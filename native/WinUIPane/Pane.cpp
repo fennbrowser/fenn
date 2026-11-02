@@ -2837,6 +2837,17 @@ static HRESULT WINAPI TestStartupDraft(HWND hwnd,uint32_t operation,const wchar_
 extern "C" __declspec(dllexport) HRESULT WINAPI WinUIPaneTestStartupDraft(HWND hwnd,uint32_t operation,const wchar_t* text,uint32_t* pending) noexcept {
     return IndependentHost::Call<TestStartupDraft>(hwnd,operation,text,pending);
 }
+// Times the posted lifetime calls for the native stall suite. A null window does nothing when its job runs.
+extern "C" __declspec(dllexport) HRESULT WINAPI WinUIPaneTestPostedLifetime() noexcept {
+    struct : IUnknown {
+        HRESULT STDMETHODCALLTYPE QueryInterface(REFIID,void**) noexcept override {return E_NOINTERFACE;}
+        ULONG STDMETHODCALLTYPE AddRef() noexcept override {return 2;}
+        ULONG STDMETHODCALLTYPE Release() noexcept override {return 1;}
+    } static provider;
+    for(const auto result:{IndependentHost::PostResolve(nullptr,0,0),IndependentHost::PostAccessibility(nullptr,&provider),
+        IndependentHost::PostDismissSurface(nullptr)})if(FAILED(result))return result;
+    return S_OK;
+}
 extern "C" __declspec(dllexport) HRESULT WINAPI WinUIPaneTestLocalStartup(void(WINAPI* inspect)(HWND)) noexcept {
     HWND hwnd{};
     auto require=[](bool value){if(!value)throw_hresult(E_FAIL);};

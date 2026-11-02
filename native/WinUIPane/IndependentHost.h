@@ -401,6 +401,29 @@ inline HRESULT Bind(HWND hwnd, uintptr_t identity, HWND endpoint) noexcept {
 inline HRESULT Resolve(HWND hwnd, uint64_t generation, uint64_t request) noexcept {
     return NativeWindowHost::ResolveEndpointClose(hwnd,generation,request,false);
 }
+// Waits only if the queue is over its bound: a close request has to be answered.
+inline HRESULT WINAPI PostResolve(HWND hwnd, uint64_t generation, uint64_t request) noexcept {
+    if (State().owner==GetCurrentThreadId()) return Resolve(hwnd,generation,request);
+    const auto result=PostJob(0,[hwnd,generation,request]{return Resolve(hwnd,generation,request);});
+    return FAILED(result) ? Call<Resolve>(hwnd,generation,request) : result;
+}
+// Setting a provider has no caller left to fail to: without it the window only lacks the
+// root until teardown disconnects it. Clearing waits, so nothing can use a released provider.
+inline HRESULT WINAPI PostAccessibility(HWND hwnd, IUnknown* provider) noexcept {
+    if (State().owner==GetCurrentThreadId()) return NativeWindowHost::SetAccessibility(hwnd,provider);
+    if (!provider) return Call<NativeWindowHost::SetAccessibility>(hwnd,provider);
+    winrt::com_ptr<IUnknown> held;
+    held.copy_from(provider);
+    return PostJob(0,[hwnd,held=std::move(held)]{return NativeWindowHost::SetAccessibility(hwnd,held.get());});
+}
+// Removing the property here retires the surface for Gecko at once and answers S_OK only
+// once. The close still runs: construction may not have set the property yet.
+inline HRESULT WINAPI PostDismissSurface(HWND hwnd) noexcept {
+    if (State().owner==GetCurrentThreadId()) return DismissStartupSurface(hwnd);
+    const bool retired=hwnd && RemovePropW(hwnd,NativeStartupSurface::Property);
+    const auto result=PostJob(0,[hwnd]{return DismissStartupSurface(hwnd);});
+    return FAILED(result) ? result : retired ? S_OK : S_FALSE;
+}
 inline BOOL WINAPI IgnoreTranslate(MSG*) noexcept { return FALSE; }
 inline void Route(WinUIPaneApi& api) {
     if (!State().started) return;
@@ -415,9 +438,9 @@ inline void Route(WinUIPaneApi& api) {
     api.measureChromeLayout=MeasureChromeLayout;
     ROUTE(createWindowHost,Create); ROUTE(detachWindowHost,NativeWindowHost::Detach);
     api.destroyWindowHost=[](HWND hwnd) noexcept { GeometryForgetWindow(hwnd); return Call<NativeWindowHost::Destroy>(hwnd); };
-    ROUTE(showStartupSurface,ShowStartupSurface); ROUTE(dismissStartupSurface,DismissStartupSurface);
-    ROUTE(bindIndependentEndpoint,Bind); ROUTE(cancelIndependentClose,Resolve);
-    ROUTE(setIndependentAccessibility,NativeWindowHost::SetAccessibility);
+    ROUTE(showStartupSurface,ShowStartupSurface); api.dismissStartupSurface=PostDismissSurface;
+    ROUTE(bindIndependentEndpoint,Bind); api.cancelIndependentClose=PostResolve;
+    api.setIndependentAccessibility=PostAccessibility;
     ROUTE(publishIndependentGeometry,NativePageInput::Geometry); ROUTE(publishIndependentInput,NativePageInput::Publish); ROUTE(drainIndependentInput,NativePageInput::Drain);
     ROUTE(commitIndependentInput,NativePageInput::Commit);
     ROUTE(startupTransfer,StartupTransfer);
