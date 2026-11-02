@@ -32635,10 +32635,10 @@ index 00000000000..4fbeda2397a
 +}, { once: true });
 diff --git a/widget/windows/WinUIPrototype.cpp b/widget/windows/WinUIPrototype.cpp
 new file mode 100644
-index 00000000000..1a19871ff78
+index 00000000000..2fed2761f57
 --- /dev/null
 +++ b/widget/windows/WinUIPrototype.cpp
-@@ -0,0 +1,730 @@
+@@ -0,0 +1,733 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -32854,8 +32854,11 @@ index 00000000000..1a19871ff78
 +    // the native thread's transient WINDOWPOS pointer through PostMessage.
 +    RECT bounds{};
 +    if (!GetWindowRect(outer,&bounds)) return 0;
++    // A size can mean maximize, minimize or restore, which Gecko reads only on a
++    // frame change. It ignores a no-activate frame change while it thinks it is minimized.
 +    WINDOWPOS position{outer,nullptr,bounds.left,bounds.top,
-+        bounds.right-bounds.left,bounds.bottom-bounds.top,SWP_NOZORDER|SWP_NOACTIVATE};
++        bounds.right-bounds.left,bounds.bottom-bounds.top,
++        message==WM_SIZE?UINT(SWP_NOZORDER|SWP_FRAMECHANGED):UINT(SWP_NOZORDER|SWP_NOACTIVATE)};
 +    return callback(outer,WM_WINDOWPOSCHANGED,0,reinterpret_cast<LPARAM>(&position));
 +  }
 +  switch (message) {
