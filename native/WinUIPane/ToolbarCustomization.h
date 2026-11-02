@@ -23,6 +23,7 @@ struct NativeToolbarCustomization {
     HWND ownerHwnd{};
     Microsoft::UI::Xaml::FrameworkElement toolbar{nullptr};
     double popupAnchorX{};
+    bool popupFromPointer{};
     bool placingPopup{};
     Microsoft::UI::Xaml::Controls::MenuFlyout itemMenu{nullptr};
     bool itemMenuOpen{};
@@ -278,7 +279,7 @@ struct NativeToolbarCustomization {
         auto row=toolbar.TransformToVisual(nullptr).TransformBounds({0,0,float(toolbar.ActualWidth()),float(toolbar.ActualHeight())});
         if(capture) {
             POINT cursor{};
-            if(GetCursorPos(&cursor) && PtInRect(&client,cursor))
+            if(GetCursorPos(&cursor) && (popupFromPointer || PtInRect(&client,cursor)))
                 popupAnchorX=converter.ConvertScreenToLocal(winrt::Windows::Graphics::PointInt32{cursor.x,cursor.y}).X;
             else popupAnchorX=anchor.TransformToVisual(nullptr).TransformPoint({0,0}).X;
         }

@@ -338,13 +338,18 @@ struct NativeNavigationToolbar {
             Controls::MenuFlyoutItem open;
             open.Text(customization.state.labels.at(L"open"));
             Microsoft::UI::Xaml::Automation::AutomationProperties::SetAutomationId(open, L"FennCustomizeOpen");
-            open.Click([this, alive](auto const&, auto const&) {
-                if (!alive.expired() && visible && !customization.editing) customization.Open(buttons[0]);
+            Windows::Foundation::Point point;
+            const bool fromPointer = args.TryGetPosition(host, point);
+            open.Click([this, alive, fromPointer](auto const&, auto const&) {
+                if (!alive.expired() && visible && !customization.editing) {
+                    customization.popupFromPointer = fromPointer;
+                    customization.Open(buttons[0]);
+                    customization.popupFromPointer = false;
+                }
             });
             contextMenu.Items().Append(open);
-            Windows::Foundation::Point point;
             Controls::Primitives::FlyoutShowOptions options;
-            if (args.TryGetPosition(host, point)) options.Position(point);
+            if (fromPointer) options.Position(point);
             contextMenu.ShowAt(host, options);
         });
         auto updatePreview=[this](auto const& args) {
