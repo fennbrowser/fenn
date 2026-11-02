@@ -433,6 +433,14 @@ inline HRESULT WINAPI PostDismissSurface(HWND hwnd) noexcept {
     if (FAILED(result)) result=Call<DismissStartupSurface>(hwnd);
     return FAILED(result) ? result : retired ? S_OK : S_FALSE;
 }
+inline HRESULT WINAPI SetTitle(HWND hwnd, const wchar_t* title) noexcept {
+    return SetWindowTextW(hwnd,title) ? S_OK : HRESULT_FROM_WIN32(GetLastError());
+}
+// Waits only if the queue is over its bound or the title exceeds it: the last title has to land.
+inline HRESULT WINAPI PostTitle(HWND hwnd, const wchar_t* title) noexcept {
+    const auto result=Post<SetTitle>(hwnd,title);
+    return result==E_OUTOFMEMORY ? Call<SetTitle>(hwnd,title) : result;
+}
 inline BOOL WINAPI IgnoreTranslate(MSG*) noexcept { return FALSE; }
 inline void Route(WinUIPaneApi& api) {
     if (!State().started) return;
@@ -449,7 +457,7 @@ inline void Route(WinUIPaneApi& api) {
     api.destroyWindowHost=[](HWND hwnd) noexcept { GeometryForgetWindow(hwnd); return Call<NativeWindowHost::Destroy>(hwnd); };
     ROUTE(showStartupSurface,ShowStartupSurface); api.dismissStartupSurface=PostDismissSurface;
     ROUTE(bindIndependentEndpoint,Bind); api.cancelIndependentClose=PostResolve;
-    api.setIndependentAccessibility=PostAccessibility;
+    api.setIndependentAccessibility=PostAccessibility; api.setIndependentTitle=PostTitle;
     ROUTE(publishIndependentGeometry,NativePageInput::Geometry); ROUTE(publishIndependentInput,NativePageInput::Publish); ROUTE(drainIndependentInput,NativePageInput::Drain);
     ROUTE(commitIndependentInput,NativePageInput::Commit);
     ROUTE(startupTransfer,StartupTransfer);

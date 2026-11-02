@@ -27,7 +27,8 @@ struct IUnknown;
 // syncTabs' selection out-parameter. v10 added an explicit strip-only host,
 // retaining the sidebar entry point.
 // v18 adds stateless native client-area allocation for browser layout.
-#define WINUI_PANE_ABI_VERSION 37u
+// v38 adds the independent host's window title.
+#define WINUI_PANE_ABI_VERSION 38u
 
 // Scalar key transport, translated exactly once by the Gecko endpoint.
 #define WINUI_PANE_ENDPOINT_KEY_OFFSET WM_APP
@@ -211,5 +212,7 @@ struct WinUIPaneApi {
     // Decimal u64 identities in JSON; borrowed buffers only for this call.
     // Operations 17/18 enable exact-state draft adoption and finish the retained presenter.
     HRESULT (WINAPI* startupTransfer)(HWND, const wchar_t*, wchar_t*, uint32_t);
+    // v38: copied before return; never waits unless the bounded queue refuses it.
+    HRESULT (WINAPI* setIndependentTitle)(HWND, const wchar_t*);
 };
 using WinUIPaneGetApiFn = HRESULT (WINAPI*)(uint32_t, uint32_t, WinUIPaneApi*);

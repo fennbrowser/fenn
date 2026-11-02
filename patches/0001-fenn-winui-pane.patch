@@ -10596,7 +10596,7 @@ index f5d293a068d..1c4562bd45f 100644
 +        }
          if (msg.message >= WM_KEYFIRST && msg.message <= WM_KEYLAST &&
 diff --git a/widget/windows/nsWindow.cpp b/widget/windows/nsWindow.cpp
-index e505d3ce012..3fa68d31a4d 100644
+index e505d3ce012..28237eee49a 100644
 --- a/widget/windows/nsWindow.cpp
 +++ b/widget/windows/nsWindow.cpp
 @@ -81,2 +81,4 @@
@@ -10929,37 +10929,43 @@ index e505d3ce012..3fa68d31a4d 100644
 +    ::SetFocus(mWnd);
 +  }
  }
-@@ -4057,3 +4279,4 @@ BOOL CALLBACK nsWindow::DispatchStarvedPaints(HWND aWnd, LPARAM aMsg) {
+@@ -3552,2 +3774,5 @@ nsresult nsWindow::SetTitle(const nsAString& aTitle) {
+   const nsString& strTitle = PromiseFlatString(aTitle);
++  if (mozilla::widget::SetIndependentWindowTitle(mWnd, strTitle.get())) {
++    return NS_OK;
++  }
+   AutoRestore<bool> sendingText(mSendingSetText);
+@@ -4057,3 +4282,4 @@ BOOL CALLBACK nsWindow::DispatchStarvedPaints(HWND aWnd, LPARAM aMsg) {
    LONG_PTR proc = ::GetWindowLongPtrW(aWnd, GWLP_WNDPROC);
 -  if (proc == (LONG_PTR)&nsWindow::WindowProc) {
 +  if (proc == (LONG_PTR)&nsWindow::WindowProc ||
 +      (mozilla::widget::IsNativeWindowHost(aWnd) && WinUtils::GetNSWindowPtr(aWnd))) {
      // its one of our windows so check to see if it has a
-@@ -5639,3 +5862,4 @@ bool nsWindow::ProcessMessageInternal(UINT msg, WPARAM& wParam, LPARAM& lParam,
+@@ -5639,3 +5865,4 @@ bool nsWindow::ProcessMessageInternal(UINT msg, WPARAM& wParam, LPARAM& lParam,
  
 -      if (IsWindowButton(int32_t(wParam)) && mCustomNonClient) {
 +      if (IsWindowButton(int32_t(wParam)) && mCustomNonClient &&
 +          !mozilla::widget::HasWinUISystemCaption(mWnd)) {
          DispatchMouseEvent(eMouseDown, wParamFromGlobalMouseState(),
-@@ -5650,3 +5874,5 @@ bool nsWindow::ProcessMessageInternal(UINT msg, WPARAM& wParam, LPARAM& lParam,
+@@ -5650,3 +5877,5 @@ bool nsWindow::ProcessMessageInternal(UINT msg, WPARAM& wParam, LPARAM& lParam,
      case WM_NCLBUTTONUP: {
 -      if (mCustomNonClient) {
 +      // The native strip uses SDK-drawn caption controls. Forward their
 +      // original input to the previous (App SDK) window proc, not DOM chrome.
 +      if (mCustomNonClient && !mozilla::widget::HasWinUISystemCaption(mWnd)) {
          result = DispatchMouseEvent(eMouseUp, wParamFromGlobalMouseState(),
-@@ -6945,2 +7171,6 @@ bool nsWindow::OnGesture(WPARAM wParam, LPARAM lParam) {
+@@ -6945,2 +7174,6 @@ bool nsWindow::OnGesture(WPARAM wParam, LPARAM lParam) {
  void nsWindow::OnDestroy() {
 +  mozilla::widget::DestroyWinUIPane(mWnd);
 +  if (mWindowType == WindowType::TopLevel) {
 +    mozilla::widget::TraceWinUIPrototype("window-destroy", mWnd);
 +  }
    mOnDestroyCalled = true;
-@@ -7210,2 +7440,3 @@ void nsWindow::SetInputContext(const InputContext& aContext,
+@@ -7210,2 +7443,3 @@ void nsWindow::SetInputContext(const InputContext& aContext,
    mInputContext = newInputContext;
 +  mozilla::widget::RefreshIndependentPageIME(mWnd);
  }
-@@ -8935,3 +9166,3 @@ void nsWindow::FrameState::CheckInvariant() const {
+@@ -8935,3 +9169,3 @@ void nsWindow::FrameState::CheckInvariant() const {
  
 -void nsWindow::FrameState::ConsumePreXULSkeletonState(bool aWasMaximized) {
 +void nsWindow::FrameState::ConsumeStartupWindowState(bool aWasMaximized) {
@@ -32635,10 +32641,10 @@ index 00000000000..4fbeda2397a
 +}, { once: true });
 diff --git a/widget/windows/WinUIPrototype.cpp b/widget/windows/WinUIPrototype.cpp
 new file mode 100644
-index 00000000000..2fed2761f57
+index 00000000000..38e1e6c4c08
 --- /dev/null
 +++ b/widget/windows/WinUIPrototype.cpp
-@@ -0,0 +1,733 @@
+@@ -0,0 +1,739 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -32864,9 +32870,10 @@ index 00000000000..2fed2761f57
 +  switch (message) {
 +    case WM_ACTIVATE: case WM_SETFOCUS: case WM_KILLFOCUS:
 +    case WM_KEYDOWN: case WM_KEYUP: case WM_SYSKEYDOWN: case WM_SYSKEYUP:
-+    case WM_CHAR: case WM_SYSCHAR: case WM_MOUSEMOVE: case WM_CONTEXTMENU:
++    case WM_CHAR: case WM_SYSCHAR: case WM_MOUSEMOVE: case WM_MOUSELEAVE: case WM_CONTEXTMENU:
 +    case WM_LBUTTONDOWN: case WM_LBUTTONUP: case WM_RBUTTONDOWN: case WM_RBUTTONUP:
 +    case WM_MBUTTONDOWN: case WM_MBUTTONUP: case WM_MOUSEWHEEL: case WM_MOUSEHWHEEL:
++    case WM_LBUTTONDBLCLK: case WM_RBUTTONDBLCLK: case WM_MBUTTONDBLCLK:
 +      return callback(outer,message,w,l);
 +  }
 +  return DefWindowProcW(hwnd,message,w,l);
@@ -33065,6 +33072,11 @@ index 00000000000..2fed2761f57
 +  }
 +}
 +bool IsNativeWindowHost(HWND hwnd) { return GetPropW(hwnd, L"Fenn.NativeWindowHost") != nullptr; }
++bool SetIndependentWindowTitle(HWND hwnd, const wchar_t* title) {
++  return sPaneApi.setIndependentTitle && IsNativeWindowHost(hwnd) &&
++         ::GetWindowThreadProcessId(hwnd, nullptr) != ::GetCurrentThreadId() &&
++         SUCCEEDED(sPaneApi.setIndependentTitle(hwnd, title));
++}
 +bool AdoptNativeStartupWindowHost(HWND hwnd) {
 +  if (FennStartupWindowIndependent()) return LoadPane() && IsNativeWindowHost(hwnd);
 +  return NS_IsMainThread() && XRE_IsParentProcess() && !sPaneStopped && LoadPane() &&
@@ -33374,10 +33386,10 @@ index 00000000000..2fed2761f57
 +}  // namespace mozilla::widget
 diff --git a/widget/windows/WinUIPrototype.h b/widget/windows/WinUIPrototype.h
 new file mode 100644
-index 00000000000..2794270e58a
+index 00000000000..71152f71f8a
 --- /dev/null
 +++ b/widget/windows/WinUIPrototype.h
-@@ -0,0 +1,59 @@
+@@ -0,0 +1,61 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -33391,6 +33403,8 @@ index 00000000000..2794270e58a
 +class nsIFile;
 +namespace mozilla::widget {
 +bool IsNativeWindowHost(HWND);
++// Returns true when the title was handed to the independent native owner, without waiting on it.
++bool SetIndependentWindowTitle(HWND, const wchar_t*);
 +// Returns true when the independent native owner handles the request.
 +bool FocusIndependentWindowHost(HWND);
 +bool NativeStartupEditorOwnsForeground();
@@ -34161,10 +34175,10 @@ index 00000000000..cd1051c5061
 +}
 diff --git a/widget/windows/WinUIPaneApi.h b/widget/windows/WinUIPaneApi.h
 new file mode 100644
-index 00000000000..09836a64706
+index 00000000000..cea8559abf2
 --- /dev/null
 +++ b/widget/windows/WinUIPaneApi.h
-@@ -0,0 +1,215 @@
+@@ -0,0 +1,218 @@
 +#pragma once
 +struct IUnknown;
 +#include <windows.h>
@@ -34194,7 +34208,8 @@ index 00000000000..09836a64706
 +// syncTabs' selection out-parameter. v10 added an explicit strip-only host,
 +// retaining the sidebar entry point.
 +// v18 adds stateless native client-area allocation for browser layout.
-+#define WINUI_PANE_ABI_VERSION 37u
++// v38 adds the independent host's window title.
++#define WINUI_PANE_ABI_VERSION 38u
 +
 +// Scalar key transport, translated exactly once by the Gecko endpoint.
 +#define WINUI_PANE_ENDPOINT_KEY_OFFSET WM_APP
@@ -34378,5 +34393,7 @@ index 00000000000..09836a64706
 +    // Decimal u64 identities in JSON; borrowed buffers only for this call.
 +    // Operations 17/18 enable exact-state draft adoption and finish the retained presenter.
 +    HRESULT (WINAPI* startupTransfer)(HWND, const wchar_t*, wchar_t*, uint32_t);
++    // v38: copied before return; never waits unless the bounded queue refuses it.
++    HRESULT (WINAPI* setIndependentTitle)(HWND, const wchar_t*);
 +};
 +using WinUIPaneGetApiFn = HRESULT (WINAPI*)(uint32_t, uint32_t, WinUIPaneApi*);

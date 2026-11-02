@@ -48,6 +48,7 @@ struct Context {
     winrt::com_ptr<IRawElementProviderSimple> accessibility;
     // This thread holds capture for a page drag: Gecko cannot capture a window it does not own.
     bool pageCapture{};
+    bool pageTracking{};
     ShellWindowBinding state{};
     ShellStatus Call(uint32_t operation, ShellWindowBinding input={}) {
         return shell_core_window_host(core.get(),operation,&input,&state);
@@ -122,10 +123,20 @@ inline LRESULT CALLBACK Base(HWND hwnd, UINT message, WPARAM w, LPARAM l) {
             PostMessageW(host->endpoint,EndpointDpiMessage(),w,0);
             return 0;
         }
-        if (message==WM_LBUTTONDOWN || message==WM_RBUTTONDOWN || message==WM_MBUTTONDOWN) {
+        if (message==WM_LBUTTONDOWN || message==WM_RBUTTONDOWN || message==WM_MBUTTONDOWN ||
+            message==WM_LBUTTONDBLCLK || message==WM_RBUTTONDBLCLK || message==WM_MBUTTONDBLCLK) {
             if (!GetCapture()) { SetCapture(hwnd); host->pageCapture=GetCapture()==hwnd; }
         }
-        if (message==WM_CAPTURECHANGED) host->pageCapture=false;
+        // Leave tracking belongs to this thread, so nsWindow's own request has no effect. As in
+        // nsWindow::CaptureMouse it pauses during a capture; asking again when capture ends
+        // reports a leave at once if the drag ended outside the window.
+        const auto trackLeave=[&]{
+            TRACKMOUSEEVENT track{sizeof(track),TME_LEAVE,hwnd,0};
+            host->pageTracking=TrackMouseEvent(&track)!=FALSE;
+        };
+        if (message==WM_MOUSEMOVE && !host->pageTracking && !host->pageCapture) trackLeave();
+        if (message==WM_MOUSELEAVE) { host->pageTracking=false; PostMessageW(host->endpoint,message,0,0); }
+        if (message==WM_CAPTURECHANGED && host->pageCapture) { host->pageCapture=false; trackLeave(); }
         // Only pointer-free notifications cross this boundary. Synchronous
         // non-client, accessibility, IME and drag messages are not forwarded.
         if (message==WM_CONTEXTMENU) {
@@ -139,6 +150,7 @@ inline LRESULT CALLBACK Base(HWND hwnd, UINT message, WPARAM w, LPARAM l) {
             case WM_SETFOCUS: case WM_KILLFOCUS:
             case WM_MOUSEMOVE: case WM_LBUTTONDOWN: case WM_LBUTTONUP:
             case WM_RBUTTONDOWN: case WM_RBUTTONUP: case WM_MBUTTONDOWN: case WM_MBUTTONUP:
+            case WM_LBUTTONDBLCLK: case WM_RBUTTONDBLCLK: case WM_MBUTTONDBLCLK:
             case WM_MOUSEWHEEL: case WM_MOUSEHWHEEL:
                 PostMessageW(host->endpoint,message,w,l); break;
         }
