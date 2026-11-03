@@ -39,6 +39,9 @@ inline UINT EndpointCloseMessage() { static UINT message=RegisterWindowMessageW(
 inline UINT EndpointDpiMessage() { static UINT message=RegisterWindowMessageW(L"Fenn.NativeWindowHost.EndpointDpi.v1"); return message; }
 inline UINT EndpointLayoutMessage() { static UINT message=RegisterWindowMessageW(L"Fenn.NativeWindowHost.EndpointLayout.v1"); return message; }
 // The shell moved, resized or changed size mode; the proxy reads the new state itself.
+// Explorer sends this to the window with the taskbar button, the shell. Firefox applies taskbar
+// progress, overlay icons and thumbnail buttons only once its own window has seen it.
+inline UINT TaskbarButtonCreatedMessage() { static UINT message=RegisterWindowMessageW(L"TaskbarButtonCreated"); return message; }
 inline UINT EndpointGeometryMessage() { static UINT message=RegisterWindowMessageW(L"Fenn.NativeWindowHost.EndpointGeometry.v1"); return message; }
 struct Context {
     std::unique_ptr<ShellCore,decltype(&shell_core_destroy)> core{shell_core_create(nullptr),shell_core_destroy};
@@ -198,6 +201,7 @@ inline LRESULT CALLBACK Base(HWND hwnd, UINT message, WPARAM w, LPARAM l) {
             return 0;
         }
         if (message==WM_SIZE || message==WM_MOVE) PostMessageW(host->endpoint,EndpointGeometryMessage(),0,0);
+        if (message==TaskbarButtonCreatedMessage()) PostMessageW(host->endpoint,message,w,l);
         switch (message) {
             case WM_ACTIVATE:
             case WM_SETFOCUS: case WM_KILLFOCUS:
@@ -309,6 +313,8 @@ inline HRESULT BindEndpoint(HWND hwnd, uint64_t generation, uintptr_t identity, 
     binding.shell=reinterpret_cast<uintptr_t>(hwnd); binding.content=identity;
     if (host->Call(SHELL_WINDOW_HOST_OPERATION_BIND,binding)!=SHELL_STATUS_OK) return E_FAIL;
     host->endpoint=endpoint;
+    // A shell shown before Firefox attached already has its taskbar button.
+    if (IsWindowVisible(hwnd)) PostMessageW(endpoint,TaskbarButtonCreatedMessage(),0,0);
     return S_OK;
 }
 inline HRESULT ResolveEndpointClose(HWND hwnd, uint64_t generation, uint64_t request, bool allow) noexcept {
