@@ -29454,10 +29454,10 @@ index 00000000000..39117cb2f96
 +}
 diff --git a/browser/base/content/WinUIAddressToolbar.sys.mjs b/browser/base/content/WinUIAddressToolbar.sys.mjs
 new file mode 100644
-index 00000000000..a4c7c4f2ecb
+index 00000000000..7fa6a8ed94f
 --- /dev/null
 +++ b/browser/base/content/WinUIAddressToolbar.sys.mjs
-@@ -0,0 +1,617 @@
+@@ -0,0 +1,619 @@
 +export class WinUIAddressToolbar {
 +  constructor(window, owner) {
 +    this.window = window;
@@ -29477,6 +29477,8 @@ index 00000000000..a4c7c4f2ecb
 +    document.documentElement.append(this.link);
 +    this.proxy = document.createElementNS("http://www.w3.org/1999/xhtml", "div");
 +    this.proxy.id = "winui-address-focus";
++    // While this has Gecko focus, the native field has keyboard focus: the widget must not take it.
++    this.proxy.setAttribute("winui-native-focus", "");
 +    this.proxy.tabIndex = 0;
 +    // Keyboard routing only: the native TextBox owns accessible focus. Exposing
 +    // this intermediate Gecko target makes Narrator follow a duplicate group.
@@ -32708,10 +32710,10 @@ index 00000000000..4fbeda2397a
 +}, { once: true });
 diff --git a/widget/windows/WinUIPrototype.cpp b/widget/windows/WinUIPrototype.cpp
 new file mode 100644
-index 00000000000..3fe9c4acf83
+index 00000000000..3e9079e80e6
 --- /dev/null
 +++ b/widget/windows/WinUIPrototype.cpp
-@@ -0,0 +1,927 @@
+@@ -0,0 +1,938 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -32729,6 +32731,9 @@ index 00000000000..3fe9c4acf83
 +#include "WinUIAccessibleRoot.h"
 +#include "WinUtils.h"
 +#include "nsWindow.h"
++#include "nsContentUtils.h"
++#include "nsFocusManager.h"
++#include "mozilla/dom/Element.h"
 +#include "mozilla/Logging.h"
 +#include "mozilla/FennStartupWindow.h"
 +#include "mozilla/ProfilerMarkers.h"
@@ -32759,8 +32764,16 @@ index 00000000000..3fe9c4acf83
 +  // then deadlock against a synchronous native layout call from that teardown.
 +  // The runnable owns only scalar identities; it never pumps borrowed ABI work.
 +  NS_DispatchToCurrentThread(NS_NewRunnableFunction(
-+      "FocusIndependentWindowHost", [window, endpoint]() {
++      "FocusIndependentWindowHost", [window, endpoint, proxy]() {
 +        if (GetPropW(window, WINUI_PANE_ENDPOINT_PROPERTY) != endpoint) return;
++        // Gecko's focus is on an element that stands for a native control, such as the native
++        // address field, which has keyboard focus already. Focusing the window would take it away.
++        nsFocusManager* focus = nsFocusManager::GetFocusManager();
++        dom::Element* element = focus ? focus->GetFocusedElement() : nullptr;
++        if (element && element->HasAttribute(u"winui-native-focus"_ns)) {
++          nsIWidget* widget = nsContentUtils::WidgetForDocument(element->OwnerDoc());
++          if (widget && widget->GetNativeData(NS_NATIVE_WINDOW) == proxy) return;
++        }
 +        if (!message || !PostMessageW(window, message,
 +                                      reinterpret_cast<WPARAM>(endpoint), 0)) {
 +          NS_WARNING("Native focus request failed");
