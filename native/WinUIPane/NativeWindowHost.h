@@ -7,10 +7,11 @@
 #pragma comment(lib,"uiautomationcore.lib")
 #include "shell_core.h"
 
-// The HWND is native-owned; nsWindow remains the logical browser adapter.
-// Gecko keeps its compositor children and all window/focus/browser semantics.
-// The binding's content identity is the attached nsWindow, not a disposable
-// compositor HWND (which Gecko may replace after a graphics-device reset).
+// The HWND is native-owned; nsWindow remains the logical browser adapter, on its own hidden
+// window on Gecko's thread (the proxy, which is also the endpoint). Gecko keeps its compositor
+// children and all window/focus/browser semantics. The binding's content identity is the
+// attached nsWindow, not a disposable compositor HWND (which Gecko may replace after a
+// graphics-device reset).
 namespace NativeWindowHost {
 inline constexpr wchar_t Property[] = L"Fenn.NativeWindowHost";
 inline UINT CloseMessage() { static UINT message=RegisterWindowMessageW(L"Fenn.NativeWindowHost.Close.v1"); return message; }
@@ -37,9 +38,11 @@ inline bool EditorOwned(HWND hwnd) {
 inline UINT EndpointCloseMessage() { static UINT message=RegisterWindowMessageW(L"Fenn.NativeWindowHost.EndpointClose.v1"); return message; }
 inline UINT EndpointDpiMessage() { static UINT message=RegisterWindowMessageW(L"Fenn.NativeWindowHost.EndpointDpi.v1"); return message; }
 inline UINT EndpointLayoutMessage() { static UINT message=RegisterWindowMessageW(L"Fenn.NativeWindowHost.EndpointLayout.v1"); return message; }
+// The shell moved, resized or changed size mode; the proxy reads the new state itself.
+inline UINT EndpointGeometryMessage() { static UINT message=RegisterWindowMessageW(L"Fenn.NativeWindowHost.EndpointGeometry.v1"); return message; }
 struct Context {
     std::unique_ptr<ShellCore,decltype(&shell_core_destroy)> core{shell_core_create(nullptr),shell_core_destroy};
-    WNDPROC base{}, fallback{}, gecko{};
+    WNDPROC base{};
     // Independent browser endpoint. Never call its window procedure on the
     // native UI thread or synchronously wait for its close decision.
     HWND endpoint{};
@@ -51,6 +54,8 @@ struct Context {
     bool pageTracking{};
     HCURSOR pageCursor{};
     bool pageCursorOwned{};
+    // Copies of Gecko's window icons, which Gecko destroys on its own schedule.
+    HICON icons[2]{};
     ShellWindowBinding state{};
     ShellStatus Call(uint32_t operation, ShellWindowBinding input={}) {
         return shell_core_window_host(core.get(),operation,&input,&state);
@@ -181,7 +186,8 @@ inline LRESULT CALLBACK Base(HWND hwnd, UINT message, WPARAM w, LPARAM l) {
                     return TRUE;
             }
         }
-        if (message==WM_MOUSELEAVE) { host->pageTracking=false; PostMessageW(host->endpoint,message,0,0); }
+        // Offset, so Gecko can tell it from the leave its own tracking of the hidden proxy produces.
+        if (message==WM_MOUSELEAVE) { host->pageTracking=false; PostMessageW(host->endpoint,message+WINUI_PANE_ENDPOINT_KEY_OFFSET,0,0); }
         if (message==WM_CAPTURECHANGED && host->pageCapture) { host->pageCapture=false; trackLeave(); }
         // Only pointer-free notifications cross this boundary. Synchronous
         // non-client, accessibility, IME and drag messages are not forwarded.
@@ -191,8 +197,9 @@ inline LRESULT CALLBACK Base(HWND hwnd, UINT message, WPARAM w, LPARAM l) {
             PostMessageW(host->endpoint,message,w,l);
             return 0;
         }
+        if (message==WM_SIZE || message==WM_MOVE) PostMessageW(host->endpoint,EndpointGeometryMessage(),0,0);
         switch (message) {
-            case WM_SIZE: case WM_MOVE: case WM_ACTIVATE:
+            case WM_ACTIVATE:
             case WM_SETFOCUS: case WM_KILLFOCUS:
             case WM_MOUSEWHEEL: case WM_MOUSEHWHEEL:
                 PostMessageW(host->endpoint,message,w,l); break;
@@ -227,6 +234,7 @@ inline LRESULT CALLBACK Base(HWND hwnd, UINT message, WPARAM w, LPARAM l) {
     const auto result=CallWindowProcW(base,hwnd,message,w,l);
     if (message==WM_NCDESTROY) {
         if (host->pageCursorOwned) DestroyCursor(host->pageCursor);
+        for (auto icon : host->icons) if (icon) DestroyIcon(icon);
         NativePageInput::Remove(hwnd);
         if (host->state.phase==6) host->Call(SHELL_WINDOW_HOST_OPERATION_CANCEL_STARTUP,host->state);
         if (host->state.phase==4 || host->state.phase==7)
@@ -249,35 +257,6 @@ inline HRESULT WINAPI SetPageCursor(HWND hwnd, HCURSOR cursor, BOOL owned) noexc
 }
 inline HRESULT WINAPI RegisterPageTouch(HWND hwnd) noexcept {
     return ::RegisterTouchWindow(hwnd,TWF_WANTPALM) ? S_OK : HRESULT_FROM_WIN32(GetLastError());
-}
-inline LRESULT CALLBACK Forward(HWND hwnd, UINT message, WPARAM w, LPARAM l) {
-    auto* host=Get(hwnd);
-    if (!host) return DefWindowProcW(hwnd,message,w,l);
-    if (message==WM_CLOSE) {
-        if (host->gecko && host->Call(SHELL_WINDOW_HOST_OPERATION_REQUEST_CLOSE)==SHELL_STATUS_OK) {
-            if (!PostMessageW(hwnd,CloseMessage(),static_cast<WPARAM>(host->state.close_request),
-                              static_cast<LPARAM>(host->state.generation)))
-                host->Call(SHELL_WINDOW_HOST_OPERATION_CANCEL_CLOSE,host->state);
-        }
-        return 0;
-    }
-    if (message==CloseMessage()) {
-        const auto request=host->state;
-        if (!host->gecko || request.phase!=2 || request.close_request!=static_cast<uint64_t>(w) ||
-            request.generation!=static_cast<uint64_t>(l)) return 0;
-        // Gecko's existing RequestWindowClose dispatches the browser close
-        // event, including confirmation/unload cancellation. Destroy() is the
-        // only approval to destroy the native HWND. Never infer approval from
-        // the window-procedure return value or retain host across that callback.
-        const auto gecko=host->gecko;
-        CallWindowProcW(gecko,hwnd,WM_CLOSE,0,0);
-        auto* current=Get(hwnd);
-        if (current && current->state.generation==request.generation && current->state.phase==2)
-            current->Call(SHELL_WINDOW_HOST_OPERATION_CANCEL_CLOSE,request);
-        return 0;
-    }
-    const auto procedure=host->gecko ? host->gecko : host->fallback;
-    return CallWindowProcW(procedure,hwnd,message,w,l);
 }
 inline HRESULT WINAPI SetAccessibility(HWND hwnd,IUnknown* provider) noexcept {
     auto* host=Get(hwnd);
@@ -316,32 +295,15 @@ inline HRESULT WINAPI Create(DWORD ex, const wchar_t* name, DWORD style, const R
         host.release(); *output=hwnd; return S_OK;
     } catch (...) { return winrt::to_hresult(); }
 }
-inline HRESULT WINAPI Attach(HWND hwnd, uintptr_t identity, WNDPROC gecko, WNDPROC* fallback) noexcept {
-    auto* host=Get(hwnd);
-    if (!host || !Owner(hwnd) || !identity || !gecko || !fallback) return E_INVALIDARG;
-    if (host->state.phase!=0 && host->state.phase!=6) return E_NOT_VALID_STATE;
-    // Windows App SDK has already associated the window. Preserve its chain
-    // below Gecko's adapter, with Base at the bottom for final native cleanup.
-    host->fallback=reinterpret_cast<WNDPROC>(GetWindowLongPtrW(hwnd,GWLP_WNDPROC));
-    ShellWindowBinding binding{}; binding.shell=reinterpret_cast<uintptr_t>(hwnd); binding.content=identity;
-    if (host->Call(SHELL_WINDOW_HOST_OPERATION_BIND,binding)!=SHELL_STATUS_OK) return E_FAIL;
-    host->gecko=gecko;
-    SetLastError(ERROR_SUCCESS);
-    auto previous=SetWindowLongPtrW(hwnd,GWLP_WNDPROC,reinterpret_cast<LONG_PTR>(Forward));
-    if (!previous && GetLastError()!=ERROR_SUCCESS) { host->gecko=nullptr; return HRESULT_FROM_WIN32(GetLastError()); }
-    *fallback=host->fallback;
-    return S_OK;
-}
-// Independent-thread foundation. The outer HWND stays on its original native
-// thread; an opaque browser identity and message-only notification endpoint
-// replace the same-thread Gecko WNDPROC attachment in the development lane.
+// The outer HWND stays on its native thread; an opaque browser identity and Gecko's hidden
+// proxy window, which receives the posted input, are all it knows of the browser.
 inline HRESULT BindEndpoint(HWND hwnd, uint64_t generation, uintptr_t identity, HWND endpoint) noexcept {
     auto* host=Get(hwnd);
     DWORD process{};
     const auto thread=GetWindowThreadProcessId(endpoint,&process);
     if (!host || !Owner(hwnd) || !identity || !thread || thread==GetCurrentThreadId() ||
         process!=GetCurrentProcessId() || !EndpointCloseMessage()) return E_INVALIDARG;
-    if (host->state.phase!=6 || host->state.generation!=generation || host->gecko || host->endpoint)
+    if (host->state.phase!=6 || host->state.generation!=generation || host->endpoint)
         return E_NOT_VALID_STATE;
     ShellWindowBinding binding{};
     binding.shell=reinterpret_cast<uintptr_t>(hwnd); binding.content=identity;
@@ -357,38 +319,48 @@ inline HRESULT ResolveEndpointClose(HWND hwnd, uint64_t generation, uint64_t req
     return host->Call(allow ? SHELL_WINDOW_HOST_OPERATION_APPROVE_CLOSE :
         SHELL_WINDOW_HOST_OPERATION_CANCEL_CLOSE,decision)==SHELL_STATUS_OK ? S_OK : E_NOT_VALID_STATE;
 }
-// Transfer ownership only from Fenn's pre-XUL native bootstrap, never from a
-// Firefox/skeleton HWND. The bootstrap has already consumed its one-use slot.
-inline HRESULT WINAPI AdoptStartup(HWND hwnd) noexcept {
-    if (!hwnd || !Owner(hwnd) || Get(hwnd) ||
-        GetPropW(hwnd,L"Fenn.NativeStartupOrigin")!=reinterpret_cast<HANDLE>(1)) return E_INVALIDARG;
-    wchar_t name[64]{};
-    if (!GetClassNameW(hwnd,name,64) || wcscmp(name,L"Fenn.NativeStartupBootstrap.v1")) return E_INVALIDARG;
-    try {
-        auto host=std::make_unique<Context>();
-        if (!host->core || !CloseMessage()) return E_FAIL;
-        ShellWindowBinding binding{}; binding.shell=reinterpret_cast<uintptr_t>(hwnd);
-        if (host->Call(SHELL_WINDOW_HOST_OPERATION_PREPARE_STARTUP,binding)!=SHELL_STATUS_OK) return E_FAIL;
-        host->base=reinterpret_cast<WNDPROC>(GetWindowLongPtrW(hwnd,GWLP_WNDPROC));
-        if (!SetPropW(hwnd,Property,host.get())) return HRESULT_FROM_WIN32(GetLastError());
-        SetLastError(ERROR_SUCCESS);
-        auto previous=SetWindowLongPtrW(hwnd,GWLP_WNDPROC,reinterpret_cast<LONG_PTR>(Base));
-        if (!previous && GetLastError()!=ERROR_SUCCESS) {
-            auto error=HRESULT_FROM_WIN32(GetLastError()); RemovePropW(hwnd,Property); return error;
-        }
-        host.release();
-        return S_OK;
-    } catch (...) { return winrt::to_hresult(); }
-}
-inline HRESULT WINAPI Detach(HWND hwnd) noexcept {
+// Gecko asked for this on its proxy window. Applied here, where the shell lives, so Gecko never
+// waits for this thread; the proxy follows once the shell reports its new state.
+inline HRESULT ApplyWindowRequest(HWND hwnd, const WinUIPaneWindowRequest& request) noexcept {
     auto* host=Get(hwnd);
-    if (!host || !Owner(hwnd)) return E_INVALIDARG;
-    if (!host->gecko) return S_OK;
-    SetLastError(ERROR_SUCCESS);
-    auto previous=SetWindowLongPtrW(hwnd,GWLP_WNDPROC,reinterpret_cast<LONG_PTR>(host->fallback));
-    if (!previous && GetLastError()!=ERROR_SUCCESS) return HRESULT_FROM_WIN32(GetLastError());
-    host->gecko=nullptr;
-    return S_OK;
+    HRESULT result=S_OK;
+    if (!host || !Owner(hwnd)) result=E_INVALIDARG;
+    else switch (request.kind) {
+        case WinUIPaneWindowPosition: {
+            constexpr UINT kept=SWP_NOMOVE|SWP_NOSIZE|SWP_FRAMECHANGED|SWP_NOZORDER;
+            // Only always-on-top crosses: the shell keeps its own place among other windows.
+            const auto after=reinterpret_cast<HWND>(request.value);
+            const bool topmost=!(request.flags&SWP_NOZORDER) && (after==HWND_TOPMOST || after==HWND_NOTOPMOST);
+            if (!SetWindowPos(hwnd,topmost?after:nullptr,request.rect.left,request.rect.top,request.rect.right-request.rect.left,
+                    request.rect.bottom-request.rect.top,(request.flags&kept)|(topmost?0:SWP_NOZORDER)|SWP_NOOWNERZORDER|SWP_NOACTIVATE))
+                result=HRESULT_FROM_WIN32(GetLastError());
+            break;
+        }
+        case WinUIPaneWindowShow: ShowWindow(hwnd,static_cast<int>(request.value)); break;
+        case WinUIPaneWindowStyle: {
+            const LONG_PTR current=GetWindowLongPtrW(hwnd,GWL_STYLE);
+            const LONG_PTR next=(current&~WinUIPaneShellStyleMask)|(request.value&WinUIPaneShellStyleMask);
+            if (next!=current) {
+                SetWindowLongPtrW(hwnd,GWL_STYLE,next);
+                SetWindowPos(hwnd,nullptr,0,0,0,0,SWP_NOMOVE|SWP_NOSIZE|SWP_NOZORDER|SWP_NOOWNERZORDER|SWP_NOACTIVATE|SWP_FRAMECHANGED);
+            }
+            break;
+        }
+        case WinUIPaneWindowEnable: EnableWindow(hwnd,request.value!=0); break;
+        case WinUIPaneWindowIcon: {
+            const auto icon=reinterpret_cast<HICON>(request.value);
+            auto& held=host->icons[request.flags==ICON_BIG?0:1];
+            SendMessageW(hwnd,WM_SETICON,request.flags==ICON_BIG?ICON_BIG:ICON_SMALL,reinterpret_cast<LPARAM>(icon));
+            if (held) DestroyIcon(held);
+            held=icon;
+            break;
+        }
+        default: result=E_INVALIDARG;
+    }
+    if (FAILED(result) && request.kind==WinUIPaneWindowIcon && request.value) DestroyIcon(reinterpret_cast<HICON>(request.value));
+    if (request.pending) InterlockedDecrement(request.pending);
+    if (host && host->endpoint) PostMessageW(host->endpoint,EndpointGeometryMessage(),0,0);
+    return result;
 }
 inline HRESULT WINAPI Destroy(HWND hwnd) noexcept {
     auto* host=Get(hwnd);

@@ -29,9 +29,12 @@ struct IUnknown;
 // v18 adds stateless native client-area allocation for browser layout.
 // v38 adds the independent host's window title.
 // v39 adds its page cursor and touch registration, and pen messages to the endpoint.
-#define WINUI_PANE_ABI_VERSION 39u
+// v40 retires the native host on Gecko's thread (attach, detach, adopt) and adds window-state
+// requests from Gecko's hidden proxy window to the shell.
+#define WINUI_PANE_ABI_VERSION 40u
 
-// Scalar key transport, translated exactly once by the Gecko endpoint.
+// Scalar key transport, translated exactly once by the Gecko endpoint. The endpoint is nsWindow's
+// own hidden window (the proxy), which stands for the shell on Gecko's thread.
 #define WINUI_PANE_ENDPOINT_KEY_OFFSET WM_APP
 #define WINUI_PANE_ENDPOINT_PROPERTY L"Fenn.GeckoEndpoint"
 inline constexpr int WinUIPaneModifierKeys[] = {
@@ -112,6 +115,24 @@ struct WinUIPageGeometry {
     uint32_t start, end, valid, clipped;
     RECT bounds;
 };
+enum WinUIPaneWindowRequestKind : uint32_t {
+    // rect and the SWP_NOMOVE, SWP_NOSIZE, SWP_FRAMECHANGED and SWP_NOZORDER bits of flags; without
+    // SWP_NOZORDER, value is HWND_TOPMOST or HWND_NOTOPMOST
+    WinUIPaneWindowPosition = 1,
+    WinUIPaneWindowShow = 2,     // value is a ShowWindow command
+    WinUIPaneWindowStyle = 3,    // value replaces the bits of WinUIPaneShellStyleMask
+    WinUIPaneWindowEnable = 4,   // value is TRUE or FALSE
+    WinUIPaneWindowIcon = 5,     // value is an HICON the shell takes over; flags is ICON_BIG or ICON_SMALL
+};
+inline constexpr LONG_PTR WinUIPaneShellStyleMask =
+    WS_CAPTION | WS_THICKFRAME | WS_SYSMENU | WS_MINIMIZEBOX | WS_MAXIMIZEBOX;
+struct WinUIPaneWindowRequest {
+    uint32_t kind;
+    uint32_t flags;
+    RECT rect;
+    LONG_PTR value;
+    volatile LONG* pending;
+};
 struct WinUIPaneApi {
     uint32_t size;
     uint32_t version;
@@ -181,11 +202,7 @@ struct WinUIPaneApi {
     HRESULT (WINAPI* measureChromeLayout)(HWND, uint32_t, BOOL, uint32_t, WinUIChromeLayout*);
     // v19: opt-in native outer HWND; Gecko remains its logical widget adapter.
     HRESULT (WINAPI* createWindowHost)(DWORD, const wchar_t*, DWORD, const RECT*, HWND, HINSTANCE, HWND*);
-    HRESULT (WINAPI* attachWindowHost)(HWND, uintptr_t, WNDPROC, WNDPROC*);
-    HRESULT (WINAPI* detachWindowHost)(HWND);
     HRESULT (WINAPI* destroyWindowHost)(HWND);
-    // One-use handoff from Fenn's native bootstrap, never Firefox window adoption.
-    HRESULT (WINAPI* adoptStartupWindowHost)(HWND);
     // v21: early loading island on the original native HWND, owning thread only.
     HRESULT (WINAPI* showStartupSurface)(HWND);
     HRESULT (WINAPI* dismissStartupSurface)(HWND);
@@ -218,6 +235,9 @@ struct WinUIPaneApi {
     // v39: the native owner destroys an owned cursor, including when this call fails.
     HRESULT (WINAPI* setIndependentCursor)(HWND, HCURSOR, BOOL);
     HRESULT (WINAPI* registerIndependentTouch)(HWND);
+    // v40: copied and applied to the shell in order with other posted calls, never waited on unless
+    // the bounded queue refuses it. The shell decrements pending once applied, then reports its state.
+    HRESULT (WINAPI* requestIndependentWindow)(HWND, const WinUIPaneWindowRequest*);
 };
 // Pen data can only be read on the thread that owns the window, so the endpoint gets a copy.
 // Sent as WM_POINTER*+WINUI_PANE_ENDPOINT_KEY_OFFSET with this as wParam and the original lParam.

@@ -450,6 +450,18 @@ inline HRESULT WINAPI PostPageCursor(HWND hwnd, HCURSOR cursor, BOOL owned) noex
 inline HRESULT WINAPI PostPageTouch(HWND hwnd) noexcept {
     return PostJob(0,[hwnd]{return NativeWindowHost::RegisterPageTouch(hwnd);});
 }
+inline HRESULT ApplyWindowRequest(HWND hwnd, const WinUIPaneWindowRequest* request) noexcept {
+    return NativeWindowHost::ApplyWindowRequest(hwnd,*request);
+}
+// Waits only if the queue is over its bound: Gecko's proxy has already changed and the shell has to follow.
+inline HRESULT WINAPI PostWindowRequest(HWND hwnd, const WinUIPaneWindowRequest* request) noexcept {
+    if (!request) return E_POINTER;
+    const WinUIPaneWindowRequest copy=*request;
+    if (State().owner==GetCurrentThreadId()) return NativeWindowHost::ApplyWindowRequest(hwnd,copy);
+    const auto result=PostJob(0,[hwnd,copy]{return NativeWindowHost::ApplyWindowRequest(hwnd,copy);});
+    if (result!=E_OUTOFMEMORY) return result;
+    return Call<ApplyWindowRequest>(hwnd,&copy);
+}
 inline BOOL WINAPI IgnoreTranslate(MSG*) noexcept { return FALSE; }
 inline void Route(WinUIPaneApi& api) {
     if (!State().started) return;
@@ -462,7 +474,7 @@ inline void Route(WinUIPaneApi& api) {
     api.updateAddress=PostRect<UpdateAddress,ReportedUpdateAddress,2>; api.focusAddress=PostFocus<FocusAddress,ReportedFocusAddress>;
     // Reads only window state the OS answers from any thread, then computes.
     api.measureChromeLayout=MeasureChromeLayout;
-    ROUTE(createWindowHost,Create); ROUTE(detachWindowHost,NativeWindowHost::Detach);
+    ROUTE(createWindowHost,Create); api.requestIndependentWindow=PostWindowRequest;
     api.destroyWindowHost=[](HWND hwnd) noexcept { GeometryForgetWindow(hwnd); return Call<NativeWindowHost::Destroy>(hwnd); };
     ROUTE(showStartupSurface,ShowStartupSurface); api.dismissStartupSurface=PostDismissSurface;
     ROUTE(bindIndependentEndpoint,Bind); api.cancelIndependentClose=PostResolve;

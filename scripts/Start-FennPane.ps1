@@ -17,7 +17,7 @@ if ($InteractiveNativeStartup) {
 }
 $env:FENN_NATIVE_INTERACTIVE_STARTUP = if ($InteractiveNativeStartup) { '1' } elseif ($PSBoundParameters.ContainsKey('InteractiveNativeStartup')) { '0' } else { $previousInteractiveStartup }
 if ($IndependentNativeStartupHost) { $NativeStartupHost = [switch]$true }
-$env:FENN_NATIVE_STARTUP_HOST = if ($IndependentNativeStartupHost) { '2' } elseif ($PSBoundParameters.ContainsKey('IndependentNativeStartupHost')) { '0' } elseif ($NativeStartupHost) { '1' } elseif ($PSBoundParameters.ContainsKey('NativeStartupHost')) { '0' } else { $previousStartupHost }
+$env:FENN_NATIVE_STARTUP_HOST = if ($IndependentNativeStartupHost) { '2' } elseif ($PSBoundParameters.ContainsKey('IndependentNativeStartupHost')) { '0' } elseif ($NativeStartupHost) { '2' } elseif ($PSBoundParameters.ContainsKey('NativeStartupHost')) { '0' } else { $previousStartupHost }
 if ($NativeStartupHost) {
     if ($PSBoundParameters.ContainsKey('NativeWindowHost') -and -not $NativeWindowHost) {
         throw 'NativeStartupHost requires native window ownership.'

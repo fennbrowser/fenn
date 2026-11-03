@@ -2686,11 +2686,10 @@ extern "C" __declspec(dllexport) HRESULT WINAPI WinUIPaneGetApi(uint32_t version
                UpdateAddress,
                FocusAddress,
                MeasureChromeLayout,
-               NativeWindowHost::Create,
-               NativeWindowHost::Attach,
-               NativeWindowHost::Detach,
+               // A native host exists only on the independent thread, which Route installs.
+               [](DWORD, const wchar_t*, DWORD, const RECT*, HWND, HINSTANCE, HWND* output) noexcept {
+                   if (output) *output=nullptr; return E_NOTIMPL; },
                NativeWindowHost::Destroy,
-               NativeWindowHost::AdoptStartup,
                ShowStartupSurface,
                DismissStartupSurface,
                IndependentHost::Start,
@@ -2701,7 +2700,8 @@ extern "C" __declspec(dllexport) HRESULT WINAPI WinUIPaneGetApi(uint32_t version
                StartupTransfer,
                IndependentHost::SetTitle,
                NativeWindowHost::SetPageCursor,
-               NativeWindowHost::RegisterPageTouch};
+               NativeWindowHost::RegisterPageTouch,
+               IndependentHost::PostWindowRequest};
     IndependentHost::Route(*output);
     return S_OK;
 }
@@ -3034,7 +3034,8 @@ extern "C" __declspec(dllexport) HRESULT WINAPI WinUIPaneTestStartupSurface(void
                 require(DismissStartupSurface(hwnd)==S_OK);
                 require(DismissStartupSurface(hwnd)==S_FALSE);
                 require(IsWindow(hwnd) && !GetPropW(hwnd, NativeStartupSurface::Property));
-                require(SUCCEEDED(NativeWindowHost::Attach(hwnd,42,StartupWindowHostContract::Gecko,&StartupWindowHostContract::fallback)));
+                ShellWindowBinding binding{}; binding.shell=reinterpret_cast<uintptr_t>(hwnd); binding.content=42;
+                require(NativeWindowHost::Get(hwnd)->Call(SHELL_WINDOW_HOST_OPERATION_BIND,binding)==SHELL_STATUS_OK);
                 require(ShowStartupSurface(hwnd)==E_INVALIDARG);
             }
         }
