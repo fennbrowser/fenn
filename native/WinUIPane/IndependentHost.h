@@ -441,6 +441,15 @@ inline HRESULT WINAPI PostTitle(HWND hwnd, const wchar_t* title) noexcept {
     const auto result=Post<SetTitle>(hwnd,title);
     return result==E_OUTOFMEMORY ? Call<SetTitle>(hwnd,title) : result;
 }
+// A refused cursor only leaves the previous one showing, until the next change.
+inline HRESULT WINAPI PostPageCursor(HWND hwnd, HCURSOR cursor, BOOL owned) noexcept {
+    const auto result=PostJob(0,[hwnd,cursor,owned]{return NativeWindowHost::SetPageCursor(hwnd,cursor,owned);});
+    if (FAILED(result) && owned) DestroyCursor(cursor);
+    return result;
+}
+inline HRESULT WINAPI PostPageTouch(HWND hwnd) noexcept {
+    return PostJob(0,[hwnd]{return NativeWindowHost::RegisterPageTouch(hwnd);});
+}
 inline BOOL WINAPI IgnoreTranslate(MSG*) noexcept { return FALSE; }
 inline void Route(WinUIPaneApi& api) {
     if (!State().started) return;
@@ -458,6 +467,7 @@ inline void Route(WinUIPaneApi& api) {
     ROUTE(showStartupSurface,ShowStartupSurface); api.dismissStartupSurface=PostDismissSurface;
     ROUTE(bindIndependentEndpoint,Bind); api.cancelIndependentClose=PostResolve;
     api.setIndependentAccessibility=PostAccessibility; api.setIndependentTitle=PostTitle;
+    api.setIndependentCursor=PostPageCursor; api.registerIndependentTouch=PostPageTouch;
     ROUTE(publishIndependentGeometry,NativePageInput::Geometry); ROUTE(publishIndependentInput,NativePageInput::Publish); ROUTE(drainIndependentInput,NativePageInput::Drain);
     ROUTE(commitIndependentInput,NativePageInput::Commit);
     ROUTE(startupTransfer,StartupTransfer);

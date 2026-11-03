@@ -49,6 +49,8 @@ struct Context {
     // This thread holds capture for a page drag: Gecko cannot capture a window it does not own.
     bool pageCapture{};
     bool pageTracking{};
+    HCURSOR pageCursor{};
+    bool pageCursorOwned{};
     ShellWindowBinding state{};
     ShellStatus Call(uint32_t operation, ShellWindowBinding input={}) {
         return shell_core_window_host(core.get(),operation,&input,&state);
@@ -135,6 +137,50 @@ inline LRESULT CALLBACK Base(HWND hwnd, UINT message, WPARAM w, LPARAM l) {
             host->pageTracking=TrackMouseEvent(&track)!=FALSE;
         };
         if (message==WM_MOUSEMOVE && !host->pageTracking && !host->pageCapture) trackLeave();
+        // Stock consumes pen messages, so nothing is promoted to mouse messages here either.
+        if (message==WM_POINTERDOWN || message==WM_POINTERUP || message==WM_POINTERUPDATE || message==WM_POINTERLEAVE) {
+            POINTER_INPUT_TYPE type{};
+            if (GetPointerType(GET_POINTERID_WPARAM(w),&type) && type==PT_PEN) {
+                // Moves can be dropped behind a stalled Gecko; presses and releases cannot.
+                static volatile LONG pending=0;
+                constexpr LONG MaxPendingPen=1024;
+                if (message==WM_POINTERUPDATE && pending>=MaxPendingPen) return 0;
+                auto* copy=static_cast<WinUIPanePenMessage*>(HeapAlloc(GetProcessHeap(),HEAP_ZERO_MEMORY,sizeof(WinUIPanePenMessage)));
+                if (!copy) return 0;
+                if (message!=WM_POINTERLEAVE && !GetPointerPenInfo(GET_POINTERID_WPARAM(w),&copy->pen)) { HeapFree(GetProcessHeap(),0,copy); return 0; }
+                copy->wParam=w; copy->pending=&pending;
+                InterlockedIncrement(&pending);
+                if (!PostMessageW(host->endpoint,message+WINUI_PANE_ENDPOINT_KEY_OFFSET,reinterpret_cast<WPARAM>(copy),l)) {
+                    InterlockedDecrement(&pending); HeapFree(GetProcessHeap(),0,copy);
+                }
+                return 0;
+            }
+        }
+        // Only the owner's SetCursor counts. An island's own message names its window, not this one.
+        if (message==WM_SETCURSOR && reinterpret_cast<HWND>(w)==hwnd && LOWORD(l)==HTCLIENT && host->pageCursor) {
+            SetCursor(host->pageCursor);
+            return TRUE;
+        }
+        // Gecko reads and closes the handle on its thread, which the OS allows.
+        if (message==WM_TOUCH) {
+            if (!PostMessageW(host->endpoint,message,w,l)) CloseTouchInputHandle(reinterpret_cast<HTOUCHINPUT>(l));
+            return 0;
+        }
+        // The commands nsWindow consumes. Others, such as volume, stay with the system.
+        if (message==WM_APPCOMMAND) {
+            switch (GET_APPCOMMAND_LPARAM(l)) {
+                case APPCOMMAND_BROWSER_BACKWARD: case APPCOMMAND_BROWSER_FORWARD: case APPCOMMAND_BROWSER_REFRESH:
+                case APPCOMMAND_BROWSER_STOP: case APPCOMMAND_BROWSER_SEARCH: case APPCOMMAND_BROWSER_FAVORITES:
+                case APPCOMMAND_BROWSER_HOME: case APPCOMMAND_CLOSE: case APPCOMMAND_FIND: case APPCOMMAND_HELP:
+                case APPCOMMAND_NEW: case APPCOMMAND_OPEN: case APPCOMMAND_PRINT: case APPCOMMAND_SAVE:
+                case APPCOMMAND_FORWARD_MAIL: case APPCOMMAND_REPLY_TO_MAIL: case APPCOMMAND_SEND_MAIL:
+                case APPCOMMAND_MEDIA_NEXTTRACK: case APPCOMMAND_MEDIA_PREVIOUSTRACK: case APPCOMMAND_MEDIA_STOP:
+                case APPCOMMAND_MEDIA_PLAY_PAUSE: case APPCOMMAND_COPY: case APPCOMMAND_CUT: case APPCOMMAND_PASTE:
+                case APPCOMMAND_REDO: case APPCOMMAND_UNDO:
+                    PostMessageW(host->endpoint,message,w,l);
+                    return TRUE;
+            }
+        }
         if (message==WM_MOUSELEAVE) { host->pageTracking=false; PostMessageW(host->endpoint,message,0,0); }
         if (message==WM_CAPTURECHANGED && host->pageCapture) { host->pageCapture=false; trackLeave(); }
         // Only pointer-free notifications cross this boundary. Synchronous
@@ -148,11 +194,15 @@ inline LRESULT CALLBACK Base(HWND hwnd, UINT message, WPARAM w, LPARAM l) {
         switch (message) {
             case WM_SIZE: case WM_MOVE: case WM_ACTIVATE:
             case WM_SETFOCUS: case WM_KILLFOCUS:
+            case WM_MOUSEWHEEL: case WM_MOUSEHWHEEL:
+                PostMessageW(host->endpoint,message,w,l); break;
+            // Extra info says whether touch or pen made this message, and it is per thread.
             case WM_MOUSEMOVE: case WM_LBUTTONDOWN: case WM_LBUTTONUP:
             case WM_RBUTTONDOWN: case WM_RBUTTONUP: case WM_MBUTTONDOWN: case WM_MBUTTONUP:
             case WM_LBUTTONDBLCLK: case WM_RBUTTONDBLCLK: case WM_MBUTTONDBLCLK:
-            case WM_MOUSEWHEEL: case WM_MOUSEHWHEEL:
-                PostMessageW(host->endpoint,message,w,l); break;
+                PostMessageW(host->endpoint,message,
+                    (static_cast<WPARAM>(static_cast<uint32_t>(GetMessageExtraInfo()))<<32)|(w&0xffffffffu),l);
+                break;
         }
         if ((message==WM_LBUTTONUP || message==WM_RBUTTONUP || message==WM_MBUTTONUP) && host->pageCapture &&
             !(w&(MK_LBUTTON|MK_RBUTTON|MK_MBUTTON)) && GetCapture()==hwnd) ReleaseCapture();
@@ -176,6 +226,7 @@ inline LRESULT CALLBACK Base(HWND hwnd, UINT message, WPARAM w, LPARAM l) {
     const auto base=host->base;
     const auto result=CallWindowProcW(base,hwnd,message,w,l);
     if (message==WM_NCDESTROY) {
+        if (host->pageCursorOwned) DestroyCursor(host->pageCursor);
         NativePageInput::Remove(hwnd);
         if (host->state.phase==6) host->Call(SHELL_WINDOW_HOST_OPERATION_CANCEL_STARTUP,host->state);
         if (host->state.phase==4 || host->state.phase==7)
@@ -184,6 +235,20 @@ inline LRESULT CALLBACK Base(HWND hwnd, UINT message, WPARAM w, LPARAM l) {
         delete host;
     }
     return result;
+}
+// Takes an owned cursor over and destroys the one it replaces, after replacing it.
+inline HRESULT WINAPI SetPageCursor(HWND hwnd, HCURSOR cursor, BOOL owned) noexcept {
+    auto* host=Get(hwnd);
+    if (!host || !Owner(hwnd)) { if (owned) DestroyCursor(cursor); return E_INVALIDARG; }
+    const auto previous=host->pageCursorOwned ? host->pageCursor : nullptr;
+    host->pageCursor=cursor; host->pageCursorOwned=owned!=FALSE;
+    POINT point{};
+    if (GetCapture()==hwnd || (GetCursorPos(&point) && WindowFromPoint(point)==hwnd)) SetCursor(cursor);
+    if (previous) DestroyCursor(previous);
+    return S_OK;
+}
+inline HRESULT WINAPI RegisterPageTouch(HWND hwnd) noexcept {
+    return ::RegisterTouchWindow(hwnd,TWF_WANTPALM) ? S_OK : HRESULT_FROM_WIN32(GetLastError());
 }
 inline LRESULT CALLBACK Forward(HWND hwnd, UINT message, WPARAM w, LPARAM l) {
     auto* host=Get(hwnd);

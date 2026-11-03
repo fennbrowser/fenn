@@ -10456,6 +10456,28 @@ index 624b829193a..a0f40eed44e 100644
 +    return;
 +  }
  
+diff --git a/widget/windows/WinPointerEvents.cpp b/widget/windows/WinPointerEvents.cpp
+index f6c74578449..a8c54c11641 100644
+--- a/widget/windows/WinPointerEvents.cpp
++++ b/widget/windows/WinPointerEvents.cpp
+@@ -8,2 +8,3 @@
+ 
++#include "WinUIPrototype.h"
+ #include "WinPointerEvents.h"
+@@ -78,2 +79,6 @@ bool WinPointerEvents::GetPointerType(uint32_t aPointerId,
+                                       POINTER_INPUT_TYPE* aPointerType) {
++  if (mozilla::widget::IndependentPenInfo(aPointerId)) {
++    *aPointerType = PT_PEN;
++    return true;
++  }
+   if (!getPointerType) {
+@@ -101,2 +106,6 @@ bool WinPointerEvents::GetPointerPenInfo(uint32_t aPointerId,
+                                          POINTER_PEN_INFO* aPenInfo) {
++  if (const auto* copy = mozilla::widget::IndependentPenInfo(aPointerId)) {
++    *aPenInfo = *copy;
++    return true;
++  }
+   if (!getPointerPenInfo) {
 diff --git a/widget/windows/WinUtils.cpp b/widget/windows/WinUtils.cpp
 index 27b422c0dda..187fa13835e 100644
 --- a/widget/windows/WinUtils.cpp
@@ -10596,7 +10618,7 @@ index f5d293a068d..1c4562bd45f 100644
 +        }
          if (msg.message >= WM_KEYFIRST && msg.message <= WM_KEYLAST &&
 diff --git a/widget/windows/nsWindow.cpp b/widget/windows/nsWindow.cpp
-index e505d3ce012..28237eee49a 100644
+index e505d3ce012..2065f7cd5b7 100644
 --- a/widget/windows/nsWindow.cpp
 +++ b/widget/windows/nsWindow.cpp
 @@ -81,2 +81,4 @@
@@ -10892,22 +10914,29 @@ index e505d3ce012..28237eee49a 100644
 +        }
 +      }
      }
-@@ -1989,3 +2202,3 @@ void nsWindow::Move(const DesktopPoint& aTopLeft) {
+@@ -1869,3 +2082,5 @@ void nsWindow::RegisterTouchWindow() {
+   mTouchWindow = true;
+-  ::RegisterTouchWindow(mWnd, TWF_WANTPALM);
++  if (!mozilla::widget::RegisterIndependentTouch(mWnd)) {
++    ::RegisterTouchWindow(mWnd, TWF_WANTPALM);
++  }
+   ::EnumChildWindows(mWnd, nsWindow::RegisterTouchForDescendants, 0);
+@@ -1989,3 +2204,3 @@ void nsWindow::Move(const DesktopPoint& aTopLeft) {
    // screen space coordinates we normally use with SetWindowPos.
 -  if (mIsShowingPreXULSkeletonUI && WasPreXULSkeletonUIMaximized()) {
 +  if (IsShowingMaximizedStartupWindow()) {
      WINDOWPLACEMENT pl = {sizeof(WINDOWPLACEMENT)};
-@@ -2073,3 +2286,3 @@ void nsWindow::Resize(const DesktopSize& aSize, bool aRepaint) {
+@@ -2073,3 +2288,3 @@ void nsWindow::Resize(const DesktopSize& aSize, bool aRepaint) {
    // Refer to the comment above a similar check in nsWindow::Move
 -  if (mIsShowingPreXULSkeletonUI && WasPreXULSkeletonUIMaximized()) {
 +  if (IsShowingMaximizedStartupWindow()) {
      WINDOWPLACEMENT pl = {sizeof(WINDOWPLACEMENT)};
-@@ -2136,3 +2349,3 @@ void nsWindow::Resize(const DesktopRect& aRect, bool aRepaint) {
+@@ -2136,3 +2351,3 @@ void nsWindow::Resize(const DesktopRect& aRect, bool aRepaint) {
    // Refer to the comment above a similar check in nsWindow::Move
 -  if (mIsShowingPreXULSkeletonUI && WasPreXULSkeletonUIMaximized()) {
 +  if (IsShowingMaximizedStartupWindow()) {
      WINDOWPLACEMENT pl = {sizeof(WINDOWPLACEMENT)};
-@@ -2208,2 +2421,9 @@ static UINT GetCurrentShowCmd(HWND aWnd) {
+@@ -2208,2 +2423,9 @@ static UINT GetCurrentShowCmd(HWND aWnd) {
  
 +bool nsWindow::IsShowingMaximizedStartupWindow() const {
 +  return (mIsShowingPreXULSkeletonUI && WasPreXULSkeletonUIMaximized()) ||
@@ -10917,55 +10946,69 @@ index e505d3ce012..28237eee49a 100644
 +}
 +
  // Maximize, minimize or restore the window.
-@@ -2214,3 +2434,3 @@ void nsWindow::SetSizeMode(nsSizeMode aMode) {
+@@ -2214,3 +2436,3 @@ void nsWindow::SetSizeMode(nsSizeMode aMode) {
    // technically displayed), we will again accept sizemode changes.
 -  if (mIsShowingPreXULSkeletonUI && WasPreXULSkeletonUIMaximized()) {
 +  if (IsShowingMaximizedStartupWindow()) {
      return;
-@@ -2448,3 +2668,5 @@ void nsWindow::SetFocus(Raise aRaise, mozilla::dom::CallerType aCallerType) {
+@@ -2448,3 +2670,5 @@ void nsWindow::SetFocus(Raise aRaise, mozilla::dom::CallerType aCallerType) {
    }
 -  ::SetFocus(mWnd);
 +  if (!mozilla::widget::FocusIndependentWindowHost(mWnd)) {
 +    ::SetFocus(mWnd);
 +  }
  }
-@@ -3552,2 +3774,5 @@ nsresult nsWindow::SetTitle(const nsAString& aTitle) {
+@@ -3023,2 +3247,4 @@ void nsWindow::SetCursor(const Cursor& aCursor) {
+     ::SetCursor(sCurrentHCursor);
++    mozilla::widget::SetIndependentCursor(mWnd, sCurrentHCursor,
++                                          sCurrentHCursorIsCustom);
+     return;
+@@ -3053,2 +3279,3 @@ void nsWindow::SetCursor(const Cursor& aCursor) {
+   ::SetCursor(cursor);
++  mozilla::widget::SetIndependentCursor(mWnd, cursor, custom);
+ }
+@@ -3552,2 +3779,5 @@ nsresult nsWindow::SetTitle(const nsAString& aTitle) {
    const nsString& strTitle = PromiseFlatString(aTitle);
 +  if (mozilla::widget::SetIndependentWindowTitle(mWnd, strTitle.get())) {
 +    return NS_OK;
 +  }
    AutoRestore<bool> sendingText(mSendingSetText);
-@@ -4057,3 +4282,4 @@ BOOL CALLBACK nsWindow::DispatchStarvedPaints(HWND aWnd, LPARAM aMsg) {
+@@ -4057,3 +4287,4 @@ BOOL CALLBACK nsWindow::DispatchStarvedPaints(HWND aWnd, LPARAM aMsg) {
    LONG_PTR proc = ::GetWindowLongPtrW(aWnd, GWLP_WNDPROC);
 -  if (proc == (LONG_PTR)&nsWindow::WindowProc) {
 +  if (proc == (LONG_PTR)&nsWindow::WindowProc ||
 +      (mozilla::widget::IsNativeWindowHost(aWnd) && WinUtils::GetNSWindowPtr(aWnd))) {
      // its one of our windows so check to see if it has a
-@@ -5639,3 +5865,4 @@ bool nsWindow::ProcessMessageInternal(UINT msg, WPARAM& wParam, LPARAM& lParam,
+@@ -5639,3 +5870,4 @@ bool nsWindow::ProcessMessageInternal(UINT msg, WPARAM& wParam, LPARAM& lParam,
  
 -      if (IsWindowButton(int32_t(wParam)) && mCustomNonClient) {
 +      if (IsWindowButton(int32_t(wParam)) && mCustomNonClient &&
 +          !mozilla::widget::HasWinUISystemCaption(mWnd)) {
          DispatchMouseEvent(eMouseDown, wParamFromGlobalMouseState(),
-@@ -5650,3 +5877,5 @@ bool nsWindow::ProcessMessageInternal(UINT msg, WPARAM& wParam, LPARAM& lParam,
+@@ -5650,3 +5882,5 @@ bool nsWindow::ProcessMessageInternal(UINT msg, WPARAM& wParam, LPARAM& lParam,
      case WM_NCLBUTTONUP: {
 -      if (mCustomNonClient) {
 +      // The native strip uses SDK-drawn caption controls. Forward their
 +      // original input to the previous (App SDK) window proc, not DOM chrome.
 +      if (mCustomNonClient && !mozilla::widget::HasWinUISystemCaption(mWnd)) {
          result = DispatchMouseEvent(eMouseUp, wParamFromGlobalMouseState(),
-@@ -6945,2 +7174,6 @@ bool nsWindow::OnGesture(WPARAM wParam, LPARAM lParam) {
+@@ -6945,2 +7179,6 @@ bool nsWindow::OnGesture(WPARAM wParam, LPARAM lParam) {
  void nsWindow::OnDestroy() {
 +  mozilla::widget::DestroyWinUIPane(mWnd);
 +  if (mWindowType == WindowType::TopLevel) {
 +    mozilla::widget::TraceWinUIPrototype("window-destroy", mWnd);
 +  }
    mOnDestroyCalled = true;
-@@ -7210,2 +7443,3 @@ void nsWindow::SetInputContext(const InputContext& aContext,
+@@ -7210,2 +7448,3 @@ void nsWindow::SetInputContext(const InputContext& aContext,
    mInputContext = newInputContext;
 +  mozilla::widget::RefreshIndependentPageIME(mWnd);
  }
-@@ -8935,3 +9169,3 @@ void nsWindow::FrameState::CheckInvariant() const {
+@@ -8157,3 +8396,3 @@ bool nsWindow::OnPointerEvents(UINT msg, WPARAM aWParam, LPARAM aLParam) {
+   POINTER_INPUT_TYPE pointerType = PT_POINTER;
+-  if (!GetPointerType(pointerId, &pointerType)) {
++  if (!mPointerEvents.GetPointerType(pointerId, &pointerType)) {
+     MOZ_ASSERT(false, "cannot find PointerType");
+@@ -8935,3 +9174,3 @@ void nsWindow::FrameState::CheckInvariant() const {
  
 -void nsWindow::FrameState::ConsumePreXULSkeletonState(bool aWasMaximized) {
 +void nsWindow::FrameState::ConsumeStartupWindowState(bool aWasMaximized) {
@@ -32641,10 +32684,10 @@ index 00000000000..4fbeda2397a
 +}, { once: true });
 diff --git a/widget/windows/WinUIPrototype.cpp b/widget/windows/WinUIPrototype.cpp
 new file mode 100644
-index 00000000000..38e1e6c4c08
+index 00000000000..af79afd56f4
 --- /dev/null
 +++ b/widget/windows/WinUIPrototype.cpp
-@@ -0,0 +1,739 @@
+@@ -0,0 +1,795 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -32787,6 +32830,8 @@ index 00000000000..38e1e6c4c08
 +#endif
 +};
 +LRESULT CALLBACK IndependentDefault(HWND,UINT,WPARAM,LPARAM) { return 0; }
++// The pen message being delivered. Only ever touched on Gecko's main thread.
++static const WinUIPanePenMessage* sIndependentPen=nullptr;
 +LRESULT CALLBACK IndependentEndpointProc(HWND hwnd,UINT message,WPARAM w,LPARAM l) {
 +  auto* endpoint=reinterpret_cast<IndependentEndpoint*>(GetWindowLongPtrW(hwnd,GWLP_USERDATA));
 +  if (message==WM_NCCREATE) {
@@ -32844,6 +32889,19 @@ index 00000000000..38e1e6c4c08
 +    TranslateMessage(&key);
 +    return callback(outer,message,w,l);
 +  }
++  if (message==WM_POINTERDOWN+WINUI_PANE_ENDPOINT_KEY_OFFSET ||
++      message==WM_POINTERUP+WINUI_PANE_ENDPOINT_KEY_OFFSET ||
++      message==WM_POINTERUPDATE+WINUI_PANE_ENDPOINT_KEY_OFFSET ||
++      message==WM_POINTERLEAVE+WINUI_PANE_ENDPOINT_KEY_OFFSET) {
++    auto* copy=reinterpret_cast<WinUIPanePenMessage*>(w);
++    const WinUIPanePenMessage* outerPen=sIndependentPen;
++    sIndependentPen=copy;
++    const auto result=callback(outer,message-WINUI_PANE_ENDPOINT_KEY_OFFSET,copy->wParam,l);
++    sIndependentPen=outerPen;
++    InterlockedDecrement(copy->pending);
++    HeapFree(GetProcessHeap(),0,copy);
++    return result;
++  }
 +  static UINT dpiMessage=RegisterWindowMessageW(L"Fenn.NativeWindowHost.EndpointDpi.v1");
 +  static UINT layoutMessage=RegisterWindowMessageW(L"Fenn.NativeWindowHost.EndpointLayout.v1");
 +  if (message==layoutMessage) {
@@ -32870,10 +32928,22 @@ index 00000000000..38e1e6c4c08
 +  switch (message) {
 +    case WM_ACTIVATE: case WM_SETFOCUS: case WM_KILLFOCUS:
 +    case WM_KEYDOWN: case WM_KEYUP: case WM_SYSKEYDOWN: case WM_SYSKEYUP:
-+    case WM_CHAR: case WM_SYSCHAR: case WM_MOUSEMOVE: case WM_MOUSELEAVE: case WM_CONTEXTMENU:
++    case WM_CHAR: case WM_SYSCHAR: case WM_MOUSELEAVE: case WM_CONTEXTMENU:
++    case WM_MOUSEWHEEL: case WM_MOUSEHWHEEL:
++    case WM_TOUCH:
++      return callback(outer,message,w,l);
++    case WM_MOUSEMOVE:
 +    case WM_LBUTTONDOWN: case WM_LBUTTONUP: case WM_RBUTTONDOWN: case WM_RBUTTONUP:
-+    case WM_MBUTTONDOWN: case WM_MBUTTONUP: case WM_MOUSEWHEEL: case WM_MOUSEHWHEEL:
++    case WM_MBUTTONDOWN: case WM_MBUTTONUP:
 +    case WM_LBUTTONDBLCLK: case WM_RBUTTONDBLCLK: case WM_MBUTTONDBLCLK:
++      // Gecko asks GetMessageExtraInfo whether touch or pen made this message.
++      ::SetMessageExtraInfo(static_cast<LPARAM>(w>>32));
++      return callback(outer,message,w&0xffffffffu,l);
++    // nsWindow would have kept a disabled button from producing this.
++    case WM_APPCOMMAND:
++      if (GET_DEVICE_LPARAM(l)==FAPPCOMMAND_MOUSE &&
++          ((GET_APPCOMMAND_LPARAM(l)==APPCOMMAND_BROWSER_BACKWARD && !Preferences::GetBool("mousebutton.4th.enabled",true)) ||
++           (GET_APPCOMMAND_LPARAM(l)==APPCOMMAND_BROWSER_FORWARD && !Preferences::GetBool("mousebutton.5th.enabled",true)))) return 0;
 +      return callback(outer,message,w,l);
 +  }
 +  return DefWindowProcW(hwnd,message,w,l);
@@ -33072,6 +33142,35 @@ index 00000000000..38e1e6c4c08
 +  }
 +}
 +bool IsNativeWindowHost(HWND hwnd) { return GetPropW(hwnd, L"Fenn.NativeWindowHost") != nullptr; }
++static bool OnOtherThreadHost(HWND hwnd) {
++  return IsNativeWindowHost(hwnd) &&
++         ::GetWindowThreadProcessId(hwnd, nullptr) != ::GetCurrentThreadId();
++}
++void SetIndependentCursor(HWND hwnd, HCURSOR cursor, bool custom) {
++  // Gecko asks on nearly every mouse move, and Windows keeps only the newest.
++  static HWND sWindow = nullptr;
++  static HCURSOR sCursor = nullptr;
++  if (!sPaneApi.setIndependentCursor || !OnOtherThreadHost(hwnd) ||
++      (sWindow == hwnd && sCursor == cursor)) {
++    return;
++  }
++  // Gecko destroys its custom cursor on its own schedule, so the owner gets a copy.
++  HCURSOR held = custom ? reinterpret_cast<HCURSOR>(::CopyIcon(cursor)) : cursor;
++  if (held && SUCCEEDED(sPaneApi.setIndependentCursor(hwnd, held, custom))) {
++    sWindow = hwnd;
++    sCursor = cursor;
++  } else {
++    sWindow = nullptr;
++  }
++}
++bool RegisterIndependentTouch(HWND hwnd) {
++  return sPaneApi.registerIndependentTouch && OnOtherThreadHost(hwnd) &&
++         SUCCEEDED(sPaneApi.registerIndependentTouch(hwnd));
++}
++const POINTER_PEN_INFO* IndependentPenInfo(uint32_t pointerId) {
++  return sIndependentPen && GET_POINTERID_WPARAM(sIndependentPen->wParam)==pointerId
++             ? &sIndependentPen->pen : nullptr;
++}
 +bool SetIndependentWindowTitle(HWND hwnd, const wchar_t* title) {
 +  return sPaneApi.setIndependentTitle && IsNativeWindowHost(hwnd) &&
 +         ::GetWindowThreadProcessId(hwnd, nullptr) != ::GetCurrentThreadId() &&
@@ -33386,10 +33485,10 @@ index 00000000000..38e1e6c4c08
 +}  // namespace mozilla::widget
 diff --git a/widget/windows/WinUIPrototype.h b/widget/windows/WinUIPrototype.h
 new file mode 100644
-index 00000000000..71152f71f8a
+index 00000000000..f36726963a5
 --- /dev/null
 +++ b/widget/windows/WinUIPrototype.h
-@@ -0,0 +1,61 @@
+@@ -0,0 +1,67 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -33405,6 +33504,12 @@ index 00000000000..71152f71f8a
 +bool IsNativeWindowHost(HWND);
 +// Returns true when the title was handed to the independent native owner, without waiting on it.
 +bool SetIndependentWindowTitle(HWND, const wchar_t*);
++// The native owner applies page cursors; another thread's SetCursor has no effect.
++void SetIndependentCursor(HWND, HCURSOR, bool custom);
++// Returns true when the native owner will register the window for touch.
++bool RegisterIndependentTouch(HWND);
++// The copied data of the pen message being delivered, which this thread cannot read from Windows.
++const POINTER_PEN_INFO* IndependentPenInfo(uint32_t pointerId);
 +// Returns true when the independent native owner handles the request.
 +bool FocusIndependentWindowHost(HWND);
 +bool NativeStartupEditorOwnsForeground();
@@ -34175,10 +34280,10 @@ index 00000000000..cd1051c5061
 +}
 diff --git a/widget/windows/WinUIPaneApi.h b/widget/windows/WinUIPaneApi.h
 new file mode 100644
-index 00000000000..cea8559abf2
+index 00000000000..fc9c0cb0357
 --- /dev/null
 +++ b/widget/windows/WinUIPaneApi.h
-@@ -0,0 +1,218 @@
+@@ -0,0 +1,230 @@
 +#pragma once
 +struct IUnknown;
 +#include <windows.h>
@@ -34209,7 +34314,8 @@ index 00000000000..cea8559abf2
 +// retaining the sidebar entry point.
 +// v18 adds stateless native client-area allocation for browser layout.
 +// v38 adds the independent host's window title.
-+#define WINUI_PANE_ABI_VERSION 38u
++// v39 adds its page cursor and touch registration, and pen messages to the endpoint.
++#define WINUI_PANE_ABI_VERSION 39u
 +
 +// Scalar key transport, translated exactly once by the Gecko endpoint.
 +#define WINUI_PANE_ENDPOINT_KEY_OFFSET WM_APP
@@ -34395,5 +34501,16 @@ index 00000000000..cea8559abf2
 +    HRESULT (WINAPI* startupTransfer)(HWND, const wchar_t*, wchar_t*, uint32_t);
 +    // v38: copied before return; never waits unless the bounded queue refuses it.
 +    HRESULT (WINAPI* setIndependentTitle)(HWND, const wchar_t*);
++    // v39: the native owner destroys an owned cursor, including when this call fails.
++    HRESULT (WINAPI* setIndependentCursor)(HWND, HCURSOR, BOOL);
++    HRESULT (WINAPI* registerIndependentTouch)(HWND);
++};
++// Pen data can only be read on the thread that owns the window, so the endpoint gets a copy.
++// Sent as WM_POINTER*+WINUI_PANE_ENDPOINT_KEY_OFFSET with this as wParam and the original lParam.
++// From GetProcessHeap; the receiver frees it and decrements pending.
++struct WinUIPanePenMessage {
++    WPARAM wParam;
++    POINTER_PEN_INFO pen;
++    volatile LONG* pending;
 +};
 +using WinUIPaneGetApiFn = HRESULT (WINAPI*)(uint32_t, uint32_t, WinUIPaneApi*);

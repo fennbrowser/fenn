@@ -28,7 +28,8 @@ struct IUnknown;
 // retaining the sidebar entry point.
 // v18 adds stateless native client-area allocation for browser layout.
 // v38 adds the independent host's window title.
-#define WINUI_PANE_ABI_VERSION 38u
+// v39 adds its page cursor and touch registration, and pen messages to the endpoint.
+#define WINUI_PANE_ABI_VERSION 39u
 
 // Scalar key transport, translated exactly once by the Gecko endpoint.
 #define WINUI_PANE_ENDPOINT_KEY_OFFSET WM_APP
@@ -214,5 +215,16 @@ struct WinUIPaneApi {
     HRESULT (WINAPI* startupTransfer)(HWND, const wchar_t*, wchar_t*, uint32_t);
     // v38: copied before return; never waits unless the bounded queue refuses it.
     HRESULT (WINAPI* setIndependentTitle)(HWND, const wchar_t*);
+    // v39: the native owner destroys an owned cursor, including when this call fails.
+    HRESULT (WINAPI* setIndependentCursor)(HWND, HCURSOR, BOOL);
+    HRESULT (WINAPI* registerIndependentTouch)(HWND);
+};
+// Pen data can only be read on the thread that owns the window, so the endpoint gets a copy.
+// Sent as WM_POINTER*+WINUI_PANE_ENDPOINT_KEY_OFFSET with this as wParam and the original lParam.
+// From GetProcessHeap; the receiver frees it and decrements pending.
+struct WinUIPanePenMessage {
+    WPARAM wParam;
+    POINTER_PEN_INFO pen;
+    volatile LONG* pending;
 };
 using WinUIPaneGetApiFn = HRESULT (WINAPI*)(uint32_t, uint32_t, WinUIPaneApi*);

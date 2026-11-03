@@ -2699,7 +2699,9 @@ extern "C" __declspec(dllexport) HRESULT WINAPI WinUIPaneGetApi(uint32_t version
                NativeWindowHost::SetAccessibility,
                NativePageInput::Publish, NativePageInput::Drain, NativePageInput::Commit, NativePageInput::Geometry,
                StartupTransfer,
-               IndependentHost::SetTitle};
+               IndependentHost::SetTitle,
+               NativeWindowHost::SetPageCursor,
+               NativeWindowHost::RegisterPageTouch};
     IndependentHost::Route(*output);
     return S_OK;
 }
