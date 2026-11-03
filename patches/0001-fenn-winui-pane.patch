@@ -10686,7 +10686,7 @@ index f5d293a068d..1c4562bd45f 100644
 +        }
          if (msg.message >= WM_KEYFIRST && msg.message <= WM_KEYLAST &&
 diff --git a/widget/windows/nsWindow.cpp b/widget/windows/nsWindow.cpp
-index e505d3ce012..8f5b4c9d855 100644
+index e505d3ce012..223de7dc7f9 100644
 --- a/widget/windows/nsWindow.cpp
 +++ b/widget/windows/nsWindow.cpp
 @@ -81,2 +81,4 @@
@@ -11020,6 +11020,11 @@ index e505d3ce012..8f5b4c9d855 100644
    mInputContext = newInputContext;
 +  mozilla::widget::RefreshIndependentPageIME(mWnd);
  }
+@@ -7354,3 +7511,3 @@ void nsWindow::UpdateOpaqueRegionInternal() {
+   }
+-  DwmExtendFrameIntoClientArea(mWnd, &margins);
++  DwmExtendFrameIntoClientArea(mozilla::widget::ShellOfProxy(mWnd), &margins);
+   MaybeInvalidateTranslucentRegion();
 @@ -8157,3 +8314,3 @@ bool nsWindow::OnPointerEvents(UINT msg, WPARAM aWParam, LPARAM aLParam) {
    POINTER_INPUT_TYPE pointerType = PT_POINTER;
 -  if (!GetPointerType(pointerId, &pointerType)) {
