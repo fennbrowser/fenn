@@ -29462,10 +29462,10 @@ index 00000000000..39117cb2f96
 +}
 diff --git a/browser/base/content/WinUIAddressToolbar.sys.mjs b/browser/base/content/WinUIAddressToolbar.sys.mjs
 new file mode 100644
-index 00000000000..f6349ddea72
+index 00000000000..fcc0c9a7c96
 --- /dev/null
 +++ b/browser/base/content/WinUIAddressToolbar.sys.mjs
-@@ -0,0 +1,621 @@
+@@ -0,0 +1,622 @@
 +export class WinUIAddressToolbar {
 +  constructor(window, owner) {
 +    this.window = window;
@@ -30014,10 +30014,11 @@ index 00000000000..f6349ddea72
 +    }
 +    this.customization?.nativeOverflow.clear();
 +    this.window.document.getElementById("nav-bar")?.overflowable?.setNativeOverflow(null);
-+    // Firefox's focus decides. focusOwned clears only when the native editor blurs, which an
-+    // inactive window never reports, so a page focused meanwhile must not hand focus back here.
-+    const hadFocus = this.active && this.focusOwned && this.window.document.activeElement === this.proxy;
++    // Firefox's focus decides, not focusOwned: an inactive window never reports the native blur that
++    // clears it, and a native F11 reports one before fullscreen retires the editor.
++    const hadFocus = this.active && this.window.document.activeElement === this.proxy;
 +    this.active = false;
++    this.focusOwned = false;
 +    this.customization?.endEditor();
 +    this.row.hidden = true;
 +    this.window.document.documentElement.removeAttribute("winui-address-active");
