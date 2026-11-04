@@ -171,20 +171,6 @@ struct NativeWindowDrag {
         } catch (...) {}
         return DefSubclassProc(hwnd, msg, w, l);
     }
-    // Returns whether the compositor had to be moved below the island.
-    static bool Restack(HWND island) {
-        // Relative ordering is sufficient. HWND_TOP hides the SDK caption input
-        // window and breaks native dragging. Never depend on SDK HWND class names.
-        for (HWND sibling = GetWindow(island, GW_HWNDPREV); sibling; sibling = GetWindow(sibling, GW_HWNDPREV)) {
-            wchar_t name[128]{};
-            GetClassNameW(sibling, name, 128);
-            if (wcscmp(name, L"MozillaCompositorWindowClass") == 0) {
-                check_bool(SetWindowPos(sibling, island, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE));
-                return true;
-            }
-        }
-        return false;
-    }
     Rect Bounds(FrameworkElement const& element) const {
         auto local = element.TransformToVisual(nullptr).TransformBounds(
             {0, 0, float(element.ActualWidth()), float(element.ActualHeight())});
@@ -288,13 +274,11 @@ struct NativeWindowDrag {
         visible = value;
         Update();
     }
-    void SetClip(HWND island, std::vector<RECT> const& exclusions) {
+    // Exclusions are relative to the strip's region, whose client rectangle is `strip`.
+    void SetClip(RECT const& stripBounds, std::vector<RECT> const& exclusions) {
         std::vector<Rect> next;
-        RECT bounds{}; check_bool(GetWindowRect(island, &bounds));
-        for (auto r : exclusions) {
-            POINT p{bounds.left + r.left, bounds.top + r.top}; ScreenToClient(owner, &p);
-            next.push_back({p.x, p.y, r.right - r.left, r.bottom - r.top});
-        }
+        for (auto r : exclusions)
+            next.push_back({stripBounds.left + r.left, stripBounds.top + r.top, r.right - r.left, r.bottom - r.top});
         if (next == clipped) return;
         clipped = std::move(next);
         if (strip) { strip->captionDirty = true; Update(); }

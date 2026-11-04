@@ -80,13 +80,33 @@ struct NativeProfileMenu {
             MenuFlyoutItemBase base{nullptr};
             if(entry.GetNamedBoolean(L"checked")){ToggleMenuFlyoutItem item;item.Text(entry.GetNamedString(L"label"));item.IsChecked(true);item.IsEnabled(false);base=item;}
             else {MenuFlyoutItem item;item.Text(entry.GetNamedString(L"label"));item.IsEnabled(entry.GetNamedBoolean(L"enabled"));
-                item.Click([this,session,revision,id,alive=std::weak_ptr<int>(lifetime),current=std::weak_ptr<int>(openingLifetime)](auto const&,auto const&){
+                auto activate=[this,session,revision,id,alive=std::weak_ptr<int>(lifetime),current=std::weak_ptr<int>(openingLifetime)]{
                     if(alive.expired() || current.expired() || opening!=session)return;
                     bool accepted{};if(shell_core_profile_menu_activate(core,session,revision,id,&accepted)!=SHELL_STATUS_OK || !accepted)return;
                     auto command=L"profile-menu:invoke:"+std::to_wstring(session)+L":"+std::to_wstring(revision)+L":"+std::to_wstring(id);
                     afterClose=[this,command,source=anchor,alive,current]{if(!alive.expired() && !current.expired() && enabled && dispatch)dispatch(command.c_str(),0,source);};
-                    flyout.Hide();
-                });base=item;
+                    if(flyout)flyout.Hide();
+                };
+                item.Click([activate](auto const&,auto const&){activate();});
+                // Stock Click runs first. In a later window, WinUI's delayed exits from a stale pointer
+                // record can clear the item's pressed state even with capture (as in the back/forward
+                // menu): recover only a captured left press released inside this same item. ShellCore
+                // consumes the activation once.
+                auto mouseArmed=std::make_shared<bool>(false);
+                item.AddHandler(UIElement::PointerPressedEvent(),winrt::box_value(Microsoft::UI::Xaml::Input::PointerEventHandler([mouseArmed](auto const& sender,auto const& args){
+                    if(args.Pointer().PointerDeviceType()==Microsoft::UI::Input::PointerDeviceType::Mouse && args.GetCurrentPoint(nullptr).Properties().IsLeftButtonPressed())
+                        *mouseArmed=sender.template as<MenuFlyoutItemBase>().CapturePointer(args.Pointer());
+                })),true);
+                item.AddHandler(UIElement::PointerReleasedEvent(),winrt::box_value(Microsoft::UI::Xaml::Input::PointerEventHandler([activate,mouseArmed](auto const& sender,auto const& args){
+                    if(args.Pointer().PointerDeviceType()!=Microsoft::UI::Input::PointerDeviceType::Mouse)return;
+                    auto row=sender.template as<MenuFlyoutItemBase>();auto point=args.GetCurrentPoint(row);auto p=point.Position();
+                    const bool armed=std::exchange(*mouseArmed,false);
+                    if(armed && point.Properties().PointerUpdateKind()==Microsoft::UI::Input::PointerUpdateKind::LeftButtonReleased &&
+                       p.X>=0 && p.Y>=0 && p.X<row.ActualWidth() && p.Y<row.ActualHeight())activate();
+                    row.ReleasePointerCapture(args.Pointer());
+                })),true);
+                item.PointerCanceled([mouseArmed](auto const&,auto const&){*mouseArmed=false;});
+                base=item;
             }
             Automation::AutomationProperties::SetAutomationId(base,L"FennProfileMenu-"+key);flyout.Items().Append(base);
         }

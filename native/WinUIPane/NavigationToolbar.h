@@ -354,13 +354,7 @@ struct NativeNavigationToolbar {
         });
         auto updatePreview=[this](auto const& args) {
             if(!customization.Accept(args)){preview.Reset();return false;}
-            auto palette=customization.previews.find(customization.dragId);
-            const double paletteWidth=palette!=customization.previews.end() && palette->second.ActualWidth()>0
-                ? palette->second.ActualWidth():ToolbarMetrics::kButton;
-            preview.Begin(host,ordered,dropSlots,customization.dragId,customization.dragRevision,paletteWidth);
-            uint32_t index;
-            if(!preview.Hit(args.GetPosition(host).X,host.FlowDirection()==Microsoft::UI::Xaml::FlowDirection::RightToLeft,index))return false;
-            preview.Show(index);return true;
+            return PreviewAt(args.GetPosition(host).X);
         };
         host.DragOver([this,updatePreview,alive=std::weak_ptr<int>(lifetime)](auto const&,auto const& args){if(!alive.expired() && updatePreview(args))args.Handled(true);});
         host.DragLeave([this,alive=std::weak_ptr<int>(lifetime)](auto const&,auto const& args){
@@ -380,6 +374,33 @@ struct NativeNavigationToolbar {
             Layout(layoutState);
         });
     }
+    bool PreviewAt(double x) {
+        auto palette=customization.previews.find(customization.dragId);
+        const double paletteWidth=palette!=customization.previews.end() && palette->second.ActualWidth()>0
+            ? palette->second.ActualWidth():ToolbarMetrics::kButton;
+        preview.Begin(host,ordered,dropSlots,customization.dragId,customization.dragRevision,paletteWidth);
+        uint32_t index;
+        if(!preview.Hit(x,host.FlowDirection()==Microsoft::UI::Xaml::FlowDirection::RightToLeft,index))return false;
+        preview.Show(index);return true;
+    }
+    // In a browser window the island's own drop target (Pane.cpp's ChromeDropTarget) replaces XAML's,
+    // so it brings this editor's drags here, at a point in the island root's coordinates.
+    template<typename Override> bool DragOverRoot(winrt::Windows::ApplicationModel::DataTransfer::DataPackageView const& data,
+                                                  winrt::Windows::Foundation::Point root, Override const* ui) {
+        if(!visible || !host.XamlRoot() || !customization.Droppable(data)){preview.Reset();return false;}
+        auto local=host.TransformToVisual(nullptr).Inverse().TransformPoint(root);
+        if(local.X<0 || local.Y<0 || local.X>=host.ActualWidth() || local.Y>=host.ActualHeight()){preview.Reset();return false;}
+        if(ui)customization.ShowDrag(*ui);
+        return PreviewAt(local.X);
+    }
+    template<typename Override> bool DropOnRoot(winrt::Windows::ApplicationModel::DataTransfer::DataPackageView const& data,
+                                                winrt::Windows::Foundation::Point root, Override const* ui) {
+        if(!DragOverRoot(data,root,ui))return false;
+        auto target=preview.target<preview.slots.size()?preview.slots[preview.target].first:winrt::hstring{};
+        preview.Reset(false);
+        return customization.DropData(data,target);
+    }
+    void LeaveRoot() { preview.Reset(); }
     void Layout(NativeToolbarCustomization::State const& state) {
         using namespace Microsoft::UI::Xaml;
         using namespace Microsoft::UI::Xaml::Controls;

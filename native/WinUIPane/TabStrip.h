@@ -1961,7 +1961,7 @@ struct NativeTabStrip {
     void OpenGroupEditor(uint32_t id,Controls::Button const& button,uint32_t request=0) {
         if((!request && (IsDragging() || GroupDrag().phase)) || !groupsButton.dispatch)return;
         groupHeader.core=core;groupHeader.dispatch=groupsButton.dispatch;
-        groupHeader.releaseFocus=[this]{if(ownerHwnd)SetFocus(ownerHwnd);};
+        groupHeader.releaseFocus=[this]{if(ownerHwnd)SetFocus(NativeWindowHost::PageWindow(ownerHwnd));};
         const auto opening=request?groupHeader.Request(button,request,id,windowDragSession):groupHeader.Open(button);if(!opening)return;
         using Value=Windows::Data::Json::JsonValue;
         auto local=button.TransformToVisual(nullptr).TransformBounds({0,0,float(button.ActualWidth()),float(button.ActualHeight())});

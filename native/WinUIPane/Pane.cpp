@@ -30,6 +30,7 @@ using namespace Microsoft::UI::Xaml::Hosting;
 #include "ChromeLayout.h"
 #include "PageInput.h"
 #include "NativeWindowHost.h"
+#include "XamlSlot.h"
 #include "TabMenu.h"
 #include "TabStrip.h"
 #include "WindowDrag.h"
@@ -39,24 +40,41 @@ using namespace Microsoft::UI::Xaml::Hosting;
 namespace {
 bool DiagnosticsEnabled();
 namespace SystemDrag = Microsoft::UI::Input::DragDrop;
-// Reject external system drags before WinUI creates XAML DragEventArgs.
-// AllowDrop=false only rejects them after that unsafe dispatch has happened.
-// This target owns no pane, controls, drag data or deferred work: an in-flight
-// leave/drop remains safe even after the island that requested it is destroyed.
-struct RejectExternalDrop : implements<RejectExternalDrop, SystemDrag::IDropOperationTarget> {
+// The island's drop target, set before WinUI creates XAML DragEventArgs: it replaces XAML's own.
+// It rejects external system drags (AllowDrop=false only rejects them after that unsafe dispatch has
+// happened). In a browser window the island also holds the toolbar, so it brings the toolbar
+// editor's own drag to the toolbar through `route`, which reads no drag data unless that drag is
+// under way. It owns no pane, controls, drag data or deferred work, and holds the route weakly: an
+// in-flight leave/drop remains safe even after the island that requested it is destroyed.
+struct ChromeDropTarget : implements<ChromeDropTarget, SystemDrag::IDropOperationTarget> {
     using Operation = Windows::ApplicationModel::DataTransfer::DataPackageOperation;
-    Windows::Foundation::IAsyncOperation<Operation> EnterAsync(SystemDrag::DragInfo const&,
-                                                              SystemDrag::DragUIOverride const&) {
-        if (DiagnosticsEnabled()) fprintf(stderr, "WinUIPane external drag rejected\n");
-        co_return Operation::None;
+    enum Phase { Enter, Over, Leave, Drop };
+    // True when the drag is accepted as a move.
+    using Route = std::function<bool(Phase, SystemDrag::DragInfo const&, SystemDrag::DragUIOverride const*)>;
+    std::weak_ptr<Route> route;
+    explicit ChromeDropTarget(std::weak_ptr<Route> route) : route(std::move(route)) {}
+    Operation Call(Phase phase, SystemDrag::DragInfo const& info, SystemDrag::DragUIOverride const* ui) const noexcept {
+        try {
+            if (auto routed = route.lock(); routed && (*routed)(phase, info, ui)) return Operation::Move;
+        } catch (...) {}
+        return Operation::None;
     }
-    Windows::Foundation::IAsyncOperation<Operation> OverAsync(SystemDrag::DragInfo const&,
-                                                             SystemDrag::DragUIOverride const&) {
-        co_return Operation::None;
+    Windows::Foundation::IAsyncOperation<Operation> EnterAsync(SystemDrag::DragInfo const& info,
+                                                              SystemDrag::DragUIOverride const& ui) {
+        const auto operation = Call(Enter, info, &ui);
+        if (operation == Operation::None && DiagnosticsEnabled()) fprintf(stderr, "WinUIPane external drag rejected\n");
+        co_return operation;
     }
-    Windows::Foundation::IAsyncAction LeaveAsync(SystemDrag::DragInfo const&) { co_return; }
-    Windows::Foundation::IAsyncOperation<Operation> DropAsync(SystemDrag::DragInfo const&) {
-        co_return Operation::None;
+    Windows::Foundation::IAsyncOperation<Operation> OverAsync(SystemDrag::DragInfo const& info,
+                                                             SystemDrag::DragUIOverride const& ui) {
+        co_return Call(Over, info, &ui);
+    }
+    Windows::Foundation::IAsyncAction LeaveAsync(SystemDrag::DragInfo const& info) {
+        Call(Leave, info, nullptr);
+        co_return;
+    }
+    Windows::Foundation::IAsyncOperation<Operation> DropAsync(SystemDrag::DragInfo const& info) {
+        co_return Call(Drop, info, nullptr);
     }
 };
 // How much of what update() and clip() are asked to do turns out to repeat
@@ -367,8 +385,9 @@ struct Pane {
     NativeShellCore shell;
     HWND parent{};
     std::unique_ptr<NativeAddress> address;
-    DesktopWindowXamlSource source{nullptr};
-    DesktopWindowXamlSource addressSource{nullptr};
+    // Regions of the window's one XAML tree: the strip, and the toolbar when it is separate.
+    XamlSlot source{nullptr};
+    XamlSlot addressSource{nullptr};
     std::function<bool(MSG const&)> startupKey;
     std::shared_ptr<void> startupPresenter;
 #ifdef WINUI_PANE_TESTING
@@ -386,7 +405,7 @@ struct Pane {
     bool addressBoundsApplied{};
     bool navigationBackdrop{};
     bool toolbarHitTestVisible{true};
-    static void SetBackdrop(DesktopWindowXamlSource const& target, NativeTabStrip::Backdrop kind) {
+    static void SetBackdrop(XamlSlot const& target, NativeTabStrip::Backdrop kind) {
         if (kind == NativeTabStrip::Backdrop::Acrylic) {
             target.SystemBackdrop(Media::DesktopAcrylicBackdrop());
         } else {
@@ -455,21 +474,36 @@ struct Pane {
         if (!stripPopup && strip && (strip->inlineGroups.hover.open || strip->inlineGroups.hover.showPending))
             strip->inlineGroups.hover.Dismiss();
         if (!addressPopup && address) { address->bookmarkPanel.LightDismiss(); address->permissionsPanel.LightDismiss(); address->notificationPanel.LightDismiss(); address->connectionPanel.LightDismiss(); address->translationsPanel.LightDismiss(); address->selectedTranslationsPanel.LightDismiss(); address->pageContextMenu.LightDismiss(); if(address->navigation)address->navigation->backForwardMenu.LightDismiss(); }
-        const HWND addressHost = addressSource ? addressWindow : childWindow;
-        if (!InWindow(addressHost, target) && !addressPopup) LeaveAddress();
+        const bool inAddress = (addressSource ? addressSource : source).Holds(target);
+        if (!inAddress && !addressPopup) LeaveAddress();
         else if (!addressPopup && address && address->mode.flyout.IsOpen()) address->mode.flyout.Hide();
-        if (!InWindow(childWindow, target) && !InWindow(addressWindow, target) &&
+        if (!source.Holds(target) && !addressSource.Holds(target) &&
             !stripPopup && !addressPopup &&
             (InWindow(childWindow, GetFocus()) || InWindow(addressWindow, GetFocus()) ||
              InPopups(contentIsland, GetFocus()) || InPopups(addressIsland, GetFocus())) &&
-            InWindow(parent, target)) SetFocus(parent);
-        if (!InWindow(addressHost, target) && !addressPopup) CloseCustomization();
+            InWindow(parent, target)) SetFocus(NativeWindowHost::PageWindow(parent));
+        if (!inAddress && !addressPopup) CloseCustomization();
         if (address) address->ScheduleFocusObservation();
+    }
+    // The page child takes input everywhere but the visible chrome regions, except where
+    // Gecko's own controls show through the strip (Firefox's exclusions, strip-relative).
+    void ApplyPageRegion() {
+        if (!parent) return;
+        std::vector<RECT> chrome, cut;
+        for (auto const* slot : {&source, &addressSource}) {
+            if (*slot) if (RECT r = slot->Bounds(); r.right > r.left && r.bottom > r.top) chrome.push_back(r);
+        }
+        const RECT strip = source.Bounds();
+        for (auto r : appliedExclusions) {
+            OffsetRect(&r, strip.left, strip.top);
+            cut.push_back(r);
+        }
+        NativeWindowHost::SetPageRegion(parent, std::move(chrome), std::move(cut));
     }
     void CloseAddressHost() {
         startupPresenter.reset();
         if (!addressSource) return;
-        if (addressWindow) RemoveWindowSubclass(addressWindow, FocusProc, reinterpret_cast<UINT_PTR>(this));
+        if (addressWindow && addressWindow != childWindow) RemoveWindowSubclass(addressWindow, FocusProc, reinterpret_cast<UINT_PTR>(this));
         addressSource.TakeFocusRequested(addressTakeFocus);
         addressSource.SiteBridge().Hide();
         addressSource.SystemBackdrop(nullptr);
@@ -486,6 +520,7 @@ struct Pane {
         addressBoundsApplied = false;
         addressSource.Close();
         addressSource = nullptr;
+        ApplyPageRegion();
     }
     void WireAddress() {
         address->navigation->customization.ownerHwnd=parent;
@@ -496,7 +531,7 @@ struct Pane {
             menuButton.Margin({6, 0, 4, 0});
             strip->SetLeadingControl(menuButton);
         }
-        address->releaseMenuFocus = [this] { SetFocus(parent); };
+        address->releaseMenuFocus = [this] { SetFocus(NativeWindowHost::PageWindow(parent)); };
         address->preparePointerFocus = [this] {
             // Revoke the other island's menu without replaying the pointer or
             // replacing TextBox selection/caret handling.
@@ -510,7 +545,7 @@ struct Pane {
             const bool release = GetForegroundWindow() == parent &&
                 (InWindow(host, focused) || InPopups(addressSource ? addressIsland : contentIsland, focused));
             NativeWindowHost::FocusTrace(release ? "release-content-focus" : "release-content-focus-skipped");
-            if (release) SetFocus(parent);
+            if (release) SetFocus(NativeWindowHost::PageWindow(parent));
         };
         address->navigate = [this](hstring const& action) {
             Enqueue(NativeShellCore::NavigationAction, 0, 0, action);
@@ -544,6 +579,32 @@ struct Pane {
         };
     }
     SystemDrag::DragDropManager::TargetRequested_revoker externalDropRevoker;
+    std::shared_ptr<ChromeDropTarget::Route> dropRoute;
+    void RejectExternalDrops() {
+        if (externalDropRevoker || !strip || !strip->root.XamlRoot()) return;
+        dropRoute = std::make_shared<ChromeDropTarget::Route>(
+            [this](ChromeDropTarget::Phase phase, SystemDrag::DragInfo const& info, SystemDrag::DragUIOverride const* ui) {
+                // Only while the editor's own drag is under way: no other drag can run meanwhile.
+                if (!address || !address->navigation || !address->navigation->customization.dragging || !strip) return false;
+                auto& navigation = *address->navigation;
+                auto root = strip->root.XamlRoot();
+                if (!root || !navigation.host || !navigation.host.XamlRoot() || !SameObject(root, navigation.host.XamlRoot()))
+                    return false;
+                if (phase == ChromeDropTarget::Leave) { navigation.LeaveRoot(); return false; }
+                auto* host = NativeWindowHost::Get(parent);
+                POINT cursor{};
+                if (!host || !host->bridge || !GetCursorPos(&cursor) || !ScreenToClient(host->bridge, &cursor)) return false;
+                const double scale = root.RasterizationScale() > 0 ? root.RasterizationScale() : 1.0;
+                const Windows::Foundation::Point at{float(cursor.x / scale), float(cursor.y / scale)};
+                return phase == ChromeDropTarget::Drop ? navigation.DropOnRoot(info.Data(), at, ui)
+                                                       : navigation.DragOverRoot(info.Data(), at, ui);
+            });
+        auto dropManager = SystemDrag::DragDropManager::GetForIsland(strip->root.XamlRoot().ContentIsland());
+        externalDropRevoker = dropManager.TargetRequested(auto_revoke,
+            [route = std::weak_ptr<ChromeDropTarget::Route>(dropRoute)](auto const&, SystemDrag::DropOperationTargetRequestedEventArgs const& args) {
+                args.SetTarget(make<ChromeDropTarget>(route));
+            });
+    }
     std::map<uint32_t, hstring> tabTitles;
     NativeTabMenu tabMenu;
     std::unique_ptr<NativeTabStrip> strip;
@@ -638,7 +699,7 @@ struct Pane {
     // through its live converter, then through the TabView/root transform;
     // parent HWND client coordinates and XAML units are different spaces.
     RECT StripScreenBounds() const {
-        if (!strip) return {};
+        if (!strip || !strip->view.XamlRoot()) return {};
         auto rootBounds = strip->view.TransformToVisual(nullptr).TransformBounds(
             {0, 0, float(strip->view.ActualWidth()), float(strip->view.ActualHeight())});
         auto screen = strip->view.XamlRoot().ContentIsland().CoordinateConverter().ConvertLocalToScreen(rootBounds);
@@ -710,6 +771,7 @@ struct Pane {
         if (shell.core) shell_core_close(shell.core);
         lifetime.reset();
         source.TakeFocusRequested(takeFocus);
+        dropRoute.reset();
         externalDropRevoker.revoke();
         source.SystemBackdrop(nullptr);
         source.Content(nullptr);
@@ -936,7 +998,7 @@ struct Pane {
         tabMenu.dispatch = [this](uint32_t id, uint32_t contextRevision, hstring const& action) {
             Enqueue(NativeShellCore::MenuEvent, id, contextRevision, action);
         };
-        source = DesktopWindowXamlSource();
+        source = XamlSlot::New();
         source.Initialize(GetWindowIdFromWindow(hwnd));
         childWindow = GetWindowFromWindowId(source.SiteBridge().WindowId());
         check_bool(SetWindowSubclass(childWindow, FocusProc, reinterpret_cast<UINT_PTR>(this),
@@ -975,7 +1037,7 @@ struct Pane {
         strip->select = [this](uint32_t id) { QueueStripSelection(id); };
         strip->close = [this](uint32_t id) { QueueClose(id); };
         strip->add = [this] { QueueNewTab(); };
-        takeFocus = source.TakeFocusRequested([this](auto const&, auto const&) { SetFocus(parent); });
+        takeFocus = source.TakeFocusRequested([this](auto const&, auto const&) { SetFocus(NativeWindowHost::PageWindow(parent)); });
         source.Content(strip->root);
         // The island owns the backdrop and its theme/activation/fallback
         // handling. The toolbar's separate island follows the same choice;
@@ -993,18 +1055,24 @@ struct Pane {
         // embedded Firefox). Do not Close this shared, WinUI-owned manager
         // or replace Firefox's HWND/OLE registration. Native tab gestures
         // use our independent pointer session and never enter this path.
-        auto dropManager = SystemDrag::DragDropManager::GetForIsland(strip->root.XamlRoot().ContentIsland());
-        externalDropRevoker = dropManager.TargetRequested(auto_revoke,
-            [](auto const&, SystemDrag::DropOperationTargetRequestedEventArgs const& args) {
-                args.SetTarget(make<RejectExternalDrop>());
+        // A Window loads its content only once shown, so before then this waits for the strip to load,
+        // which still precedes any drag.
+        if (strip->root.XamlRoot()) RejectExternalDrops();
+        else {
+            auto token = std::make_shared<event_token>();
+            *token = strip->root.Loaded([this, token, alive = std::weak_ptr<int>(lifetime)](auto const&, auto const&) {
+                if (alive.expired() || !strip) return;
+                strip->root.Loaded(*token);
+                RejectExternalDrops();
             });
+        }
         strip->armDragSession = [this](uint32_t id) { ArmDragSession(*this, id); };
         strip->armGroupDragSession = [this](uint32_t id) { ArmDragSession(*this,id); dragSession().groupSource=true; };
         strip->tickDragSession = TickDragSession;
         strip->allTabsPanel.core=shell.core;
         strip->allTabsPanel.ownerHwnd=parent;
         strip->allTabsPanel.dispatch=[this](auto const& action){if(strip && strip->dispatch)strip->dispatch(0,action.Stringify());};
-        strip->allTabsPanel.releaseFocus=[this]{SetFocus(parent);};
+        strip->allTabsPanel.releaseFocus=[this]{SetFocus(NativeWindowHost::PageWindow(parent));};
         strip->allTabsPanel.cancelDrag=[owner=strip.get()] {
             if(dragSession().sourceStrip==owner || dragSession().hoverPanel==&owner->allTabsPanel)AbortDragSession();
         };
@@ -1591,6 +1659,9 @@ void Initialize() {
         check_bool(GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_PIN, L"Microsoft.UI.Xaml.dll", &xaml));
         phase = "xaml-manager";
         s.manager = WindowsXamlManager::InitializeForCurrentThread();
+        // Browser windows close and open through Firefox; the last one closing must not end this thread's loop.
+        phase = "shutdown-mode";
+        s.app.DispatcherShutdownMode(DispatcherShutdownMode::OnExplicitShutdown);
         phase = "resources";
         s.app.Resources().MergedDictionaries().Append(Controls::XamlControlsResources());
         // The same holds for the controls module these resources (and TabView)
@@ -1610,6 +1681,26 @@ void Initialize() {
 }
 
 HRESULT ShowInteractiveStartup(HWND hwnd, const wchar_t* profile, const wchar_t* presentation = nullptr) noexcept;
+HRESULT CreateBrowserWindow(const RECT& bounds, HWND* output) noexcept {
+    try {
+        Initialize();
+        Window window;
+        Controls::Canvas root;
+        window.Content(root);
+        const HWND hwnd = GetWindowFromWindowId(window.AppWindow().Id());
+        // XAML's content window. Its class name is the only handle the Window gives to it.
+        const HWND bridge = FindWindowExW(hwnd, nullptr, L"Microsoft.UI.Content.DesktopChildSiteBridge", nullptr);
+        check_bool(hwnd && bridge);
+        check_hresult(NativeWindowHost::Attach(hwnd, window, root, bridge));
+        check_bool(SetWindowPos(hwnd, nullptr, bounds.left, bounds.top, bounds.right - bounds.left,
+                                bounds.bottom - bounds.top, SWP_NOZORDER | SWP_NOACTIVATE));
+        *output = hwnd;
+        return S_OK;
+    } catch (...) {
+        return to_hresult();
+    }
+}
+const bool browserWindowFactory = (NativeWindowHost::CreateShellWindow = &CreateBrowserWindow, true);
 HRESULT ShowStartupSurfaceForProfile(HWND hwnd, const wchar_t* profile, const wchar_t* presentation = nullptr) noexcept {
     try {
         check_hresult(Check(hwnd));
@@ -1672,18 +1763,16 @@ HRESULT WINAPI UpdateTabStrip(HWND hwnd, const RECT* rect, BOOL visible) noexcep
             // A position-only island move need not cause any XAML layout event.
             pane.strip->captionDirty = true;
             operation = "clip-caption";
-            pane.windowDrag.SetClip(child, pane.appliedExclusions);
+            pane.windowDrag.SetClip(requested, pane.appliedExclusions);
             pane.appliedBounds = requested;
             pane.boundsApplied = true;
             ++work.geometryApplied;
         }
         operation = "restack";
-        if (visible) {
-            // Firefox's compositor is a sibling HWND covering the client area.
-            // Ask the window where it actually is rather than remembering where
-            // it was last put: a restack by anything else still has to be undone.
-            if (NativeWindowDrag::Restack(child)) ++work.restacks;
-        }
+        // Firefox's compositor is a sibling HWND covering the client area: below an island, above
+        // the Window's XAML. Ask the window where things actually are: a restack by anything else is undone.
+        if (visible && pane.source.Restack()) ++work.restacks;
+        NativeWindowHost::KeepOrder(hwnd);
         operation = "show-island";
         if (pane.appliedVisible != int(bool(visible))) {
             if (visible)
@@ -1695,6 +1784,7 @@ HRESULT WINAPI UpdateTabStrip(HWND hwnd, const RECT* rect, BOOL visible) noexcep
         }
         operation = "update-caption";
         pane.windowDrag.SetVisible(bool(visible));
+        pane.ApplyPageRegion();
         scope.Stop();
         if (DiagnosticsEnabled()) {
             RECT actual{};
@@ -1723,51 +1813,27 @@ HRESULT WINAPI Clip(HWND hwnd, const RECT* exclusions, uint32_t count) noexcept 
         auto found = state().panes.find(hwnd);
         if (found == state().panes.end()) return count ? E_INVALIDARG : S_OK;
         auto& pane = *found->second;
-        HWND child = GetWindowFromWindowId(pane.source.SiteBridge().WindowId());
-        RECT bounds{};
-        check_bool(GetClientRect(child, &bounds));
+        RECT bounds = pane.appliedBounds;
+        // Exclusions are strip-relative: only the strip's size can change what they cut. A move is
+        // followed by UpdateTabStrip, which places the caption and page region again.
+        const RECT size{0, 0, bounds.right - bounds.left, bounds.bottom - bounds.top};
         auto& work = geometryWork();
         ++work.clips;
-        // The same exclusions against the same client rect produce the same
-        // region, and the window already holds it. Rebuilding it and handing it
-        // back costs a redrawing SetWindowRgn for no change. The client rect is
-        // the whole of what can invalidate a region: it is in the window's own
-        // coordinates, so moving the island leaves it valid and only a resize
-        // does not -- and GetClientRect above has already reported that.
-        if (pane.clipApplied && EqualRect(&pane.appliedClipClient, &bounds) &&
+        if (pane.clipApplied && EqualRect(&pane.appliedClipClient, &size) &&
             pane.appliedExclusions.size() == count &&
             std::equal(pane.appliedExclusions.begin(), pane.appliedExclusions.end(), exclusions,
                        [](RECT const& a, RECT const& b) { return EqualRect(&a, &b) != 0; }))
             return S_OK;
-        HRGN region = CreateRectRgnIndirect(&bounds);
-        if (!region) return E_OUTOFMEMORY;
-        for (uint32_t i = 0; i < count; ++i) {
-            RECT exclusion = exclusions[i];
-            if (GetWindowLongPtrW(child, GWL_EXSTYLE) & WS_EX_LAYOUTRTL) {
-                exclusion.left = bounds.right - exclusions[i].right;
-                exclusion.right = bounds.right - exclusions[i].left;
-            }
-            HRGN cut = CreateRectRgnIndirect(&exclusion);
-            int result = cut ? CombineRgn(region, region, cut, RGN_DIFF) : ERROR;
-            if (cut) DeleteObject(cut);
-            if (result == ERROR) {
-                DeleteObject(region);
-                return E_FAIL;
-            }
-        }
-        // Windows owns the region on success; it clips rendering and hit testing.
-        if (!SetWindowRgn(child, region, TRUE)) {
-            DeleteObject(region);
-            return E_FAIL;
-        }
         pane.appliedExclusions.assign(exclusions, exclusions + count);
-        pane.appliedClipClient = bounds;
+        pane.appliedClipClient = size;
         pane.clipApplied = true;
-        pane.windowDrag.SetClip(child, pane.appliedExclusions);
+        pane.source.Clip(pane.appliedExclusions);
+        pane.windowDrag.SetClip(bounds, pane.appliedExclusions);
+        pane.ApplyPageRegion();
         ++work.clipsApplied;
         scope.Stop();
         if (DiagnosticsEnabled())
-            fprintf(stderr, "WinUIPane clip exclusions=%u visible=%d\n", count, IsWindowVisible(child));
+            fprintf(stderr, "WinUIPane clip exclusions=%u visible=%d\n", count, int(pane.source.SiteBridge().Visible()));
         return S_OK;
     } catch (...) {
         return to_hresult();
@@ -1824,13 +1890,13 @@ HRESULT WINAPI UpdateAddress(HWND hwnd, const RECT* rect, BOOL visible) noexcept
         }
         if (!pane.strip) return E_NOTIMPL;
         if (!pane.addressSource) {
-            pane.addressSource = DesktopWindowXamlSource();
+            pane.addressSource = XamlSlot::New();
             pane.addressSource.Initialize(GetWindowIdFromWindow(hwnd));
             pane.address = std::make_unique<NativeAddress>(pane.shell);
             pane.address->navigation->productMenu.updates->owner = hwnd;
             pane.WireAddress();
             pane.addressTakeFocus = pane.addressSource.TakeFocusRequested([&pane](auto const&, auto const&) {
-                SetFocus(pane.parent);
+                SetFocus(NativeWindowHost::PageWindow(pane.parent));
                 pane.address->LeaveForTraversal((GetKeyState(VK_SHIFT) & 0x8000) ? -1 : 1);
             });
             pane.addressSource.Content(pane.address->toolbarRoot);
@@ -1846,10 +1912,10 @@ HRESULT WINAPI UpdateAddress(HWND hwnd, const RECT* rect, BOOL visible) noexcept
             pane.addressBounds = *rect;
             pane.addressBoundsApplied = true;
         }
-        if (GetWindow(pane.addressWindow, GW_HWNDPREV))
-            check_bool(SetWindowPos(pane.addressWindow, HWND_TOP, 0, 0, 0, 0,
-                                   SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE));
+        pane.addressSource.BringToTop();
+        NativeWindowHost::KeepOrder(hwnd);
         site.Show();
+        pane.ApplyPageRegion();
         pane.address->PlacePopup();
         return S_OK;
     } catch (...) {
@@ -2357,10 +2423,10 @@ BOOL WINAPI Translate(MSG* message) noexcept {
             // MenuFlyout can create a top-level popup outside the child HWND.
             // Use WinUI's explicit ownership graph, never all browser/thread HWNDs.
             if (!ownsMessage && (pane.tabMenu.active || pane.address || pane.strip)) {
-                // Left to throw exactly as the direct expression did if the
-                // island is not available yet: Translate's own catch handles it.
-                if (!pane.contentIsland) pane.contentIsland = pane.source.Content().XamlRoot().ContentIsland();
-                for (auto popup : pane.contentIsland.Popups()) {
+                // A Window has no XamlRoot until it is first shown, and so no popups yet either.
+                if (!pane.contentIsland)
+                    if (auto root = pane.source.Content().XamlRoot()) pane.contentIsland = root.ContentIsland();
+                if (pane.contentIsland) for (auto popup : pane.contentIsland.Popups()) {
                     HWND popupWindow = GetWindowFromWindowId(popup.WindowId());
                     if (message->hwnd == popupWindow || IsChild(popupWindow, message->hwnd)) {
                         ownsMessage = true;
@@ -2380,8 +2446,9 @@ BOOL WINAPI Translate(MSG* message) noexcept {
                 if (addressShortcut || (control && (message->wParam == 'L' || message->wParam == 'T' || message->wParam == 'W' ||
                                 (pane.strip && (message->wParam == VK_TAB || message->wParam == VK_PRIOR ||
                                                 message->wParam == VK_NEXT))))) {
-                    SetFocus(pane.parent);
-                    PostMessageW(pane.parent, message->message, message->wParam, message->lParam);
+                    const HWND page = NativeWindowHost::PageWindow(pane.parent);
+                    SetFocus(page);
+                    PostMessageW(page, message->message, message->wParam, message->lParam);
                     return TRUE;
                 }
             }
@@ -2985,7 +3052,7 @@ extern "C" __declspec(dllexport) HRESULT WINAPI WinUIPaneTestLocalStartup(void(W
 // Test-only on-owner query: a miss returns immediately and lets Gecko process
 // the queued request between Marionette calls. No synchronous geometry lookup.
 static HRESULT WINAPI TestPageRange(HWND hwnd,uint32_t start,uint32_t end,int32_t* output) {
-    auto store=NativePageInput::Get(hwnd);if(!store || !output || store->lock || start<store->textBase || end<store->textBase)return E_INVALIDARG;
+    auto store=NativePageInput::Get(NativeWindowHost::PageWindow(hwnd));if(!store || !output || store->lock || start<store->textBase || end<store->textBase)return E_INVALIDARG;
     RECT bounds{};BOOL clipped{};store->lock=TS_LF_READ;
     HRESULT result=store->GetTextExt(0,start-store->textBase,end-store->textBase,&bounds,&clipped);
     store->lock=0;

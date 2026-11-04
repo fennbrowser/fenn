@@ -10389,7 +10389,7 @@ index b5b1249e777..697b0c3b809 100644
 +    SetCompositorParent(mCompositorWnd, mWnd);
      aResolve(true);
 diff --git a/widget/windows/InProcessWinCompositorWidget.cpp b/widget/windows/InProcessWinCompositorWidget.cpp
-index 044efe4f5d2..c049eaf8f22 100644
+index 044efe4f5d2..8cf1d918f3a 100644
 --- a/widget/windows/InProcessWinCompositorWidget.cpp
 +++ b/widget/windows/InProcessWinCompositorWidget.cpp
 @@ -5,2 +5,3 @@
@@ -10399,11 +10399,11 @@ index 044efe4f5d2..c049eaf8f22 100644
 @@ -189,6 +190,6 @@ bool InProcessWinCompositorWidget::GetWindowIsFullyOccluded() const {
  
 -HDC InProcessWinCompositorWidget::GetWindowSurface() { return ::GetDC(mWnd); }
-+HDC InProcessWinCompositorWidget::GetWindowSurface() { return ::GetDC(CompositorTarget(mWnd)); }
++HDC InProcessWinCompositorWidget::GetWindowSurface() { return ::GetDC(SurfaceTarget(mWnd)); }
  
  void InProcessWinCompositorWidget::FreeWindowSurface(HDC dc) {
 -  ::ReleaseDC(mWnd, dc);
-+  ::ReleaseDC(CompositorTarget(mWnd), dc);
++  ::ReleaseDC(SurfaceTarget(mWnd), dc);
  }
 @@ -214,3 +215,3 @@ void InProcessWinCompositorWidget::UpdateCompositorWnd(
    // directly.
@@ -10411,7 +10411,7 @@ index 044efe4f5d2..c049eaf8f22 100644
 +  SetCompositorParent(aCompositorWnd, aParentWnd);
    mSetParentCompleted = true;
 diff --git a/widget/windows/RemoteBackbuffer.cpp b/widget/windows/RemoteBackbuffer.cpp
-index 0044327a96b..eeaeced7430 100644
+index 0044327a96b..4c3b5c97a16 100644
 --- a/widget/windows/RemoteBackbuffer.cpp
 +++ b/widget/windows/RemoteBackbuffer.cpp
 @@ -5,2 +5,3 @@
@@ -10421,7 +10421,7 @@ index 0044327a96b..eeaeced7430 100644
 @@ -259,3 +260,4 @@ class PresentableSharedImage {
  
 -    HDC windowDC = ::GetDC(aWindowHandle);
-+    const HWND target = CompositorTarget(aWindowHandle);
++    const HWND target = SurfaceTarget(aWindowHandle);
 +    HDC windowDC = ::GetDC(target);
      if (!windowDC) {
 @@ -277,3 +279,3 @@ class PresentableSharedImage {
@@ -11325,10 +11325,10 @@ index 00000000000..9e20e3ca163
 +}
 diff --git a/widget/windows/FennCompositorParent.h b/widget/windows/FennCompositorParent.h
 new file mode 100644
-index 00000000000..f178f3bb7df
+index 00000000000..40de554e099
 --- /dev/null
 +++ b/widget/windows/FennCompositorParent.h
-@@ -0,0 +1,40 @@
+@@ -0,0 +1,48 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -11345,6 +11345,14 @@ index 00000000000..f178f3bb7df
 +inline HWND CompositorTarget(HWND aWidget) {
 +  HWND shell = aWidget ? static_cast<HWND>(::GetPropW(aWidget, L"Fenn.ProxyShell")) : nullptr;
 +  return shell ? shell : aWidget;
++}
++
++// Where software rendering draws for a widget: the native page input window, which covers the
++// page and clips it out of its parent's drawing, or else the compositor target.
++inline HWND SurfaceTarget(HWND aWidget) {
++  HWND target = CompositorTarget(aWidget);
++  HWND page = static_cast<HWND>(::GetPropW(target, L"Fenn.PageWindow"));
++  return page ? page : target;
 +}
 +
 +// While the native startup host holds the page area, the compositor window
@@ -32710,10 +32718,10 @@ index 00000000000..4fbeda2397a
 +}, { once: true });
 diff --git a/widget/windows/WinUIPrototype.cpp b/widget/windows/WinUIPrototype.cpp
 new file mode 100644
-index 00000000000..3e9079e80e6
+index 00000000000..2391631e7ea
 --- /dev/null
 +++ b/widget/windows/WinUIPrototype.cpp
-@@ -0,0 +1,938 @@
+@@ -0,0 +1,940 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -33065,7 +33073,9 @@ index 00000000000..3e9079e80e6
 +#ifdef ACCESSIBILITY
 +  HiddenProxy* link=ProxyOf(proxy);
 +  if (!link || link->accessibility) return;
-+  link->accessibility=new WinUIAccessibleRoot(link->shell,proxy);
++  // The native page input window carries page focus, so it answers for the page.
++  HWND page=static_cast<HWND>(GetPropW(link->shell,L"Fenn.PageWindow"));
++  link->accessibility=new WinUIAccessibleRoot(page ? page : link->shell,proxy);
 +  HRESULT accessibilityResult=link->accessibility->Initialize();
 +  if (SUCCEEDED(accessibilityResult))
 +    accessibilityResult=sPaneApi.setIndependentAccessibility(link->shell,static_cast<IRawElementProviderSimple*>(link->accessibility.get()));

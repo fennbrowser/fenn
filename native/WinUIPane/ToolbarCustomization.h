@@ -107,30 +107,40 @@ struct NativeToolbarCustomization {
         data.RequestedOperation(winrt::Windows::ApplicationModel::DataTransfer::DataPackageOperation::Move);
         return true;
     }
-    bool OwnDrag(Microsoft::UI::Xaml::DragEventArgs const& args) {
+    // This editor's own drag, carrying the token it put in the data, onto an item it may move there.
+    bool Droppable(winrt::Windows::ApplicationModel::DataTransfer::DataPackageView const& data, bool removing=false) {
         if(!editing || !dragging || dragCancelled || externalDrop || dragRevision!=state.revision)return false;
-        auto values=args.DataView().Properties();
-        return values.HasKey(L"FennToolbarDrag") && winrt::unbox_value_or<winrt::hstring>(values.Lookup(L"FennToolbarDrag"),L"")==dragToken;
+        auto values=data.Properties();
+        if(!values.HasKey(L"FennToolbarDrag") || winrt::unbox_value_or<winrt::hstring>(values.Lookup(L"FennToolbarDrag"),L"")!=dragToken)return false;
+        auto row=std::find_if(state.items.begin(),state.items.end(),[&](auto const& item){return item.id==dragId;});
+        return row!=state.items.end() && !(removing && (!row->placed || !row->removable));
+    }
+    // XAML's drag override and the island drop target's are different types with the same members.
+    template<typename Override> void ShowDrag(Override const& ui) const {
+        ui.IsContentVisible(bool(dragBitmap));ui.IsCaptionVisible(false);ui.IsGlyphVisible(false);
+        if(dragBitmap)ui.SetContentFromSoftwareBitmap(dragBitmap,{float(dragBitmap.PixelWidth())/2,float(dragBitmap.PixelHeight())/2});
     }
     bool Accept(Microsoft::UI::Xaml::DragEventArgs const& args, bool removing=false) {
-        if(!OwnDrag(args))return false;
-        auto row=std::find_if(state.items.begin(),state.items.end(),[&](auto const& item){return item.id==dragId;});
-        if(row==state.items.end() || (removing && (!row->placed || !row->removable)))return false;
+        if(!Droppable(args.DataView(),removing))return false;
         args.AcceptedOperation(winrt::Windows::ApplicationModel::DataTransfer::DataPackageOperation::Move);
-        args.DragUIOverride().IsContentVisible(bool(dragBitmap));
-        args.DragUIOverride().IsCaptionVisible(false);args.DragUIOverride().IsGlyphVisible(false);
-        if(dragBitmap)args.DragUIOverride().SetContentFromSoftwareBitmap(dragBitmap,{float(dragBitmap.PixelWidth())/2,float(dragBitmap.PixelHeight())/2});
+        ShowDrag(args.DragUIOverride());
         return true;
     }
     void DropAt(Microsoft::UI::Xaml::DragEventArgs const& args,winrt::hstring const& target={},bool removing=false) {
         if(!Accept(args,removing))return;
-        args.Handled(true);externalDrop=true;
-        if(target==dragId)return;
+        args.Handled(true);
+        DropData(args.DataView(),target,removing);
+    }
+    bool DropData(winrt::Windows::ApplicationModel::DataTransfer::DataPackageView const& data,winrt::hstring const& target={},bool removing=false) {
+        if(!Droppable(data,removing))return false;
+        externalDrop=true;
+        if(target==dragId)return true;
         auto row=std::find_if(state.items.begin(),state.items.end(),[&](auto const& item){return item.id==dragId;});
         Send(dragId,removing?L"remove":!row->placed?L"insert":target.empty()?L"end":L"before",target,dragRevision);
         // Firefox can remove the source control before WinUI raises DropCompleted.
         // Let the acknowledged layout refresh the palette even in that case.
         dragging=false;
+        return true;
     }
     void EndDrag() {if(dragEnded)dragEnded();dragging=false;dragToken=L"";Refresh();}
     winrt::fire_and_forget CaptureDrag(Microsoft::UI::Xaml::DragStartingEventArgs args,

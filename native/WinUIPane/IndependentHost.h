@@ -348,7 +348,7 @@ inline HRESULT WINAPI Start(const wchar_t* profilePath, const wchar_t* initialPr
                 MSG message{};
                 while (GetMessageW(&message,nullptr,0,0)>0) {
                     if (!NativePageInput::Key(&message) && !Translate(&message)) {
-                        const auto* binding=NativeWindowHost::Get(message.hwnd);
+                        const auto* binding=NativeWindowHost::ForInput(message.hwnd);
                         const bool browserKey=binding && binding->endpoint &&
                             (message.message==WM_KEYDOWN || message.message==WM_KEYUP ||
                              message.message==WM_SYSKEYDOWN || message.message==WM_SYSKEYUP);
@@ -378,6 +378,11 @@ inline HRESULT WINAPI Start(const wchar_t* profilePath, const wchar_t* initialPr
         *output=host.shell; return S_OK;
     } catch (...) { return to_hresult(); }
 }
+// Gecko names the top-level window; its page input lives on the page child.
+inline HRESULT WINAPI PageGeometry(HWND hwnd, const WinUIPageGeometry* input) noexcept { return NativePageInput::Geometry(NativeWindowHost::PageWindow(hwnd),input); }
+inline HRESULT WINAPI PagePublish(HWND hwnd, const WinUIPageInput* input) noexcept { return NativePageInput::Publish(NativeWindowHost::PageWindow(hwnd),input); }
+inline HRESULT WINAPI PageDrain(HWND hwnd, WinUIPageInputEvent* output, WCHAR* text, uint32_t capacity) noexcept { return NativePageInput::Drain(NativeWindowHost::PageWindow(hwnd),output,text,capacity); }
+inline HRESULT WINAPI PageCommit(HWND hwnd, BOOL cancel) noexcept { return NativePageInput::Commit(NativeWindowHost::PageWindow(hwnd),cancel); }
 inline HRESULT WINAPI Stop() noexcept {
     auto& host=State();
     if (!host.thread.joinable()) return S_FALSE;
@@ -480,8 +485,8 @@ inline void Route(WinUIPaneApi& api) {
     ROUTE(bindIndependentEndpoint,Bind); api.cancelIndependentClose=PostResolve;
     api.setIndependentAccessibility=PostAccessibility; api.setIndependentTitle=PostTitle;
     api.setIndependentCursor=PostPageCursor; api.registerIndependentTouch=PostPageTouch;
-    ROUTE(publishIndependentGeometry,NativePageInput::Geometry); ROUTE(publishIndependentInput,NativePageInput::Publish); ROUTE(drainIndependentInput,NativePageInput::Drain);
-    ROUTE(commitIndependentInput,NativePageInput::Commit);
+    ROUTE(publishIndependentGeometry,PageGeometry); ROUTE(publishIndependentInput,PagePublish); ROUTE(drainIndependentInput,PageDrain);
+    ROUTE(commitIndependentInput,PageCommit);
     ROUTE(startupTransfer,StartupTransfer);
 #undef ROUTE
 }

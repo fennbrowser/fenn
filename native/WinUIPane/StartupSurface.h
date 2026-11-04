@@ -22,7 +22,7 @@ inline bool Eligible(HWND hwnd) {
 
 struct Surface {
     HWND hwnd{};
-    DesktopWindowXamlSource source{nullptr};
+    XamlSlot source{nullptr};
     void Resize() {
         RECT bounds{};
         if (!source || !GetClientRect(hwnd, &bounds)) return;
@@ -62,7 +62,7 @@ inline HRESULT Show(HWND hwnd) {
     if (Active()) return Active()->hwnd == hwnd ? S_FALSE : E_NOT_VALID_STATE;
     auto surface = std::make_unique<Surface>();
     surface->hwnd = hwnd;
-    surface->source = DesktopWindowXamlSource();
+    surface->source = XamlSlot::New();
     surface->source.Initialize(GetWindowIdFromWindow(hwnd));
     // English is a pre-publication fallback only. No browser-dependent commands
     // are exposed; localized normal controls replace this entire island.

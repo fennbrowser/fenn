@@ -24,7 +24,7 @@ struct NativeSearchMode {
     NativeShellCore& shell;
     winrt::hstring buttonPixels;
     double generation{-1}, applied{}, reveal{};
-    bool revealPending{};
+    bool revealPending{}, openAtPress{};
     std::shared_ptr<int> lifetime = std::make_shared<int>(0);
 
     // Provided by the owning NativeAddress: observe the pending text edit,
@@ -237,6 +237,28 @@ struct NativeSearchMode {
         using namespace Microsoft::UI::Xaml;
         using namespace Microsoft::UI::Xaml::Controls;
         NewFlyout();
+        // In a browser Window, after the flyout closed with the pointer resting on the button (no
+        // PointerExited since), WinUI ignores the DropDownButton's own opening: Click fires and
+        // nothing opens. Open it then, unless the flyout was open when this press began (the press
+        // that closes it). See the implementation lessons.
+        button.AddHandler(UIElement::PointerPressedEvent(),
+            winrt::box_value(Microsoft::UI::Xaml::Input::PointerEventHandler([this, alive = std::weak_ptr<int>(lifetime)](auto const&, auto const&) {
+                if (!alive.expired()) openAtPress = flyout.IsOpen();
+            })), true);
+        button.Click([this, alive = std::weak_ptr<int>(lifetime)](auto const&, auto const&) {
+            if (alive.expired()) return;
+            const bool wasOpen = openAtPress;
+            openAtPress = false;
+            auto queue = Microsoft::UI::Dispatching::DispatcherQueue::GetForCurrentThread();
+            if (wasOpen || !queue) return;
+            queue.TryEnqueue([this, alive] {
+                if (alive.expired() || flyout.IsOpen() || !button.IsEnabled() ||
+                    button.Visibility() != Visibility::Visible || !button.XamlRoot()) return;
+                Primitives::FlyoutShowOptions options;
+                options.Placement(Primitives::FlyoutPlacementMode::BottomEdgeAlignedLeft);
+                flyout.ShowAt(button, options);
+            });
+        });
         button.IsEnabled(false);
         button.Padding({4, 0, 4, 0});
         Automation::AutomationProperties::SetAutomationId(button, L"FennSearchMode");
