@@ -31,7 +31,7 @@ struct IUnknown;
 // v39 adds its page cursor and touch registration, and pen messages to the endpoint.
 // v40 retires the native host on Gecko's thread (attach, detach, adopt) and adds window-state
 // requests from Gecko's hidden proxy window to the shell.
-#define WINUI_PANE_ABI_VERSION 40u
+#define WINUI_PANE_ABI_VERSION 41u
 
 // Scalar key transport, translated exactly once by the Gecko endpoint. The endpoint is nsWindow's
 // own hidden window (the proxy), which stands for the shell on Gecko's thread.
@@ -83,6 +83,9 @@ struct WinUITab {
 // schedules a fresh wakeup, rather than waiting forever for one that will never
 // arrive. Returning FALSE is not an error the host must otherwise handle.
 using WinUIPaneNotifyFn = BOOL (WINAPI*)(void* context);
+// v41: a startup transfer's answer, on Gecko's main thread: S_OK and the reply, or a failure and
+// null. The reply is borrowed for the call.
+using WinUIPaneStartupReplyFn = void (WINAPI*)(void* context, uint64_t request, HRESULT result, const wchar_t* reply);
 
 struct WinUIChromeLayout {
     BOOL fits;
@@ -229,6 +232,8 @@ struct WinUIPaneApi {
     // Operation 11 publishes bounded browser-row identity snapshots.
     // Decimal u64 identities in JSON; borrowed buffers only for this call.
     // Operations 17/18 enable exact-state draft adoption and finish the retained presenter.
+    // v41: never waits. The output receives a decimal request token at once; the reply goes to
+    // the startup sink with that token.
     HRESULT (WINAPI* startupTransfer)(HWND, const wchar_t*, wchar_t*, uint32_t);
     // v38: copied before return; never waits unless the bounded queue refuses it.
     HRESULT (WINAPI* setIndependentTitle)(HWND, const wchar_t*);
@@ -238,6 +243,8 @@ struct WinUIPaneApi {
     // v40: copied and applied to the shell in order with other posted calls, never waited on unless
     // the bounded queue refuses it. The shell decrements pending once applied, then reports its state.
     HRESULT (WINAPI* requestIndependentWindow)(HWND, const WinUIPaneWindowRequest*);
+    // v41: where startup transfer replies go; null clears it.
+    HRESULT (WINAPI* setStartupSink)(WinUIPaneStartupReplyFn, void*);
 };
 // Pen data can only be read on the thread that owns the window, so the endpoint gets a copy.
 // Sent as WM_POINTER*+WINUI_PANE_ENDPOINT_KEY_OFFSET with this as wParam and the original lParam.

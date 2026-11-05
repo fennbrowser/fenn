@@ -64,6 +64,11 @@ struct Engine {
     // proxy each window bound, to close it if the bind is refused.
     std::map<uint32_t,uint32_t> refused;
     std::map<uint32_t,HWND> endpoints;
+    // Startup transfer replies go to Gecko's sink, never during the call that asked.
+    WinUIPaneStartupReplyFn startupSink{};
+    void* startupContext{};
+    uint64_t nextStartup{};
+    std::vector<std::tuple<uint64_t,HRESULT,std::wstring>> localReplies;
 };
 inline Engine& Gecko() { static auto* engine=new Engine; return *engine; }
 inline void Pump() noexcept;
@@ -101,8 +106,15 @@ inline void Flush(bool force) noexcept {
         }
     }
 }
-inline void Deliver(const ShellFrameView& view, std::vector<std::pair<WinUIPaneNotifyFn,void*>>& wakes) {
+using Replies=std::vector<std::tuple<uint64_t,HRESULT,std::wstring>>;
+inline void Deliver(const ShellFrameView& view, std::vector<std::pair<WinUIPaneNotifyFn,void*>>& wakes, Replies& replies) {
     auto& engine=Gecko();
+    if (view.channel==SHELL_FRAME_STARTUP) {
+        if (view.length<sizeof(HRESULT)) return;
+        replies.emplace_back(view.revision,Read<HRESULT>(view.payload),
+            Text(view.payload+sizeof(HRESULT),view.length-sizeof(HRESULT)));
+        return;
+    }
     if (view.channel==SHELL_FRAME_REQUESTS) {
         if (view.length) engine.mailbox[view.window]=Text(view.payload,view.length);
         if (auto found=engine.sinks.find(view.window); found!=engine.sinks.end()) wakes.push_back(found->second);
@@ -131,6 +143,8 @@ inline void Pump() noexcept {
     engine.pumping=true;
     std::deque<std::pair<uint8_t*,size_t>> frames;
     std::vector<std::pair<WinUIPaneNotifyFn,void*>> wakes;
+    Replies replies;
+    replies.swap(engine.localReplies);
     {
         auto& inbox=ToEngine();
         inbox.posted=false;
@@ -140,13 +154,28 @@ inline void Pump() noexcept {
     for (auto [data,length] : frames) {
         ShellFrameView view{};
         if (shell_link_receive(engine.link,data,length,&view)==SHELL_STATUS_OK && view.delivered)
-            try { Deliver(view,wakes); } catch (...) {}
+            try { Deliver(view,wakes,replies); } catch (...) {}
         shell_link_free_frame(data,length);
     }
     engine.pumping=false;
     Flush(false);
     // Wakeups only schedule Gecko work; they run after the link is consistent again.
     for (auto& [notify,context] : wakes) notify(context);
+    for (auto& [request,result,reply] : replies)
+        if (engine.startupSink) engine.startupSink(engine.startupContext,request,result,SUCCEEDED(result) ? reply.c_str() : nullptr);
+}
+inline uint64_t NextStartup() noexcept { return ++Gecko().nextStartup; }
+// A reply produced on Gecko's thread itself, delivered on a later turn like a framed one.
+inline void PostLocalReply(uint64_t request, HRESULT result, std::wstring reply) noexcept {
+    auto& engine=Gecko();
+    try { engine.localReplies.emplace_back(request,result,std::move(reply)); } catch (...) { return; }
+    if (engine.wake) PostMessageW(engine.wake,WakeMessage,0,0);
+}
+inline HRESULT WINAPI SetStartupSink(WinUIPaneStartupReplyFn sink, void* context) noexcept {
+    if (sink && !EnsureEngine()) return E_OUTOFMEMORY;
+    auto& engine=Gecko();
+    engine.startupSink=sink; engine.startupContext=context;
+    return S_OK;
 }
 // The window's serial, introducing a new window to the shell with its handle first.
 inline uint32_t Serial(HWND hwnd) noexcept {
@@ -291,6 +320,13 @@ inline HRESULT ShellSend(HWND hwnd, uint16_t channel, uint16_t kind, uint64_t re
     return Result(outcome);
 }
 // For a window this side never adopted, so it has no handle here.
+inline void ShellSendSerial(uint32_t serial, uint16_t channel, uint16_t kind, uint64_t revision, const void* payload, size_t length) noexcept {
+    auto& shell=Native();
+    if (!shell.link) return;
+    ShellLinkSend outcome{};
+    shell_link_send(shell.link,serial,channel,kind,revision,static_cast<const uint8_t*>(payload),length,&outcome);
+    FlushShell();
+}
 inline void ShellRefuseSerial(uint32_t serial, uint16_t surface) noexcept {
     auto& shell=Native();
     if (!shell.link) return;

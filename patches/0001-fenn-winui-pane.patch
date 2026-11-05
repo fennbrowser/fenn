@@ -11110,10 +11110,10 @@ index 30846e96272..985c9f8934e 100644
      /* the nativeWindow pointer is converted to and exposed as a string. This
 diff --git a/browser/base/content/WinUIAutomaticStartup.sys.mjs b/browser/base/content/WinUIAutomaticStartup.sys.mjs
 new file mode 100644
-index 00000000000..9e20e3ca163
+index 00000000000..16c925e9a9d
 --- /dev/null
 +++ b/browser/base/content/WinUIAutomaticStartup.sys.mjs
-@@ -0,0 +1,209 @@
+@@ -0,0 +1,221 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -11235,8 +11235,9 @@ index 00000000000..9e20e3ca163
 +  const key = JSON.stringify(body);
 +  if (state.presentationKey === key) return;
 +  const revision = (state.presentationRevision || 0) + 1;
-+  window.windowUtils.transferWinUIStartup(JSON.stringify({version: 1, operation: 19,
-+    session: state.session, revision: String(revision), ...body}));
++  const { transferStartup } = ChromeUtils.importESModule("chrome://browser/content/WinUIStartupTransfer.sys.mjs");
++  transferStartup(window, {version: 1, operation: 19, session: state.session, revision: String(revision), ...body})
++    .catch(error => { state.presentationError = String(error); });
 +  delete state.presentationError;
 +  state.presentationKey = key;
 +  state.presentationRevision = revision;
@@ -11248,10 +11249,16 @@ index 00000000000..9e20e3ca163
 +  if (pane.automaticStartup) return;
 +  const root = window.document.documentElement;
 +  const state = pane.automaticStartup = { phase: "probing" };
-+  let probe;
-+  try {
-+    probe = JSON.parse(window.windowUtils.transferWinUIStartup(JSON.stringify({ version: 1, operation: 15 })));
-+  } catch { /* A window without an early native presenter uses normal fallback. */ }
++  const { transferStartup } = ChromeUtils.importESModule("chrome://browser/content/WinUIStartupTransfer.sys.mjs");
++  // The chrome stays hidden while probing; the answer takes one turn of the native thread.
++  transferStartup(window, { version: 1, operation: 15 })
++    .catch(() => null) // A window without an early native presenter uses normal fallback.
++    .then(probe => { if (!window.closed) continueAutomaticStartup(window, probe); });
++}
++
++function continueAutomaticStartup(window, probe) {
++  const pane = window.gWinUIPane, state = pane.automaticStartup;
++  const root = window.document.documentElement;
 +  if (!probe?.early) {
 +    state.phase = "fallback";
 +    root.setAttribute(READY, "fallback");
@@ -11304,15 +11311,20 @@ index 00000000000..9e20e3ca163
 +      !root.hasAttribute("winui-replaces-tabs") || !root.hasAttribute("winui-hides-nav-bar")) return;
 +  // Mark before calling the adapter: publishing rows can reenter this path.
 +  state.phase = "connecting";
++  connectAutomaticStartup(window, state, root);
++}
++
++async function connectAutomaticStartup(window, state, root) {
 +  try {
 +    const { connectFirefoxStartup } = ChromeUtils.importESModule("chrome://browser/content/WinUIStartupTransfer.sys.mjs");
 +    // The token names this native endpoint. The adapter separately captures and
 +    // revalidates the resolved Firefox profile, privacy context and window.
-+    const connection = connectFirefoxStartup(window, state.session, state.session);
-+    connection.attachPresenter();
-+    connection.enableNormalTabs();
++    const connection = await connectFirefoxStartup(window, state.session, state.session);
++    await connection.attachPresenter();
++    await connection.enableNormalTabs();
 +    if (connection.stopped) throw new Error("Automatic startup binding was lost");
-+    connection.send(16);
++    await connection.send(16);
++    connection.start();
 +    state.phase = "connected";
 +    state.connection = connection;
 +    root.setAttribute(READY, "native");
@@ -11379,10 +11391,10 @@ index 00000000000..40de554e099
 +#endif
 diff --git a/browser/base/content/WinUIStartupTransfer.sys.mjs b/browser/base/content/WinUIStartupTransfer.sys.mjs
 new file mode 100644
-index 00000000000..9cc2c6236ee
+index 00000000000..9809d9a951c
 --- /dev/null
 +++ b/browser/base/content/WinUIStartupTransfer.sys.mjs
-@@ -0,0 +1,425 @@
+@@ -0,0 +1,479 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -11506,7 +11518,7 @@ index 00000000000..9cc2c6236ee
 +    this.rows = [];
 +  }
 +
-+  publish(force = false) {
++  async publish(force = false) {
 +    const snapshot = this.capture();
 +    if (!snapshot) return this.rows; // Transient selection during tab teardown.
 +    const { ids, selected } = snapshot;
@@ -11517,7 +11529,7 @@ index 00000000000..9cc2c6236ee
 +    if (!force && fingerprint === this.fingerprint) return this.rows;
 +    const revision = fingerprint === this.fingerprint ? this.revision : this.revision + 1n;
 +    if (revision > 18446744073709551615n) throw new Error("Startup row revision exhausted");
-+    const result = this.send(11, { revision: String(revision), ids, selected });
++    const result = await this.send(11, { revision: String(revision), ids, selected });
 +    if (Object.keys(this.identity).some(key => result[key] !== this.identity[key]) ||
 +        !Array.isArray(result.rows) || result.rows.length > 4128) throw new Error("Invalid row projection");
 +    const seen = new Set();
@@ -11536,6 +11548,33 @@ index 00000000000..9cc2c6236ee
 +  }
 +}
 +
++// The native side answers each startup transfer later, by token (WinUIPaneApi v41).
++const pendingReplies = new Map();
++let observingReplies = false;
++function observeReplies() {
++  if (observingReplies) return;
++  observingReplies = true;
++  Services.obs.addObserver({ observe(_subject, _topic, data) {
++    const split = data.search(/[:!]/);
++    const entry = split > 0 && pendingReplies.get(data.slice(0, split));
++    if (!entry) return;
++    pendingReplies.delete(data.slice(0, split));
++    if (data[split] === "!") {
++      entry.reject(new Error(`Native startup transfer refused: operation ${entry.operation}, 0x${data.slice(split + 1)}`));
++      return;
++    }
++    try { entry.resolve(JSON.parse(data.slice(split + 1))); } catch (error) { entry.reject(error); }
++  } }, "winui-startup-reply");
++}
++export function transferStartup(window, message) {
++  observeReplies();
++  let token;
++  try { token = window.windowUtils.transferWinUIStartup(JSON.stringify(message)); }
++  catch (error) { return Promise.reject(error); }
++  if (!token) return Promise.reject(new Error("Native startup transfer unavailable"));
++  return new Promise((resolve, reject) => pendingReplies.set(token, { resolve, reject, operation: message.operation }));
++}
++
 +// One lease, one execution, one terminal acknowledgment. A wake is a hint, not
 +// permission to replay an in-flight command. Failure freezes automatic draining.
 +export class WinUIStartupConnection {
@@ -11548,6 +11587,14 @@ index 00000000000..9cc2c6236ee
 +    this.again = false;
 +    this.stopped = false;
 +    this.lastOutcome = null;
++    // Held until the caller has finished its setup: a wake meanwhile, such as the one a drain
++    // brings, is only recorded. Setup spans several turns now that replies are asynchronous.
++    this.held = true;
++  }
++
++  start() {
++    this.held = false;
++    return this.wake();
 +  }
 +
 +  send(operation, fields = {}) {
@@ -11559,20 +11606,21 @@ index 00000000000..9cc2c6236ee
 +    this.stopped = true;
 +    this.onDisconnect?.();
 +    this.consumer.disconnect();
-+    try { this.send(7); } catch { /* Endpoint teardown is already terminal. */ }
++    this.send(7).catch(() => { /* Endpoint teardown is already terminal. */ });
 +  }
 +
 +  wake() {
 +    if (this.stopped) return Promise.resolve();
++    if (this.held) { this.again = true; return Promise.resolve(); }
 +    if (this.running) { this.again = true; return this.running; }
 +    this.running = Promise.resolve().then(async () => {
 +      try {
 +        for (let count = 0; count < 16 && !this.stopped; count++) {
 +          this.again = false;
-+          const command = this.send(8);
++          const command = await this.send(8);
 +          if (command.lost || Object.keys(this.identity).some(key => command[key] !== this.identity[key]))
 +            throw new Error("Startup lease identity changed");
-+          if (!command.kind) { this.publishRows?.(true); return; }
++          if (!command.kind) { await this.publishRows?.(true); return; }
 +          const outcome = await this.consumer.execute(command);
 +          this.lastOutcome = outcome;
 +          if (this.stopped) return;
@@ -11580,12 +11628,12 @@ index 00000000000..9cc2c6236ee
 +              ["context", "session", "generation", "request", "draft"].some(key => outcome[key] !== command[key])) {
 +            this.disconnect(); return;
 +          }
-+          const acknowledged = this.send(6, { request: outcome.request, browser: outcome.browser, accepted: outcome.accepted });
++          const acknowledged = await this.send(6, { request: outcome.request, browser: outcome.browser, accepted: outcome.accepted });
 +          // Only an acknowledged background adoption retires this mapping.
 +          // A locally closed draft still needs it for the explicit Close command.
 +          if (command.kind === 6 && outcome.accepted && acknowledged.mappings < command.mappings)
 +            this.consumer.mappings.delete(command.draft);
-+          this.publishRows?.(true);
++          await this.publishRows?.(true);
 +          if (!outcome.accepted) {
 +            this.again = false;
 +            if (command.kind !== 4 && command.kind !== 5 && command.kind !== 6) this.disconnect();
@@ -11608,12 +11656,12 @@ index 00000000000..9cc2c6236ee
 +// Explicit integration entry; normal startup does not call this until restore
 +// and same-control presentation reconciliation are installed. The trusted caller
 +// supplies the context token only after resolving the profile/privacy binding.
-+export function connectFirefoxStartup(window, context, generation) {
++export async function connectFirefoxStartup(window, context, generation) {
 +  if (!id(context) || !id(generation)) throw new TypeError("Invalid startup binding");
 +  const pane = window.gWinUIPane;
 +  if (!pane || pane.startupConnection) throw new Error("Startup connection already active or unavailable");
-+  const transport = message => JSON.parse(window.windowUtils.transferWinUIStartup(JSON.stringify(message)));
-+  const prepared = transport({ version: 1, operation: 1, context });
++  const transport = message => transferStartup(window, message);
++  const prepared = await transport({ version: 1, operation: 1, context });
 +  const identity = { context, session: prepared.session, generation };
 +  let connection;
 +  try {
@@ -11623,8 +11671,6 @@ index 00000000000..9cc2c6236ee
 +    connection.onDisconnect = () => {
 +      if (pane.startupConnection === connection) pane.startupConnection = null;
 +    };
-+    pane.startupConnection = connection;
-+    transport({ version: 1, operation: 2, ...identity });
 +    const publisher = new WinUIStartupRowsPublisher(identity,
 +      (operation, fields) => connection.send(operation, fields), () => {
 +        if (!consumer.current()) throw new Error("Startup browser context lost");
@@ -11636,68 +11682,88 @@ index 00000000000..9cc2c6236ee
 +        const selected = String(pane.tabIds.get(window.gBrowser.selectedTab) || 0);
 +        return ids.length && !ids.includes(selected) ? null : { ids, selected: ids.length ? selected : "0" };
 +      });
-+    connection.publishRows = force => {
-+      if (connection.stopped) return;
-+      try {
-+        connection.rows = publisher.publish(force);
-+        if (connection.presentationActive) {
-+          let state = connection.send(0);
-+          if ((state.editorBrowser || "0") === "0" && !state.kind && !state.lost) {
-+            state = connection.send(14, { browser: String(pane.tabIds.get(window.gBrowser.selectedTab) || 0) });
-+            connection.rows = publisher.publish(true);
-+          }
-+          const selected = connection.rows.find(row => row[3]);
-+          if (!connection.rows.some(row => row[1] !== "0") && (state.editorBrowser || "0") === "0" &&
-+              selected && !state.kind && !state.mappings && !state.lost) {
-+            state = connection.send(13, { browser: selected[2] });
-+          }
-+          if (state.adoptionReady && !state.kind) {
-+            pane.addressPublication = null;
-+            pane.syncAddress();
-+            state = connection.send(0);
-+          }
-+          const target = state.editorBrowser || "0";
-+          connection.editorReady = target !== "0";
-+          if (target !== connection.editorTarget) {
-+            connection.editorTarget = target;
-+            pane.addressPublication = null;
-+            if (connection.editorReady) pane.syncAddress();
-+          }
-+          if (connection.adoptDrafts && connection.editorReady && !state.kind && !state.mappings &&
-+              !connection.rows.some(row => row[1] !== "0") && connection.send(18).normal) {
-+            connection.presentationActive = false;
-+            connection.stopped = true;
-+            consumer.disconnect();
-+            pane.startupConnection = null;
-+            pane.structuralDirty = true;
-+            pane.syncTabs();
-+            pane.publish(true);
-+            pane.addressPublication = null;
-+            pane.syncAddress();
-+          }
-+        }
++    const publishOnce = async force => {
++      connection.rows = await publisher.publish(force);
++      if (!connection.presentationActive || connection.stopped) return;
++      let state = await connection.send(0);
++      if ((state.editorBrowser || "0") === "0" && !state.kind && !state.lost) {
++        state = await connection.send(14, { browser: String(pane.tabIds.get(window.gBrowser.selectedTab) || 0) });
++        connection.rows = await publisher.publish(true);
 +      }
-+      catch (error) { connection.rowFailure = String(error); connection.disconnect(); }
++      const selected = connection.rows.find(row => row[3]);
++      if (!connection.rows.some(row => row[1] !== "0") && (state.editorBrowser || "0") === "0" &&
++          selected && !state.kind && !state.mappings && !state.lost) {
++        state = await connection.send(13, { browser: selected[2] });
++      }
++      if (state.adoptionReady && !state.kind) {
++        pane.addressPublication = null;
++        pane.syncAddress();
++        state = await connection.send(0);
++      }
++      const target = state.editorBrowser || "0";
++      connection.editorReady = target !== "0";
++      if (target !== connection.editorTarget) {
++        connection.editorTarget = target;
++        pane.addressPublication = null;
++        if (connection.editorReady) pane.syncAddress();
++      }
++      if (connection.adoptDrafts && connection.editorReady && !state.kind && !state.mappings &&
++          !connection.rows.some(row => row[1] !== "0") && (await connection.send(18)).normal) {
++        connection.presentationActive = false;
++        connection.stopped = true;
++        consumer.disconnect();
++        pane.startupConnection = null;
++        pane.structuralDirty = true;
++        pane.syncTabs();
++        pane.publish(true);
++        pane.addressPublication = null;
++        pane.syncAddress();
++      }
 +    };
-+    connection.publishRows();
-+    connection.enableNormalTabs = () => {
-+      connection.send(17);
++    // One publication at a time, in order: a request asked for meanwhile runs once after it.
++    connection.publishRows = force => {
++      if (connection.stopped) return Promise.resolve();
++      connection.rowsForce ||= !!force;
++      // Until binding (operation 2) is answered a publication is only recorded: the first one
++      // after it carries every request, so rows never precede the binding.
++      if (!connection.bound) return Promise.resolve();
++      if (connection.rowsRunning) { connection.rowsAgain = true; return connection.rowsRunning; }
++      connection.rowsRunning = (async () => {
++        try {
++          do {
++            connection.rowsAgain = false;
++            const forced = connection.rowsForce;
++            connection.rowsForce = false;
++            await publishOnce(forced);
++          } while (connection.rowsAgain && !connection.stopped);
++        } catch (error) { connection.rowFailure = String(error); connection.disconnect(); }
++        finally { connection.rowsRunning = null; }
++      })();
++      return connection.rowsRunning;
++    };
++    // The pane can publish rows from here on, while the binding is answered.
++    pane.startupConnection = connection;
++    await transport({ version: 1, operation: 2, ...identity });
++    connection.bound = true;
++    await connection.publishRows();
++    connection.enableNormalTabs = async () => {
++      await connection.send(17);
 +      connection.adoptDrafts = true;
-+      connection.wake();
 +    };
-+    connection.attachPresenter = () => {
++    connection.attachPresenter = async () => {
 +      if (connection.stopped || !consumer.current()) throw new Error("Startup connection unavailable");
 +      pane.syncTabs();
-+      connection.send(12);
++      await connection.send(12);
 +      connection.presentationActive = true;
-+      connection.publishRows(true);
++      await connection.publishRows(true);
 +    };
 +    window.addEventListener("unload", () => connection.disconnect(), { once: true });
-+    connection.wake();
++    // The caller starts the connection after its own setup, so the first command request (operation 8)
++    // follows presenter attachment and normal-tab enablement, as it did when they were synchronous.
 +    return connection;
 +  } catch (error) {
 +    if (pane.startupConnection === connection) pane.startupConnection = null;
-+    try { transport({ version: 1, operation: 7, ...identity }); } catch {}
++    transport({ version: 1, operation: 7, ...identity }).catch(() => {});
 +    throw error;
 +  }
 +}
@@ -32721,10 +32787,10 @@ index 00000000000..4fbeda2397a
 +}, { once: true });
 diff --git a/widget/windows/WinUIPrototype.cpp b/widget/windows/WinUIPrototype.cpp
 new file mode 100644
-index 00000000000..2391631e7ea
+index 00000000000..da413bc69d0
 --- /dev/null
 +++ b/widget/windows/WinUIPrototype.cpp
-@@ -0,0 +1,940 @@
+@@ -0,0 +1,961 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -32816,6 +32882,26 @@ index 00000000000..2391631e7ea
 +static bool sPaneAttempted = false;
 +static std::atomic<bool> sPaneStopped{false};
 +
++// A startup transfer's reply, as "<token>:<reply>" or "<token>!<hresult>" when it failed, for
++// WinUIStartupTransfer.sys.mjs. Dispatched so script never runs inside the pane's call.
++static void WINAPI StartupReply(void*, uint64_t aRequest, HRESULT aResult, const wchar_t* aReply) {
++  nsAutoString data;
++  data.AppendInt(aRequest);
++  if (SUCCEEDED(aResult) && aReply) {
++    data.Append(u':');
++    data.Append(reinterpret_cast<const char16_t*>(aReply));
++  } else {
++    data.Append(u'!');
++    data.AppendInt(static_cast<uint32_t>(aResult), 16);
++  }
++  NS_DispatchToMainThread(NS_NewRunnableFunction(
++      "mozilla::widget::WinUIStartupReply", [data = std::move(data)]() {
++        if (sPaneStopped) return;
++        if (nsCOMPtr<nsIObserverService> observers = services::GetObserverService())
++          observers->NotifyObservers(nullptr, "winui-startup-reply", data.get());
++      }));
++}
++
 +static bool LoadPane() {
 +  if (sPaneAttempted) return sPaneApi.updateTabStrip != nullptr;
 +  sPaneAttempted = true;
@@ -32847,12 +32933,13 @@ index 00000000000..2391631e7ea
 +      !api.destroy || !api.translate || !api.shutdown || !api.clip || !api.syncTabs || !api.syncAddress || !api.syncTabMenu || !api.updateTabStrip ||
 +      !api.setNotifySink || !api.drainRequests || !api.completeRequests || !api.applyTabDelta ||
 +      !api.updateAddress || !api.focusAddress || !api.measureChromeLayout || !api.startupTransfer ||
-+      !api.createWindowHost || !api.destroyWindowHost || !api.requestIndependentWindow || !api.showStartupSurface || !api.dismissStartupSurface || !api.startIndependentHost || !api.bindIndependentEndpoint || !api.cancelIndependentClose || !api.setIndependentAccessibility || !api.publishIndependentInput || !api.drainIndependentInput || !api.commitIndependentInput || !api.publishIndependentGeometry) {
++      !api.createWindowHost || !api.destroyWindowHost || !api.requestIndependentWindow || !api.showStartupSurface || !api.dismissStartupSurface || !api.startIndependentHost || !api.bindIndependentEndpoint || !api.cancelIndependentClose || !api.setIndependentAccessibility || !api.publishIndependentInput || !api.drainIndependentInput || !api.commitIndependentInput || !api.publishIndependentGeometry || !api.setStartupSink) {
 +    MOZ_LOG(sWinUIPrototypeLog, LogLevel::Warning,
 +            ("pane=incompatible hr=0x%08lx", hr));
 +    return false;
 +  }
 +  sPaneApi = api;
++  sPaneApi.setStartupSink(StartupReply, nullptr);
 +  return true;
 +}
 +
@@ -34469,10 +34556,10 @@ index 00000000000..cd1051c5061
 +}
 diff --git a/widget/windows/WinUIPaneApi.h b/widget/windows/WinUIPaneApi.h
 new file mode 100644
-index 00000000000..1103cf46bf3
+index 00000000000..ecd80b5f249
 --- /dev/null
 +++ b/widget/windows/WinUIPaneApi.h
-@@ -0,0 +1,250 @@
+@@ -0,0 +1,257 @@
 +#pragma once
 +struct IUnknown;
 +#include <windows.h>
@@ -34506,7 +34593,7 @@ index 00000000000..1103cf46bf3
 +// v39 adds its page cursor and touch registration, and pen messages to the endpoint.
 +// v40 retires the native host on Gecko's thread (attach, detach, adopt) and adds window-state
 +// requests from Gecko's hidden proxy window to the shell.
-+#define WINUI_PANE_ABI_VERSION 40u
++#define WINUI_PANE_ABI_VERSION 41u
 +
 +// Scalar key transport, translated exactly once by the Gecko endpoint. The endpoint is nsWindow's
 +// own hidden window (the proxy), which stands for the shell on Gecko's thread.
@@ -34558,6 +34645,9 @@ index 00000000000..1103cf46bf3
 +// schedules a fresh wakeup, rather than waiting forever for one that will never
 +// arrive. Returning FALSE is not an error the host must otherwise handle.
 +using WinUIPaneNotifyFn = BOOL (WINAPI*)(void* context);
++// v41: a startup transfer's answer, on Gecko's main thread: S_OK and the reply, or a failure and
++// null. The reply is borrowed for the call.
++using WinUIPaneStartupReplyFn = void (WINAPI*)(void* context, uint64_t request, HRESULT result, const wchar_t* reply);
 +
 +struct WinUIChromeLayout {
 +    BOOL fits;
@@ -34704,6 +34794,8 @@ index 00000000000..1103cf46bf3
 +    // Operation 11 publishes bounded browser-row identity snapshots.
 +    // Decimal u64 identities in JSON; borrowed buffers only for this call.
 +    // Operations 17/18 enable exact-state draft adoption and finish the retained presenter.
++    // v41: never waits. The output receives a decimal request token at once; the reply goes to
++    // the startup sink with that token.
 +    HRESULT (WINAPI* startupTransfer)(HWND, const wchar_t*, wchar_t*, uint32_t);
 +    // v38: copied before return; never waits unless the bounded queue refuses it.
 +    HRESULT (WINAPI* setIndependentTitle)(HWND, const wchar_t*);
@@ -34713,6 +34805,8 @@ index 00000000000..1103cf46bf3
 +    // v40: copied and applied to the shell in order with other posted calls, never waited on unless
 +    // the bounded queue refuses it. The shell decrements pending once applied, then reports its state.
 +    HRESULT (WINAPI* requestIndependentWindow)(HWND, const WinUIPaneWindowRequest*);
++    // v41: where startup transfer replies go; null clears it.
++    HRESULT (WINAPI* setStartupSink)(WinUIPaneStartupReplyFn, void*);
 +};
 +// Pen data can only be read on the thread that owns the window, so the endpoint gets a copy.
 +// Sent as WM_POINTER*+WINUI_PANE_ENDPOINT_KEY_OFFSET with this as wParam and the original lParam.

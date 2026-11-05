@@ -387,7 +387,14 @@ inline void ShellApply(const ShellFrameView& v) {
         return;
     }
     uintptr_t handle{};
-    if (shell_link_handle(shell.link,v.window,&handle)!=SHELL_STATUS_OK) return;
+    if (shell_link_handle(shell.link,v.window,&handle)!=SHELL_STATUS_OK) {
+        // A startup transfer is always answered, or Gecko's startup would wait for it forever.
+        if (v.channel==SHELL_FRAME_STARTUP) {
+            const HRESULT refused=E_INVALIDARG;
+            PaneLink::ShellSendSerial(v.window,SHELL_FRAME_STARTUP,0,v.revision,&refused,sizeof(refused));
+        }
+        return;
+    }
     const auto hwnd=reinterpret_cast<HWND>(handle);
     const auto text=[&]{return PaneLink::Text(v.payload,v.length);};
     switch (v.channel) {
@@ -440,6 +447,17 @@ inline void ShellApply(const ShellFrameView& v) {
             } else if (v.kind==1) SetTitle(hwnd,text().c_str());
             break;
         case SHELL_FRAME_REQUESTS: CompleteRequests(hwnd,text().c_str()); break;
+        case SHELL_FRAME_STARTUP: {
+            static thread_local std::vector<wchar_t> reply(262144);
+            reply[0]=0;
+            const HRESULT result=StartupTransfer(hwnd,text().c_str(),reply.data(),uint32_t(reply.size()));
+            const size_t units=SUCCEEDED(result) ? wcsnlen(reply.data(),reply.size()) : 0;
+            std::vector<uint8_t> payload(sizeof(HRESULT)+units*sizeof(wchar_t));
+            memcpy(payload.data(),&result,sizeof(HRESULT));
+            if (units) memcpy(payload.data()+sizeof(HRESULT),reply.data(),units*sizeof(wchar_t));
+            PaneLink::ShellSend(hwnd,SHELL_FRAME_STARTUP,0,v.revision,payload.data(),payload.size());
+            break;
+        }
         case SHELL_FRAME_CLOSE:
             Resolve(hwnd,PaneLink::Read<uint64_t>(v.payload),PaneLink::Read<uint64_t>(v.payload+8));
             break;
@@ -476,6 +494,37 @@ inline HRESULT WINAPI PostBind(HWND hwnd, uintptr_t identity, HWND endpoint) noe
     PaneLink::RememberEndpoint(hwnd,endpoint);
     return PaneLink::Send(hwnd,SHELL_FRAME_LIFETIME,SHELL_FRAME_LIFETIME_BIND,0,payload,sizeof(payload));
 }
+// Answers with a request token at once; the reply reaches Gecko's startup sink later.
+inline HRESULT WINAPI PostStartup(HWND hwnd, const wchar_t* input, wchar_t* output, uint32_t capacity) noexcept {
+    if (State().owner==GetCurrentThreadId()) return StartupTransfer(hwnd,input,output,capacity);
+    if (!output || capacity<21) return E_INVALIDARG;
+    output[0]=0;
+    if (!input) return E_POINTER;
+    const size_t units=wcsnlen(input,131073);
+    if (units>131072) return E_INVALIDARG;
+    if (!PaneLink::EnsureEngine()) return E_OUTOFMEMORY;
+    const auto request=PaneLink::NextStartup();
+    const auto result=PaneLink::Send(hwnd,SHELL_FRAME_STARTUP,0,request,input,units*sizeof(wchar_t));
+    if (FAILED(result)) return result;
+    swprintf_s(output,capacity,L"%llu",static_cast<unsigned long long>(request));
+    return S_OK;
+}
+// Without the independent host the transfer runs at once on Gecko's thread, and its reply still
+// arrives through the sink on a later turn, so both lanes behave the same to Gecko.
+inline HRESULT WINAPI DirectStartup(HWND hwnd, const wchar_t* input, wchar_t* output, uint32_t capacity) noexcept {
+    if (!output || capacity<21) return E_INVALIDARG;
+    output[0]=0;
+    if (!PaneLink::EnsureEngine()) return E_OUTOFMEMORY;
+    try {
+        std::vector<wchar_t> reply(262144);
+        reply[0]=0;
+        const HRESULT result=StartupTransfer(hwnd,input,reply.data(),uint32_t(reply.size()));
+        const auto request=PaneLink::NextStartup();
+        PaneLink::PostLocalReply(request,result,SUCCEEDED(result) ? std::wstring(reply.data()) : std::wstring());
+        swprintf_s(output,capacity,L"%llu",static_cast<unsigned long long>(request));
+        return S_OK;
+    } catch (...) { return E_OUTOFMEMORY; }
+}
 inline HRESULT WINAPI DestroyHostRetired(HWND hwnd) noexcept {
     const auto result=NativeWindowHost::Destroy(hwnd);
     PaneLink::ShellRetire(hwnd);
@@ -501,7 +550,7 @@ inline void Route(WinUIPaneApi& api) {
     api.setIndependentCursor=PostPageCursor; api.registerIndependentTouch=PostPageTouch;
     ROUTE(publishIndependentGeometry,PageGeometry); ROUTE(publishIndependentInput,PagePublish); ROUTE(drainIndependentInput,PageDrain);
     ROUTE(commitIndependentInput,PageCommit);
-    ROUTE(startupTransfer,StartupTransfer);
+    api.startupTransfer=PostStartup;
 #undef ROUTE
 }
 }
