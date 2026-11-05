@@ -32,6 +32,10 @@ pub const SHELL_FRAME_LIFETIME_DESTROY: u16 = 1;
 pub const SHELL_FRAME_LIFETIME_WAKEUP_ON: u16 = 2;
 pub const SHELL_FRAME_LIFETIME_WAKEUP_OFF: u16 = 3;
 pub const SHELL_FRAME_LIFETIME_INTRODUCE: u16 = 4;
+pub const SHELL_FRAME_LIFETIME_DESTROY_HOST: u16 = 5;
+pub const SHELL_FRAME_REFUSED_STRIP: u16 = 0;
+pub const SHELL_FRAME_REFUSED_ADDRESS: u16 = 1;
+pub const SHELL_FRAME_REFUSED_BIND: u16 = 2;
 
 pub struct ShellLinkEnd {
     owner: ThreadId,
@@ -446,7 +450,10 @@ mod tests {
         assert_eq!(Channel::from_u16(11), None, "every channel is exported");
         for (number, kind) in [(SHELL_FRAME_LIFETIME_BIND, Lifetime::Bind), (SHELL_FRAME_LIFETIME_DESTROY, Lifetime::Destroy),
             (SHELL_FRAME_LIFETIME_WAKEUP_ON, Lifetime::WakeupOn), (SHELL_FRAME_LIFETIME_WAKEUP_OFF, Lifetime::WakeupOff),
-            (SHELL_FRAME_LIFETIME_INTRODUCE, Lifetime::Introduce)] { assert_eq!(number, kind as u16); }
+            (SHELL_FRAME_LIFETIME_INTRODUCE, Lifetime::Introduce), (SHELL_FRAME_LIFETIME_DESTROY_HOST, Lifetime::DestroyHost)] {
+            assert_eq!(number, kind as u16);
+        }
+        assert!(frame::rule(Channel::Lifetime, 6).is_none(), "every lifetime kind is exported");
     }
 
     #[test]

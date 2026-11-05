@@ -23,10 +23,6 @@ struct Host {
     std::atomic<DWORD> owner{};
     std::atomic<uint32_t> posted{};
     std::atomic<size_t> postedChars{};
-    // Surfaces that exist on the shell. Only the first call for a surface waits, because that
-    // one creates it and its caller acts on the result.
-    std::mutex geometryLock;
-    std::set<std::pair<HWND,int>> geometry;
     HRESULT result=E_PENDING;
     bool started{};
 };
@@ -147,53 +143,39 @@ inline HRESULT WINAPI PostTabDelta(HWND hwnd, const wchar_t* input, uint32_t* re
     if (SUCCEEDED(result)) *revision=1;
     return result;
 }
-inline bool GeometryKnown(HWND hwnd, int kind) {
-    auto& host=State();
-    std::lock_guard guard(host.geometryLock);
-    return host.geometry.count({hwnd,kind})!=0;
-}
-inline void GeometryForget(HWND hwnd, int kind) {
-    auto& host=State();
-    std::lock_guard guard(host.geometryLock);
-    host.geometry.erase({hwnd,kind});
-}
-inline void GeometryRecord(HWND hwnd, int kind) {
-    auto& host=State();
-    std::lock_guard guard(host.geometryLock);
-    host.geometry.insert({hwnd,kind});
-}
-inline void GeometryForgetWindow(HWND hwnd) {
-    auto& host=State();
-    std::lock_guard guard(host.geometryLock);
-    std::erase_if(host.geometry,[hwnd](auto const& entry){return entry.first==hwnd;});
-}
-template<auto Function, auto Reported, int Kind>
+// Geometry is latest-wins on the link, so a stalled shell gets only the newest rectangle. The first
+// frame for a surface creates it; a surface the shell could not create fails the next call here.
+template<auto Function, int Kind>
 HRESULT WINAPI PostRect(HWND hwnd, const RECT* rect, BOOL visible) noexcept {
     auto& host=State();
     if (host.owner==GetCurrentThreadId()) return Function(hwnd,rect,visible);
     if (!rect || rect->right<rect->left || rect->bottom<rect->top) return E_INVALIDARG;
-    if (!visible) { GeometryForget(hwnd,Kind); return Call<Function>(hwnd,rect,visible); }
-    if (!GeometryKnown(hwnd,Kind)) {
-        const auto result=Call<Function>(hwnd,rect,visible);
-        if (SUCCEEDED(result)) GeometryRecord(hwnd,Kind);
-        return result;
-    }
-    // Latest-wins on the link: a stalled shell gets only the newest rectangle.
+    if (PaneLink::Refused(hwnd,Kind)) return E_FAIL;
     uint8_t payload[sizeof(RECT)+1];
-    memcpy(payload,rect,sizeof(RECT)); payload[sizeof(RECT)]=1;
-    return PaneLink::Send(hwnd,SHELL_FRAME_GEOMETRY,Kind==0?0:1,0,payload,sizeof(payload));
+    memcpy(payload,rect,sizeof(RECT)); payload[sizeof(RECT)]=visible ? 1 : 0;
+    return PaneLink::Send(hwnd,SHELL_FRAME_GEOMETRY,Kind,0,payload,sizeof(payload));
 }
-template<auto Function, auto Reported, int Kind>
+template<auto Function>
 HRESULT WINAPI PostClip(HWND hwnd, const RECT* rects, uint32_t count) noexcept {
     auto& host=State();
     if (host.owner==GetCurrentThreadId()) return Function(hwnd,rects,count);
-    if (!GeometryKnown(hwnd,Kind)) {
-        const auto result=Call<Function>(hwnd,rects,count);
-        if (SUCCEEDED(result)) GeometryRecord(hwnd,Kind);
-        return result;
-    }
     if (count && !rects) return E_POINTER;
+    if (PaneLink::Refused(hwnd,SHELL_FRAME_REFUSED_STRIP)) return E_FAIL;
     return PaneLink::Send(hwnd,SHELL_FRAME_GEOMETRY,2,0,rects,size_t(count)*sizeof(RECT));
+}
+// Gecko recreates the pane later if it wants one; the destruction runs after everything before it.
+inline HRESULT WINAPI PostDestroy(HWND hwnd) noexcept {
+    if (State().owner==GetCurrentThreadId()) return Destroy(hwnd);
+    PaneLink::ClearRefused(hwnd);
+    return PaneLink::Send(hwnd,SHELL_FRAME_LIFETIME,SHELL_FRAME_LIFETIME_DESTROY,0,nullptr,0);
+}
+// Gecko frees its proxy link right after: nothing the shell does later can reach it, because
+// acknowledgements for a retired window are dropped on this side.
+inline HRESULT WINAPI PostDestroyHost(HWND hwnd) noexcept {
+    if (State().owner==GetCurrentThreadId()) return NativeWindowHost::Destroy(hwnd);
+    const auto result=PaneLink::Send(hwnd,SHELL_FRAME_LIFETIME,SHELL_FRAME_LIFETIME_DESTROY_HOST,0,nullptr,0);
+    PaneLink::Retire(hwnd);
+    return result;
 }
 // The pane's wakeup can fire inside its own drain bookkeeping, so the batch is prepared on a later
 // turn and sent to Gecko as a frame. An empty frame only wakes Gecko, as the wakeup did before.
@@ -338,6 +320,8 @@ inline HRESULT Bind(HWND hwnd, uintptr_t identity, HWND endpoint) noexcept {
 inline HRESULT Resolve(HWND hwnd, uint64_t generation, uint64_t request) noexcept {
     return NativeWindowHost::ResolveEndpointClose(hwnd,generation,request,false);
 }
+inline HRESULT WINAPI PostBind(HWND hwnd, uintptr_t identity, HWND endpoint) noexcept;
+inline HRESULT WINAPI DestroyHostRetired(HWND hwnd) noexcept;
 // An overflowing link refuses this like any ordered frame; it no longer waits.
 inline HRESULT WINAPI PostResolve(HWND hwnd, uint64_t generation, uint64_t request) noexcept {
     if (State().owner==GetCurrentThreadId()) return Resolve(hwnd,generation,request);
@@ -394,10 +378,12 @@ inline HRESULT WINAPI PostWindowRequest(HWND hwnd, const WinUIPaneWindowRequest*
 inline void ShellApply(const ShellFrameView& v) {
     auto& shell=PaneLink::Native();
     if (v.channel==SHELL_FRAME_LIFETIME && v.kind==SHELL_FRAME_LIFETIME_INTRODUCE) {
-        // Only a window of this thread can be introduced.
+        // Only a window of this thread can be introduced. Any other, such as a Gecko window opened
+        // with the native host turned off, can have no pane here, and Gecko is told so.
         const auto hwnd=reinterpret_cast<HWND>(static_cast<uintptr_t>(PaneLink::Read<uint64_t>(v.payload)));
-        if (IsWindow(hwnd) && GetWindowThreadProcessId(hwnd,nullptr)==GetCurrentThreadId())
-            shell_link_adopt(shell.link,v.window,reinterpret_cast<uintptr_t>(hwnd));
+        if (!IsWindow(hwnd) || GetWindowThreadProcessId(hwnd,nullptr)!=GetCurrentThreadId() ||
+            shell_link_adopt(shell.link,v.window,reinterpret_cast<uintptr_t>(hwnd))!=SHELL_STATUS_OK)
+            PaneLink::ShellRefuseSerial(v.window,SHELL_FRAME_REFUSED_STRIP);
         return;
     }
     uintptr_t handle{};
@@ -413,7 +399,12 @@ inline void ShellApply(const ShellFrameView& v) {
             } else {
                 const auto rect=PaneLink::Read<RECT>(v.payload);
                 const BOOL visible=v.payload[sizeof(RECT)];
-                if (v.kind==0) ReportedUpdateTabStrip(hwnd,&rect,visible); else ReportedUpdateAddress(hwnd,&rect,visible);
+                const auto result=v.kind==0 ? ReportedUpdateTabStrip(hwnd,&rect,visible) : ReportedUpdateAddress(hwnd,&rect,visible);
+                // Without a pane there is no request queue to report through, so the link says it.
+                if (FAILED(result) && !state().panes.count(hwnd)) {
+                    const uint16_t surface=v.kind==0 ? SHELL_FRAME_REFUSED_STRIP : SHELL_FRAME_REFUSED_ADDRESS;
+                    PaneLink::ShellSend(hwnd,SHELL_FRAME_WINDOW,3,0,&surface,sizeof(surface));
+                }
             }
             break;
         case SHELL_FRAME_TABS:
@@ -455,6 +446,16 @@ inline void ShellApply(const ShellFrameView& v) {
         case SHELL_FRAME_LIFETIME:
             if (v.kind==SHELL_FRAME_LIFETIME_WAKEUP_ON) SetNotifySink(hwnd,NotifyPrepared,hwnd);
             else if (v.kind==SHELL_FRAME_LIFETIME_WAKEUP_OFF) SetNotifySink(hwnd,nullptr,nullptr);
+            else if (v.kind==SHELL_FRAME_LIFETIME_DESTROY) Destroy(hwnd);
+            else if (v.kind==SHELL_FRAME_LIFETIME_DESTROY_HOST) DestroyHostRetired(hwnd);
+            else if (v.kind==SHELL_FRAME_LIFETIME_BIND) {
+                const auto identity=static_cast<uintptr_t>(PaneLink::Read<uint64_t>(v.payload));
+                const auto endpoint=reinterpret_cast<HWND>(static_cast<uintptr_t>(PaneLink::Read<uint64_t>(v.payload+8)));
+                if (FAILED(Bind(hwnd,identity,endpoint))) {
+                    const uint16_t refused=SHELL_FRAME_REFUSED_BIND;
+                    PaneLink::ShellSend(hwnd,SHELL_FRAME_WINDOW,3,0,&refused,sizeof(refused));
+                }
+            }
             break;
     }
 }
@@ -466,6 +467,15 @@ inline void ShellReceive(uint8_t* data, size_t length) noexcept {
     shell_link_free_frame(data,length);
     PaneLink::FlushShell();
 }
+// A refused bind cannot be undone in Gecko after nsWindow::Create returned, so the engine half
+// closes that browser window: a window that never bound was a window creation failure before.
+inline HRESULT WINAPI PostBind(HWND hwnd, uintptr_t identity, HWND endpoint) noexcept {
+    if (State().owner==GetCurrentThreadId()) return Bind(hwnd,identity,endpoint);
+    if (!identity || !endpoint) return E_INVALIDARG;
+    const uint64_t payload[2]{identity,reinterpret_cast<uintptr_t>(endpoint)};
+    PaneLink::RememberEndpoint(hwnd,endpoint);
+    return PaneLink::Send(hwnd,SHELL_FRAME_LIFETIME,SHELL_FRAME_LIFETIME_BIND,0,payload,sizeof(payload));
+}
 inline HRESULT WINAPI DestroyHostRetired(HWND hwnd) noexcept {
     const auto result=NativeWindowHost::Destroy(hwnd);
     PaneLink::ShellRetire(hwnd);
@@ -475,18 +485,18 @@ inline BOOL WINAPI IgnoreTranslate(MSG*) noexcept { return FALSE; }
 inline void Route(WinUIPaneApi& api) {
     if (!State().started) return;
 #define ROUTE(field, function) api.field=[](auto... args) noexcept { return Call<function>(args...); }
-    api.focus=PostFocus<Focus,0>; api.destroy=[](HWND hwnd) noexcept { GeometryForgetWindow(hwnd); return Call<Destroy>(hwnd); }; api.translate=IgnoreTranslate; api.shutdown=Stop;
-    api.syncTabs=PostSyncTabs; api.syncAddress=PostText<PostedSyncAddress,SHELL_FRAME_ADDRESS>; api.clip=PostClip<Clip,ReportedClip,1>;
-    api.syncTabMenu=PostText<PostedSyncTabMenu,SHELL_FRAME_TAB_MENU>; api.updateTabStrip=PostRect<UpdateTabStrip,ReportedUpdateTabStrip,0>;
+    api.focus=PostFocus<Focus,0>; api.destroy=PostDestroy; api.translate=IgnoreTranslate; api.shutdown=Stop;
+    api.syncTabs=PostSyncTabs; api.syncAddress=PostText<PostedSyncAddress,SHELL_FRAME_ADDRESS>; api.clip=PostClip<Clip>;
+    api.syncTabMenu=PostText<PostedSyncTabMenu,SHELL_FRAME_TAB_MENU>; api.updateTabStrip=PostRect<UpdateTabStrip,SHELL_FRAME_REFUSED_STRIP>;
     api.setNotifySink=PostSink; api.drainRequests=PostDrain;
     api.completeRequests=PostText<CompleteRequests,SHELL_FRAME_REQUESTS>; api.applyTabDelta=PostTabDelta;
-    api.updateAddress=PostRect<UpdateAddress,ReportedUpdateAddress,2>; api.focusAddress=PostFocus<FocusAddress,1>;
+    api.updateAddress=PostRect<UpdateAddress,SHELL_FRAME_REFUSED_ADDRESS>; api.focusAddress=PostFocus<FocusAddress,1>;
     // Reads only window state the OS answers from any thread, then computes.
     api.measureChromeLayout=MeasureChromeLayout;
     ROUTE(createWindowHost,Create); api.requestIndependentWindow=PostWindowRequest;
-    api.destroyWindowHost=[](HWND hwnd) noexcept { GeometryForgetWindow(hwnd); PaneLink::Retire(hwnd); return Call<DestroyHostRetired>(hwnd); };
+    api.destroyWindowHost=PostDestroyHost;
     ROUTE(showStartupSurface,ShowStartupSurface); api.dismissStartupSurface=PostDismissSurface;
-    ROUTE(bindIndependentEndpoint,Bind); api.cancelIndependentClose=PostResolve;
+    api.bindIndependentEndpoint=PostBind; api.cancelIndependentClose=PostResolve;
     api.setIndependentAccessibility=PostAccessibility; api.setIndependentTitle=PostTitle;
     api.setIndependentCursor=PostPageCursor; api.registerIndependentTouch=PostPageTouch;
     ROUTE(publishIndependentGeometry,PageGeometry); ROUTE(publishIndependentInput,PagePublish); ROUTE(drainIndependentInput,PageDrain);

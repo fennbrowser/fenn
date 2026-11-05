@@ -60,6 +60,10 @@ struct Engine {
     // Window requests the shell has not acknowledged yet, with Gecko's pending counter for each.
     std::map<uint64_t,std::pair<uint32_t,volatile LONG*>> pending;
     uint64_t nextRequest{};
+    // Surfaces the shell could not create (one bit per SHELL_FRAME_REFUSED_* surface), and the
+    // proxy each window bound, to close it if the bind is refused.
+    std::map<uint32_t,uint32_t> refused;
+    std::map<uint32_t,HWND> endpoints;
 };
 inline Engine& Gecko() { static auto* engine=new Engine; return *engine; }
 inline void Pump() noexcept;
@@ -110,6 +114,15 @@ inline void Deliver(const ShellFrameView& view, std::vector<std::pair<WinUIPaneN
         engine.pending.erase(found);
         if (const auto endpoint=reinterpret_cast<HWND>(static_cast<uintptr_t>(Read<uint64_t>(view.payload))))
             PostMessageW(endpoint,NativeWindowHost::EndpointGeometryMessage(),0,0);
+    } else if (view.channel==SHELL_FRAME_WINDOW && view.kind==3) {
+        const auto surface=Read<uint16_t>(view.payload);
+        if (surface==SHELL_FRAME_REFUSED_BIND) {
+            if (auto found=engine.endpoints.find(view.window); found!=engine.endpoints.end())
+                PostMessageW(found->second,WM_CLOSE,0,0);
+        } else {
+            engine.refused[view.window]|=1u<<surface;
+        }
+        if (auto found=engine.sinks.find(view.window); found!=engine.sinks.end()) wakes.push_back(found->second);
     }
 }
 inline void Pump() noexcept {
@@ -154,6 +167,12 @@ inline HRESULT Send(HWND hwnd, uint16_t channel, uint16_t kind, uint64_t revisio
     Pump();
     const auto serial=Serial(hwnd);
     if (!serial) return E_INVALIDARG;
+    // A window the shell could not give a pane has none: its publications fail here, so Gecko's
+    // own failure handling runs as it did when the first, waited call failed.
+    if (channel!=SHELL_FRAME_LIFETIME) {
+        auto refused=engine.refused.find(serial);
+        if (refused!=engine.refused.end() && (refused->second&(1u<<SHELL_FRAME_REFUSED_STRIP))) return E_FAIL;
+    }
     ShellLinkSend outcome{};
     if (shell_link_send(engine.link,serial,channel,kind,revision,static_cast<const uint8_t*>(payload),length,&outcome)!=SHELL_STATUS_OK)
         return E_UNEXPECTED;
@@ -213,6 +232,26 @@ inline HRESULT Drain(HWND hwnd, wchar_t* output, uint32_t capacity) noexcept {
     engine.mailbox.erase(found);
     return S_OK;
 }
+inline uint32_t KnownSerial(HWND hwnd) noexcept {
+    auto& engine=Gecko();
+    uint32_t serial{};
+    if (!engine.link || shell_link_serial(engine.link,reinterpret_cast<uintptr_t>(hwnd),false,&serial)!=SHELL_STATUS_OK) return 0;
+    return serial;
+}
+inline bool Refused(HWND hwnd, uint16_t surface) noexcept {
+    Pump();
+    const auto serial=KnownSerial(hwnd);
+    auto& refused=Gecko().refused;
+    auto found=serial ? refused.find(serial) : refused.end();
+    return found!=refused.end() && (found->second&(1u<<surface));
+}
+inline void ClearRefused(HWND hwnd) noexcept {
+    if (const auto serial=KnownSerial(hwnd)) Gecko().refused.erase(serial);
+}
+inline void RememberEndpoint(HWND hwnd, HWND endpoint) noexcept {
+    if (!EnsureEngine()) return;
+    if (const auto serial=Serial(hwnd)) Gecko().endpoints[serial]=endpoint;
+}
 // The window is gone on Gecko's side: nothing more is sent for it or delivered to it.
 inline void Retire(HWND hwnd) noexcept {
     auto& engine=Gecko();
@@ -221,6 +260,8 @@ inline void Retire(HWND hwnd) noexcept {
     if (shell_link_serial(engine.link,reinterpret_cast<uintptr_t>(hwnd),false,&serial)!=SHELL_STATUS_OK) return;
     engine.sinks.erase(serial);
     engine.mailbox.erase(serial);
+    engine.refused.erase(serial);
+    engine.endpoints.erase(serial);
     std::erase_if(engine.pending,[serial](auto const& entry){return entry.second.first==serial;});
     shell_link_retire(engine.link,serial);
 }
@@ -248,6 +289,14 @@ inline HRESULT ShellSend(HWND hwnd, uint16_t channel, uint16_t kind, uint64_t re
         return E_UNEXPECTED;
     FlushShell();
     return Result(outcome);
+}
+// For a window this side never adopted, so it has no handle here.
+inline void ShellRefuseSerial(uint32_t serial, uint16_t surface) noexcept {
+    auto& shell=Native();
+    if (!shell.link) return;
+    ShellLinkSend outcome{};
+    shell_link_send(shell.link,serial,SHELL_FRAME_WINDOW,3,0,reinterpret_cast<const uint8_t*>(&surface),sizeof(surface),&outcome);
+    FlushShell();
 }
 // A destroyed window: frames still on their way for it are dropped, and its handle can be reused.
 inline void ShellRetire(HWND hwnd) noexcept {

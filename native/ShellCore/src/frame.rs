@@ -50,7 +50,8 @@ pub enum Channel {
     Focus = 6,
     /// Kind 0 window request ([`window_request`]), 1 title text, 2 applied
     /// acknowledgement (shell to engine; payload the endpoint handle to report
-    /// to, or 0).
+    /// to, or 0), 3 refusal (shell to engine; payload u16: 0 strip surface,
+    /// 1 address surface, 2 bind).
     Window = 7,
     /// Engine to shell: completed outcomes. Shell to engine: request batches.
     Requests = 8,
@@ -70,6 +71,8 @@ pub enum Lifetime {
     /// The first frame for a window: the shell's own handle for it, which the
     /// shell checks is one of its windows. In one process this is the HWND.
     Introduce = 4,
+    /// The window itself goes, after everything queued before it.
+    DestroyHost = 5,
 }
 
 impl Channel {
@@ -94,6 +97,7 @@ pub fn rule(channel: Channel, kind: u16) -> Option<(Class, usize)> {
         (Lifetime, 0) => (Class::Ordered, 16),
         (Lifetime, 1..=3) => (Class::Ordered, 0),
         (Lifetime, 4) => (Class::Ordered, 8),
+        (Lifetime, 5) => (Class::Ordered, 0),
         // Already latest-wins before M5b: the only coalesced channel so far.
         (Geometry, 0 | 1) => (Class::Snapshot, rects::BYTES + 1),
         (Geometry, 2) => (Class::Snapshot, rects::BYTES * rects::MAX_CLIP),
@@ -104,6 +108,7 @@ pub fn rule(channel: Channel, kind: u16) -> Option<(Class, usize)> {
         (Window, 0) => (Class::Ordered, window_request::BYTES),
         (Window, 1) => (Class::Ordered, 32768 * 2),
         (Window, 2) => (Class::Ordered, 8),
+        (Window, 3) => (Class::Ordered, 2),
         (Requests, 0) => (Class::Ordered, TEXT),
         (Startup, 0) => (Class::Ordered, TEXT),
         (Close, 0) => (Class::Ordered, 16),
@@ -183,6 +188,7 @@ pub(crate) fn valid_payload(channel: Channel, kind: u16, p: &[u8]) -> bool {
         (Lifetime, 0) | (Close, 0) => p.len() == 16,
         (Lifetime, 4) => p.len() == 8 && p != [0; 8],
         (Window, 2) => p.len() == 8,
+        (Window, 3) => p.len() == 2 && u16::from_le_bytes([p[0], p[1]]) <= 2,
         (Lifetime, _) => p.is_empty(),
         (Geometry, 0 | 1) => p.len() == rects::BYTES + 1 && p[rects::BYTES] <= 1 &&
             rects::decode(&p[..rects::BYTES]).is_some(),
@@ -357,6 +363,9 @@ mod tests {
         assert!(decode(&frame(Channel::Lifetime, 1, &[0])).is_err());
         assert!(decode(&frame(Channel::Lifetime, 4, &[0; 8])).is_err(), "no null handle");
         assert!(decode(&frame(Channel::Lifetime, 4, &[1, 0, 0, 0, 0, 0, 0, 0])).is_ok());
+        assert!(decode(&frame(Channel::Lifetime, 5, &[])).is_ok());
+        assert!(decode(&frame(Channel::Window, 3, &[2, 0])).is_ok());
+        assert!(decode(&frame(Channel::Window, 3, &[3, 0])).is_err(), "unknown refusal");
     }
 
     #[test]
