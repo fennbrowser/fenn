@@ -2915,9 +2915,11 @@ extern "C" __declspec(dllexport) HRESULT WINAPI WinUIPaneTestPostedLifetime() no
         ULONG STDMETHODCALLTYPE AddRef() noexcept override {return 2;}
         ULONG STDMETHODCALLTYPE Release() noexcept override {return 1;}
     } static provider;
-    // A framed call needs a window the shell knows; generation 0 resolves no close.
-    for(const auto result:{IndependentHost::PostResolve(IndependentHost::State().shell,0,0),IndependentHost::PostAccessibility(nullptr,&provider),
-        IndependentHost::PostDismissSurface(nullptr)})if(FAILED(result))return result;
+    // A framed call needs a window the shell knows; generation 0 resolves no close. Dismissal posts
+    // only for a shell window, whose startup surface is long gone here.
+    const HWND shell=IndependentHost::State().shell;
+    for(const auto result:{IndependentHost::PostResolve(shell,0,0),IndependentHost::PostAccessibility(nullptr,&provider),
+        IndependentHost::PostDismissSurface(shell)})if(FAILED(result))return result;
     return S_OK;
 }
 // Overfills the posted queue. Answers how many posts were refused; PostedChars shows the accounting afterward.

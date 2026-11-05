@@ -341,7 +341,9 @@ inline HRESULT WINAPI PostAccessibility(HWND hwnd, IUnknown* provider) noexcept 
 // once. The close still runs: construction may not have set the property yet.
 inline HRESULT WINAPI PostDismissSurface(HWND hwnd) noexcept {
     if (State().owner==GetCurrentThreadId()) return DismissStartupSurface(hwnd);
-    const bool retired=hwnd && RemovePropW(hwnd,NativeStartupSurface::Property);
+    // Every Gecko window asks when first shown; only a shell window can hold a startup surface.
+    if (!hwnd || GetWindowThreadProcessId(hwnd,nullptr)!=State().owner) return S_FALSE;
+    const bool retired=RemovePropW(hwnd,NativeStartupSurface::Property);
     auto result=PostJob(0,[hwnd]{return DismissStartupSurface(hwnd);});
     // The property is gone, so the close has to happen: nothing else would take the surface down.
     if (FAILED(result)) result=Call<DismissStartupSurface>(hwnd);

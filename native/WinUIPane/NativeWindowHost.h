@@ -351,9 +351,14 @@ inline LRESULT CALLBACK Base(HWND hwnd, UINT message, WPARAM w, LPARAM l) {
     // window never receives WM_SETFOCUS to pass on to the page. Activation returns focus to the
     // page when the page had it (or nothing had yet); XAML keeps a focus it owned.
     if (message==WM_ACTIVATE && host->page && host->window) {
-        // Gecko learns of the shell window's activation only from this post: without it a later
+        // Gecko learns of the shell window's activation only from these posts: without them a later
         // window stays inactive to Firefox (Services.focus.activeWindow), and its prompts never show.
-        if (host->endpoint) PostMessageW(host->endpoint,message,w,l);
+        // nsWindow only records WM_ACTIVATE and dispatches on the focus message that follows, which
+        // the window itself no longer gets once its page child owns page focus, so the pair is sent.
+        if (host->endpoint) {
+            PostMessageW(host->endpoint,message,w,l);
+            PostMessageW(host->endpoint,LOWORD(w)==WA_INACTIVE ? WM_KILLFOCUS : WM_SETFOCUS,0,0);
+        }
         if (LOWORD(w)==WA_INACTIVE) {
             const HWND focused=GetFocus();
             host->pageFocusOnActivate=!focused || focused==host->page || focused==hwnd;
