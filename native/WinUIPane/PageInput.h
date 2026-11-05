@@ -382,7 +382,8 @@ struct Store final : ITextStoreACP, ITfContextOwnerCompositionSink, ITfTextEditS
     STDMETHODIMP OnEndComposition(ITfCompositionView* view) override {if(view!=composition.get())return E_INVALIDARG;Extent(view);if(Diagnostics())fprintf(stderr,"FennPageIME end extent=%ld,%ld lock=%lu\n",compositionStart,compositionLength,lock);FinishComposition();return S_OK;}
     STDMETHODIMP OnEndEdit(ITfContext*,TfEditCookie cookie,ITfEditRecord*) override {if(composition) {Extent(composition.get());CaptureClauses(cookie);dirty=true;}if(!lock)Flush();return S_OK;}
 };
-inline std::map<HWND,winrt::com_ptr<Store>>& Stores() {static std::map<HWND,winrt::com_ptr<Store>> stores;return stores;}
+// Per thread: each thread that owns page windows has its own stores and TSF thread manager (M5c).
+inline std::map<HWND,winrt::com_ptr<Store>>& Stores() {static thread_local std::map<HWND,winrt::com_ptr<Store>> stores;return stores;}
 inline Store* Get(HWND hwnd) {auto it=Stores().find(hwnd);return it==Stores().end() ? nullptr : it->second.get();}
 inline HRESULT WINAPI Publish(HWND hwnd,const WinUIPageInput* input) noexcept {
     try {

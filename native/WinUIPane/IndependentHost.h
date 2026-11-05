@@ -54,6 +54,9 @@ inline bool WaitDeliveringSent(HANDLE handle, HANDLE other=nullptr) noexcept {
         PeekMessageW(&message,nullptr,0,0,PM_NOREMOVE|PM_QS_SENDMESSAGE);
     }
 }
+}
+#include "InputThread.h"
+namespace IndependentHost {
 template<auto Function, class... Args>
 auto Call(Args... args) noexcept -> decltype(Function(args...)) {
     using Result=decltype(Function(args...));
@@ -173,6 +176,8 @@ inline HRESULT WINAPI PostDestroy(HWND hwnd) noexcept {
 // acknowledgements for a retired window are dropped on this side.
 inline HRESULT WINAPI PostDestroyHost(HWND hwnd) noexcept {
     if (State().owner==GetCurrentThreadId()) return NativeWindowHost::Destroy(hwnd);
+    // The page child goes first, on its own thread, so the shell never destroys another thread's child.
+    if (InputThread::Running()) InputThread::DestroyPage(hwnd);
     const auto result=PaneLink::Send(hwnd,SHELL_FRAME_LIFETIME,SHELL_FRAME_LIFETIME_DESTROY_HOST,0,nullptr,0);
     PaneLink::Retire(hwnd);
     return result;
@@ -216,6 +221,8 @@ inline HRESULT WINAPI Start(const wchar_t* profilePath, const wchar_t* initialPr
     auto& host=State();
     if (host.started) return E_NOT_VALID_STATE;
     host.started=true;
+    // Page input runs on its own thread. Without it page children are the shell's, as before M5c.
+    if (FAILED(InputThread::Start())) NativeWindowHost::FocusTrace("input-thread-failed");
     try {
         const std::wstring profile=profilePath ? profilePath : L"";
         const std::wstring presentation=initialPresentation ? initialPresentation : L"";
@@ -298,7 +305,9 @@ inline HRESULT WINAPI Stop() noexcept {
     // publications. The owner releases all WinRT objects before COM teardown.
     PostThreadMessageW(host.owner,WM_QUIT,0,0);
     WaitDeliveringSent(host.thread.native_handle());
-    host.thread.join(); return S_OK;
+    host.thread.join();
+    InputThread::Stop();
+    return S_OK;
 }
 inline HRESULT Create(DWORD ex, const wchar_t*, DWORD style, const RECT* bounds,
                       HWND parent, HINSTANCE, HWND* output) noexcept {
@@ -548,10 +557,26 @@ inline void Route(WinUIPaneApi& api) {
     api.destroyWindowHost=PostDestroyHost;
     ROUTE(showStartupSurface,ShowStartupSurface); api.dismissStartupSurface=PostDismissSurface;
     api.bindIndependentEndpoint=PostBind; api.cancelIndependentClose=PostResolve;
-    api.setIndependentAccessibility=PostAccessibility; api.setIndependentTitle=PostTitle;
-    api.setIndependentCursor=PostPageCursor; api.registerIndependentTouch=PostPageTouch;
-    ROUTE(publishIndependentGeometry,PageGeometry); ROUTE(publishIndependentInput,PagePublish); ROUTE(drainIndependentInput,PageDrain);
-    ROUTE(commitIndependentInput,PageCommit);
+    api.setIndependentTitle=PostTitle;
+    // Page input belongs to the input thread when it runs (M5c).
+    api.setIndependentAccessibility=[](HWND hwnd, IUnknown* provider) noexcept {
+        return InputThread::Running() ? InputThread::SetAccessibility(hwnd,provider) : PostAccessibility(hwnd,provider); };
+    api.setIndependentCursor=[](HWND hwnd, HCURSOR cursor, BOOL owned) noexcept {
+        return InputThread::Running() ? InputThread::SetCursor(hwnd,cursor,owned) : PostPageCursor(hwnd,cursor,owned); };
+    api.registerIndependentTouch=[](HWND hwnd) noexcept {
+        return InputThread::Running() ? InputThread::RegisterTouch(hwnd) : PostPageTouch(hwnd); };
+    api.publishIndependentGeometry=[](HWND hwnd, const WinUIPageGeometry* input) noexcept {
+        return InputThread::Running() ? InputThread::OnPage(hwnd,[input](HWND page){return NativePageInput::Geometry(page,input);}) :
+            Call<PageGeometry>(hwnd,input); };
+    api.publishIndependentInput=[](HWND hwnd, const WinUIPageInput* input) noexcept {
+        return InputThread::Running() ? InputThread::OnPage(hwnd,[input](HWND page){return NativePageInput::Publish(page,input);}) :
+            Call<PagePublish>(hwnd,input); };
+    api.drainIndependentInput=[](HWND hwnd, WinUIPageInputEvent* output, wchar_t* text, uint32_t capacity) noexcept {
+        return InputThread::Running() ? InputThread::OnPage(hwnd,[=](HWND page){return NativePageInput::Drain(page,output,text,capacity);}) :
+            Call<PageDrain>(hwnd,output,text,capacity); };
+    api.commitIndependentInput=[](HWND hwnd, BOOL cancel) noexcept {
+        return InputThread::Running() ? InputThread::OnPage(hwnd,[cancel](HWND page){return NativePageInput::Commit(page,cancel);}) :
+            Call<PageCommit>(hwnd,cancel); };
     api.startupTransfer=PostStartup;
 #undef ROUTE
 }

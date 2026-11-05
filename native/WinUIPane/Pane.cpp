@@ -2345,6 +2345,18 @@ HRESULT WINAPI Destroy(HWND hwnd) noexcept {
         return to_hresult();
     }
 }
+// A page child on the input thread reports what this thread's message filter saw while the page
+// child was its own (M5c): a press closes the shell's popups, and focus changes are observed.
+void PageReported(HWND shell, HWND page, WPARAM kind) noexcept {
+    try {
+        auto found = state().panes.find(shell);
+        if (found == state().panes.end()) return;
+        auto& pane = *found->second;
+        if (kind == 1) pane.OutsidePress(page);
+        else if (pane.address) pane.address->ScheduleFocusObservation();
+    } catch (...) {}
+}
+const bool pageReports = (NativeWindowHost::PageReported = &PageReported, true);
 BOOL WINAPI Translate(MSG* message) noexcept {
     WorkScope scope{EntryTranslate};
     if (WorkAccountingEnabled()) RecordPumpGap();
@@ -3055,8 +3067,9 @@ extern "C" __declspec(dllexport) HRESULT WINAPI WinUIPaneTestLocalStartup(void(W
 }
 // Test-only on-owner query: a miss returns immediately and lets Gecko process
 // the queued request between Marionette calls. No synchronous geometry lookup.
-static HRESULT WINAPI TestPageRange(HWND hwnd,uint32_t start,uint32_t end,int32_t* output) {
-    auto store=NativePageInput::Get(NativeWindowHost::PageWindow(hwnd));if(!store || !output || store->lock || start<store->textBase || end<store->textBase)return E_INVALIDARG;
+// On the thread that owns the page window: the input thread when it runs.
+static HRESULT TestPageRangeOn(HWND page,uint32_t start,uint32_t end,int32_t* output) {
+    auto store=NativePageInput::Get(page);if(!store || !output || store->lock || start<store->textBase || end<store->textBase)return E_INVALIDARG;
     RECT bounds{};BOOL clipped{};store->lock=TS_LF_READ;
     HRESULT result=store->GetTextExt(0,start-store->textBase,end-store->textBase,&bounds,&clipped);
     store->lock=0;
@@ -3064,7 +3077,11 @@ static HRESULT WINAPI TestPageRange(HWND hwnd,uint32_t start,uint32_t end,int32_
     output[5]=store->textBase;output[6]=store->Read().length;output[7]=store->Read().edit;
     return result;
 }
+static HRESULT WINAPI TestPageRange(HWND hwnd,uint32_t start,uint32_t end,int32_t* output) {
+    return TestPageRangeOn(NativeWindowHost::PageWindow(hwnd),start,end,output);
+}
 extern "C" __declspec(dllexport) HRESULT WINAPI WinUIPaneTestPageRange(HWND hwnd,uint32_t start,uint32_t end,int32_t* output) noexcept {
+    if (InputThread::Running()) return InputThread::OnPage(hwnd,[=](HWND page){return TestPageRangeOn(page,start,end,output);});
     return IndependentHost::Call<TestPageRange>(hwnd,start,end,output);
 }
 #include "../../tests/native/PageInputTests.h"

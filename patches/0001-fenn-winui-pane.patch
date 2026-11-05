@@ -32787,7 +32787,7 @@ index 00000000000..4fbeda2397a
 +}, { once: true });
 diff --git a/widget/windows/WinUIPrototype.cpp b/widget/windows/WinUIPrototype.cpp
 new file mode 100644
-index 00000000000..da413bc69d0
+index 00000000000..92528ac7db2
 --- /dev/null
 +++ b/widget/windows/WinUIPrototype.cpp
 @@ -0,0 +1,961 @@
@@ -33163,9 +33163,9 @@ index 00000000000..da413bc69d0
 +#ifdef ACCESSIBILITY
 +  HiddenProxy* link=ProxyOf(proxy);
 +  if (!link || link->accessibility) return;
-+  // The native page input window carries page focus, so it answers for the page.
-+  HWND page=static_cast<HWND>(GetPropW(link->shell,L"Fenn.PageWindow"));
-+  link->accessibility=new WinUIAccessibleRoot(page ? page : link->shell,proxy);
++  // The native page input window carries page focus, so it answers for the page; the root finds
++  // it when asked, since it can be created after this.
++  link->accessibility=new WinUIAccessibleRoot(link->shell,proxy);
 +  HRESULT accessibilityResult=link->accessibility->Initialize();
 +  if (SUCCEEDED(accessibilityResult))
 +    accessibilityResult=sPaneApi.setIndependentAccessibility(link->shell,static_cast<IRawElementProviderSimple*>(link->accessibility.get()));
@@ -33832,10 +33832,10 @@ index 00000000000..a8e1f9160e7
 +#endif
 diff --git a/widget/windows/WinUIAccessibleRoot.h b/widget/windows/WinUIAccessibleRoot.h
 new file mode 100644
-index 00000000000..78cf885dc4e
+index 00000000000..1142fdd4abd
 --- /dev/null
 +++ b/widget/windows/WinUIAccessibleRoot.h
-@@ -0,0 +1,155 @@
+@@ -0,0 +1,165 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -33862,8 +33862,7 @@ index 00000000000..78cf885dc4e
 +                                  public IRawElementProviderFragmentRoot {
 + public:
 +  // window is the visible shell; widget is the hidden window Gecko's accessibility tree belongs to.
-+  WinUIAccessibleRoot(HWND window, HWND widget)
-+      : mWindow(window), mWidget(widget), mOwner(GetWindowThreadProcessId(window, nullptr)) {}
++  WinUIAccessibleRoot(HWND window, HWND widget) : mShell(window), mWidget(widget) {}
 +  HRESULT Initialize() {
 +    MOZ_ASSERT(NS_IsMainThread());
 +    HRESULT hr=CoCreateFreeThreadedMarshaler(
@@ -33914,13 +33913,13 @@ index 00000000000..78cf885dc4e
 +  HRESULT STDMETHODCALLTYPE get_HostRawElementProvider(IRawElementProviderSimple** out) override {
 +    if (!out) return E_POINTER;
 +    *out=nullptr;
-+    return mUia ? UiaHostProviderFromHwnd(mWindow,out) : UIA_E_ELEMENTNOTAVAILABLE;
++    return mUia ? UiaHostProviderFromHwnd(Window(),out) : UIA_E_ELEMENTNOTAVAILABLE;
 +  }
 +
 + private:
 +  ~WinUIAccessibleRoot() { MOZ_ASSERT(!mUia); }
 +  template<class T> HRESULT Proxy(RefPtr<T>& out) {
-+    if (GetCurrentThreadId()==mOwner) {
++    if (OnWindowThread()) {
 +      MOZ_LOG(sWinUIAccessibilityLog,LogLevel::Debug,("Reject native-thread semantic query"));
 +      return UIA_E_ELEMENTNOTAVAILABLE;
 +    }
@@ -33931,9 +33930,20 @@ index 00000000000..78cf885dc4e
 +    return FAILED(hr) ? hr : base->QueryInterface(__uuidof(T),getter_AddRefs(out));
 +  }
 +  std::atomic<ULONG> mReferences{0};
-+  HWND const mWindow;
++  // The page input window answers for the page once it exists. It is created on its own thread
++  // and can appear after this root, so it is looked up on every use rather than once: a root that
++  // named the shell window would claim the shell's identity from inside it.
++  HWND Window() const {
++    HWND page=static_cast<HWND>(GetPropW(mShell,L"Fenn.PageWindow"));
++    return page && IsWindow(page) ? page : mShell;
++  }
++  // The shell's thread and the page window's thread must never wait for Gecko.
++  bool OnWindowThread() const {
++    const DWORD current=GetCurrentThreadId();
++    return current==GetWindowThreadProcessId(mShell,nullptr) || current==GetWindowThreadProcessId(Window(),nullptr);
++  }
++  HWND const mShell;
 +  HWND const mWidget;
-+  DWORD const mOwner;
 +  RefPtr<IUnknown> mMarshaler;
 +  RefPtr<IGlobalInterfaceTable> mGit;
 +  std::atomic<DWORD> mUia{0};
@@ -33948,7 +33958,7 @@ index 00000000000..78cf885dc4e
 +  HRESULT STDMETHODCALLTYPE GetPatternProvider(PATTERNID id,IUnknown** out) override {
 +    if (!out) return E_POINTER;
 +    *out=nullptr;
-+    if (GetCurrentThreadId()==mOwner) return S_OK;
++    if (OnWindowThread()) return S_OK;
 +    RefPtr<IRawElementProviderSimple> proxy; HRESULT hr=Proxy(proxy);
 +    return FAILED(hr) ? hr : proxy->GetPatternProvider(id,out);
 +  }
@@ -33956,9 +33966,9 @@ index 00000000000..78cf885dc4e
 +    if (!out) return E_POINTER;
 +    VariantInit(out);
 +    if (id==UIA_NativeWindowHandlePropertyId) {
-+      out->vt=VT_I4; out->lVal=static_cast<LONG>(reinterpret_cast<LONG_PTR>(mWindow)); return S_OK;
++      out->vt=VT_I4; out->lVal=static_cast<LONG>(reinterpret_cast<LONG_PTR>(Window())); return S_OK;
 +    }
-+    if (GetCurrentThreadId()==mOwner) return S_OK; // native HWND provider fallback
++    if (OnWindowThread()) return S_OK; // native HWND provider fallback
 +    RefPtr<IRawElementProviderSimple> proxy; HRESULT hr=Proxy(proxy);
 +    return FAILED(hr) ? hr : proxy->GetPropertyValue(id,out);
 +  }
@@ -33972,7 +33982,7 @@ index 00000000000..78cf885dc4e
 +  HRESULT STDMETHODCALLTYPE get_BoundingRectangle(UiaRect* out) override {
 +    if (!out) return E_POINTER;
 +    *out={}; RECT bounds{};
-+    if (!mUia || !GetWindowRect(mWindow,&bounds)) return UIA_E_ELEMENTNOTAVAILABLE;
++    if (!mUia || !GetWindowRect(Window(),&bounds)) return UIA_E_ELEMENTNOTAVAILABLE;
 +    *out={double(bounds.left),double(bounds.top),double(bounds.right-bounds.left),double(bounds.bottom-bounds.top)};
 +    return S_OK;
 +  }
