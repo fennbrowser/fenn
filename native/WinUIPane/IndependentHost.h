@@ -5,7 +5,9 @@
 #include <vector>
 #include <thread>
 #include <tuple>
+#include <set>
 #include "StartupPlacement.h"
+#include "shell_core.h"
 
 // Development-only owning-thread dispatcher. Gecko can wait for bounded pane
 // calls; this thread never waits for Gecko or runs its window procedure.
@@ -14,9 +16,6 @@ inline constexpr UINT InvokeMessage=WM_APP+901;
 inline constexpr uint32_t MaxPosted=1024;
 inline constexpr size_t MaxPostedChars=16*1024*1024;
 struct Work { void (*run)(Work*); HANDLE complete; };
-// The newest geometry for one window and call. Only the first call for a surface
-// waits, because that one creates it and its caller acts on the result.
-struct GeometrySlot { bool pending{}; RECT rect{}; std::vector<RECT> clip; };
 struct Host {
     std::thread thread;
     HANDLE ready=CreateEventW(nullptr,TRUE,FALSE,nullptr);
@@ -24,15 +23,20 @@ struct Host {
     std::atomic<DWORD> owner{};
     std::atomic<uint32_t> posted{};
     std::atomic<size_t> postedChars{};
+    // Surfaces that exist on the shell. Only the first call for a surface waits, because that
+    // one creates it and its caller acts on the result.
     std::mutex geometryLock;
-    std::map<std::pair<HWND,int>,struct GeometrySlot> geometry;
-    std::map<HWND,std::pair<WinUIPaneNotifyFn,void*>> sinks;
-    std::map<HWND,std::wstring> preparedDrains;
+    std::set<std::pair<HWND,int>> geometry;
     HRESULT result=E_PENDING;
     bool started{};
 };
 inline Host& State() { static auto host=new Host; return *host; }
+}
+#include "PaneLink.h"
+namespace IndependentHost {
+inline void ShellReceive(uint8_t* data, size_t length) noexcept;
 inline LRESULT CALLBACK Dispatch(HWND hwnd, UINT message, WPARAM w, LPARAM l) {
+    if (message==PaneLink::FrameMessage) { ShellReceive(reinterpret_cast<uint8_t*>(l),static_cast<size_t>(w)); return 0; }
     if (message==InvokeMessage) {
         auto* work=reinterpret_cast<Work*>(l);
         const auto complete=work->complete;
@@ -60,6 +64,7 @@ auto Call(Args... args) noexcept -> decltype(Function(args...)) {
     auto& host=State();
     if (host.owner==GetCurrentThreadId()) return Function(args...);
     if (!host.dispatcher) return static_cast<Result>(RO_E_CLOSED);
+    PaneLink::Flush(true);
     struct Job : Work { std::tuple<Args...> args; Result result{}; };
     Job job{}; job.args=std::make_tuple(args...);
     job.complete=CreateEventW(nullptr,TRUE,FALSE,nullptr);
@@ -81,6 +86,7 @@ template<class Apply>
 HRESULT PostJob(size_t chars, Apply apply) noexcept {
     auto& host=State();
     if (!host.dispatcher) return RO_E_CLOSED;
+    PaneLink::Flush(true);
     const auto count=host.posted.fetch_add(1);
     if (host.postedChars.fetch_add(chars)+chars>MaxPostedChars || count>=MaxPosted) {
         host.posted.fetch_sub(1); host.postedChars.fetch_sub(chars); return E_OUTOFMEMORY;
@@ -100,21 +106,17 @@ HRESULT PostJob(size_t chars, Apply apply) noexcept {
     }
     return S_OK;
 }
-template<auto Function>
-HRESULT WINAPI Post(HWND hwnd, const wchar_t* text) noexcept {
+template<auto Function, uint16_t Channel, uint16_t Kind=0>
+HRESULT WINAPI PostText(HWND hwnd, const wchar_t* text) noexcept {
     if (State().owner==GetCurrentThreadId()) return Function(hwnd,text);
-    if (!text) return E_POINTER;
-    try {
-        std::wstring copy=text;
-        const auto chars=copy.size();
-        return PostJob(chars,[hwnd,copy=std::move(copy)]{return Function(hwnd,copy.c_str());});
-    } catch (...) { return E_OUTOFMEMORY; }
+    return PaneLink::SendText(hwnd,Channel,Kind,text);
 }
 // Focus is fire and forget: a failure comes back as a refused publication.
-template<auto Function, auto Reported>
+template<auto Function, uint16_t Kind>
 HRESULT WINAPI PostFocus(HWND hwnd, BOOL flag) noexcept {
     if (State().owner==GetCurrentThreadId()) return Function(hwnd,flag);
-    return PostJob(0,[hwnd,flag]{return Reported(hwnd,flag);});
+    const uint8_t value=flag ? 1 : 0;
+    return PaneLink::Send(hwnd,SHELL_FRAME_FOCUS,Kind,0,&value,1);
 }
 // Validated here as well, so a malformed publication still fails at its caller.
 inline HRESULT WINAPI PostSyncTabs(HWND hwnd, const WinUITab* tabs, uint32_t count, uint32_t selected,
@@ -124,15 +126,13 @@ inline HRESULT WINAPI PostSyncTabs(HWND hwnd, const WinUITab* tabs, uint32_t cou
     *requested=0;
     try {
         if (!hwnd || !ValidTabPublication(tabs,count,selected,revision)) return E_INVALIDARG;
-        std::vector<std::wstring> titles;
-        std::vector<WinUITab> rows(tabs,tabs+count);
-        titles.reserve(count);
-        size_t chars=0;
-        for (uint32_t i=0;i<count;++i) { titles.emplace_back(tabs[i].title); chars+=titles.back().size(); }
-        const auto result=PostJob(chars,[hwnd,titles=std::move(titles),rows=std::move(rows),selected,revision]() mutable {
-            for (size_t i=0;i<rows.size();++i) rows[i].title=titles[i].c_str();
-            return ReportedSyncTabs(hwnd,rows.data(),uint32_t(rows.size()),selected,revision);
-        });
+        std::vector<ShellFrameTabIn> rows(count);
+        for (uint32_t i=0;i<count;++i)
+            rows[i]={tabs[i].id,tabs[i].commands,reinterpret_cast<const uint16_t*>(tabs[i].title),wcslen(tabs[i].title)};
+        uint8_t* data{}; size_t length{};
+        if (shell_frame_tabs_encode(rows.data(),rows.size(),selected,revision,&data,&length)!=SHELL_STATUS_OK) return E_INVALIDARG;
+        const auto result=PaneLink::Send(hwnd,SHELL_FRAME_TABS,0,revision,data,length);
+        shell_link_free_frame(data,length);
         if (SUCCEEDED(result)) *requested=revision;
         return result;
     } catch (...) { return E_OUTOFMEMORY; }
@@ -143,45 +143,9 @@ inline HRESULT WINAPI PostTabDelta(HWND hwnd, const wchar_t* input, uint32_t* re
     if (State().owner==GetCurrentThreadId()) return ApplyTabDelta(hwnd,input,revision);
     if (!revision) return E_POINTER;
     *revision=0;
-    const auto result=Post<PostedApplyTabDelta>(hwnd,input);
+    const auto result=PaneLink::SendText(hwnd,SHELL_FRAME_TABS,1,input);
     if (SUCCEEDED(result)) *revision=1;
     return result;
-}
-// Geometry is latest-wins, so a stalled native thread queues at most one job per
-// surface and going over a bound can never turn into a permanent fallback.
-template<auto Function, int Kind, class Prepare, class Apply>
-HRESULT PostGeometry(HWND hwnd, Prepare prepare, Apply apply) noexcept {
-    auto& host=State();
-    if (!host.dispatcher) return RO_E_CLOSED;
-    try {
-        std::unique_lock lock(host.geometryLock);
-        auto& slot=host.geometry[{hwnd,Kind}];
-        prepare(slot);
-        if (slot.pending) return S_OK;
-        slot.pending=true;
-        lock.unlock();
-        struct Job : Work { HWND hwnd; Apply apply; };
-        auto* job=new Job;
-        job->complete=nullptr; job->hwnd=hwnd; job->apply=std::move(apply);
-        job->run=[](Work* work) {
-            std::unique_ptr<Job> job(static_cast<Job*>(work));
-            GeometrySlot slot;
-            {
-                std::lock_guard guard(State().geometryLock);
-                auto found=State().geometry.find({job->hwnd,Kind});
-                if (found==State().geometry.end() || !found->second.pending) return;
-                found->second.pending=false; slot=found->second;
-            }
-            job->apply(job->hwnd,slot);
-        };
-        if (!PostMessageW(host.dispatcher,InvokeMessage,0,reinterpret_cast<LPARAM>(job))) {
-            delete job;
-            std::lock_guard guard(host.geometryLock);
-            host.geometry[{hwnd,Kind}].pending=false;
-            return RO_E_CLOSED;
-        }
-        return S_OK;
-    } catch (...) { return E_OUTOFMEMORY; }
 }
 inline bool GeometryKnown(HWND hwnd, int kind) {
     auto& host=State();
@@ -196,14 +160,12 @@ inline void GeometryForget(HWND hwnd, int kind) {
 inline void GeometryRecord(HWND hwnd, int kind) {
     auto& host=State();
     std::lock_guard guard(host.geometryLock);
-    host.geometry[{hwnd,kind}];
+    host.geometry.insert({hwnd,kind});
 }
 inline void GeometryForgetWindow(HWND hwnd) {
     auto& host=State();
     std::lock_guard guard(host.geometryLock);
-    std::erase_if(host.geometry,[hwnd](auto const& entry){return entry.first.first==hwnd;});
-    host.sinks.erase(hwnd);
-    host.preparedDrains.erase(hwnd);
+    std::erase_if(host.geometry,[hwnd](auto const& entry){return entry.first==hwnd;});
 }
 template<auto Function, auto Reported, int Kind>
 HRESULT WINAPI PostRect(HWND hwnd, const RECT* rect, BOOL visible) noexcept {
@@ -216,9 +178,10 @@ HRESULT WINAPI PostRect(HWND hwnd, const RECT* rect, BOOL visible) noexcept {
         if (SUCCEEDED(result)) GeometryRecord(hwnd,Kind);
         return result;
     }
-    const RECT copy=*rect;
-    return PostGeometry<Function,Kind>(hwnd,[copy](GeometrySlot& slot){slot.rect=copy;},
-        [](HWND target, GeometrySlot const& slot){Reported(target,&slot.rect,TRUE);});
+    // Latest-wins on the link: a stalled shell gets only the newest rectangle.
+    uint8_t payload[sizeof(RECT)+1];
+    memcpy(payload,rect,sizeof(RECT)); payload[sizeof(RECT)]=1;
+    return PaneLink::Send(hwnd,SHELL_FRAME_GEOMETRY,Kind==0?0:1,0,payload,sizeof(payload));
 }
 template<auto Function, auto Reported, int Kind>
 HRESULT WINAPI PostClip(HWND hwnd, const RECT* rects, uint32_t count) noexcept {
@@ -229,36 +192,20 @@ HRESULT WINAPI PostClip(HWND hwnd, const RECT* rects, uint32_t count) noexcept {
         if (SUCCEEDED(result)) GeometryRecord(hwnd,Kind);
         return result;
     }
-    try {
-        std::vector<RECT> copy(rects,rects+count);
-        return PostGeometry<Function,Kind>(hwnd,[copy=std::move(copy)](GeometrySlot& slot){slot.clip=copy;},
-            [](HWND target, GeometrySlot const& slot){Reported(target,slot.clip.data(),uint32_t(slot.clip.size()));});
-    } catch (...) { return E_OUTOFMEMORY; }
+    if (count && !rects) return E_POINTER;
+    return PaneLink::Send(hwnd,SHELL_FRAME_GEOMETRY,2,0,rects,size_t(count)*sizeof(RECT));
 }
-// The pane's wakeup can fire inside its own drain bookkeeping, so the batch is
-// prepared on a later turn. Gecko then reads it without waiting for this thread.
+// The pane's wakeup can fire inside its own drain bookkeeping, so the batch is prepared on a later
+// turn and sent to Gecko as a frame. An empty frame only wakes Gecko, as the wakeup did before.
 inline void PrepareAndNotify(HWND hwnd) noexcept {
-    auto& host=State();
-    std::pair<WinUIPaneNotifyFn,void*> sink{};
-    bool prepare{};
-    {
-        std::lock_guard guard(host.geometryLock);
-        auto found=host.sinks.find(hwnd);
-        if (found==host.sinks.end()) return;
-        sink=found->second;
-        prepare=!host.preparedDrains.count(hwnd);
-    }
-    if (prepare) try {
+    try {
         static thread_local std::vector<wchar_t> buffer(262144);
         buffer[0]=0;
         const auto result=PrepareDrain(hwnd,buffer.data(),uint32_t(buffer.size()));
         if (FAILED(result) && DiagnosticsEnabled()) fprintf(stderr,"WinUIPane drain failed hr=%08x\n",unsigned(result));
-        if (result==S_OK) {
-            std::lock_guard guard(host.geometryLock);
-            if (host.sinks.count(hwnd)) host.preparedDrains[hwnd]=buffer.data();
-        }
+        const size_t units=result==S_OK ? wcsnlen(buffer.data(),buffer.size()) : 0;
+        PaneLink::ShellSend(hwnd,SHELL_FRAME_REQUESTS,0,0,buffer.data(),units*sizeof(wchar_t));
     } catch (...) {}
-    sink.first(sink.second);
 }
 inline BOOL WINAPI NotifyPrepared(void* context) noexcept {
     struct Job : Work { HWND hwnd; };
@@ -273,35 +220,12 @@ inline BOOL WINAPI NotifyPrepared(void* context) noexcept {
     return TRUE;
 }
 inline HRESULT WINAPI PostDrain(HWND hwnd, wchar_t* output, uint32_t capacity) noexcept {
-    auto& host=State();
-    if (host.owner==GetCurrentThreadId()) return DrainRequests(hwnd,output,capacity);
-    if (!output || capacity<1) return E_INVALIDARG;
-    output[0]=0;
-    std::lock_guard guard(host.geometryLock);
-    auto found=host.preparedDrains.find(hwnd);
-    if (found==host.preparedDrains.end()) return S_FALSE;
-    if (found->second.size()>=capacity) return E_NOT_SUFFICIENT_BUFFER;
-    wcscpy_s(output,capacity,found->second.c_str());
-    host.preparedDrains.erase(found);
-    return S_OK;
+    if (State().owner==GetCurrentThreadId()) return DrainRequests(hwnd,output,capacity);
+    return PaneLink::Drain(hwnd,output,capacity);
 }
-// Registered again on every geometry update; only a change reaches the native thread.
 inline HRESULT WINAPI PostSink(HWND hwnd, WinUIPaneNotifyFn notify, void* context) noexcept {
-    auto& host=State();
-    if (host.owner==GetCurrentThreadId()) return SetNotifySink(hwnd,notify,context);
-    try {
-        std::lock_guard guard(host.geometryLock);
-        auto found=host.sinks.find(hwnd);
-        if (notify && found!=host.sinks.end() && found->second==std::make_pair(notify,context)) return S_OK;
-        if (notify) host.sinks[hwnd]={notify,context};
-        else host.sinks.erase(hwnd);
-    } catch (...) { return E_OUTOFMEMORY; }
-    const auto result=Call<SetNotifySink>(hwnd,notify ? NotifyPrepared : nullptr,notify ? static_cast<void*>(hwnd) : nullptr);
-    if (FAILED(result)) {
-        std::lock_guard guard(host.geometryLock);
-        host.sinks.erase(hwnd);
-    }
-    return result;
+    if (State().owner==GetCurrentThreadId()) return SetNotifySink(hwnd,notify,context);
+    return PaneLink::SetSink(hwnd,notify,context);
 }
 inline HRESULT WINAPI Start(const wchar_t* profilePath, const wchar_t* initialPresentation, HWND* output) noexcept {
     if (!output) return E_POINTER;
@@ -328,6 +252,7 @@ inline HRESULT WINAPI Start(const wchar_t* profilePath, const wchar_t* initialPr
                 check_bool(RegisterClassW(&wc));
                 host.dispatcher=CreateWindowExW(0,wc.lpszClassName,L"",0,0,0,0,0,HWND_MESSAGE,nullptr,wc.hInstance,nullptr);
                 check_bool(host.dispatcher!=nullptr);
+                PaneLink::StartShell();
                 const auto placement=NativeStartupPlacement::Read(profile);
                 HWND shell{};
                 check_hresult(NativeWindowHost::CreateStartup(0,WS_OVERLAPPEDWINDOW|WS_CLIPCHILDREN,placement.bounds,&shell));
@@ -413,11 +338,11 @@ inline HRESULT Bind(HWND hwnd, uintptr_t identity, HWND endpoint) noexcept {
 inline HRESULT Resolve(HWND hwnd, uint64_t generation, uint64_t request) noexcept {
     return NativeWindowHost::ResolveEndpointClose(hwnd,generation,request,false);
 }
-// Waits only if the queue is over its bound: a close request has to be answered.
+// An overflowing link refuses this like any ordered frame; it no longer waits.
 inline HRESULT WINAPI PostResolve(HWND hwnd, uint64_t generation, uint64_t request) noexcept {
     if (State().owner==GetCurrentThreadId()) return Resolve(hwnd,generation,request);
-    const auto result=PostJob(0,[hwnd,generation,request]{return Resolve(hwnd,generation,request);});
-    return FAILED(result) ? Call<Resolve>(hwnd,generation,request) : result;
+    const uint64_t payload[2]{generation,request};
+    return PaneLink::Send(hwnd,SHELL_FRAME_CLOSE,0,0,payload,sizeof(payload));
 }
 // Setting a provider has no caller left to fail to: without it the window only lacks the
 // root until teardown disconnects it. Clearing waits, so nothing can use a released provider.
@@ -441,10 +366,11 @@ inline HRESULT WINAPI PostDismissSurface(HWND hwnd) noexcept {
 inline HRESULT WINAPI SetTitle(HWND hwnd, const wchar_t* title) noexcept {
     return SetWindowTextW(hwnd,title) ? S_OK : HRESULT_FROM_WIN32(GetLastError());
 }
-// Waits only if the queue is over its bound or the title exceeds it: the last title has to land.
+// Longer titles are cut to the frame's bound; the window caption shows far less.
 inline HRESULT WINAPI PostTitle(HWND hwnd, const wchar_t* title) noexcept {
-    const auto result=Post<SetTitle>(hwnd,title);
-    return result==E_OUTOFMEMORY ? Call<SetTitle>(hwnd,title) : result;
+    if (State().owner==GetCurrentThreadId()) return SetTitle(hwnd,title);
+    if (!title) return E_POINTER;
+    return PaneLink::Send(hwnd,SHELL_FRAME_WINDOW,1,0,title,wcsnlen(title,32768)*sizeof(wchar_t));
 }
 // A refused cursor only leaves the previous one showing, until the next change.
 inline HRESULT WINAPI PostPageCursor(HWND hwnd, HCURSOR cursor, BOOL owned) noexcept {
@@ -458,29 +384,107 @@ inline HRESULT WINAPI PostPageTouch(HWND hwnd) noexcept {
 inline HRESULT ApplyWindowRequest(HWND hwnd, const WinUIPaneWindowRequest* request) noexcept {
     return NativeWindowHost::ApplyWindowRequest(hwnd,*request);
 }
-// Waits only if the queue is over its bound: Gecko's proxy has already changed and the shell has to follow.
+// The shell acknowledges each request once applied, which decrements Gecko's pending counter.
 inline HRESULT WINAPI PostWindowRequest(HWND hwnd, const WinUIPaneWindowRequest* request) noexcept {
     if (!request) return E_POINTER;
-    const WinUIPaneWindowRequest copy=*request;
-    if (State().owner==GetCurrentThreadId()) return NativeWindowHost::ApplyWindowRequest(hwnd,copy);
-    const auto result=PostJob(0,[hwnd,copy]{return NativeWindowHost::ApplyWindowRequest(hwnd,copy);});
-    if (result!=E_OUTOFMEMORY) return result;
-    return Call<ApplyWindowRequest>(hwnd,&copy);
+    if (State().owner==GetCurrentThreadId()) return NativeWindowHost::ApplyWindowRequest(hwnd,*request);
+    return PaneLink::SendRequest(hwnd,*request);
+}
+// Frames from Gecko, applied on the shell's thread through the same handlers the posted calls used.
+inline void ShellApply(const ShellFrameView& v) {
+    auto& shell=PaneLink::Native();
+    if (v.channel==SHELL_FRAME_LIFETIME && v.kind==SHELL_FRAME_LIFETIME_INTRODUCE) {
+        // Only a window of this thread can be introduced.
+        const auto hwnd=reinterpret_cast<HWND>(static_cast<uintptr_t>(PaneLink::Read<uint64_t>(v.payload)));
+        if (IsWindow(hwnd) && GetWindowThreadProcessId(hwnd,nullptr)==GetCurrentThreadId())
+            shell_link_adopt(shell.link,v.window,reinterpret_cast<uintptr_t>(hwnd));
+        return;
+    }
+    uintptr_t handle{};
+    if (shell_link_handle(shell.link,v.window,&handle)!=SHELL_STATUS_OK) return;
+    const auto hwnd=reinterpret_cast<HWND>(handle);
+    const auto text=[&]{return PaneLink::Text(v.payload,v.length);};
+    switch (v.channel) {
+        case SHELL_FRAME_GEOMETRY:
+            if (v.kind==2) {
+                std::vector<RECT> rects(v.length/sizeof(RECT));
+                if (!rects.empty()) memcpy(rects.data(),v.payload,rects.size()*sizeof(RECT));
+                ReportedClip(hwnd,rects.data(),uint32_t(rects.size()));
+            } else {
+                const auto rect=PaneLink::Read<RECT>(v.payload);
+                const BOOL visible=v.payload[sizeof(RECT)];
+                if (v.kind==0) ReportedUpdateTabStrip(hwnd,&rect,visible); else ReportedUpdateAddress(hwnd,&rect,visible);
+            }
+            break;
+        case SHELL_FRAME_TABS:
+            if (v.kind==1) { PostedApplyTabDelta(hwnd,text().c_str()); break; }
+            {
+                std::vector<ShellFrameTab> rows(10000);
+                size_t count{}; uint32_t selected{}, revision{};
+                if (shell_frame_tabs_decode(v.payload,v.length,rows.data(),rows.size(),&count,&selected,&revision)!=SHELL_STATUS_OK) break;
+                std::vector<std::wstring> titles; titles.reserve(count);
+                std::vector<WinUITab> tabs(count);
+                for (size_t i=0;i<count;++i) {
+                    titles.emplace_back(rows[i].title_length,L'\0');
+                    if (rows[i].title_length) memcpy(titles.back().data(),rows[i].title,rows[i].title_length*sizeof(wchar_t));
+                    tabs[i]={rows[i].id,titles.back().c_str(),rows[i].commands};
+                }
+                ReportedSyncTabs(hwnd,tabs.data(),uint32_t(count),selected,revision);
+            }
+            break;
+        case SHELL_FRAME_ADDRESS: PostedSyncAddress(hwnd,text().c_str()); break;
+        case SHELL_FRAME_TAB_MENU: PostedSyncTabMenu(hwnd,text().c_str()); break;
+        case SHELL_FRAME_FOCUS:
+            if (v.kind==0) ReportedFocus(hwnd,v.payload[0]); else ReportedFocusAddress(hwnd,v.payload[0]);
+            break;
+        case SHELL_FRAME_WINDOW:
+            if (v.kind==0) {
+                const auto r=PaneLink::Read<ShellFrameWindowRequest>(v.payload);
+                const WinUIPaneWindowRequest request{r.kind,r.flags,{r.rect[0],r.rect[1],r.rect[2],r.rect[3]},
+                    static_cast<LONG_PTR>(r.value),nullptr};
+                NativeWindowHost::ApplyWindowRequest(hwnd,request,false);
+                auto* host=NativeWindowHost::Get(hwnd);
+                const uint64_t endpoint=host ? reinterpret_cast<uintptr_t>(host->endpoint) : 0;
+                PaneLink::ShellSend(hwnd,SHELL_FRAME_WINDOW,2,v.revision,&endpoint,sizeof(endpoint));
+            } else if (v.kind==1) SetTitle(hwnd,text().c_str());
+            break;
+        case SHELL_FRAME_REQUESTS: CompleteRequests(hwnd,text().c_str()); break;
+        case SHELL_FRAME_CLOSE:
+            Resolve(hwnd,PaneLink::Read<uint64_t>(v.payload),PaneLink::Read<uint64_t>(v.payload+8));
+            break;
+        case SHELL_FRAME_LIFETIME:
+            if (v.kind==SHELL_FRAME_LIFETIME_WAKEUP_ON) SetNotifySink(hwnd,NotifyPrepared,hwnd);
+            else if (v.kind==SHELL_FRAME_LIFETIME_WAKEUP_OFF) SetNotifySink(hwnd,nullptr,nullptr);
+            break;
+    }
+}
+inline void ShellReceive(uint8_t* data, size_t length) noexcept {
+    auto& shell=PaneLink::Native();
+    ShellFrameView view{};
+    if (shell.link && shell_link_receive(shell.link,data,length,&view)==SHELL_STATUS_OK && view.delivered)
+        try { ShellApply(view); } catch (...) {}
+    shell_link_free_frame(data,length);
+    PaneLink::FlushShell();
+}
+inline HRESULT WINAPI DestroyHostRetired(HWND hwnd) noexcept {
+    const auto result=NativeWindowHost::Destroy(hwnd);
+    PaneLink::ShellRetire(hwnd);
+    return result;
 }
 inline BOOL WINAPI IgnoreTranslate(MSG*) noexcept { return FALSE; }
 inline void Route(WinUIPaneApi& api) {
     if (!State().started) return;
 #define ROUTE(field, function) api.field=[](auto... args) noexcept { return Call<function>(args...); }
-    api.focus=PostFocus<Focus,ReportedFocus>; api.destroy=[](HWND hwnd) noexcept { GeometryForgetWindow(hwnd); return Call<Destroy>(hwnd); }; api.translate=IgnoreTranslate; api.shutdown=Stop;
-    api.syncTabs=PostSyncTabs; api.syncAddress=Post<PostedSyncAddress>; api.clip=PostClip<Clip,ReportedClip,1>;
-    api.syncTabMenu=Post<PostedSyncTabMenu>; api.updateTabStrip=PostRect<UpdateTabStrip,ReportedUpdateTabStrip,0>;
+    api.focus=PostFocus<Focus,0>; api.destroy=[](HWND hwnd) noexcept { GeometryForgetWindow(hwnd); return Call<Destroy>(hwnd); }; api.translate=IgnoreTranslate; api.shutdown=Stop;
+    api.syncTabs=PostSyncTabs; api.syncAddress=PostText<PostedSyncAddress,SHELL_FRAME_ADDRESS>; api.clip=PostClip<Clip,ReportedClip,1>;
+    api.syncTabMenu=PostText<PostedSyncTabMenu,SHELL_FRAME_TAB_MENU>; api.updateTabStrip=PostRect<UpdateTabStrip,ReportedUpdateTabStrip,0>;
     api.setNotifySink=PostSink; api.drainRequests=PostDrain;
-    api.completeRequests=Post<CompleteRequests>; api.applyTabDelta=PostTabDelta;
-    api.updateAddress=PostRect<UpdateAddress,ReportedUpdateAddress,2>; api.focusAddress=PostFocus<FocusAddress,ReportedFocusAddress>;
+    api.completeRequests=PostText<CompleteRequests,SHELL_FRAME_REQUESTS>; api.applyTabDelta=PostTabDelta;
+    api.updateAddress=PostRect<UpdateAddress,ReportedUpdateAddress,2>; api.focusAddress=PostFocus<FocusAddress,1>;
     // Reads only window state the OS answers from any thread, then computes.
     api.measureChromeLayout=MeasureChromeLayout;
     ROUTE(createWindowHost,Create); api.requestIndependentWindow=PostWindowRequest;
-    api.destroyWindowHost=[](HWND hwnd) noexcept { GeometryForgetWindow(hwnd); return Call<NativeWindowHost::Destroy>(hwnd); };
+    api.destroyWindowHost=[](HWND hwnd) noexcept { GeometryForgetWindow(hwnd); PaneLink::Retire(hwnd); return Call<DestroyHostRetired>(hwnd); };
     ROUTE(showStartupSurface,ShowStartupSurface); api.dismissStartupSurface=PostDismissSurface;
     ROUTE(bindIndependentEndpoint,Bind); api.cancelIndependentClose=PostResolve;
     api.setIndependentAccessibility=PostAccessibility; api.setIndependentTitle=PostTitle;

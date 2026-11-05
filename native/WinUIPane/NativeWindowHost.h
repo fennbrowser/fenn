@@ -538,7 +538,9 @@ inline HRESULT ResolveEndpointClose(HWND hwnd, uint64_t generation, uint64_t req
 }
 // Gecko asked for this on its proxy window. Applied here, where the shell lives, so Gecko never
 // waits for this thread; the proxy follows once the shell reports its new state.
-inline HRESULT ApplyWindowRequest(HWND hwnd, const WinUIPaneWindowRequest& request) noexcept {
+// Without report, the caller tells the endpoint itself once the request counts as applied there:
+// a framed request is acknowledged on Gecko's side, which then reports (PaneLink).
+inline HRESULT ApplyWindowRequest(HWND hwnd, const WinUIPaneWindowRequest& request, bool report=true) noexcept {
     auto* host=Get(hwnd);
     HRESULT result=S_OK;
     if (!host || !Owner(hwnd)) result=E_INVALIDARG;
@@ -576,7 +578,7 @@ inline HRESULT ApplyWindowRequest(HWND hwnd, const WinUIPaneWindowRequest& reque
     }
     if (FAILED(result) && request.kind==WinUIPaneWindowIcon && request.value) DestroyIcon(reinterpret_cast<HICON>(request.value));
     if (request.pending) InterlockedDecrement(request.pending);
-    if (host && host->endpoint) PostMessageW(host->endpoint,EndpointGeometryMessage(),0,0);
+    if (report && host && host->endpoint) PostMessageW(host->endpoint,EndpointGeometryMessage(),0,0);
     return result;
 }
 inline HRESULT WINAPI Destroy(HWND hwnd) noexcept {

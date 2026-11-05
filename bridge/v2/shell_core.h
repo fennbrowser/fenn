@@ -24,7 +24,7 @@
  layout or meaning of anything in [`ffi`] changes; the native host refuses to
  use a core whose version it was not compiled against.
  */
-#define SHELL_CORE_ABI_VERSION 83
+#define SHELL_CORE_ABI_VERSION 84
 
 #define MAX_EDIT_ID 9007199254740991
 
@@ -104,6 +104,56 @@
 
 #define STARTUP_BROWSER_ROWS 4096
 
+#define MAGIC 20038
+
+#define VERSION 1
+
+#define HEADER_BYTES 40
+
+#define BYTES 16
+
+#define MAX_CLIP 64
+
+#define MAX_TITLE 32768
+
+#define MAX_BYTES ((32 * 1024) * 1024)
+
+/*
+ Channel and kind numbers for C. They mirror [`frame::Channel`] and
+ [`frame::Lifetime`]; a test keeps them equal.
+ */
+#define SHELL_FRAME_CONTROL 0
+
+#define SHELL_FRAME_LIFETIME 1
+
+#define SHELL_FRAME_GEOMETRY 2
+
+#define SHELL_FRAME_TABS 3
+
+#define SHELL_FRAME_ADDRESS 4
+
+#define SHELL_FRAME_TAB_MENU 5
+
+#define SHELL_FRAME_FOCUS 6
+
+#define SHELL_FRAME_WINDOW 7
+
+#define SHELL_FRAME_REQUESTS 8
+
+#define SHELL_FRAME_STARTUP 9
+
+#define SHELL_FRAME_CLOSE 10
+
+#define SHELL_FRAME_LIFETIME_BIND 0
+
+#define SHELL_FRAME_LIFETIME_DESTROY 1
+
+#define SHELL_FRAME_LIFETIME_WAKEUP_ON 2
+
+#define SHELL_FRAME_LIFETIME_WAKEUP_OFF 3
+
+#define SHELL_FRAME_LIFETIME_INTRODUCE 4
+
 #define SHELL_STARTUP_ROW_CAPACITY 4128
 
 /*
@@ -163,6 +213,25 @@ enum ShellStatus
 typedef enum ShellStatus ShellStatus;
 #else
 typedef uint32_t ShellStatus;
+#endif // __STDC_VERSION__ >= 202311L
+#endif // __cplusplus
+
+enum ShellLinkSend
+#if defined(__cplusplus) || __STDC_VERSION__ >= 202311L
+  : uint32_t
+#endif // defined(__cplusplus) || __STDC_VERSION__ >= 202311L
+ {
+  SHELL_LINK_SEND_QUEUED = 0,
+  SHELL_LINK_SEND_COALESCED = 1,
+  SHELL_LINK_SEND_OVERFLOW = 2,
+  SHELL_LINK_SEND_CLOSED = 3,
+  SHELL_LINK_SEND_INVALID = 4,
+};
+#ifndef __cplusplus
+#if __STDC_VERSION__ >= 202311L
+typedef enum ShellLinkSend ShellLinkSend;
+#else
+typedef uint32_t ShellLinkSend;
 #endif // __STDC_VERSION__ >= 202311L
 #endif // __cplusplus
 
@@ -417,6 +486,66 @@ typedef uint32_t ShellWindowHostOperation;
  Opaque per-endpoint state. One per native shell surface.
  */
 typedef struct ShellCore ShellCore;
+
+typedef struct ShellLinkEnd ShellLinkEnd;
+
+/*
+ Bounds for one link end. Zero in any field keeps the built-in default.
+ */
+typedef struct {
+  uint32_t in_flight_frames;
+  uint32_t in_flight_bytes;
+  uint32_t outbox_frames;
+  uint32_t outbox_bytes;
+  uint32_t snapshot_keys;
+} ShellLinkLimits;
+
+/*
+ One received frame. `payload` points into the buffer given to
+ `shell_link_receive` and lives as long as that buffer.
+ */
+typedef struct {
+  /*
+   False for a credit return or a frame of a retired window.
+   */
+  bool delivered;
+  uint16_t channel;
+  uint16_t kind;
+  uint32_t window;
+  uint64_t revision;
+  const uint8_t *payload;
+  uintptr_t length;
+} ShellFrameView;
+
+typedef struct {
+  uint64_t sent;
+  uint64_t received;
+  uint64_t coalesced;
+  uint64_t overflowed;
+  uint64_t dropped;
+  uint64_t outbox;
+  uint64_t in_flight;
+} ShellLinkCounts;
+
+/*
+ A tab row to encode; `title` holds `title_length` UTF-16 units.
+ */
+typedef struct {
+  uint32_t id;
+  uint32_t commands;
+  const uint16_t *title;
+  uintptr_t title_length;
+} ShellFrameTabIn;
+
+/*
+ A decoded tab row; `title` points into the frame payload.
+ */
+typedef struct {
+  uint32_t id;
+  uint32_t commands;
+  const uint16_t *title;
+  uintptr_t title_length;
+} ShellFrameTab;
 
 typedef struct {
   uint32_t presentation;
@@ -1218,9 +1347,138 @@ typedef struct {
   int32_t bottom;
 } ShellPageGeometry;
 
+/*
+ The window-request payload, byte for byte: 32 bytes, no padding.
+ */
+typedef struct {
+  uint32_t kind;
+  uint32_t flags;
+  int32_t rect[4];
+  int64_t value;
+} ShellFrameWindowRequest;
+
 #ifdef __cplusplus
 extern "C" {
 #endif // __cplusplus
+
+/*
+ A link end owned by the calling thread. Returns null for generation 0.
+ # Safety
+ `limits` must be null or readable.
+ */
+ShellLinkEnd *shell_link_create(uint32_t generation, const ShellLinkLimits *limits_in);
+
+/*
+ # Safety
+ `link` must be null or from `shell_link_create`, and not used afterwards.
+ */
+void shell_link_destroy(ShellLinkEnd *link);
+
+/*
+ Queues one frame. Never blocks; `outcome` says what happened to it.
+ # Safety
+ `payload` must be readable for `length` bytes (or null with 0); `outcome` writable.
+ */
+ShellStatus shell_link_send(ShellLinkEnd *link,
+                            uint32_t window,
+                            uint16_t channel,
+                            uint16_t kind,
+                            uint64_t revision,
+                            const uint8_t *payload,
+                            uintptr_t length,
+                            ShellLinkSend *outcome);
+
+/*
+ The next frame that may go to the transport, or null when none may. With
+ `force`, credit is ignored: for a caller that will wait for the other side
+ and must not overtake queued frames. The buffer is released with
+ `shell_link_free_frame`, on any thread.
+ # Safety
+ `data` and `length` must be writable.
+ */
+ShellStatus shell_link_take(ShellLinkEnd *link, bool force, uint8_t **data, uintptr_t *length);
+
+/*
+ # Safety
+ `data` and `length` must come from one `shell_link_take`, released once.
+ */
+void shell_link_free_frame(uint8_t *data, uintptr_t length);
+
+/*
+ Validates and accounts one whole frame. `Rejected`: from another
+ generation, dropped. `Closed`: lost or forged frames closed the link.
+ `InvalidArgument`: not a frame.
+ # Safety
+ `data` readable for `length` bytes and kept alive while `view` is used.
+ */
+ShellStatus shell_link_receive(ShellLinkEnd *link,
+                               const uint8_t *data,
+                               uintptr_t length,
+                               ShellFrameView *view);
+
+/*
+ # Safety
+ See `guard`.
+ */
+ShellStatus shell_link_retire(ShellLinkEnd *link, uint32_t window);
+
+/*
+ # Safety
+ See `guard`.
+ */
+ShellStatus shell_link_close(ShellLinkEnd *link);
+
+/*
+ The serial for a local handle; with `create`, a new one if it has none.
+ `UnknownTab` when it has none and `create` is false.
+ # Safety
+ `serial` must be writable.
+ */
+ShellStatus shell_link_serial(ShellLinkEnd *link, uintptr_t handle, bool create, uint32_t *serial);
+
+/*
+ Binds a serial the other side chose to a local handle.
+ # Safety
+ See `guard`.
+ */
+ShellStatus shell_link_adopt(ShellLinkEnd *link, uint32_t serial, uintptr_t handle);
+
+/*
+ # Safety
+ `handle` must be writable.
+ */
+ShellStatus shell_link_handle(ShellLinkEnd *link, uint32_t serial, uintptr_t *handle);
+
+/*
+ # Safety
+ `counts` must be writable.
+ */
+ShellStatus shell_link_counts(ShellLinkEnd *link, ShellLinkCounts *counts);
+
+/*
+ Encodes complete tab rows into a buffer released with `shell_link_free_frame`.
+ # Safety
+ `rows` readable for `count` entries and each title for its length; outputs writable.
+ */
+ShellStatus shell_frame_tabs_encode(const ShellFrameTabIn *rows,
+                                    uintptr_t count,
+                                    uint32_t selected,
+                                    uint32_t revision,
+                                    uint8_t **data,
+                                    uintptr_t *length);
+
+/*
+ Decodes complete tab rows. Titles point into `payload`.
+ # Safety
+ `payload` readable for `length` bytes; `rows` writable for `capacity`; scalars writable.
+ */
+ShellStatus shell_frame_tabs_decode(const uint8_t *payload,
+                                    uintptr_t length,
+                                    ShellFrameTab *rows,
+                                    uintptr_t capacity,
+                                    uintptr_t *count,
+                                    uint32_t *selected,
+                                    uint32_t *revision);
 
 /*
  Accept a complete startup presentation for this native endpoint. Labels stay
