@@ -5863,6 +5863,13 @@ pub unsafe extern "C" fn shell_core_page_input_apply(core:*mut ShellCore,input:*
  })
 }
 /// # Safety
+/// core is live and exclusively accessed by its native owner. Ok when a geometry request is
+/// still waiting to be read, Busy otherwise.
+#[no_mangle]
+pub unsafe extern "C" fn shell_core_page_geometry_pending(core:*mut ShellCore)->ShellStatus {
+ guard(core,|core| if core.page_input.geometry_pending() {ShellStatus::Ok} else {ShellStatus::Busy})
+}
+/// # Safety
 /// Valid output pointers. Returned text is borrowed until next core mutation.
 #[no_mangle]
 pub unsafe extern "C" fn shell_core_page_input_read(core:*mut ShellCore,state:*mut crate::page_input::ShellPageInputState,text:*mut *const u16)->ShellStatus {

@@ -29,10 +29,16 @@ struct Host {
 inline Host& State() { static auto host=new Host; return *host; }
 }
 #include "PaneLink.h"
+// The input link's credit returns reach the shell here (InputThread.h).
+namespace InputThread {
+inline constexpr UINT CreditMessage=WM_APP+907;
+inline void ShellReceive(uint8_t* data, size_t length) noexcept;
+}
 namespace IndependentHost {
 inline void ShellReceive(uint8_t* data, size_t length) noexcept;
 inline LRESULT CALLBACK Dispatch(HWND hwnd, UINT message, WPARAM w, LPARAM l) {
     if (message==PaneLink::FrameMessage) { ShellReceive(reinterpret_cast<uint8_t*>(l),static_cast<size_t>(w)); return 0; }
+    if (message==InputThread::CreditMessage) { InputThread::ShellReceive(reinterpret_cast<uint8_t*>(l),static_cast<size_t>(w)); return 0; }
     if (message==InvokeMessage) {
         auto* work=reinterpret_cast<Work*>(l);
         const auto complete=work->complete;
@@ -566,16 +572,16 @@ inline void Route(WinUIPaneApi& api) {
     api.registerIndependentTouch=[](HWND hwnd) noexcept {
         return InputThread::Running() ? InputThread::RegisterTouch(hwnd) : PostPageTouch(hwnd); };
     api.publishIndependentGeometry=[](HWND hwnd, const WinUIPageGeometry* input) noexcept {
-        return InputThread::Running() ? InputThread::OnPage(hwnd,[input](HWND page){return NativePageInput::Geometry(page,input);}) :
+        return InputThread::Running() ? InputThread::PublishGeometry(hwnd,input) :
             Call<PageGeometry>(hwnd,input); };
     api.publishIndependentInput=[](HWND hwnd, const WinUIPageInput* input) noexcept {
-        return InputThread::Running() ? InputThread::OnPage(hwnd,[input](HWND page){return NativePageInput::Publish(page,input);}) :
+        return InputThread::Running() ? InputThread::PublishInput(hwnd,input) :
             Call<PagePublish>(hwnd,input); };
     api.drainIndependentInput=[](HWND hwnd, WinUIPageInputEvent* output, wchar_t* text, uint32_t capacity) noexcept {
-        return InputThread::Running() ? InputThread::OnPage(hwnd,[=](HWND page){return NativePageInput::Drain(page,output,text,capacity);}) :
+        return InputThread::Running() ? InputThread::DrainInput(hwnd,output,text,capacity) :
             Call<PageDrain>(hwnd,output,text,capacity); };
     api.commitIndependentInput=[](HWND hwnd, BOOL cancel) noexcept {
-        return InputThread::Running() ? InputThread::OnPage(hwnd,[cancel](HWND page){return NativePageInput::Commit(page,cancel);}) :
+        return InputThread::Running() ? InputThread::CommitInput(hwnd,cancel) :
             Call<PageCommit>(hwnd,cancel); };
     api.startupTransfer=PostStartup;
 #undef ROUTE

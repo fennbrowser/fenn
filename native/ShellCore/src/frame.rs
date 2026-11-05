@@ -59,6 +59,9 @@ pub enum Channel {
     Startup = 9,
     /// Close resolution: two u64, generation and request.
     Close = 10,
+    /// Shell to the engine's input thread (M5c): kind 0, the page input window's shape
+    /// ([`page_shape`]), which only its owner can apply.
+    Page = 11,
 }
 
 #[repr(u16)]
@@ -80,7 +83,7 @@ impl Channel {
         use Channel::*;
         Some(match value {
             0 => Control, 1 => Lifetime, 2 => Geometry, 3 => Tabs, 4 => Address, 5 => TabMenu,
-            6 => Focus, 7 => Window, 8 => Requests, 9 => Startup, 10 => Close,
+            6 => Focus, 7 => Window, 8 => Requests, 9 => Startup, 10 => Close, 11 => Page,
             _ => return None,
         })
     }
@@ -112,6 +115,7 @@ pub fn rule(channel: Channel, kind: u16) -> Option<(Class, usize)> {
         (Requests, 0) => (Class::Ordered, TEXT),
         (Startup, 0) => (Class::Ordered, TEXT),
         (Close, 0) => (Class::Ordered, 16),
+        (Page, 0) => (Class::Snapshot, page_shape::MAX_BYTES),
         _ => return None,
     })
 }
@@ -196,6 +200,7 @@ pub(crate) fn valid_payload(channel: Channel, kind: u16, p: &[u8]) -> bool {
         (Tabs, 0) => tabs::decode(p).is_some(),
         (Focus, _) => p.len() == 1 && p[0] <= 1,
         (Window, 0) => window_request::decode(p).is_some(),
+        (Page, 0) => page_shape::decode(p).is_some(),
         // Text: whole UTF-16 units. JSON content is validated by its handler.
         _ => p.len() % 2 == 0,
     }
@@ -227,6 +232,39 @@ pub mod rects {
             [v(0), v(1), v(2), v(3)]
         }).collect();
         out.iter().all(|r| r[2] >= r[0] && r[3] >= r[1]).then_some(out)
+    }
+}
+
+/// The page input window's shape: u32 chrome count, then the client rectangle, the visible
+/// chrome cut out of it, and Firefox's exclusions added back, all client-relative ([`rects`]).
+pub mod page_shape {
+    use super::rects::{self, Rect};
+    /// Strip and address, plus the clip list's bound.
+    pub const MAX_CHROME: usize = 2;
+    pub const MAX_BYTES: usize = 4 + rects::BYTES * (1 + MAX_CHROME + rects::MAX_CLIP);
+
+    #[derive(Clone, Debug, PartialEq, Eq)]
+    pub struct Shape { pub client: Rect, pub chrome: Vec<Rect>, pub exclusions: Vec<Rect> }
+
+    pub fn encode(s: &Shape) -> Option<Vec<u8>> {
+        if s.chrome.len() > MAX_CHROME || s.exclusions.len() > rects::MAX_CLIP { return None; }
+        let mut out = (s.chrome.len() as u32).to_le_bytes().to_vec();
+        out.extend(rects::encode(&[s.client]));
+        out.extend(rects::encode(&s.chrome));
+        out.extend(rects::encode(&s.exclusions));
+        Some(out)
+    }
+
+    pub fn decode(p: &[u8]) -> Option<Shape> {
+        if p.len() < 4 + rects::BYTES || p.len() > MAX_BYTES || (p.len() - 4) % rects::BYTES != 0 { return None; }
+        let chrome = u32::from_le_bytes(p[..4].try_into().unwrap()) as usize;
+        let all: Vec<Rect> = p[4..].chunks_exact(rects::BYTES).map(|c| {
+            let v = |i: usize| i32::from_le_bytes(c[i * 4..i * 4 + 4].try_into().unwrap());
+            [v(0), v(1), v(2), v(3)]
+        }).collect();
+        if chrome > MAX_CHROME || chrome + 1 > all.len() || all.len() - 1 - chrome > rects::MAX_CLIP ||
+            !all.iter().all(|r| r[2] >= r[0] && r[3] >= r[1]) { return None; }
+        Some(Shape { client: all[0], chrome: all[1..1 + chrome].to_vec(), exclusions: all[1 + chrome..].to_vec() })
     }
 }
 
@@ -376,6 +414,15 @@ mod tests {
         assert!(decode(&frame(Channel::Geometry, 1, &shown([0, 0, 1, 1], 2))).is_err());
         assert!(decode(&frame(Channel::Geometry, 1, &rects::encode(&[[0, 0, 1, 1]]))).is_err(), "no visibility byte");
         assert_eq!(rects::decode(&rects::encode(&[[0, 0, 5, 5], [1, 1, 2, 2]])).unwrap().len(), 2);
+        let shape = page_shape::Shape { client: [0, 0, 800, 600], chrome: vec![[0, 0, 800, 40]], exclusions: vec![[700, 0, 760, 40]] };
+        let bytes = page_shape::encode(&shape).unwrap();
+        assert_eq!(page_shape::decode(&bytes), Some(shape.clone()));
+        assert!(valid_payload(Channel::Page, 0, &bytes));
+        let mut wrong = bytes.clone(); wrong[0] = 3;
+        assert!(page_shape::decode(&wrong).is_none(), "more chrome than rectangles or than the bound");
+        assert!(page_shape::decode(&bytes[..bytes.len() - 1]).is_none());
+        let crowded = page_shape::Shape { exclusions: vec![[0, 0, 1, 1]; rects::MAX_CLIP + 1], ..shape };
+        assert!(page_shape::encode(&crowded).is_none());
         assert!(decode(&frame(Channel::Geometry, 2, &[])).is_ok(), "an empty clip restores the surface");
     }
 

@@ -84,6 +84,11 @@ inline UINT PageReportMessage() { static UINT message=RegisterWindowMessageW(L"F
 inline void (*PageReported)(HWND shell, HWND page, WPARAM kind) noexcept = nullptr;
 // Set by the input thread when it runs: creates the page child there instead of here.
 inline bool (*RequestPage)(HWND shell, HWND endpoint, COLORREF background) noexcept = nullptr;
+// Sends the shape of a page child the input thread owns to that thread, which applies it.
+inline void (*SendPageShape)(HWND shell, const RECT& client, const std::vector<RECT>& chrome,
+    const std::vector<RECT>& exclusions) noexcept = nullptr;
+// The window is gone: its handle can come back for another window.
+inline void (*RetirePageShape)(HWND shell) noexcept = nullptr;
 struct Context {
     std::unique_ptr<ShellCore,decltype(&shell_core_destroy)> core{shell_core_create(nullptr),shell_core_destroy};
     // The browser window is a WinUI Window: its single XAML tree (root) and the XAML content
@@ -142,15 +147,30 @@ inline void KeepOrder(HWND hwnd) {
         SetWindowPos(host->bridge,HWND_BOTTOM,0,0,0,0,flags);
     }
 }
+// The page child's region: its client area less the chrome, plus the exclusions.
+inline HRGN PageRegion(const RECT& client, const std::vector<RECT>& chrome, const std::vector<RECT>& exclusions) {
+    HRGN region=CreateRectRgnIndirect(&client);
+    if (!region) return nullptr;
+    for (auto const& rect : chrome) {
+        if (HRGN cut=CreateRectRgnIndirect(&rect)) { CombineRgn(region,region,cut,RGN_DIFF); DeleteObject(cut); }
+    }
+    for (auto const& rect : exclusions) {
+        if (HRGN add=CreateRectRgnIndirect(&rect)) { CombineRgn(region,region,add,RGN_OR); DeleteObject(add); }
+    }
+    return region;
+}
 // The page child takes input everywhere except the visible native chrome, where Gecko's own
 // controls (exclusions) still belong to the page.
 // Firefox republishes geometry continually, mostly unchanged. Reshaping the page child under a
 // resting pointer makes Windows hit-test it again, which WinUI reports to an open popup as the pointer
 // leaving and re-entering, cancelling a press in it: only a changed region is applied.
-inline void ApplyPageRegion(Context* host) {
+// The page child fills the client area. A child the input thread owns is sized and shaped there:
+// SetWindowRgn only works on a window of the calling process, and sizing it from here would wait
+// for that thread.
+inline void ApplyPageRegion(HWND shell, Context* host) {
     if (!host || !host->page) return;
     RECT client{};
-    GetClientRect(host->page,&client);
+    GetClientRect(shell,&client);
     const auto same=[](std::vector<RECT> const& a, std::vector<RECT> const& b) {
         return a.size()==b.size() && std::equal(a.begin(),a.end(),b.begin(),[](RECT const& x, RECT const& y){ return EqualRect(&x,&y)!=0; });
     };
@@ -158,26 +178,28 @@ inline void ApplyPageRegion(Context* host) {
         same(host->chrome,host->pageRegionChrome) && same(host->exclusions,host->pageRegionExclusions)) return;
     host->pageRegionApplied=true; host->pageRegionClient=client;
     host->pageRegionChrome=host->chrome; host->pageRegionExclusions=host->exclusions;
-    HRGN region=CreateRectRgnIndirect(&client);
-    if (!region) return;
-    for (auto const& rect : host->chrome) {
-        if (HRGN cut=CreateRectRgnIndirect(&rect)) { CombineRgn(region,region,cut,RGN_DIFF); DeleteObject(cut); }
+    if (!Owner(host->page)) {
+        if (SendPageShape) SendPageShape(shell,client,host->chrome,host->exclusions);
+        return;
     }
-    for (auto const& rect : host->exclusions) {
-        if (HRGN add=CreateRectRgnIndirect(&rect)) { CombineRgn(region,region,add,RGN_OR); DeleteObject(add); }
-    }
-    if (!SetWindowRgn(host->page,region,TRUE)) DeleteObject(region);
+    HRGN region=PageRegion(client,host->chrome,host->exclusions);
+    if (region && !SetWindowRgn(host->page,region,TRUE)) DeleteObject(region);
 }
 inline void SetPageRegion(HWND hwnd, std::vector<RECT> chrome, std::vector<RECT> exclusions) {
     auto* host=Get(hwnd);
     if (!host) return;
     host->chrome=std::move(chrome); host->exclusions=std::move(exclusions);
-    ApplyPageRegion(host);
+    ApplyPageRegion(hwnd,host);
 }
 // Page input for the browser behind `window`: the top-level window before the page child exists,
 // the page child after. Returns true when the message is consumed, with its result.
 inline bool ForwardPage(HWND window, PageState* host, UINT message, WPARAM w, LPARAM l, LRESULT& result) {
     result=0;
+    // Says whether touch or pen made a mouse message. Read before anything here can make this
+    // thread take a sent message, which replaces it: taking capture from a window of another
+    // thread does (WM_CAPTURECHANGED), and a touch tap's promoted press then reached Gecko as a
+    // mouse press.
+    const auto extra=static_cast<uint32_t>(GetMessageExtraInfo());
     if (message==WM_LBUTTONDOWN || message==WM_RBUTTONDOWN || message==WM_MBUTTONDOWN ||
         message==WM_LBUTTONDBLCLK || message==WM_RBUTTONDBLCLK || message==WM_MBUTTONDBLCLK) {
         if (!GetCapture()) { SetCapture(window); host->capture=GetCapture()==window; }
@@ -256,7 +278,7 @@ inline bool ForwardPage(HWND window, PageState* host, UINT message, WPARAM w, LP
         case WM_RBUTTONDOWN: case WM_RBUTTONUP: case WM_MBUTTONDOWN: case WM_MBUTTONUP:
         case WM_LBUTTONDBLCLK: case WM_RBUTTONDBLCLK: case WM_MBUTTONDBLCLK:
             PostMessageW(host->endpoint,message,
-                (static_cast<WPARAM>(static_cast<uint32_t>(GetMessageExtraInfo()))<<32)|(w&0xffffffffu),l);
+                (static_cast<WPARAM>(extra)<<32)|(w&0xffffffffu),l);
             break;
     }
     if ((message==WM_LBUTTONUP || message==WM_RBUTTONUP || message==WM_MBUTTONUP) && host->capture &&
@@ -354,7 +376,7 @@ inline void AdoptPage(HWND hwnd, HWND page) noexcept {
     if (!SetPropW(hwnd,PageWindowProperty,page)) FocusTrace("page-property-failed",reinterpret_cast<uintptr_t>(page));
     host->pageRegionApplied=false;
     KeepOrder(hwnd);
-    ApplyPageRegion(host);
+    ApplyPageRegion(hwnd,host);
     if (GetFocus()==hwnd) SetFocus(page);
 }
 inline void ForgetPage(HWND hwnd, HWND page) noexcept {
@@ -489,8 +511,9 @@ inline LRESULT CALLBACK Base(HWND hwnd, UINT message, WPARAM w, LPARAM l) {
             PostMessageW(host->endpoint,EndpointDpiMessage(),w,0);
         }
         if (message==WM_SIZE && host->page) {
-            SetWindowPos(host->page,nullptr,0,0,LOWORD(l),HIWORD(l),SWP_NOZORDER|SWP_NOACTIVATE|SWP_NOOWNERZORDER);
-            ApplyPageRegion(host);
+            if (Owner(host->page))
+                SetWindowPos(host->page,nullptr,0,0,LOWORD(l),HIWORD(l),SWP_NOZORDER|SWP_NOACTIVATE|SWP_NOOWNERZORDER);
+            ApplyPageRegion(hwnd,host);
         }
         if (message==WM_SIZE || message==WM_MOVE) PostMessageW(host->endpoint,EndpointGeometryMessage(),0,0);
         if (message==TaskbarButtonCreatedMessage()) PostMessageW(host->endpoint,message,w,l);
@@ -512,6 +535,7 @@ inline LRESULT CALLBACK Base(HWND hwnd, UINT message, WPARAM w, LPARAM l) {
                 queue.TryEnqueue([window=std::move(host->window)]{});
         for (auto icon : host->icons) if (icon) DestroyIcon(icon);
         NativePageInput::Remove(hwnd);
+        if (RetirePageShape) RetirePageShape(hwnd);
         if (host->state.phase==6) host->Call(SHELL_WINDOW_HOST_OPERATION_CANCEL_STARTUP,host->state);
         if (host->state.phase==4 || host->state.phase==7)
             host->Call(SHELL_WINDOW_HOST_OPERATION_SHELL_DESTROYED,host->state);

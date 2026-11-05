@@ -34003,10 +34003,10 @@ index 00000000000..1142fdd4abd
 +#endif
 diff --git a/widget/windows/WinUIPageInput.cpp b/widget/windows/WinUIPageInput.cpp
 new file mode 100644
-index 00000000000..15334bcd387
+index 00000000000..b96f05f4964
 --- /dev/null
 +++ b/widget/windows/WinUIPageInput.cpp
-@@ -0,0 +1,295 @@
+@@ -0,0 +1,326 @@
 +/* Licensed under the Mozilla Public License, v. 2.0. */
 +#include "WinUIPageInput.h"
 +#include "WinIMEHandler.h"
@@ -34024,11 +34024,17 @@ index 00000000000..15334bcd387
 +namespace mozilla::widget {
 +namespace {
 +constexpr uint32_t kMaxText=65536;
++// The native store's event kind for an accepted publication (ShellCore's ACCEPTED).
++constexpr uint32_t kAccepted=7;
 +struct Session final {
 +  NS_INLINE_DECL_REFCOUNTING(Session)
 +  RefPtr<nsWindow> window;
 +  uint64_t id=0, revision=0, publishedRevision=0, dispatched=0, acknowledgment=0;
 +  uint32_t textBase=0, textLength=0;
++  // Publications are posted. Their text base applies once the store accepts them, in order with
++  // the events it made against the previous one.
++  struct Pending { uint64_t revision; uint32_t base, length; };
++  std::deque<Pending> pending;
 +  bool scheduled=false, draining=false, focused=true;
 +  explicit Session(nsWindow* widget):window(widget) {}
 + private:
@@ -34114,8 +34120,15 @@ index 00000000000..15334bcd387
 +  }
 +  input.enabled=1;input.length=value.Length();input.text=reinterpret_cast<const wchar_t*>(value.BeginReading());
 +  if(PublishIndependentPageInput(widget->GetWindowHandle(),input)==S_OK) {
-+    session->textBase=base;session->textLength=length;session->publishedRevision=input.revision;
++    if(session->pending.size()>=16)session->pending.pop_front();
++    session->pending.push_back({input.revision,base,length});
 +  }
++}
++void Accept(const RefPtr<Session>& session,uint64_t revision) {
++  for(const auto& entry : session->pending) if(entry.revision==revision) {
++    session->textBase=entry.base;session->textLength=entry.length;session->publishedRevision=revision;break;
++  }
++  std::erase_if(session->pending,[revision](const Session::Pending& entry){return entry.revision<=revision;});
 +}
 +// One remote query in flight globally, with bounded FIFO work across windows.
 +// Stale jobs are discarded before querying and again before publishing replies.
@@ -34195,7 +34208,15 @@ index 00000000000..15334bcd387
 +}
 +}
 +void DrainIndependentPageIME(HWND hwnd) {
-+  RefPtr<Session> session=Find(hwnd);if(!Current(session) || session->draining)return;
++  RefPtr<Session> session=Find(hwnd);
++  if(!session) {
++    // Events for an ended session, such as an IME's late commit: drain them so the store wakes
++    // Gecko again for the next one.
++    WinUIPageInputEvent event{};nsString text;text.SetLength(kMaxText);
++    for(unsigned i=0;i<128 && DrainIndependentPageInput(hwnd,event,reinterpret_cast<wchar_t*>(text.BeginWriting()),kMaxText)==S_OK;++i) {}
++    return;
++  }
++  if(!Current(session) || session->draining)return;
 +  session->draining=true;
 +  RefPtr<TextEventDispatcher> dispatcher=session->window->GetTextEventDispatcher();
 +  nsString text;text.SetLength(kMaxText);
@@ -34204,6 +34225,7 @@ index 00000000000..15334bcd387
 +    WinUIPageInputEvent event{};
 +    if(DrainIndependentPageInput(hwnd,event,reinterpret_cast<wchar_t*>(text.BeginWriting()),kMaxText)!=S_OK)break;
 +    if(event.session!=session->id || !session->focused)continue;
++    if(event.kind==kAccepted) {Accept(session,event.revision);continue;}
 +    if(event.kind==6) {Geometry(session,event);continue;}
 +    if(event.edit<=session->dispatched)continue;
 +    changed=true;
@@ -34266,6 +34288,15 @@ index 00000000000..15334bcd387
 +    if(Current(session))DrainIndependentPageIME(session->window->GetWindowHandle());
 +  }));
 +}
++// Commits are posted, so a session can end before the IME's commit arrives; that commit is then
++// dropped with the session. Close Gecko's composition as it stands, as a synchronous IME would
++// have, so a composition in a content process does not wait for it.
++void EndIndependentPageComposition(nsWindow* window) {
++  RefPtr<TextEventDispatcher> dispatcher=window->GetTextEventDispatcher();
++  if(!dispatcher->IsComposing() || NS_FAILED(dispatcher->BeginNativeInputTransaction()))return;
++  nsEventStatus status=nsEventStatus_eIgnore;
++  dispatcher->CommitComposition(status);
++}
 +bool NotifyIndependentPageIME(nsWindow* window,const IMENotification& notification) {
 +  HWND hwnd=window->GetWindowHandle();
 +  if(!GetPropW(hwnd,WINUI_PANE_ENDPOINT_PROPERTY))return false;
@@ -34273,11 +34304,11 @@ index 00000000000..15334bcd387
 +  if(getenv("FENN_PANE_DIAGNOSTICS")) fprintf(stderr,"FennPageIME notify=%u session=%llu\n",unsigned(notification.mMessage),session ? session->id : 0);
 +  switch(notification.mMessage) {
 +    case NOTIFY_IME_OF_FOCUS:
-+      if(session) {CommitIndependentPageInput(hwnd,false);DrainIndependentPageIME(hwnd);}
++      if(session) {CommitIndependentPageInput(hwnd,false);DrainIndependentPageIME(hwnd);EndIndependentPageComposition(window);}
 +      session=new Session(window);session->id=++sNextSession;sSessions[hwnd]=session;Schedule(session);break;
 +    case NOTIFY_IME_OF_BLUR:
 +      if(session) {
-+        CommitIndependentPageInput(hwnd,false);DrainIndependentPageIME(hwnd);
++        CommitIndependentPageInput(hwnd,false);DrainIndependentPageIME(hwnd);EndIndependentPageComposition(window);
 +        session->focused=false;WinUIPageInput input{};input.session=session->id;input.revision=++session->revision;
 +        PublishIndependentPageInput(hwnd,input);sSessions.erase(hwnd);
 +      }break;
@@ -34566,10 +34597,10 @@ index 00000000000..cd1051c5061
 +}
 diff --git a/widget/windows/WinUIPaneApi.h b/widget/windows/WinUIPaneApi.h
 new file mode 100644
-index 00000000000..ecd80b5f249
+index 00000000000..94bd017eb05
 --- /dev/null
 +++ b/widget/windows/WinUIPaneApi.h
-@@ -0,0 +1,257 @@
+@@ -0,0 +1,263 @@
 +#pragma once
 +struct IUnknown;
 +#include <windows.h>
@@ -34603,7 +34634,8 @@ index 00000000000..ecd80b5f249
 +// v39 adds its page cursor and touch registration, and pen messages to the endpoint.
 +// v40 retires the native host on Gecko's thread (attach, detach, adopt) and adds window-state
 +// requests from Gecko's hidden proxy window to the shell.
-+#define WINUI_PANE_ABI_VERSION 41u
++// v42: page IME calls never wait (see publishIndependentInput).
++#define WINUI_PANE_ABI_VERSION 42u
 +
 +// Scalar key transport, translated exactly once by the Gecko endpoint. The endpoint is nsWindow's
 +// own hidden window (the proxy), which stands for the shell on Gecko's thread.
@@ -34791,7 +34823,12 @@ index 00000000000..ecd80b5f249
 +    HRESULT (WINAPI* cancelIndependentClose)(HWND, uint64_t, uint64_t);
 +    // v24: agile COM identity only. The provider must never wait for Gecko on
 +    // the HWND thread. Native retains a reference until cleared or destroyed.
++    // v42: clearing it no longer waits; disconnect the provider first.
 +    HRESULT (WINAPI* setIndependentAccessibility)(HWND, IUnknown*);
++    // v42: none of the four page IME calls waits. Publication and geometry are copied, and S_OK
++    // means queued: a publication's text base applies once the drain returns its acceptance
++    // (kind 7, its revision). A commit finishes later, as with an IME that commits
++    // asynchronously; Gecko closes a composition still open when its session ends.
 +    HRESULT (WINAPI* publishIndependentInput)(HWND, const WinUIPageInput*);
 +    HRESULT (WINAPI* drainIndependentInput)(HWND, WinUIPageInputEvent*, wchar_t*, uint32_t);
 +    HRESULT (WINAPI* commitIndependentInput)(HWND, BOOL);

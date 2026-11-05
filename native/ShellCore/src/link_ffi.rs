@@ -27,6 +27,7 @@ pub const SHELL_FRAME_WINDOW: u16 = 7;
 pub const SHELL_FRAME_REQUESTS: u16 = 8;
 pub const SHELL_FRAME_STARTUP: u16 = 9;
 pub const SHELL_FRAME_CLOSE: u16 = 10;
+pub const SHELL_FRAME_PAGE: u16 = 11;
 pub const SHELL_FRAME_LIFETIME_BIND: u16 = 0;
 pub const SHELL_FRAME_LIFETIME_DESTROY: u16 = 1;
 pub const SHELL_FRAME_LIFETIME_WAKEUP_ON: u16 = 2;
@@ -445,9 +446,9 @@ mod tests {
             (SHELL_FRAME_ADDRESS, Channel::Address), (SHELL_FRAME_TAB_MENU, Channel::TabMenu),
             (SHELL_FRAME_FOCUS, Channel::Focus), (SHELL_FRAME_WINDOW, Channel::Window),
             (SHELL_FRAME_REQUESTS, Channel::Requests), (SHELL_FRAME_STARTUP, Channel::Startup),
-            (SHELL_FRAME_CLOSE, Channel::Close)];
+            (SHELL_FRAME_CLOSE, Channel::Close), (SHELL_FRAME_PAGE, Channel::Page)];
         for (number, channel) in channels { assert_eq!(number, channel as u16); assert_eq!(Channel::from_u16(number), Some(channel)); }
-        assert_eq!(Channel::from_u16(11), None, "every channel is exported");
+        assert_eq!(Channel::from_u16(12), None, "every channel is exported");
         for (number, kind) in [(SHELL_FRAME_LIFETIME_BIND, Lifetime::Bind), (SHELL_FRAME_LIFETIME_DESTROY, Lifetime::Destroy),
             (SHELL_FRAME_LIFETIME_WAKEUP_ON, Lifetime::WakeupOn), (SHELL_FRAME_LIFETIME_WAKEUP_OFF, Lifetime::WakeupOff),
             (SHELL_FRAME_LIFETIME_INTRODUCE, Lifetime::Introduce), (SHELL_FRAME_LIFETIME_DESTROY_HOST, Lifetime::DestroyHost)] {

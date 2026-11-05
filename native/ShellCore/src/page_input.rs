@@ -5,6 +5,8 @@ use crate::publication::{Stream, StreamKind};
 
 pub const PAGE_INPUT_MAX_TEXT: usize = 65536;
 pub const PAGE_INPUT_MAX_EVENTS: usize = 128;
+/// The event kind that tells Gecko a publication was accepted (`revision`).
+pub const ACCEPTED: u32 = 7;
 const MAX_QUEUED_TEXT: usize = 262144;
 #[repr(C)]
 #[derive(Clone, Copy, Default, Debug)]
@@ -35,6 +37,10 @@ impl PageInput {
     }
     pub fn publish(&mut self,session:u64,revision:u64,ack:u64,start:u32,end:u32,text:&[u16])->Result<bool,()> {
         if session==0 || revision==0 || session<self.state.session || !Self::valid(text,start,end) {return Err(());}
+        // Reserve the acceptance event before anything changes: Gecko adopts a text base only when
+        // it reads one, so an accepted publication it cannot observe would split the two offsets.
+        if session==self.state.session && self.events.len()==PAGE_INPUT_MAX_EVENTS &&
+            !self.events.back().is_some_and(|e|e.kind==ACCEPTED) {return Err(());}
         if session>self.state.session {
             if ack!=0 {return Err(());}
             self.state=ShellPageInputState{session,..Default::default()};
@@ -42,13 +48,20 @@ impl PageInput {
         }
         if ack>self.state.edit {return Err(());}
         // A drained queue is not an acknowledgment of browser processing.
-        if ack<self.state.edit {return Ok(false);}
+        if ack<self.state.edit {self.accepted(revision);return Ok(false);}
         let mut fingerprint=text.to_vec();
         for value in [ack,start as u64,end as u64] {fingerprint.extend(value.to_le_bytes().chunks_exact(2).map(|b|u16::from_le_bytes([b[0],b[1]])));}
-        if !self.stream.check(0,revision,&fingerprint)? {return Ok(false);}
+        if !self.stream.check(0,revision,&fingerprint)? {self.accepted(revision);return Ok(false);}
         self.text=text.to_vec();self.state.start=start;self.state.end=end;self.state.length=text.len() as u32;self.state.revision=revision;
-        self.stream.commit(revision,&fingerprint);Ok(true)
+        self.stream.commit(revision,&fingerprint);self.accepted(revision);Ok(true)
     }
+    // Gecko's publications are posted, so it learns that one was taken from the event queue, in
+    // order with the edits made against it. It is not an edit and takes no edit number.
+    fn accepted(&mut self,revision:u64) {
+        if self.events.back().is_some_and(|e|e.kind==ACCEPTED) {self.events.pop_back();}
+        self.events.push_back(Event{clauses:vec![],session:self.state.session,edit:self.state.edit,revision,request:0,kind:ACCEPTED,start:0,end:0,caret:0,text:vec![]});
+    }
+    pub fn geometry_pending(&self)->bool {self.geometry.entries.iter().any(|e|!e.drained)}
     pub fn select(&mut self,start:u32,end:u32)->bool {
         if !Self::valid(&self.text,start,end) {return false;}
         if self.state.start!=start || self.state.end!=end {self.geometry.entries.clear();}
@@ -116,26 +129,52 @@ impl PageInput {
         else if let Some(entry)=self.geometry.entries.iter_mut().find(|e|!e.drained){entry.drained=true;}
     }
 }
+// Tests written before acceptance events existed check the edit queue alone.
+#[cfg(test)] impl PageInput {
+ fn quiet(&mut self,session:u64,revision:u64,ack:u64,start:u32,end:u32,text:&[u16])->Result<bool,()> {
+  let result=self.publish(session,revision,ack,start,end,text);self.events.retain(|e|e.kind!=ACCEPTED);result
+ }
+}
 #[cfg(test)] mod tests {
  use super::*;
- #[test] fn draining_does_not_acknowledge() {
+ fn kinds(p:&PageInput)->Vec<u32> {p.events.iter().map(|e|e.kind).collect()}
+ #[test] fn acceptance_is_ordered_with_edits_and_coalesced() {
   let mut p=PageInput::default();assert_eq!(p.publish(1,1,0,0,0,&[]),Ok(true));
+  assert_eq!(kinds(&p),vec![ACCEPTED]);assert_eq!(p.front().unwrap().revision,1);
+  assert_eq!(p.publish(1,2,0,0,0,&[65]),Ok(true));assert_eq!(kinds(&p),vec![ACCEPTED]);assert_eq!(p.front().unwrap().revision,2);
+  assert!(p.enqueue(1,0,0,0,&[]));assert_eq!(p.state.edit,1);
+  // Unacknowledged edits keep the old text but Gecko's revision still counts, as before.
+  assert_eq!(p.publish(1,3,0,0,0,&[65]),Ok(false));assert_eq!(kinds(&p),vec![ACCEPTED,1,ACCEPTED]);
+  assert_eq!(p.events.back().unwrap().edit,1);
+  assert!(p.publish(1,4,2,0,0,&[]).is_err());assert_eq!(kinds(&p),vec![ACCEPTED,1,ACCEPTED]);
+ }
+ #[test] fn acceptance_is_reserved_before_the_text_changes() {
+  let mut p=PageInput::default();p.publish(1,1,0,0,0,&[]).unwrap();p.pop();
+  while p.events.len()<PAGE_INPUT_MAX_EVENTS {assert!(p.enqueue(1,0,0,0,&[]));}
+  let edit=p.state.edit;
+  assert!(p.publish(1,2,edit,0,1,&[66]).is_err());assert!(p.text.is_empty());
+  while p.front().is_some() {p.pop();}
+  assert_eq!(p.publish(1,3,edit,0,1,&[66]),Ok(true));assert_eq!(p.text,vec![66]);
+  assert_eq!(p.publish(2,1,0,0,0,&[]),Ok(true));assert_eq!(kinds(&p),vec![ACCEPTED]);
+ }
+ #[test] fn draining_does_not_acknowledge() {
+  let mut p=PageInput::default();assert_eq!(p.quiet(1,1,0,0,0,&[]),Ok(true));
   assert!(p.enqueue(1,0,0,0,&[]));p.pop();assert!(p.replace(0,0,&[0x65e5]));
-  assert_eq!(p.publish(1,2,0,0,0,&[]),Ok(false));assert_eq!(p.text,vec![0x65e5]);
-  assert_eq!(p.publish(1,3,1,1,1,&[0x65e5]),Ok(true));
+  assert_eq!(p.quiet(1,2,0,0,0,&[]),Ok(false));assert_eq!(p.text,vec![0x65e5]);
+  assert_eq!(p.quiet(1,3,1,1,1,&[0x65e5]),Ok(true));
  }
  #[test] fn sessions_revoke_events_and_old_snapshots() {
-  let mut p=PageInput::default();p.publish(3,1,0,0,0,&[]).unwrap();assert!(p.enqueue(1,0,0,0,&[]));
-  p.publish(4,1,0,0,0,&[]).unwrap();assert!(p.front().is_none());assert!(p.publish(3,9,0,0,0,&[]).is_err());
+  let mut p=PageInput::default();p.quiet(3,1,0,0,0,&[]).unwrap();assert!(p.enqueue(1,0,0,0,&[]));
+  p.quiet(4,1,0,0,0,&[]).unwrap();assert!(p.front().is_none());assert!(p.quiet(3,9,0,0,0,&[]).is_err());
  }
  #[test] fn edits_are_utf16_and_bounds_are_atomic() {
-  let mut p=PageInput::default();p.publish(1,1,0,0,0,&[0xd83d,0xde00]).unwrap();
+  let mut p=PageInput::default();p.quiet(1,1,0,0,0,&[0xd83d,0xde00]).unwrap();
   assert!(!p.replace(2,1,&[]));assert_eq!(p.text.len(),2);
   assert!(!p.replace(0,0,&vec![1;PAGE_INPUT_MAX_TEXT]));assert_eq!(p.text.len(),2);
   assert!(p.replace(0,2,&[0x65e5]));assert_eq!(p.state.start,1);
  }
  #[test] fn coalescing_preserves_composition_boundaries_and_limits() {
-  let mut p=PageInput::default();p.publish(1,1,0,0,0,&[]).unwrap();
+  let mut p=PageInput::default();p.quiet(1,1,0,0,0,&[]).unwrap();
   assert!(p.enqueue(1,0,0,0,&[]));for i in 0..1000 {assert!(p.enqueue(2,0,0,1,&[i]));}
   assert_eq!(p.events.len(),2);assert!(p.enqueue(3,0,0,1,&[9]));assert_eq!(p.events.len(),3);
   while p.events.len()<PAGE_INPUT_MAX_EVENTS {assert!(p.enqueue(1,0,0,0,&[]));}
@@ -146,16 +185,16 @@ impl PageInput {
 #[cfg(test)] mod direct_edit_tests {
  use super::*;
  #[test] fn replacement_and_backward_selection_are_ordered_and_acknowledged() {
-  let mut p=PageInput::default();p.publish(1,1,0,1,2,&[65,66,67]).unwrap();
+  let mut p=PageInput::default();p.quiet(1,1,0,1,2,&[65,66,67]).unwrap();
   assert!(p.direct_replace(1,2,&[0x65e5,0x672c]));
   assert!(p.direct_select(1,3,1));
   let a=p.front().unwrap();assert_eq!((a.kind,a.start,a.end,a.text.clone()),(4,1,2,vec![0x65e5,0x672c]));p.pop();
   let b=p.front().unwrap();assert_eq!((b.kind,b.start,b.end,b.caret),(5,1,3,1));p.pop();
-  assert_eq!(p.publish(1,2,0,1,2,&[65,66,67]),Ok(false));
-  assert_eq!(p.publish(1,3,2,1,3,&[65,0x65e5,0x672c,67]),Ok(true));
+  assert_eq!(p.quiet(1,2,0,1,2,&[65,66,67]),Ok(false));
+  assert_eq!(p.quiet(1,3,2,1,3,&[65,0x65e5,0x672c,67]),Ok(true));
  }
  #[test] fn rejected_commands_leave_projection_and_sequence_unchanged() {
-  let mut p=PageInput::default();p.publish(1,1,0,0,0,&[65]).unwrap();
+  let mut p=PageInput::default();p.quiet(1,1,0,0,0,&[65]).unwrap();
   assert!(!p.direct_select(0,1,2));assert!(!p.direct_replace(0,2,&[]));
   for _ in 0..PAGE_INPUT_MAX_EVENTS {assert!(p.direct_select(0,0,0));}
   let state=p.state;assert!(!p.direct_replace(0,1,&[66]));assert!(!p.direct_select(0,1,1));
@@ -219,7 +258,7 @@ impl Geometry {
 }
 #[cfg(test)] mod geometry_tests {
  use super::*;
- fn ready()->PageInput {let mut p=PageInput::default();p.publish(1,1,0,0,0,&[65;40]).unwrap();p.geometry_context(1,1).unwrap();p}
+ fn ready()->PageInput {let mut p=PageInput::default();p.quiet(1,1,0,0,0,&[65;40]).unwrap();p.geometry_context(1,1).unwrap();p}
  fn answer(p:&PageInput)->ShellPageGeometry {let e=p.front().unwrap();ShellPageGeometry{session:e.session,revision:e.revision,edit:e.edit,request:e.request,start:e.start,end:e.end,valid:1,left:10,top:20,right:60,bottom:40,..Default::default()}}
  #[test] fn layout_refresh_retains_interest_but_never_old_rectangles() {
   let mut p=ready();assert_eq!(p.geometry_read(2,8),Ok(None));let old=answer(&p);p.pop();assert!(p.geometry_reply(old));
@@ -236,7 +275,7 @@ impl Geometry {
  #[test] fn stale_layout_edit_and_session_replies_are_rejected() {
   let mut p=ready();p.geometry_read(2,8).unwrap();let old=answer(&p);p.pop();p.geometry_context(1,2).unwrap();assert!(!p.geometry_reply(old));
   p.geometry_read(2,8).unwrap();let old=answer(&p);p.pop();p.direct_select(1,2,0);assert!(!p.geometry_reply(old));
-  p.publish(2,1,0,0,0,&[65;40]).unwrap();p.geometry_context(2,1).unwrap();assert!(!p.geometry_reply(old));
+  p.quiet(2,1,0,0,0,&[65;40]).unwrap();p.geometry_context(2,1).unwrap();assert!(!p.geometry_reply(old));
   assert_eq!(p.geometry_context(2,0),Err(()));
  }
  #[test] fn optimistic_mutations_revoke_geometry_before_edit_is_emitted() {
@@ -267,7 +306,7 @@ pub struct ShellPageClause {
 #[cfg(test)] mod clause_tests {
  use super::*;
  #[test] fn clauses_coalesce_atomically_and_keep_styles() {
-  let mut p=PageInput::default();p.publish(1,1,0,0,0,&[]).unwrap();
+  let mut p=PageInput::default();p.quiet(1,1,0,0,0,&[]).unwrap();
   let clauses=[ShellPageClause{start:0,end:1,kind:3,..Default::default()},ShellPageClause{start:1,end:3,kind:4,flags:15,line:4,bold:1,foreground:0x123456,..Default::default()}];
   assert!(p.composition(0,0,3,&[65,66,67],&clauses));
   let before=p.state.edit;

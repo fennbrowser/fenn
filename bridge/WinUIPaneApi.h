@@ -31,7 +31,8 @@ struct IUnknown;
 // v39 adds its page cursor and touch registration, and pen messages to the endpoint.
 // v40 retires the native host on Gecko's thread (attach, detach, adopt) and adds window-state
 // requests from Gecko's hidden proxy window to the shell.
-#define WINUI_PANE_ABI_VERSION 41u
+// v42: page IME calls never wait (see publishIndependentInput).
+#define WINUI_PANE_ABI_VERSION 42u
 
 // Scalar key transport, translated exactly once by the Gecko endpoint. The endpoint is nsWindow's
 // own hidden window (the proxy), which stands for the shell on Gecko's thread.
@@ -219,7 +220,12 @@ struct WinUIPaneApi {
     HRESULT (WINAPI* cancelIndependentClose)(HWND, uint64_t, uint64_t);
     // v24: agile COM identity only. The provider must never wait for Gecko on
     // the HWND thread. Native retains a reference until cleared or destroyed.
+    // v42: clearing it no longer waits; disconnect the provider first.
     HRESULT (WINAPI* setIndependentAccessibility)(HWND, IUnknown*);
+    // v42: none of the four page IME calls waits. Publication and geometry are copied, and S_OK
+    // means queued: a publication's text base applies once the drain returns its acceptance
+    // (kind 7, its revision). A commit finishes later, as with an IME that commits
+    // asynchronously; Gecko closes a composition still open when its session ends.
     HRESULT (WINAPI* publishIndependentInput)(HWND, const WinUIPageInput*);
     HRESULT (WINAPI* drainIndependentInput)(HWND, WinUIPageInputEvent*, wchar_t*, uint32_t);
     HRESULT (WINAPI* commitIndependentInput)(HWND, BOOL);

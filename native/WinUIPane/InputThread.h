@@ -16,6 +16,10 @@
 // learns of its page children by PageMessage. Neither holds a pointer into its state.
 namespace InputThread {
 inline constexpr UINT InvokeMessage=WM_APP+905;
+// The input link (shell to input thread): frames to this thread's dispatcher, credit returns to
+// the shell's (CreditMessage, declared with the shell's dispatcher). M5d carries both over the
+// engine connection instead.
+inline constexpr UINT FrameMessage=WM_APP+906;
 struct Job { std::function<void()> run; HANDLE complete{}; };
 // What the input thread keeps for one shell window. Gecko can set cursor, touch and its
 // accessibility provider before the page child exists; they are applied when it is created.
@@ -33,12 +37,15 @@ struct Host {
     std::atomic<DWORD> owner{};
     // The input thread's own: no other thread reads it.
     std::map<HWND,Window> windows;
+    ShellLinkEnd* link{};
 };
 inline Host& State() { static auto* host=new Host; return *host; }
 inline bool Running() noexcept { return State().dispatcher.load()!=nullptr; }
 inline bool OnThread() noexcept { return State().owner==GetCurrentThreadId(); }
 
+inline void Receive(uint8_t* data, size_t length) noexcept;
 inline LRESULT CALLBACK Dispatch(HWND hwnd, UINT message, WPARAM w, LPARAM l) {
+    if (message==FrameMessage) { Receive(reinterpret_cast<uint8_t*>(l),static_cast<size_t>(w)); return 0; }
     if (message==InvokeMessage) {
         auto* job=reinterpret_cast<Job*>(l);
         const HANDLE complete=job->complete;
@@ -58,8 +65,8 @@ inline bool Post(std::function<void()> run) noexcept {
         return true;
     } catch (...) { return false; }
 }
-// For a call that still answers Gecko with a result (removed later in M5c). The input thread
-// never waits for Gecko, so this wait is bounded by its own work.
+// Only for test exports, which read the input thread's state. The input thread never waits for
+// Gecko, so this wait is bounded by its own work.
 template<class F> HRESULT Call(F run) noexcept {
     if (OnThread()) return run();
     const HWND dispatcher=State().dispatcher;
@@ -96,12 +103,19 @@ inline void Create(HWND shell, HWND endpoint, COLORREF background) noexcept {
     if (window.touch) RegisterTouchWindow(page,TWF_WANTPALM);
     PostMessageW(shell,NativeWindowHost::PageMessage(),reinterpret_cast<WPARAM>(page),1);
 }
+inline void Forget(HWND shell) noexcept {
+    auto& host=State();
+    uint32_t serial{};
+    if (host.link && shell_link_serial(host.link,reinterpret_cast<uintptr_t>(shell),false,&serial)==SHELL_STATUS_OK)
+        shell_link_retire(host.link,serial);
+    host.windows.erase(shell);
+}
 inline void Destroyed(HWND page, NativeWindowHost::PageState* state) noexcept {
     // A page child another thread created for itself is that thread's alone.
     if (!OnThread()) { delete state; return; }
     auto& windows=State().windows;
     for (auto it=windows.begin();it!=windows.end();++it)
-        if (it->second.page==page) { windows.erase(it); break; }
+        if (it->second.page==page) { Forget(it->first); break; }
     delete state;
 }
 inline Window* Find(HWND shell) {
@@ -118,7 +132,7 @@ inline void DestroyPage(HWND shell) noexcept {
     Post([shell]{
         auto* window=Find(shell);
         if (window && window->page && IsWindow(window->page)) DestroyWindow(window->page);
-        else State().windows.erase(shell);
+        else Forget(shell);
     });
 }
 // Calls a page-input function on the page child of a shell window.
@@ -145,30 +159,196 @@ inline HRESULT WINAPI RegisterTouch(HWND shell) noexcept {
         if (window.page) RegisterTouchWindow(window.page,TWF_WANTPALM);
     }) ? S_OK : RO_E_CLOSED;
 }
-// Setting posts. Clearing waits, so nothing on this thread can use a released provider.
+// Both post. This thread holds its own reference until it drops the provider, so nothing here
+// uses a released one; Gecko disconnects the provider before clearing it, which makes any call
+// that reaches it in between inert.
 inline HRESULT WINAPI SetAccessibility(HWND shell, IUnknown* provider) noexcept {
     try {
         winrt::com_ptr<IRawElementProviderSimple> uia;
         if (provider) {
             const HRESULT result=provider->QueryInterface(__uuidof(IRawElementProviderSimple),uia.put_void());
             if (result!=E_NOINTERFACE && FAILED(result)) return result;
-            return Post([shell,uia]{
-                auto& window=State().windows[shell];
-                window.accessibility=uia;
-                if (window.state) window.state->accessibility=uia;
-            }) ? S_OK : RO_E_CLOSED;
         }
-        return Call([shell]() -> HRESULT {
-            auto* window=Find(shell);
-            if (!window) return S_OK;
-            window->accessibility=nullptr;
-            if (window->state) {
-                UiaReturnRawElementProvider(window->page,0,0,nullptr);
-                window->state->accessibility=nullptr;
+        return Post([shell,uia]{
+            if (!uia) {
+                auto* window=Find(shell);
+                if (!window) return;
+                window->accessibility=nullptr;
+                if (window->state) {
+                    UiaReturnRawElementProvider(window->page,0,0,nullptr);
+                    window->state->accessibility=nullptr;
+                }
+                return;
             }
-            return S_OK;
-        });
+            auto& window=State().windows[shell];
+            window.accessibility=uia;
+            if (window.state) window.state->accessibility=uia;
+        }) ? S_OK : RO_E_CLOSED;
     } catch (...) { return winrt::to_hresult(); }
+}
+
+// --- Page IME, from Gecko's thread; none of these waits -------------------------------------
+// Posts a call on the page child of a shell window.
+template<class F> HRESULT PostPage(HWND shell, F run) noexcept {
+    return Post([shell,run=std::move(run)]() mutable {
+        auto* window=Find(shell);
+        if (window && window->page) run(window->page);
+    }) ? S_OK : RO_E_CLOSED;
+}
+// S_OK means queued: Gecko learns that the store took a publication from its acceptance event.
+inline HRESULT WINAPI PublishInput(HWND shell, const WinUIPageInput* input) noexcept {
+    if (!input || input->scopeCount>8 || input->length>PAGE_INPUT_MAX_TEXT || (input->length && !input->text)) return E_INVALIDARG;
+    try {
+        WinUIPageInput copy=*input;
+        std::vector<WCHAR> text(input->text,input->text+input->length);
+        return PostPage(shell,[copy,text=std::move(text)](HWND page) mutable {
+            copy.text=text.empty() ? nullptr : text.data();
+            NativePageInput::Publish(page,&copy);
+        });
+    } catch (...) { return E_OUTOFMEMORY; }
+}
+inline HRESULT WINAPI PublishGeometry(HWND shell, const WinUIPageGeometry* input) noexcept {
+    if (!input) return E_INVALIDARG;
+    const WinUIPageGeometry copy=*input;
+    return PostPage(shell,[copy](HWND page){ NativePageInput::Geometry(page,&copy); });
+}
+// Gecko's TextComposition expects an IME that commits later (as iBus does): its own
+// commit stands, and it ignores the composition events that arrive before the IME's.
+inline HRESULT WINAPI CommitInput(HWND shell, BOOL cancel) noexcept {
+    return PostPage(shell,[cancel](HWND page){ NativePageInput::Commit(page,cancel); });
+}
+inline HRESULT WINAPI DrainInput(HWND shell, WinUIPageInputEvent* output, wchar_t* text, uint32_t capacity) noexcept {
+    if (!output || !text) return E_INVALIDARG;
+    auto box=NativePageInput::FindMailbox(shell);
+    if (!box) return S_FALSE;
+    // As the store's own drain did: any drain lets the next event wake Gecko again. The store
+    // moves what queued meanwhile and wakes Gecko only if it moved something.
+    if (!box->refill.exchange(true)) {
+        if (!Post([box]{
+                box->refill=false;
+                if (auto* store=NativePageInput::Get(box->page); store && store->mailbox==box) store->Refill();
+            }))
+            box->refill=false;
+    }
+    std::lock_guard guard(box->lock);
+    if (box->items.empty()) return S_FALSE;
+    auto& item=box->items.front();
+    if (item.text.size()>capacity) return HRESULT_FROM_WIN32(ERROR_INSUFFICIENT_BUFFER);
+    *output=item.event;
+    if (!item.text.empty()) memcpy(text,item.text.data(),item.text.size()*sizeof(WCHAR));
+    box->items.pop_front();
+    return S_OK;
+}
+
+// --- The input link ---------------------------------------------------------------------------
+// The shell's half, on the shell's thread.
+struct ShellEnd { ShellLinkEnd* link{}; uint64_t revision{}; };
+inline ShellEnd& ShellSide() { static auto* side=new ShellEnd; return *side; }
+inline void FlushToInput() noexcept {
+    auto& side=ShellSide();
+    for (;;) {
+        uint8_t* data{}; size_t length{};
+        if (shell_link_take(side.link,false,&data,&length)!=SHELL_STATUS_OK || !data) return;
+        const HWND target=State().dispatcher;
+        if (!target || !PostMessageW(target,FrameMessage,length,reinterpret_cast<LPARAM>(data))) {
+            shell_link_free_frame(data,length);
+            shell_link_close(side.link);
+            return;
+        }
+    }
+}
+inline void SendShape(HWND shell, const RECT& client, const std::vector<RECT>& chrome, const std::vector<RECT>& exclusions) noexcept {
+    auto& side=ShellSide();
+    if (!Running()) return;
+    if (!side.link) side.link=shell_link_create(1,nullptr);
+    if (!side.link) return;
+    try {
+        uint32_t serial{};
+        ShellLinkSend outcome{};
+        const auto handle=reinterpret_cast<uintptr_t>(shell);
+        if (shell_link_serial(side.link,handle,false,&serial)!=SHELL_STATUS_OK) {
+            if (shell_link_serial(side.link,handle,true,&serial)!=SHELL_STATUS_OK) return;
+            const uint64_t introduced=handle;
+            shell_link_send(side.link,serial,SHELL_FRAME_LIFETIME,SHELL_FRAME_LIFETIME_INTRODUCE,0,
+                reinterpret_cast<const uint8_t*>(&introduced),sizeof(introduced),&outcome);
+        }
+        // Clip lists that came in frames are already within the bound; more would only cut less.
+        static_assert(sizeof(RECT)==16);
+        const size_t chromeCount=(std::min)(chrome.size(),size_t(2)), exclusionCount=(std::min)(exclusions.size(),size_t(64));
+        std::vector<uint8_t> payload(4+sizeof(RECT)*(1+chromeCount+exclusionCount));
+        const uint32_t count=static_cast<uint32_t>(chromeCount);
+        memcpy(payload.data(),&count,4);
+        uint8_t* cursor=payload.data()+4;
+        memcpy(cursor,&client,sizeof(RECT)); cursor+=sizeof(RECT);
+        if (chromeCount) { memcpy(cursor,chrome.data(),chromeCount*sizeof(RECT)); cursor+=chromeCount*sizeof(RECT); }
+        if (exclusionCount) memcpy(cursor,exclusions.data(),exclusionCount*sizeof(RECT));
+        shell_link_send(side.link,serial,SHELL_FRAME_PAGE,0,++side.revision,payload.data(),payload.size(),&outcome);
+        FlushToInput();
+    } catch (...) {}
+}
+inline void ShellReceive(uint8_t* data, size_t length) noexcept {
+    auto& side=ShellSide();
+    ShellFrameView view{};
+    if (side.link) shell_link_receive(side.link,data,length,&view);
+    shell_link_free_frame(data,length);
+    if (side.link) FlushToInput();
+}
+inline void RetireShape(HWND shell) noexcept {
+    auto& side=ShellSide();
+    uint32_t serial{};
+    if (side.link && shell_link_serial(side.link,reinterpret_cast<uintptr_t>(shell),false,&serial)==SHELL_STATUS_OK)
+        shell_link_retire(side.link,serial);
+}
+// The input thread's half. ShellCore validated the payload's layout and rectangles.
+inline void ApplyShape(HWND shell, const uint8_t* payload, size_t length) noexcept {
+    auto* window=Find(shell);
+    if (!window || !window->page || length<4+sizeof(RECT)) return;
+    try {
+        uint32_t chromeCount{};
+        memcpy(&chromeCount,payload,4);
+        const size_t total=(length-4)/sizeof(RECT);
+        if (chromeCount+1>total) return;
+        std::vector<RECT> all(total);
+        memcpy(all.data(),payload+4,total*sizeof(RECT));
+        const RECT client=all[0];
+        const std::vector<RECT> chrome(all.begin()+1,all.begin()+1+chromeCount), exclusions(all.begin()+1+chromeCount,all.end());
+        RECT current{};
+        GetClientRect(window->page,&current);
+        if (!EqualRect(&current,&client))
+            SetWindowPos(window->page,nullptr,0,0,client.right-client.left,client.bottom-client.top,
+                SWP_NOZORDER|SWP_NOACTIVATE|SWP_NOOWNERZORDER);
+        HRGN region=NativeWindowHost::PageRegion(client,chrome,exclusions);
+        if (region && !SetWindowRgn(window->page,region,TRUE)) DeleteObject(region);
+    } catch (...) {}
+}
+inline void Receive(uint8_t* data, size_t length) noexcept {
+    auto& host=State();
+    ShellFrameView view{};
+    if (host.link && shell_link_receive(host.link,data,length,&view)==SHELL_STATUS_OK && view.delivered) {
+        if (view.channel==SHELL_FRAME_LIFETIME && view.kind==SHELL_FRAME_LIFETIME_INTRODUCE) {
+            uint64_t handle{};
+            memcpy(&handle,view.payload,sizeof(handle));
+            // Only a window this thread made a page child for.
+            if (host.windows.count(reinterpret_cast<HWND>(static_cast<uintptr_t>(handle))))
+                shell_link_adopt(host.link,view.window,static_cast<uintptr_t>(handle));
+        } else if (view.channel==SHELL_FRAME_PAGE && view.kind==0) {
+            uintptr_t handle{};
+            if (shell_link_handle(host.link,view.window,&handle)==SHELL_STATUS_OK)
+                ApplyShape(reinterpret_cast<HWND>(handle),view.payload,view.length);
+        }
+    }
+    shell_link_free_frame(data,length);
+    if (!host.link) return;
+    // Credit returns go back to the shell.
+    for (;;) {
+        uint8_t* out{}; size_t size{};
+        if (shell_link_take(host.link,false,&out,&size)!=SHELL_STATUS_OK || !out) return;
+        const HWND target=IndependentHost::State().dispatcher;
+        if (!target || !PostMessageW(target,CreditMessage,size,reinterpret_cast<LPARAM>(out))) {
+            shell_link_free_frame(out,size);
+            return;
+        }
+    }
 }
 
 // --- The thread -------------------------------------------------------------------------------
@@ -191,6 +371,8 @@ inline HRESULT Start() noexcept {
             RegisterClassW(&wc);
             const HWND dispatcher=CreateWindowExW(0,wc.lpszClassName,L"",0,0,0,0,0,HWND_MESSAGE,nullptr,wc.hInstance,nullptr);
             host.owner=GetCurrentThreadId();
+            host.link=shell_link_create(1,nullptr);
+            NativePageInput::Mailboxed()=true;
             host.dispatcher=dispatcher;
             SetEvent(ready);
             if (dispatcher) {
@@ -210,11 +392,15 @@ inline HRESULT Start() noexcept {
                     DispatchMessageW(&message);
                 }
             }
-            for (auto& [shell,window] : host.windows)
-                if (window.page && IsWindow(window.page)) DestroyWindow(window.page);
+            // Destroying a page child erases its entry (Destroyed), so not while iterating.
+            std::vector<HWND> pages;
+            for (auto& [shell,window] : host.windows) if (window.page) pages.push_back(window.page);
+            for (HWND page : pages) if (IsWindow(page)) DestroyWindow(page);
             host.windows.clear();
             host.dispatcher=nullptr;
             if (dispatcher) DestroyWindow(dispatcher);
+            // Frames still posted to the dispatcher go with it, and so does the link.
+            shell_link_destroy(host.link); host.link=nullptr;
             if (SUCCEEDED(apartment)) CoUninitialize();
         });
     } catch (...) { CloseHandle(ready); return E_OUTOFMEMORY; }
@@ -223,6 +409,8 @@ inline HRESULT Start() noexcept {
     if (!host.dispatcher) return E_FAIL;
     NativeWindowHost::RequestPage=RequestPage;
     NativeWindowHost::PageDestroyed=Destroyed;
+    NativeWindowHost::SendPageShape=SendShape;
+    NativeWindowHost::RetirePageShape=RetireShape;
     return S_OK;
 }
 // After the shell's thread: its windows' page children are destroyed with them, which needs
@@ -231,6 +419,8 @@ inline void Stop() noexcept {
     auto& host=State();
     if (!host.thread.joinable()) return;
     NativeWindowHost::RequestPage=nullptr;
+    NativeWindowHost::SendPageShape=nullptr;
+    NativeWindowHost::RetirePageShape=nullptr;
     PostThreadMessageW(host.owner,WM_QUIT,0,0);
     host.thread.join();
 }

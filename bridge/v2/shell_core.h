@@ -24,7 +24,7 @@
  layout or meaning of anything in [`ffi`] changes; the native host refuses to
  use a core whose version it was not compiled against.
  */
-#define SHELL_CORE_ABI_VERSION 84
+#define SHELL_CORE_ABI_VERSION 85
 
 #define MAX_EDIT_ID 9007199254740991
 
@@ -94,6 +94,11 @@
 
 #define PAGE_INPUT_MAX_EVENTS 128
 
+/*
+ The event kind that tells Gecko a publication was accepted (`revision`).
+ */
+#define ACCEPTED 7
+
 #define STARTUP_MAX_TABS 32
 
 #define STARTUP_MAX_TEXT 32768
@@ -114,9 +119,14 @@
 
 #define MAX_CLIP 64
 
-#define MAX_TITLE 32768
+/*
+ Strip and address, plus the clip list's bound.
+ */
+#define MAX_CHROME 2
 
-#define MAX_BYTES ((32 * 1024) * 1024)
+
+
+#define MAX_TITLE 32768
 
 /*
  Channel and kind numbers for C. They mirror [`frame::Channel`] and
@@ -143,6 +153,8 @@
 #define SHELL_FRAME_STARTUP 9
 
 #define SHELL_FRAME_CLOSE 10
+
+#define SHELL_FRAME_PAGE 11
 
 #define SHELL_FRAME_LIFETIME_BIND 0
 
@@ -3982,6 +3994,13 @@ ShellStatus shell_core_layout_invalidate(ShellCore *core, uint32_t consumer);
  Valid non-overlapping pointers; text readable for length units during call.
  */
 ShellStatus shell_core_page_input_apply(ShellCore *core, const ShellPageInputCommand *input);
+
+/*
+ # Safety
+ core is live and exclusively accessed by its native owner. Ok when a geometry request is
+ still waiting to be read, Busy otherwise.
+ */
+ShellStatus shell_core_page_geometry_pending(ShellCore *core);
 
 /*
  # Safety

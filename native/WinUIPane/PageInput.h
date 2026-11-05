@@ -3,7 +3,12 @@
 #include <olectl.h>
 #include <inputscope.h>
 #include <textstor.h>
+#include <atomic>
+#include <deque>
 #include <map>
+#include <memory>
+#include <mutex>
+#include <vector>
 #include "shell_core.h"
 #pragma comment(lib,"uuid.lib")
 
@@ -15,6 +20,34 @@ inline constexpr GUID InputScopeAttribute{0x1713dd5a,0x68e7,0x4a5b,{0x9a,0xf6,0x
 inline bool Diagnostics(){static const bool enabled=GetEnvironmentVariableW(L"FENN_PANE_DIAGNOSTICS",nullptr,0)>0;return enabled;}
 inline UINT WakeMessage() { static UINT id=RegisterWindowMessageW(L"Fenn.NativeWindowHost.PageInput.v1");return id; }
 inline UINT LockMessage() { static UINT id=RegisterWindowMessageW(L"Fenn.NativeWindowHost.PageInputLock.v1");return id; }
+// On the engine's input thread (M5c) Gecko never calls into the store. The store copies its
+// events into this mailbox, which Gecko drains under its lock, and Gecko's other calls are posted
+// jobs. Events that arrive while Gecko still has a batch to drain stay in the Rust queue, where
+// composition updates coalesce as before.
+struct Mailbox {
+    struct Item { WinUIPageInputEvent event; std::vector<WCHAR> text; };
+    std::mutex lock;
+    std::deque<Item> items;
+    std::atomic<bool> refill{};
+    HWND page{};
+};
+// Keyed by the shell window, which is what Gecko names.
+inline std::mutex& MailboxesLock() { static auto* lock=new std::mutex; return *lock; }
+inline std::map<HWND,std::shared_ptr<Mailbox>>& Mailboxes() { static auto* map=new std::map<HWND,std::shared_ptr<Mailbox>>; return *map; }
+inline std::shared_ptr<Mailbox> FindMailbox(HWND shell) {
+    std::lock_guard guard(MailboxesLock());
+    auto it=Mailboxes().find(shell);return it==Mailboxes().end() ? nullptr : it->second;
+}
+// Set on the input thread: its stores deliver through mailboxes.
+inline bool& Mailboxed() { static thread_local bool value=false; return value; }
+inline bool Fill(const ShellPageInputEvent& event,WinUIPageInputEvent& output) {
+    if(event.clause_count>64)return false;
+    output={event.session,event.edit,event.revision,event.request,event.kind,event.start,event.end,event.caret,static_cast<uint32_t>(event.length)};
+    static_assert(sizeof(WinUIPageClause)==sizeof(ShellPageClause));
+    output.clauseCount=static_cast<uint32_t>(event.clause_count);
+    if(event.clause_count)memcpy(output.clauses,event.clauses,event.clause_count*sizeof(ShellPageClause));
+    return true;
+}
 struct Store final : ITextStoreACP, ITfContextOwnerCompositionSink, ITfTextEditSink, ITfInputScope {
     std::atomic<ULONG> refs{1};
     HWND window{}, endpoint{};
@@ -28,6 +61,7 @@ struct Store final : ITextStoreACP, ITfContextOwnerCompositionSink, ITfTextEditS
     TfEditCookie editCookie{};
     DWORD editSink=TF_INVALID_COOKIE, mask{}, lock{}, pendingLock{};
     bool enabled{}, wake{}, dirty{}, ending{}, discarding{}, associated{};
+    std::shared_ptr<Mailbox> mailbox;bool armed{};
     bool publicationPending{};WinUIPageInput pendingPublication{};std::vector<WCHAR> pendingText;
     LONG compositionStart{}, compositionLength{};
     TsActiveSelEnd selectionEnd=TS_AE_END;
@@ -80,7 +114,28 @@ struct Store final : ITextStoreACP, ITfContextOwnerCompositionSink, ITfTextEditS
         if(manager && client!=TF_CLIENTID_NULL) manager->Deactivate();
         client=TF_CLIENTID_NULL;manager=nullptr;endpoint=nullptr;
     }
+    // Moves every queued event into the mailbox and wakes Gecko once. Until Gecko empties the
+    // mailbox, later events stay queued.
+    void Transfer() {
+        bool moved=false;
+        {
+            std::lock_guard guard(mailbox->lock);
+            ShellPageInputEvent event{};
+            while(shell_core_page_input_event(core.get(),&event)==SHELL_STATUS_OK) {
+                Mailbox::Item item{};
+                if(event.length<=PAGE_INPUT_MAX_TEXT && Fill(event,item.event)) {
+                    if(event.length)item.text.assign(reinterpret_cast<const WCHAR*>(event.text),reinterpret_cast<const WCHAR*>(event.text)+event.length);
+                    mailbox->items.push_back(std::move(item));moved=true;
+                }
+                Apply(5);
+            }
+        }
+        if(moved) {armed=true;if(!PostMessageW(endpoint,WakeMessage(),reinterpret_cast<WPARAM>(window),0))enabled=false;}
+    }
+    // Gecko emptied the mailbox.
+    void Refill() {armed=false;Transfer();}
     bool Wake() {
+        if(mailbox) {if(!armed)Transfer();return enabled;}
         if(!wake) {wake=PostMessageW(endpoint,WakeMessage(),reinterpret_cast<WPARAM>(window),0)!=FALSE;if(!wake) enabled=false;}
         return enabled;
     }
@@ -198,6 +253,10 @@ struct Store final : ITextStoreACP, ITfContextOwnerCompositionSink, ITfTextEditS
         if(status!=SHELL_STATUS_OK && status!=SHELL_STATUS_BUSY) return E_INVALIDARG;
         if(status==SHELL_STATUS_OK) {if(old.session!=input.session || old.start!=input.start || old.end!=input.end)interimSelection=false;selectionEnd=input.reversed ? TS_AE_START : TS_AE_END;textBase=input.textBase;}
         auto layout=shell_core_page_geometry_context(core.get(),input.session,input.revision);
+        // Read before waking: a mailbox takes the refreshed requests with it.
+        const bool refreshing=shell_core_page_geometry_pending(core.get())==SHELL_STATUS_OK;
+        // Gecko adopts this publication's text base when it reads the acceptance.
+        Wake();
         if(layout==SHELL_STATUS_BUSY)return S_OK;
         if(layout!=SHELL_STATUS_OK)return E_INVALIDARG;
         caret=input.caret;editor=input.editor;enabled=true;
@@ -220,10 +279,8 @@ struct Store final : ITextStoreACP, ITfContextOwnerCompositionSink, ITfTextEditS
                 if(mask&TS_AS_TEXT_CHANGE) sink->OnTextChange(0,&change);
                 if(mask&TS_AS_SEL_CHANGE) sink->OnSelectionChange();
             }
-            ShellPageInputEvent pending{};
-            const bool refreshing=shell_core_page_input_event(core.get(),&pending)==SHELL_STATUS_OK && pending.kind==6;
-            if(refreshing)Wake();
-            else if(mask&TS_AS_LAYOUT_CHANGE) sink->OnLayoutChange(TS_LC_CHANGE,0);
+            // Refreshed requests notify layout when Gecko answers them (Geometry).
+            if(!refreshing && (mask&TS_AS_LAYOUT_CHANGE)) sink->OnLayoutChange(TS_LC_CHANGE,0);
         }
         return S_OK;
     }
@@ -389,7 +446,16 @@ inline HRESULT WINAPI Publish(HWND hwnd,const WinUIPageInput* input) noexcept {
     try {
         if(!input || GetWindowThreadProcessId(hwnd,nullptr)!=GetCurrentThreadId())return E_INVALIDARG;
         HWND endpoint=static_cast<HWND>(GetPropW(hwnd,WINUI_PANE_ENDPOINT_PROPERTY));if(!endpoint)return E_INVALIDARG;
-        auto& entry=Stores()[hwnd];if(!entry)entry.attach(new Store(hwnd,endpoint));return entry->Publish(*input);
+        auto& entry=Stores()[hwnd];
+        if(!entry) {
+            entry.attach(new Store(hwnd,endpoint));
+            if(Mailboxed()) {
+                auto box=std::make_shared<Mailbox>();box->page=hwnd;
+                {std::lock_guard guard(MailboxesLock());Mailboxes()[GetAncestor(hwnd,GA_PARENT)]=box;}
+                entry->mailbox=box;
+            }
+        }
+        return entry->Publish(*input);
     }catch(...){return winrt::to_hresult();}
 }
 inline HRESULT WINAPI Drain(HWND hwnd,WinUIPageInputEvent* output,WCHAR* text,uint32_t capacity) noexcept {
@@ -397,11 +463,7 @@ inline HRESULT WINAPI Drain(HWND hwnd,WinUIPageInputEvent* output,WCHAR* text,ui
     auto store=Get(hwnd);if(!store)return S_FALSE;store->wake=false;ShellPageInputEvent event{};
     if(shell_core_page_input_event(store->core.get(),&event)!=SHELL_STATUS_OK)return S_FALSE;
     if(event.length>capacity)return HRESULT_FROM_WIN32(ERROR_INSUFFICIENT_BUFFER);
-    *output={event.session,event.edit,event.revision,event.request,event.kind,event.start,event.end,event.caret,static_cast<uint32_t>(event.length)};
-    static_assert(sizeof(WinUIPageClause)==sizeof(ShellPageClause));
-    if(event.clause_count>64)return E_UNEXPECTED;
-    output->clauseCount=static_cast<uint32_t>(event.clause_count);
-    if(event.clause_count)memcpy(output->clauses,event.clauses,event.clause_count*sizeof(ShellPageClause));
+    if(!Fill(event,*output))return E_UNEXPECTED;
     if(event.length)memcpy(text,event.text,event.length*sizeof(WCHAR));store->Apply(5);return S_OK;
 }
 inline HRESULT WINAPI Geometry(HWND hwnd,const WinUIPageGeometry* input) noexcept {
@@ -409,7 +471,14 @@ inline HRESULT WINAPI Geometry(HWND hwnd,const WinUIPageGeometry* input) noexcep
     auto store=Get(hwnd);return store ? store->Geometry(*input) : S_FALSE;
 }
 inline HRESULT WINAPI Commit(HWND hwnd,BOOL cancel) noexcept {if(GetWindowThreadProcessId(hwnd,nullptr)!=GetCurrentThreadId())return E_INVALIDARG;auto store=Get(hwnd);return store ? store->Commit(cancel!=FALSE) : S_FALSE;}
-inline void Remove(HWND hwnd) {auto it=Stores().find(hwnd);if(it!=Stores().end()){it->second->Close();Stores().erase(it);}}
+inline void Remove(HWND hwnd) {
+    auto it=Stores().find(hwnd);if(it==Stores().end())return;
+    if(auto box=it->second->mailbox) {
+        std::lock_guard guard(MailboxesLock());
+        for(auto m=Mailboxes().begin();m!=Mailboxes().end();++m) if(m->second==box) {Mailboxes().erase(m);break;}
+    }
+    it->second->Close();Stores().erase(it);
+}
 inline bool Key(MSG* message) {auto store=Get(message->hwnd);return store && store->Key(message);}
 inline void Focus(HWND hwnd) {auto store=Get(hwnd);if(store && store->enabled && store->manager)store->manager->SetFocus(store->document.get());}
 inline void Blur(HWND hwnd) {auto store=Get(hwnd);if(store)store->Commit(false);}
