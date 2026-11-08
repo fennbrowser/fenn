@@ -134,7 +134,12 @@ struct XamlSlot {
     void SystemBackdrop(Media::SystemBackdrop const& backdrop) const {
         if (state->island) { state->island.SystemBackdrop(backdrop); return; }
         if (!backdrop) return;
-        if (auto* host = NativeWindowHost::Get(state->top); host && host->window) host->window.SystemBackdrop(backdrop);
+        if (auto* host = NativeWindowHost::Get(state->top); host && host->window) {
+            host->window.SystemBackdrop(backdrop);
+            // Gecko must not replace the WinUI Window's backdrop/frame after
+            // binding. The property belongs to this HWND and dies with it.
+            check_bool(SetPropW(state->top,L"Fenn.NativeBackdrop",reinterpret_cast<HANDLE>(1)));
+        }
     }
     Media::SystemBackdrop SystemBackdrop() const {
         if (state->island) return state->island.SystemBackdrop();

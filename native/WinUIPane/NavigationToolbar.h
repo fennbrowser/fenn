@@ -88,6 +88,23 @@ struct NativeNavigationToolbar {
     bool keyboardActivation{};
     bool stopping{}, hasOverflow{}, requiredOverflow{}, overflowQueued{}, rootObserved{};
     NativeToolbarCustomization::State layoutState;
+    std::vector<winrt::hstring> startupControls;
+    bool startupProductMenu{};
+    void StartupLayout(JObject const& preview) {
+        // A new/missing-cache profile uses a neutral disabled stock preview.
+        // It is not a placement model or command authority; Firefox replaces it.
+        auto initial=preview ? preview : JObject::Parse(LR"({"controls":["back","forward","reload","address","extensions","profile"],"productMenu":true,"menuLabel":"Menu","menuTooltip":"Menu"})");
+        startupControls.clear();
+        for(auto value:initial.GetNamedArray(L"controls"))startupControls.push_back(value.GetString());
+        startupProductMenu=initial.GetNamedBoolean(L"productMenu");
+        productMenu.button.IsEnabled(false);
+        productMenu.button.Visibility(startupProductMenu?Microsoft::UI::Xaml::Visibility::Visible:Microsoft::UI::Xaml::Visibility::Collapsed);
+        Microsoft::UI::Xaml::Automation::AutomationProperties::SetName(productMenu.button,initial.GetNamedString(L"menuLabel"));
+        Microsoft::UI::Xaml::Controls::ToolTipService::SetToolTip(productMenu.button,winrt::box_value(initial.GetNamedString(L"menuTooltip")));
+        Layout({});
+    }
+    void FinishStartupLayout() {startupControls.clear();startupProductMenu=false;}
+
     std::wstring pendingOverflow, sentOverflow;
     std::array<Microsoft::UI::Dispatching::DispatcherQueueTimer, 2> historyTimers{nullptr, nullptr};
     std::array<bool, 2> historyHeld{};
@@ -512,6 +529,12 @@ struct NativeNavigationToolbar {
             }
             if(hasOverflow)desired.push_back(buttons[6]);
             if(!productMenu.enabled)desired.push_back(buttons[5]);
+        } else if(visible && !startupControls.empty()) {
+            for(auto const& control:startupControls) {
+                if(control==L"address")desired.push_back(address);
+                else for(size_t i=0;i<std::size(commands);++i)if(control==commands[i]){desired.push_back(buttons[i]);break;}
+            }
+            if(!startupProductMenu && !productMenu.enabled)desired.push_back(buttons[5]);
         } else if(visible) {
             for(size_t i=0;i<3;i++)desired.push_back(buttons[i]);
             desired.push_back(address);desired.push_back(buttons[3]);desired.push_back(buttons[4]);

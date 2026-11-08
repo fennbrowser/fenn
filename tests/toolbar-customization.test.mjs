@@ -19,12 +19,13 @@ function fixture(retired=[]) {
   moveWidgetWithinArea(id,position){saved=null;calls.push(['move',id,position]);if(order.indexOf(id)<position)position--;order=order.filter(x=>x!==id);order.splice(position,0,id);}};
  const context=vm.createContext({Services:{strings:{createBundle:()=>({GetStringFromName:()=> 'Flexible Space'})},prefs:{addObserver(){},removeObserver(){},getPrefType(p){return prefs.has(p)?64:0;},getIntPref(p){return prefs.get(p);},prefHasUserValue(p){return prefs.has(p);}}},ChromeUtils:{importESModule:()=>({CustomizableUI:ui})}});
  Object.assign(context,{readActionStamp,actionStampMatches,STOCK_TOOLBAR_WIDGETS,WinUIStockToolbar});
- vm.runInContext(readFileSync(new URL('../upstream/firefox/browser/base/content/WinUIToolbarCustomization.sys.mjs',import.meta.url),'utf8').replace(/^import .*;$/gm,'').replace('export class WinUIToolbarCustomization','this.Customization = class WinUIToolbarCustomization'),context);
+ vm.runInContext(readFileSync(new URL('../upstream/firefox/browser/base/content/WinUIToolbarCustomization.sys.mjs',import.meta.url),'utf8').replace(/^import .*;$/gm,'').replace('export function startupToolbarControls','this.startupToolbarControls = function').replace('export class WinUIToolbarCustomization','this.Customization = class WinUIToolbarCustomization'),context);
  const toolbar={window:{MutationObserver:class {observe(){} disconnect(){}},addEventListener(){},removeEventListener(){},document:{getElementById:()=>({overflowable:{setNativeOverflow:ids=>calls.push(["transient",...ids])}})}},owner:{invalidateAddress(){revision++;},localization:()=>({formatValueSync:k=>k})}};
+ ui.getNativeStartupWidgetIdsInArea=area=>ui.getWidgetIdsInArea(area);
  const c=new context.Customization(toolbar);toolbar.navigationState=()=>c.snapshot({});
  const state=()=>c.snapshot({});
  const command=(control,verb,target)=>{const s=state();return `customize:${s.revision}:${s.items.find(i=>i.control===control).id}:${verb}`+(target?':'+s.items.find(i=>i.control===target).id:'');};
- return {c,state,command,calls,ui,nodes,prefs,extras,overflow,order:()=>order};
+ return {c,state,command,calls,ui,nodes,prefs,extras,overflow,order:()=>order,startup:()=>Array.from(context.startupToolbarControls(ui))};
 }
 test('repeated accepted overflow acknowledgments do not update Firefox again',()=>{
  const f=fixture(),s=f.state(),item=s.items.find(i=>i.canAutoOverflow);
@@ -247,4 +248,12 @@ test('an extension is hosted only when its control is actually published and wit
  assert.equal(f.c.hostedWidgets.has('extension-0'),true);
  assert.equal(f.c.hostedWidgets.has('extension-31'),true);
  assert.equal(f.c.hostedWidgets.has('extension-32'),false,'the first omitted extension requires fallback');
+});
+
+test('startup uses the same Firefox placement mapping, without contextual or extension commands',()=>{
+ const f=fixture(['downloads-button','reset-pbm-toolbar-button','unknown-extension']);
+ assert.deepEqual(f.startup(),['back','address','reload','profile']);
+ f.ui.moveWidgetWithinArea('fxa-toolbar-menu-button',0);
+ assert.deepEqual(f.startup(),['profile','back','address','reload']);
+ assert.ok(!f.startup().includes('downloads') && !f.startup().includes('reset-pbm'));
 });

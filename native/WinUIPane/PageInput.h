@@ -60,7 +60,7 @@ struct Store final : ITextStoreACP, ITfContextOwnerCompositionSink, ITfTextEditS
     TfClientId client=TF_CLIENTID_NULL;
     TfEditCookie editCookie{};
     DWORD editSink=TF_INVALID_COOKIE, mask{}, lock{}, pendingLock{};
-    bool enabled{}, wake{}, dirty{}, ending{}, discarding{}, associated{};
+    bool enabled{}, wake{}, dirty{}, ending{}, discarding{}, associated{}, closed{};
     std::shared_ptr<Mailbox> mailbox;bool armed{};
     bool publicationPending{};WinUIPageInput pendingPublication{};std::vector<WCHAR> pendingText;
     LONG compositionStart{}, compositionLength{};
@@ -84,15 +84,17 @@ struct Store final : ITextStoreACP, ITfContextOwnerCompositionSink, ITfTextEditS
     STDMETHODIMP_(ULONG) Release() override {auto value=--refs;if (!value) delete this;return value;}
     ShellPageInputState Read(const uint16_t** text=nullptr) {
         ShellPageInputState state{};const uint16_t* ignored{};
+        if(closed){if(text)*text=nullptr;return state;}
         shell_core_page_input_read(core.get(),&state,text ? text : &ignored);return state;
     }
     bool Apply(uint32_t operation,LONG start=0,LONG end=0,const WCHAR* text=nullptr,ULONG count=0,ULONG reversed=0) {
-        if(start<0 || end<start) return false;
+        if(closed || start<0 || end<start) return false;
         ShellPageInputCommand command{};command.operation=operation;command.start=start;command.end=end;command.caret=reversed;
         command.text=reinterpret_cast<const uint16_t*>(text);command.length=count;
         return shell_core_page_input_apply(core.get(),&command)==SHELL_STATUS_OK;
     }
     HRESULT Open() {
+        if(closed)return RO_E_CLOSED;
         HRESULT hr=CoCreateInstance(CLSID_TF_ThreadMgr,nullptr,CLSCTX_INPROC_SERVER,IID_PPV_ARGS(manager.put()));
         if(FAILED(hr)) return hr;
         if(FAILED(hr=manager->Activate(&client))) return hr;
@@ -105,7 +107,15 @@ struct Store final : ITextStoreACP, ITfContextOwnerCompositionSink, ITfTextEditS
         return hr;
     }
     void Close() {
+        if(closed)return;
+        // COM teardown can reenter a still-held lock. Revoke before those calls,
+        // and never let deferred publication resurrect this document's store.
+        closed=true;
         enabled=false;
+        publicationPending=false;pendingPublication={};pendingText.clear();
+        pendingGeometry.clear();pendingLock=0;dirty=false;ending=false;
+        clauses.clear();core.reset();
+        if(mailbox){std::lock_guard guard(mailbox->lock);mailbox->items.clear();mailbox->refill=false;mailbox->page=nullptr;}
         if(manager && document) {winrt::com_ptr<ITfDocumentMgr> previous;manager->AssociateFocus(window,nullptr,previous.put());}
         if(context && editSink!=TF_INVALID_COOKIE) {auto source=context.try_as<ITfSource>();if(source) source->UnadviseSink(editSink);editSink=TF_INVALID_COOKIE;}
         composition=nullptr;
@@ -117,6 +127,7 @@ struct Store final : ITextStoreACP, ITfContextOwnerCompositionSink, ITfTextEditS
     // Moves every queued event into the mailbox and wakes Gecko once. Until Gecko empties the
     // mailbox, later events stay queued.
     void Transfer() {
+        if(closed)return;
         bool moved=false;
         {
             std::lock_guard guard(mailbox->lock);
@@ -135,11 +146,13 @@ struct Store final : ITextStoreACP, ITfContextOwnerCompositionSink, ITfTextEditS
     // Gecko emptied the mailbox.
     void Refill() {armed=false;Transfer();}
     bool Wake() {
+        if(closed)return false;
         if(mailbox) {if(!armed)Transfer();return enabled;}
         if(!wake) {wake=PostMessageW(endpoint,WakeMessage(),reinterpret_cast<WPARAM>(window),0)!=FALSE;if(!wake) enabled=false;}
         return enabled;
     }
     bool Emit(uint32_t kind,LONG start,LONG end,const WCHAR* text,ULONG count,ULONG cursor) {
+        if(closed)return false;
         ShellPageInputCommand command{};command.operation=4;command.kind=kind;command.start=start;command.end=end;
         command.caret=cursor;command.text=reinterpret_cast<const uint16_t*>(text);command.length=count;
         if(shell_core_page_input_apply(core.get(),&command)!=SHELL_STATUS_OK) {enabled=false;return false;}
@@ -198,6 +211,7 @@ struct Store final : ITextStoreACP, ITfContextOwnerCompositionSink, ITfTextEditS
         if(position<static_cast<uint32_t>(compositionLength))clauses.push_back({position,static_cast<uint32_t>(compositionLength),1});
     }
     void Flush() {
+        if(closed)return;
         if(!dirty && !ending) return;
         const uint16_t* text{};auto state=Read(&text);
         if(compositionStart<0 || compositionLength<0 || uint64_t(compositionStart)+compositionLength>state.length) {enabled=false;return;}
@@ -228,6 +242,7 @@ struct Store final : ITextStoreACP, ITfContextOwnerCompositionSink, ITfTextEditS
         return services ? services->TerminateComposition(nullptr) : E_NOINTERFACE;
     }
     HRESULT Publish(const WinUIPageInput& input) {
+        if(closed)return RO_E_CLOSED;
         if(input.reversed>1 || input.scopeCount>8 || input.length>PAGE_INPUT_MAX_TEXT || (input.length && !input.text))return E_INVALIDARG;
         auto old=Read();
         // A deferred publication must not acknowledge a base shift that can be
@@ -296,6 +311,7 @@ struct Store final : ITextStoreACP, ITfContextOwnerCompositionSink, ITfTextEditS
         return SUCCEEDED(hr) && eaten;
     }
     STDMETHODIMP AdviseSink(REFIID iid,IUnknown* object,DWORD flags) override {
+        if(closed)return RO_E_CLOSED;
         if(iid!=IID_ITextStoreACPSink || !object) return E_INVALIDARG;
         winrt::com_ptr<ITextStoreACPSink> next;auto hr=object->QueryInterface(IID_PPV_ARGS(next.put()));if(FAILED(hr)) return hr;
         if(sink && sink.get()!=next.get()) return CONNECT_E_ADVISELIMIT;sink=next;mask=flags;return S_OK;
@@ -307,12 +323,13 @@ struct Store final : ITextStoreACP, ITfContextOwnerCompositionSink, ITfTextEditS
         sink=nullptr;mask=0;return S_OK;
     }
     STDMETHODIMP RequestLock(DWORD flags,HRESULT* session) override {
+        if(closed)return RO_E_CLOSED;
         if(!session) return E_POINTER;if(!sink) return E_UNEXPECTED;
         if(lock) {if(flags&TS_LF_SYNC) {*session=TS_E_SYNCHRONOUS;return S_OK;} pendingLock=flags;*session=TS_S_ASYNC;return S_OK;}
         AddRef();unsigned passes=0;
         do {lock=flags;pendingLock=0;auto retained=sink;
             *session=retained->OnLockGranted(flags);lock=0;Flush();flags=pendingLock;
-        } while(flags && ++passes<8);
+        } while(!closed && flags && ++passes<8);
         if(pendingLock) PostMessageW(window,LockMessage(),reinterpret_cast<WPARAM>(endpoint),0);
         if(publicationPending) {
             auto input=pendingPublication;auto text=std::move(pendingText);publicationPending=false;
@@ -344,6 +361,7 @@ struct Store final : ITextStoreACP, ITfContextOwnerCompositionSink, ITfTextEditS
         return S_OK;
     }
     STDMETHODIMP GetText(LONG start,LONG end,WCHAR* output,ULONG capacity,ULONG* copied,TS_RUNINFO* runs,ULONG runCapacity,ULONG* runCount,LONG* next) override {
+        if(closed)return RO_E_CLOSED;
         if(!copied || !runCount || !next || (capacity && !output) || (runCapacity && !runs))return E_POINTER;
         *copied=0;*runCount=0;if(!lock)return TS_E_NOLOCK;
         const uint16_t* text{};auto state=Read(&text);if(end==-1)end=state.length;
@@ -435,9 +453,9 @@ struct Store final : ITextStoreACP, ITfContextOwnerCompositionSink, ITfTextEditS
         if(!Emit(1,selected.start,selected.end,nullptr,0,0))return S_OK;
         clauses.clear();composition.copy_from(view);Extent(view);*accept=TRUE;return S_OK;
     }
-    STDMETHODIMP OnUpdateComposition(ITfCompositionView* view,ITfRange*) override {if(view!=composition.get())return E_INVALIDARG;Extent(view);clauses.clear();dirty=true;return S_OK;}
-    STDMETHODIMP OnEndComposition(ITfCompositionView* view) override {if(view!=composition.get())return E_INVALIDARG;Extent(view);if(Diagnostics())fprintf(stderr,"FennPageIME end extent=%ld,%ld lock=%lu\n",compositionStart,compositionLength,lock);FinishComposition();return S_OK;}
-    STDMETHODIMP OnEndEdit(ITfContext*,TfEditCookie cookie,ITfEditRecord*) override {if(composition) {Extent(composition.get());CaptureClauses(cookie);dirty=true;}if(!lock)Flush();return S_OK;}
+    STDMETHODIMP OnUpdateComposition(ITfCompositionView* view,ITfRange*) override {if(closed)return RO_E_CLOSED;if(view!=composition.get())return E_INVALIDARG;Extent(view);clauses.clear();dirty=true;return S_OK;}
+    STDMETHODIMP OnEndComposition(ITfCompositionView* view) override {if(closed)return RO_E_CLOSED;if(view!=composition.get())return E_INVALIDARG;Extent(view);if(Diagnostics())fprintf(stderr,"FennPageIME end extent=%ld,%ld lock=%lu\n",compositionStart,compositionLength,lock);FinishComposition();return S_OK;}
+    STDMETHODIMP OnEndEdit(ITfContext*,TfEditCookie cookie,ITfEditRecord*) override {if(closed)return RO_E_CLOSED;if(composition) {Extent(composition.get());CaptureClauses(cookie);dirty=true;}if(!lock)Flush();return S_OK;}
 };
 // Per thread: each thread that owns page windows has its own stores and TSF thread manager (M5c).
 inline std::map<HWND,winrt::com_ptr<Store>>& Stores() {static thread_local std::map<HWND,winrt::com_ptr<Store>> stores;return stores;}

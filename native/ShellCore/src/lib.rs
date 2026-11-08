@@ -58,6 +58,12 @@ pub mod startup_rows;
 pub mod frame;
 pub mod link;
 pub mod link_ffi;
+pub mod pipe;
+pub mod pipe_ffi;
+pub mod recovery;
+pub mod recovery_windows;
+pub mod recovery_identity;
+pub mod reconnect;
 
 #[cfg(not(test))]
 pub mod ffi;
@@ -67,4 +73,4 @@ pub mod ffi;
 /// Version of the C boundary in `bridge/v2/shell_core.h`. Bumped whenever the
 /// layout or meaning of anything in [`ffi`] changes; the native host refuses to
 /// use a core whose version it was not compiled against.
-pub const SHELL_CORE_ABI_VERSION: u32 = 85;
+pub const SHELL_CORE_ABI_VERSION: u32 = 99;

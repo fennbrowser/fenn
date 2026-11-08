@@ -14,7 +14,9 @@
 namespace PaneLink {
 inline constexpr UINT FrameMessage=WM_APP+902;
 inline constexpr UINT WakeMessage=WM_APP+903;
-inline constexpr uint32_t Generation=1;
+inline uint32_t Generation=1;
+// Split shell installs a byte-only adapter; loopback remains the default contract transport.
+inline bool (*ShellTransport)(const uint8_t*,size_t) noexcept = nullptr;
 
 inline HRESULT Result(ShellLinkSend outcome) noexcept {
     switch (outcome) {
@@ -305,7 +307,10 @@ inline void FlushShell() noexcept {
     for (;;) {
         uint8_t* data{}; size_t length{};
         if (shell_link_take(shell.link,false,&data,&length)!=SHELL_STATUS_OK || !data) return;
-        DeliverToEngine(data,length);
+        if(ShellTransport) {
+            const bool sent=ShellTransport(data,length);shell_link_free_frame(data,length);
+            if(!sent){shell_link_close(shell.link);return;}
+        } else DeliverToEngine(data,length);
     }
 }
 inline HRESULT ShellSend(HWND hwnd, uint16_t channel, uint16_t kind, uint64_t revision, const void* payload, size_t length) noexcept {

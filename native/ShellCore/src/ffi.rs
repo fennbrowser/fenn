@@ -38,6 +38,34 @@ static NEXT_ENDPOINT: AtomicU64 = AtomicU64::new(1);
 pub use crate::startup_rows::ShellStartupRow;
 pub const SHELL_STARTUP_ROW_CAPACITY: u32 = 4128;
 
+/// # Safety
+/// Output is writable and disjoint from core.
+#[no_mangle]
+pub unsafe extern "C" fn shell_core_endpoint(core:*mut ShellCore, output:*mut u64)->ShellStatus {
+    guard(core,|core| {if output.is_null(){return ShellStatus::InvalidArgument;}*output=core.endpoint;ShellStatus::Ok})
+}
+
+/// Revision zero inspects the current identity; otherwise accept a complete
+/// Firefox publication for the current endpoint. Key is empty or 32 lowercase
+/// hex UTF-16 units. Private publications must have an empty key.
+/// # Safety
+/// Input key is readable for length units; output is writable and disjoint.
+#[no_mangle]
+pub unsafe extern "C" fn shell_core_recovery_identity(core: *mut ShellCore, session: u64,
+    revision: u64, privacy: u32, key: *const u16, length: usize,
+    output: *mut crate::recovery_identity::ShellRecoveryWindowIdentity) -> ShellStatus {
+    guard(core, |core| {
+        if output.is_null() || length > 32 || (length != 0 && key.is_null()) { return ShellStatus::InvalidArgument; }
+        if session != core.endpoint || core.queue.is_closed() { return ShellStatus::Rejected; }
+        if revision != 0 {
+            let key = if length == 0 { &[] } else { std::slice::from_raw_parts(key, length) };
+            if core.recovery_identity.publish(revision, privacy, key).is_err() { return ShellStatus::Rejected; }
+        } else if privacy != 0 || length != 0 { return ShellStatus::InvalidArgument; }
+        *output = core.recovery_identity.state();
+        ShellStatus::Ok
+    })
+}
+
 /// Accept a complete startup presentation for this native endpoint. Labels stay
 /// in the native presenter; shared Snapshot semantics own replay/stale/conflict.
 /// # Safety
@@ -731,6 +759,7 @@ pub struct ShellCore {
     startup_handoff: crate::startup_handoff::Handoff,
     startup_rows: crate::startup_rows::Rows,
     startup_presentation: crate::publication::Stream<u64>,
+    recovery_identity: crate::recovery_identity::Identity,
     group_hover: crate::group_hover::GroupHover,
     group_surface: crate::group_surface::GroupSurfaceMotion,
     group_glow: crate::group_glow::GroupGlow,
@@ -980,6 +1009,7 @@ pub unsafe extern "C" fn shell_core_create(limits: *const ShellCoreLimits) -> *m
         startup_handoff: Default::default(),
         startup_rows: Default::default(),
         startup_presentation: crate::publication::Stream::new(crate::publication::StreamKind::Snapshot),
+        recovery_identity: crate::recovery_identity::Identity::default(),
         group_hover: crate::group_hover::GroupHover::default(),
         group_surface: Default::default(),
         group_glow: Default::default(),

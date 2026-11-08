@@ -4,7 +4,7 @@ import {readFileSync} from 'node:fs';
 import vm from 'node:vm';
 const context=vm.createContext({console});
 const pins = new Map();
-context.Services={prefs:{getBoolPref:(key,fallback)=>pins.get(key) ?? fallback,
+context.Services={env:{get:()=>''},prefs:{getBoolPref:(key,fallback)=>pins.get(key) ?? fallback,
   setBoolPref:(key,value)=>pins.set(key,value)}};
 vm.runInContext(readFileSync(new URL('../upstream/firefox/browser/base/content/WinUIOmnibarActions.sys.mjs',import.meta.url),'utf8')
   .replace('export class WinUIOmnibarActions','this.Actions = class WinUIOmnibarActions'),context);
@@ -332,4 +332,24 @@ test('permissions are menu-only while the first sharing indicator stays inline',
   state=adapter.snapshot();
   assert.equal(state.pageActions.items.find(i=>i.key==='permissions').enabled,false);
   assert.equal(adapter.activate('omni:'+permission.id,{},{}),2);
+});
+
+test('process Share queues Firefox data with exact session/document and rejects refused routing',()=>{
+  const {adapter}=menuFixture();context.Services.env={get:()=> '1'};
+  context.Services.focus={activeWindow:adapter.window};
+  adapter.toolbar.owner={addressSession:{sessionId:'42'}};
+  adapter.context=()=>314;
+  adapter.window.gURLBar.makeURIReadable=()=>({displaySpec:'https://example.com/readable'});
+  adapter.window.gBrowser.selectedBrowser={contentTitle:'Current page'};
+  const calls=[];adapter.window.windowUtils={requestWinUIShare:(...args)=>calls.push(args)};
+  const share=adapter.snapshot().pageActions.items.find(i=>i.key==='share');
+  try {
+    assert.equal(adapter.activate('omni:'+share.id,{},{}),1);
+    assert.deepEqual(calls,[['42','314','Current page','https://example.com/readable']]);
+    adapter.window.windowUtils.requestWinUIShare=()=>{throw Error('retired window');};
+    assert.equal(adapter.activate('omni:'+share.id,{},{}),2);
+    context.Services.focus.activeWindow={};
+    assert.equal(adapter.activate('omni:'+share.id,{},{}),2);
+    assert.equal(calls.length,1);
+  }finally{context.Services.env={get:()=>''};}
 });

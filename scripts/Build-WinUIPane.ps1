@@ -21,6 +21,14 @@ if ($Test -or $ContractTest -or $AddressTest -or $MenuTest -or $TabStripTest) {
         & (Join-Path $installation 'MSBuild/Current/Bin/MSBuild.exe') (Join-Path $projectRoot 'tests/native/ExternalDragSource.vcxproj') /p:Configuration=Release /p:Platform=x64 /verbosity:minimal
         if ($LASTEXITCODE) { exit $LASTEXITCODE }
     }
+    & (Join-Path $installation 'MSBuild/Current/Bin/MSBuild.exe') (Join-Path $projectRoot 'tests/native/DropTargetLeaseTests.vcxproj') /p:Configuration=Release /p:Platform=x64 /verbosity:minimal
+    if ($LASTEXITCODE) { exit $LASTEXITCODE }
+    & (Join-Path $output 'DropTargetLeaseTests.exe')
+    if ($LASTEXITCODE) { exit $LASTEXITCODE }
+    & (Join-Path $installation 'MSBuild/Current/Bin/MSBuild.exe') (Join-Path $projectRoot 'tests/native/TextStoreRecoveryTests.vcxproj') /p:Configuration=Release /p:Platform=x64 /verbosity:minimal
+    if ($LASTEXITCODE) { exit $LASTEXITCODE }
+    & (Join-Path $output 'TextStoreRecoveryTests.exe')
+    if ($LASTEXITCODE) { exit $LASTEXITCODE }
     & (Join-Path $installation 'MSBuild/Current/Bin/MSBuild.exe') (Join-Path $projectRoot 'tests/native/PaneContractTests.vcxproj') /p:Configuration=Release /p:Platform=x64 /verbosity:minimal
     if ($LASTEXITCODE) { exit $LASTEXITCODE }
     # A pane that refuses every handshake, for Test-FennPane.py --matrix's

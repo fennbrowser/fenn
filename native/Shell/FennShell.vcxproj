@@ -1,0 +1,202 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project ToolsVersion="15.0" DefaultTargets="Build" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <PropertyGroup Label="Globals">
+    <CppWinRTOptimized>true</CppWinRTOptimized>
+    <CppWinRTRootNamespaceAutoMerge>true</CppWinRTRootNamespaceAutoMerge>
+    <MinimalCoreWin>true</MinimalCoreWin>
+    <ProjectGuid>{D998829C-F345-4C21-BC79-98EED3815839}</ProjectGuid>
+    <ProjectName>fenn-shell</ProjectName>
+    <RootNamespace>fenn-shell</RootNamespace>
+    <!--
+      $(TargetName) should be same as $(RootNamespace) so that the produced binaries (.exe/.pri/etc.)
+      have a name that matches the .winmd
+    -->
+    <TargetName>$(RootNamespace)</TargetName>
+    <TargetName Condition="'$(WinUIPaneTesting)'=='true'">fenn-shellTest</TargetName>
+    <DefaultLanguage>en-US</DefaultLanguage>
+    <MinimumVisualStudioVersion>16.0</MinimumVisualStudioVersion>
+    <AppContainerApplication>false</AppContainerApplication>
+    <AppxPackage>false</AppxPackage>
+    <WindowsPackageType>None</WindowsPackageType>
+    <ApplicationType>Windows Store</ApplicationType>
+    <ApplicationTypeRevision>10.0</ApplicationTypeRevision>
+    <WindowsTargetPlatformVersion>10.0.26100.0</WindowsTargetPlatformVersion>
+    <WindowsTargetPlatformMinVersion>10.0.17763.0</WindowsTargetPlatformMinVersion>
+    <UseWinUI>true</UseWinUI>
+    <WindowsAppSdkBootstrapInitialize>false</WindowsAppSdkBootstrapInitialize>
+    <WindowsAppSdkDeploymentManagerInitialize>false</WindowsAppSdkDeploymentManagerInitialize>
+    <WindowsAppSdkUndockedRegFreeWinRTInitialize>false</WindowsAppSdkUndockedRegFreeWinRTInitialize>
+    <WindowsAppSdkCompatibilityInitialize>false</WindowsAppSdkCompatibilityInitialize>
+    <WinUISDKReferences>false</WinUISDKReferences>
+    <EnableMsixTooling>false</EnableMsixTooling>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
+  <ItemGroup Label="ProjectConfigurations">
+    <ProjectConfiguration Include="Debug|Win32">
+      <Configuration>Debug</Configuration>
+      <Platform>Win32</Platform>
+    </ProjectConfiguration>
+    <ProjectConfiguration Include="Debug|x64">
+      <Configuration>Debug</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+    <ProjectConfiguration Include="Debug|ARM64">
+      <Configuration>Debug</Configuration>
+      <Platform>ARM64</Platform>
+    </ProjectConfiguration>
+    <ProjectConfiguration Include="Release|Win32">
+      <Configuration>Release</Configuration>
+      <Platform>Win32</Platform>
+    </ProjectConfiguration>
+    <ProjectConfiguration Include="Release|x64">
+      <Configuration>Release</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+    <ProjectConfiguration Include="Release|ARM64">
+      <Configuration>Release</Configuration>
+      <Platform>ARM64</Platform>
+    </ProjectConfiguration>
+  </ItemGroup>
+  <PropertyGroup Label="Configuration">
+    <ConfigurationType>Application</ConfigurationType>
+    <PlatformToolset Condition="'$(VisualStudioVersion)' &gt;= '18.0'">v145</PlatformToolset>
+    <PlatformToolset Condition="'$(VisualStudioVersion)' &lt; '18.0'">v143</PlatformToolset>
+    <CharacterSet>Unicode</CharacterSet>
+    <DesktopCompatible>true</DesktopCompatible>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)'=='Debug'" Label="Configuration">
+    <UseDebugLibraries>true</UseDebugLibraries>
+    <LinkIncremental>true</LinkIncremental>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)'=='Release'" Label="Configuration">
+    <UseDebugLibraries>false</UseDebugLibraries>
+    <WholeProgramOptimization>true</WholeProgramOptimization>
+    <LinkIncremental>false</LinkIncremental>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.props" />
+  <ImportGroup Label="ExtensionSettings">
+    <Import Project="$(MSBuildThisFileDirectory)..\..\.cache\nuget\native\Microsoft.Windows.CppWinRT.3.0.260818.1\build\native\Microsoft.Windows.CppWinRT.props" />
+    <Import Project="$(MSBuildThisFileDirectory)..\..\.cache\nuget\native\Microsoft.Windows.SDK.BuildTools.10.0.26100.4654\build\Microsoft.Windows.SDK.BuildTools.props" />
+    <Import Project="$(MSBuildThisFileDirectory)..\..\.cache\nuget\native\Microsoft.Windows.SDK.BuildTools.MSIX.1.7.251221100\build\Microsoft.Windows.SDK.BuildTools.MSIX.props" />
+    <Import Project="$(MSBuildThisFileDirectory)..\..\.cache\nuget\native\Microsoft.WindowsAppSDK.2.5.1\build\native\Microsoft.WindowsAppSDK.props" />
+    <Import Project="$(MSBuildThisFileDirectory)..\..\.cache\nuget\native\Microsoft.WindowsAppSDK.Base.2.0.4\build\native\Microsoft.WindowsAppSDK.Base.props" />
+    <Import Project="$(MSBuildThisFileDirectory)..\..\.cache\nuget\native\Microsoft.WindowsAppSDK.DWrite.2.1.0\build\Microsoft.WindowsAppSDK.DWrite.props" />
+    <Import Project="$(MSBuildThisFileDirectory)..\..\.cache\nuget\native\Microsoft.WindowsAppSDK.Foundation.2.3.12\build\native\Microsoft.WindowsAppSDK.Foundation.props" />
+    <Import Project="$(MSBuildThisFileDirectory)..\..\.cache\nuget\native\Microsoft.WindowsAppSDK.InteractiveExperiences.2.1.9\build\native\Microsoft.WindowsAppSDK.InteractiveExperiences.props" />
+    <Import Project="$(MSBuildThisFileDirectory)..\..\.cache\nuget\native\Microsoft.WindowsAppSDK.Runtime.2.5.1\build\native\Microsoft.WindowsAppSDK.Runtime.props" />
+    <Import Project="$(MSBuildThisFileDirectory)..\..\.cache\nuget\native\Microsoft.WindowsAppSDK.WinUI.2.3.9\build\native\Microsoft.WindowsAppSDK.WinUI.props" />
+  </ImportGroup>
+  <ImportGroup Label="PropertySheets">
+    <Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props" Condition="exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')" Label="LocalAppDataPlatform" />
+  </ImportGroup>
+  <PropertyGroup Label="UserMacros">
+    <OutDir>$(MSBuildThisFileDirectory)..\..\build\shell\$(Platform)\$(Configuration)\</OutDir>
+    <IntDir>$(MSBuildThisFileDirectory)..\..\build\shell\obj\$(Platform)\$(Configuration)\</IntDir>
+    <OutDir Condition="'$(FennShellTesting)'=='true'">$(MSBuildThisFileDirectory)..\..\build\shell-test\$(Platform)\$(Configuration)\</OutDir>
+    <IntDir Condition="'$(FennShellTesting)'=='true'">$(MSBuildThisFileDirectory)..\..\build\shell-test\obj\$(Platform)\$(Configuration)\</IntDir>
+    <FennShellTestDefine Condition="'$(FennShellTesting)'=='true'">FENN_SHELL_TESTING;</FennShellTestDefine>
+    <IntDir Condition="'$(WinUIPaneTesting)'=='true'">$(MSBuildThisFileDirectory)..\..\build\shell\obj-test\$(Platform)\$(Configuration)\</IntDir>
+    <AppxPackageDir>$(MSBuildThisFileDirectory)..\..\artifacts\winui-packages\</AppxPackageDir>
+    <AppxPackageSigningEnabled>false</AppxPackageSigningEnabled>
+    <!-- Framework-dependent on Microsoft.WindowsAppRuntime.2: hosts put the
+         framework in their package graph (MSIX dependency, or the bootstrapper
+         when unpackaged) before loading this DLL. It must not initialize WinUI
+         under loader lock. -->
+    <WindowsAppSDKSelfContained>false</WindowsAppSDKSelfContained>
+  </PropertyGroup>
+  <!-- The project-owned Rust shell core (native/ShellCore) links in as a static
+       library. Its C boundary is the checked-in, cbindgen-generated
+       bridge/v2/shell_core.h, so an ordinary build never needs cbindgen. -->
+  <PropertyGroup Label="ShellCore">
+    <ShellCoreDir>$(MSBuildThisFileDirectory)..\ShellCore\</ShellCoreDir>
+    <ShellCoreTargetDir>$(MSBuildThisFileDirectory)..\..\build\shell-core\</ShellCoreTargetDir>
+    <ShellCoreProfile Condition="'$(Configuration)'=='Release'">release</ShellCoreProfile>
+    <ShellCoreProfile Condition="'$(Configuration)'!='Release'">debug</ShellCoreProfile>
+    <ShellCoreCargoProfile Condition="'$(Configuration)'=='Release'">--release</ShellCoreCargoProfile>
+    <ShellCoreTriple Condition="'$(Platform)'=='x64'">x86_64-pc-windows-msvc</ShellCoreTriple>
+    <ShellCoreTriple Condition="'$(Platform)'=='Win32'">i686-pc-windows-msvc</ShellCoreTriple>
+    <ShellCoreTriple Condition="'$(Platform)'=='ARM64'">aarch64-pc-windows-msvc</ShellCoreTriple>
+    <ShellCoreLib>$(ShellCoreTargetDir)$(ShellCoreTriple)\$(ShellCoreProfile)\fenn_shell_core.lib</ShellCoreLib>
+    <CargoExe Condition="'$(CargoExe)'==''">cargo</CargoExe>
+  </PropertyGroup>
+  <ItemDefinitionGroup>
+    <Link>
+      <SubSystem>Windows</SubSystem>
+      <!-- The native static libraries rustc reports for this crate on
+           x86_64-pc-windows-msvc. The crate is built with +crt-static, so it
+           requests libcmt, matching this project's /MT RuntimeLibrary in every
+           configuration: one CRT, not two. -->
+      <AdditionalDependencies>gdi32.lib;Ole32.lib;$(ShellCoreLib);ntdll.lib;userenv.lib;ws2_32.lib;dbghelp.lib;delayimp.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <!-- Firefox loads this DLL with LOAD_LIBRARY_SEARCH_* flags, which skip a
+           packaged process's dependency graph. Delay-loading the only static
+           Windows App SDK import resolves it on first use through the standard
+           search: the framework package when packaged, the app-local runtime
+           otherwise. -->
+      <DelayLoadDLLs>Microsoft.UI.Windowing.Core.dll;%(DelayLoadDLLs)</DelayLoadDLLs>
+    </Link>
+    <ClCompile>
+      <AdditionalIncludeDirectories>$(MSBuildThisFileDirectory)..\..\bridge\v2;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <PreprocessorDefinitions Condition="'$(WinUIPaneTesting)'=='true'">WINUI_PANE_TESTING;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <PreprocessorDefinitions>$(FennShellTestDefine)FENN_SHELL_PROCESS;DISABLE_XAML_GENERATED_MAIN;NOMINMAX;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <PrecompiledHeaderFile>pch.h</PrecompiledHeaderFile>
+      <PrecompiledHeaderOutputFile>$(IntDir)pch.pch</PrecompiledHeaderOutputFile>
+      <WarningLevel>Level4</WarningLevel>
+      <RuntimeLibrary>MultiThreaded</RuntimeLibrary>
+      <LanguageStandard Condition="'$(VisualStudioVersion)' &gt;= '18.0'">stdcpp20</LanguageStandard>
+      <LanguageStandard Condition="'$(VisualStudioVersion)' &lt; '18.0'">stdcpp17</LanguageStandard>
+      <AdditionalOptions>%(AdditionalOptions) /bigobj /utf-8</AdditionalOptions>
+    </ClCompile>
+  </ItemDefinitionGroup>
+  <ItemDefinitionGroup Condition="'$(Configuration)'=='Debug'">
+    <ClCompile>
+      <PreprocessorDefinitions>_DEBUG;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+    </ClCompile>
+  </ItemDefinitionGroup>
+  <ItemDefinitionGroup Condition="'$(Configuration)'=='Release'">
+    <ClCompile>
+      <PreprocessorDefinitions>NDEBUG;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+    </ClCompile>
+    <Link>
+      <EnableCOMDATFolding>true</EnableCOMDATFolding>
+      <OptimizeReferences>true</OptimizeReferences>
+    </Link>
+  </ItemDefinitionGroup>
+  <ItemGroup>
+  </ItemGroup>
+  <ItemGroup>
+    <ClCompile Include="ShellMain.cpp" />
+  </ItemGroup>
+  <ItemGroup>
+    <!-- Inputs for the incremental check below: cargo does its own dependency
+         tracking, but MSBuild needs to know when to call it at all. -->
+    <ShellCoreSource Include="$(ShellCoreDir)Cargo.toml" />
+    <ShellCoreSource Include="$(ShellCoreDir)src\**\*.rs" />
+  </ItemGroup>
+  <Target Name="BuildShellCore" BeforeTargets="ClCompile" Inputs="@(ShellCoreSource)" Outputs="$(ShellCoreLib)">
+    <Error Condition="'$(ShellCoreTriple)'==''" Text="No Rust target triple for Platform=$(Platform)." />
+    <Message Importance="high" Text="Building the Rust shell core ($(ShellCoreTriple), $(ShellCoreProfile))" />
+    <!-- +crt-static so the staticlib uses the same CRT as this project's /MT
+         objects. CARGO_TARGET_DIR keeps Rust output under build/ with every
+         other build artifact, not inside the source tree. -->
+    <Exec Command="&quot;$(CargoExe)&quot; build --offline --locked $(ShellCoreCargoProfile) --target $(ShellCoreTriple)"
+          WorkingDirectory="$(ShellCoreDir)"
+          EnvironmentVariables="CARGO_TARGET_DIR=$(ShellCoreTargetDir);RUSTFLAGS=-C target-feature=+crt-static" />
+    <Error Condition="!Exists('$(ShellCoreLib)')" Text="cargo did not produce $(ShellCoreLib)." />
+  </Target>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
+  <ImportGroup Label="ExtensionTargets">
+    <Import Project="$(MSBuildThisFileDirectory)..\..\.cache\nuget\native\Microsoft.Web.WebView2.1.0.3719.77\build\native\Microsoft.Web.WebView2.targets" />
+    <Import Project="$(MSBuildThisFileDirectory)..\..\.cache\nuget\native\Microsoft.Windows.CppWinRT.3.0.260818.1\build\native\Microsoft.Windows.CppWinRT.targets" />
+    <Import Project="$(MSBuildThisFileDirectory)..\..\.cache\nuget\native\Microsoft.Windows.ImplementationLibrary.1.0.260126.7\build\native\Microsoft.Windows.ImplementationLibrary.targets" />
+    <Import Project="$(MSBuildThisFileDirectory)..\..\.cache\nuget\native\Microsoft.Windows.SDK.BuildTools.10.0.26100.4654\build\Microsoft.Windows.SDK.BuildTools.targets" />
+    <Import Project="$(MSBuildThisFileDirectory)..\..\.cache\nuget\native\Microsoft.Windows.SDK.BuildTools.MSIX.1.7.251221100\build\Microsoft.Windows.SDK.BuildTools.MSIX.targets" />
+    <Import Project="$(MSBuildThisFileDirectory)..\..\.cache\nuget\native\Microsoft.WindowsAppSDK.2.5.1\build\native\Microsoft.WindowsAppSDK.targets" />
+    <Import Project="$(MSBuildThisFileDirectory)..\..\.cache\nuget\native\Microsoft.WindowsAppSDK.Base.2.0.4\build\native\Microsoft.WindowsAppSDK.Base.targets" />
+    <Import Project="$(MSBuildThisFileDirectory)..\..\.cache\nuget\native\Microsoft.WindowsAppSDK.DWrite.2.1.0\build\Microsoft.WindowsAppSDK.DWrite.targets" />
+    <Import Project="$(MSBuildThisFileDirectory)..\..\.cache\nuget\native\Microsoft.WindowsAppSDK.Foundation.2.3.12\build\native\Microsoft.WindowsAppSDK.Foundation.targets" />
+    <Import Project="$(MSBuildThisFileDirectory)..\..\.cache\nuget\native\Microsoft.WindowsAppSDK.InteractiveExperiences.2.1.9\build\native\Microsoft.WindowsAppSDK.InteractiveExperiences.targets" />
+    <Import Project="$(MSBuildThisFileDirectory)..\..\.cache\nuget\native\Microsoft.WindowsAppSDK.Runtime.2.5.1\build\native\Microsoft.WindowsAppSDK.Runtime.targets" />
+    <Import Project="$(MSBuildThisFileDirectory)..\..\.cache\nuget\native\Microsoft.WindowsAppSDK.WinUI.2.3.9\build\native\Microsoft.WindowsAppSDK.WinUI.targets" />
+  </ImportGroup>
+</Project>

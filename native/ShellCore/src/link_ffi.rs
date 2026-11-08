@@ -34,6 +34,17 @@ pub const SHELL_FRAME_LIFETIME_WAKEUP_ON: u16 = 2;
 pub const SHELL_FRAME_LIFETIME_WAKEUP_OFF: u16 = 3;
 pub const SHELL_FRAME_LIFETIME_INTRODUCE: u16 = 4;
 pub const SHELL_FRAME_LIFETIME_DESTROY_HOST: u16 = 5;
+pub const SHELL_FRAME_LIFETIME_CREATE: u16 = 6;
+pub const SHELL_FRAME_LIFETIME_BOUND: u16 = 7;
+pub const SHELL_FRAME_LIFETIME_PAGE_READY: u16 = 8;
+pub const SHELL_FRAME_LIFETIME_PROFILE: u16 = 9;
+pub const SHELL_FRAME_LIFETIME_CONFIRM: u16 = 10;
+pub const SHELL_FRAME_LIFETIME_PRESENTED: u16 = 11;
+pub const SHELL_FRAME_LIFETIME_RECOVERY_COMMIT: u16 = 12;
+pub const SHELL_FRAME_LIFETIME_RECOVERY_DEFERRED: u16 = 13;
+pub const SHELL_FRAME_LIFETIME_RECOVERY_RESUMED: u16 = 14;
+pub const SHELL_FRAME_LIFETIME_RECOVERY_EMPTY: u16 = 15;
+pub const SHELL_FRAME_LIFETIME_RECOVERY_SUPPRESS: u16 = 16;
 pub const SHELL_FRAME_REFUSED_STRIP: u16 = 0;
 pub const SHELL_FRAME_REFUSED_ADDRESS: u16 = 1;
 pub const SHELL_FRAME_REFUSED_BIND: u16 = 2;
@@ -454,7 +465,14 @@ mod tests {
             (SHELL_FRAME_LIFETIME_INTRODUCE, Lifetime::Introduce), (SHELL_FRAME_LIFETIME_DESTROY_HOST, Lifetime::DestroyHost)] {
             assert_eq!(number, kind as u16);
         }
-        assert!(frame::rule(Channel::Lifetime, 6).is_none(), "every lifetime kind is exported");
+        for (number, kind) in [(SHELL_FRAME_LIFETIME_CREATE,Lifetime::Create),(SHELL_FRAME_LIFETIME_BOUND,Lifetime::Bound),
+            (SHELL_FRAME_LIFETIME_PAGE_READY,Lifetime::PageReady),(SHELL_FRAME_LIFETIME_PROFILE,Lifetime::Profile),
+            (SHELL_FRAME_LIFETIME_CONFIRM,Lifetime::Confirm),(SHELL_FRAME_LIFETIME_PRESENTED,Lifetime::Presented),
+            (SHELL_FRAME_LIFETIME_RECOVERY_COMMIT,Lifetime::RecoveryCommit),
+            (SHELL_FRAME_LIFETIME_RECOVERY_DEFERRED,Lifetime::RecoveryDeferred),(SHELL_FRAME_LIFETIME_RECOVERY_RESUMED,Lifetime::RecoveryResumed),
+            (SHELL_FRAME_LIFETIME_RECOVERY_EMPTY,Lifetime::RecoveryEmpty),
+            (SHELL_FRAME_LIFETIME_RECOVERY_SUPPRESS,Lifetime::RecoverySuppress)] {assert_eq!(number,kind as u16);}
+        assert!(frame::rule(Channel::Lifetime, 17).is_none(), "every lifetime kind is exported");
     }
 
     #[test]
@@ -465,4 +483,12 @@ mod tests {
         let decoded = frame::window_request::decode(raw).unwrap();
         assert_eq!((decoded.kind, decoded.flags, decoded.rect, decoded.value), (3, 1, [1, 2, 3, 4], 9));
     }
+}
+
+/// Validate an ephemeral Share request against the current address/document identity.
+/// Borrowed payload; no state, allocation ownership or replay across connections.
+#[no_mangle]
+pub unsafe extern "C" fn shell_frame_share_current(payload:*const u8,length:usize,session:u64,document:u64,now:u64)->bool {
+    if payload.is_null() || length>frame::share_request::MAX_BYTES{return false;}
+    catch_unwind(||frame::share_request::current(std::slice::from_raw_parts(payload,length),session,document,now)).unwrap_or(false)
 }

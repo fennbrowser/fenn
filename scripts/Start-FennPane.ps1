@@ -1,4 +1,4 @@
-param([switch]$InteractiveNativeStartup, [switch]$IndependentNativeStartupHost, [switch]$NativeStartupHost, [switch]$NativeAddressBar, [switch]$NativeNavigationToolbar, [switch]$NativeChromeLayout, [switch]$NativeWindowHost, [switch]$NativeHistoryMenu, [switch]$NativeTabStrip, [switch]$ReplaceFirefoxTabStrip, [switch]$ContainerDots, [switch]$TabGlows, [switch]$GroupHalo, [switch]$GroupGlowAnimations, [switch]$GroupGlowFadeOut, [switch]$GroupHover, [switch]$HideFirefoxToolbar, [switch]$ProductMenu, [switch]$CaptureCrash, [string]$DiagnosticsLog,
+param([switch]$InProcessShell, [switch]$InteractiveNativeStartup, [switch]$IndependentNativeStartupHost, [switch]$NativeStartupHost, [switch]$NativeAddressBar, [switch]$NativeNavigationToolbar, [switch]$NativeChromeLayout, [switch]$NativeWindowHost, [switch]$NativeHistoryMenu, [switch]$NativeTabStrip, [switch]$ReplaceFirefoxTabStrip, [switch]$ContainerDots, [switch]$TabGlows, [switch]$GroupHalo, [switch]$GroupGlowAnimations, [switch]$GroupGlowFadeOut, [switch]$GroupHover, [switch]$HideFirefoxToolbar, [switch]$ProductMenu, [switch]$CaptureCrash, [string]$DiagnosticsLog,
       [ValidateSet(32, 40, 48)][int]$NativeTabStripHeight,
       [ValidateSet('Mica', 'MicaAlt', 'Acrylic')][string]$TabStripBackdrop,
       [ValidateSet('None', 'Small', 'Medium', 'Large')][string]$TabGroupReach,
@@ -6,9 +6,11 @@ param([switch]$InteractiveNativeStartup, [switch]$IndependentNativeStartupHost, 
       # dist/bin/fenn-identity.exe (scripts/Register-FennDevIdentity.py).
       [switch]$PackageIdentity)
 $ErrorActionPreference = 'Stop'
+$previousProcessShell = $env:FENN_NATIVE_SHELL_PROCESS
 $previousStartupHost = $env:FENN_NATIVE_STARTUP_HOST
 $previousInteractiveStartup = $env:FENN_NATIVE_INTERACTIVE_STARTUP
 try {
+if ($InProcessShell) { $env:FENN_NATIVE_SHELL_PROCESS = '0' }
 if ($InteractiveNativeStartup) {
     if ($PSBoundParameters.ContainsKey('IndependentNativeStartupHost') -and -not $IndependentNativeStartupHost) {
         throw 'InteractiveNativeStartup requires the independent native host.'
@@ -114,6 +116,7 @@ if ($DiagnosticsLog) {
 & $browser --no-remote --profile $demoProfile (Join-Path $projectRoot 'tests/smoke/browser.html')
 
 } finally {
+    $env:FENN_NATIVE_SHELL_PROCESS = $previousProcessShell
     $env:FENN_NATIVE_STARTUP_HOST = $previousStartupHost
     $env:FENN_NATIVE_INTERACTIVE_STARTUP = $previousInteractiveStartup
 }

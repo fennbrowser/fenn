@@ -1,4 +1,5 @@
 #pragma once
+#include <set>
 
 // Presentation-only cache written by Firefox for the resolved profile. It never
 // supplies commands, settings, profile identity or browser state.
@@ -7,8 +8,8 @@ inline winrt::Windows::Data::Json::JsonObject Parse(winrt::hstring const& json) 
     if(json.empty() || json.size()>32768)winrt::throw_hresult(E_INVALIDARG);
     auto data=winrt::Windows::Data::Json::JsonObject::Parse(json);
     const auto version=data.GetNamedNumber(L"version");
-    if(version!=1 && version!=2)winrt::throw_hresult(E_INVALIDARG);
-    if(version==2) {
+    if(version!=1 && version!=2 && version!=3)winrt::throw_hresult(E_INVALIDARG);
+    if(version>=2) {
         (void)data.GetNamedBoolean(L"rtl");
         const auto locale=data.GetNamedString(L"locale");
         if(locale.empty() || locale.size()>128 || std::wstring_view(locale).find(L'\0')!=std::wstring::npos)winrt::throw_hresult(E_INVALIDARG);
@@ -19,6 +20,29 @@ inline winrt::Windows::Data::Json::JsonObject Parse(winrt::hstring const& json) 
     for(auto key:{L"newTab",L"pending",L"full",L"composition",L"address",L"unavailable",L"recovery",L"recoveryAction"}) {
         auto text=labels.GetNamedString(key);
         if(text.empty() || text.size()>1024 || std::wstring_view(text).find(L'\0')!=std::wstring::npos)winrt::throw_hresult(E_INVALIDARG);
+    }
+    if(version==3)for(auto key:{L"engineTitle",L"engineMessage",L"engineRetry",L"engineClose",L"engineWaiting",L"engineDraft"}) {
+        auto text=labels.GetNamedString(key);
+        if(text.empty() || text.size()>1024 || std::wstring_view(text).find(L'\0')!=std::wstring::npos)winrt::throw_hresult(E_INVALIDARG);
+    }
+    if(data.HasKey(L"toolbar")) {
+        auto toolbar=data.GetNamedObject(L"toolbar");
+        (void)toolbar.GetNamedBoolean(L"productMenu");
+        for(auto key:{L"menuLabel",L"menuTooltip"}) {
+            const auto text=toolbar.GetNamedString(key);
+            if(text.size()>1024 || std::wstring_view(text).find(L'\0')!=std::wstring::npos)winrt::throw_hresult(E_INVALIDARG);
+        }
+        const auto controls=toolbar.GetNamedArray(L"controls");
+        if(controls.Size()>11)winrt::throw_hresult(E_INVALIDARG);
+        std::set<winrt::hstring> unique;
+        for(auto value:controls) {
+            auto control=value.GetString();
+            if(control!=L"address" && control!=L"back" && control!=L"forward" && control!=L"reload" &&
+               control!=L"profile" && control!=L"extensions" && control!=L"home" && control!=L"history" && control!=L"bookmarks")
+                winrt::throw_hresult(E_INVALIDARG);
+            if(!unique.insert(control).second)winrt::throw_hresult(E_INVALIDARG);
+        }
+        if(controls.Size() && !unique.contains(L"address"))winrt::throw_hresult(E_INVALIDARG);
     }
     return data;
 }
@@ -40,6 +64,8 @@ inline winrt::Windows::Data::Json::JsonObject Read(const wchar_t* profile) noexc
         if(!GetFileSizeEx(file,&size) || size.QuadPart<=0 || size.QuadPart>65536)return nullptr;
         std::string bytes(static_cast<size_t>(size.QuadPart),'\0');DWORD read{};
         if(!ReadFile(file,bytes.data(),static_cast<DWORD>(bytes.size()),&read,nullptr) || read!=bytes.size())return nullptr;
+        // The optional toolbar is an inert preview, validated by the same
+        // bounded parser as live initial presentation. No commands are restored.
         return Parse(winrt::to_hstring(bytes));
     } catch(...) {return nullptr;}
 }

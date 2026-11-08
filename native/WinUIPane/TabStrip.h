@@ -189,6 +189,10 @@ struct NativeTabStrip {
         bool groupSource{}, groupTarget{};
     };
     std::map<uint32_t, Presentation> presentation;
+    // Local startup rows are presentation identities, not live Firefox tabs.
+    // Keep their loading cue separate from Firefox-owned metadata.
+    bool startupPresentation{};
+    std::set<uint32_t> startupLoading;
     TabGroupsButton groupsButton;
     AllTabsButton allTabs;
     NativeAllTabsPanel allTabsPanel;
@@ -1654,8 +1658,11 @@ struct NativeTabStrip {
                 // Like the pump's Translate hook: an exception escaping a
                 // timer callback would fail-fast the browser.
                 try {
-                    if (Drag().phase == DragPhase::None) { timer.Stop(); return; }
+                    // A routed capture-loss callback can finish the local drag
+                    // before this tick. Still retire the shared session and its
+                    // raw HWND capture; the standalone Window has no Translate hook.
                     if (tickDragSession) tickDragSession();
+                    if (Drag().phase == DragPhase::None) timer.Stop();
                 } catch (...) {}
             });
         }
@@ -3711,7 +3718,7 @@ struct NativeTabStrip {
         // No favicon (not yet resolved, or the page genuinely has none) shows
         // no icon at all -- there is no placeholder glyph to fall back to.
         const bool hasImage = !meta.imagePixels.empty();
-        const bool isBusy = (meta.flags & 2) != 0;
+        const bool isBusy = startupLoading.contains(id) || (meta.flags & 2) != 0;
         auto shown = winrt::unbox_value_or<hstring>(faviconImage.Tag(), L"");
         if (hasImage && shown != meta.imagePixels) {
             faviconImage.Source(NativeJson::DecodeImage(int(meta.imageWidth), int(meta.imageHeight), meta.imagePixels));
@@ -3899,7 +3906,7 @@ struct NativeTabStrip {
                 }
             }
             std::set<uint32_t> current;
-            const bool populated = !rows.empty();
+            const bool populated = !startupPresentation && !rows.empty();
             if (populated && count != rows.size()) {
                 if (auto add = FindAddButton(view); add && add.IsLoaded())
                     addBefore = add.TransformToVisual(root).TransformPoint({0, 0}).X;
@@ -4217,7 +4224,10 @@ struct NativeTabStrip {
         }
         syncing = false;
         captionDirty = true;
-        try { groupSlide.Commit(rows, inlineGroups, FindAddButton(view), active); }
+        try {
+            if(startupPresentation)groupSlide.Cancel();
+            else groupSlide.Commit(rows, inlineGroups, FindAddButton(view), active);
+        }
         catch (...) {
 #ifdef WINUI_PANE_TESTING
             fprintf(stderr, "GroupSlide Commit failed: %08x\n", unsigned(to_hresult()));
@@ -4242,7 +4252,7 @@ struct NativeTabStrip {
                 try { RevealNewRow(rows.at(created), created, addBefore, rowsBefore); } catch (...) {}
             });
         }
-        else if (createdRows.empty() && rows.size() < priorRowCount) {
+        else if (!startupPresentation && createdRows.empty() && rows.size() < priorRowCount) {
             // The toggle above can leave TabView's next layout with every Width
             // NaN (tabs sized to their content, the group's last tab narrow until
             // the pointer moves). Repair it once TabView has arranged the close,

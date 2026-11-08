@@ -269,6 +269,10 @@ struct NativeSearchMode {
         Automation::AutomationProperties::SetAccessibilityView(symbol, Automation::Peers::AccessibilityView::Raw);
         image.Width(16);
         image.Height(16);
+        // Before Firefox supplies artwork/text, reserve only the real search
+        // glyph. Empty visible slots add spacing that disappears at handoff.
+        image.Visibility(Visibility::Collapsed);
+        label.Visibility(Visibility::Collapsed);
         image.Stretch(Media::Stretch::Uniform);
         symbol.Symbol(Symbol::Find);
         buttonContent.Children().Append(image);

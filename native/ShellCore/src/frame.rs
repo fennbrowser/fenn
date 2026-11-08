@@ -76,6 +76,17 @@ pub enum Lifetime {
     Introduce = 4,
     /// The window itself goes, after everything queued before it.
     DestroyHost = 5,
+    Create = 6,
+    Bound = 7,
+    PageReady = 8,
+    Profile = 9,
+    Confirm = 10,
+    Presented = 11,
+    RecoveryCommit = 12,
+    RecoveryDeferred = 13,
+    RecoveryResumed = 14,
+    RecoveryEmpty = 15,
+    RecoverySuppress = 16,
 }
 
 impl Channel {
@@ -101,6 +112,11 @@ pub fn rule(channel: Channel, kind: u16) -> Option<(Class, usize)> {
         (Lifetime, 1..=3) => (Class::Ordered, 0),
         (Lifetime, 4) => (Class::Ordered, 8),
         (Lifetime, 5) => (Class::Ordered, 0),
+        (Lifetime, 6) => (Class::Ordered, 104),
+        (Lifetime, 7 | 8) => (Class::Ordered, 8),
+        (Lifetime, 9) => (Class::Ordered, 131074),
+        (Lifetime, 10..=14 | 16) => (Class::Ordered, 0),
+        (Lifetime, 15) => (Class::Ordered, 128 * 16),
         // Already latest-wins before M5b: the only coalesced channel so far.
         (Geometry, 0 | 1) => (Class::Snapshot, rects::BYTES + 1),
         (Geometry, 2) => (Class::Snapshot, rects::BYTES * rects::MAX_CLIP),
@@ -112,6 +128,12 @@ pub fn rule(channel: Channel, kind: u16) -> Option<(Class, usize)> {
         (Window, 1) => (Class::Ordered, 32768 * 2),
         (Window, 2) => (Class::Ordered, 8),
         (Window, 3) => (Class::Ordered, 2),
+        // Icons carry request revisions with an applied acknowledgement each.
+        // Coalescing would strand the superseded request's pending counter.
+        (Window, 4 | 5) => (Class::Ordered, 8 + 256 * 256 * 4),
+        (Window, 6) => (Class::Snapshot, 64),
+        (Window, 7) => (Class::Ordered, share_request::MAX_BYTES),
+        (Window, 8) => (Class::Ordered, 24),
         (Requests, 0) => (Class::Ordered, TEXT),
         (Startup, 0) => (Class::Ordered, TEXT),
         (Close, 0) => (Class::Ordered, 16),
@@ -191,8 +213,22 @@ pub(crate) fn valid_payload(channel: Channel, kind: u16, p: &[u8]) -> bool {
         (Control, _) => p.len() == 16,
         (Lifetime, 0) | (Close, 0) => p.len() == 16,
         (Lifetime, 4) => p.len() == 8 && p != [0; 8],
+        (Lifetime, 6) => p.len() == 104 && p[..8] != [0;8] && p[8..16] != [0;8]
+            && rects::decode(&p[16..32]).is_some() && u32_at(p,32) <= 3 && u32_at(p,36) == 0
+            && (p[40..] == [0;64] || (u32_at(p,32)&2 != 0 && valid_placement(&p[40..]))),
+        (Lifetime, 7 | 8) => p.len() == 8 && p != [0;8],
+        (Lifetime, 9) => p.len() >= 2 && p.len()%2 == 0 && text(p).iter().filter(|&&v| v==0).count() == 1,
         (Window, 2) => p.len() == 8,
+        (Window, 6) => valid_placement(p),
+        (Window, 7) => share_request::valid(p),
+        (Window, 8) => p.len()==24,
         (Window, 3) => p.len() == 2 && u16::from_le_bytes([p[0], p[1]]) <= 2,
+        (Window, 4 | 5) => p.len() >= 8 && {
+            let (w,h)=(u32_at(p,0) as usize,u32_at(p,4) as usize);
+            (1..=256).contains(&w) && (1..=256).contains(&h) && p.len() == 8+w*h*4
+        },
+        (Lifetime, 15) => !p.is_empty() && p.len()%16==0 && p.chunks_exact(16).all(|key| key != [0;16]) &&
+            {let mut keys=std::collections::BTreeSet::new();p.chunks_exact(16).all(|key|keys.insert(key))},
         (Lifetime, _) => p.is_empty(),
         (Geometry, 0 | 1) => p.len() == rects::BYTES + 1 && p[rects::BYTES] <= 1 &&
             rects::decode(&p[..rects::BYTES]).is_some(),
@@ -204,6 +240,13 @@ pub(crate) fn valid_payload(channel: Channel, kind: u16, p: &[u8]) -> bool {
         // Text: whole UTF-16 units. JSON content is validated by its handler.
         _ => p.len() % 2 == 0,
     }
+}
+
+// Native placement snapshot: outer/normal RECTs, min/max POINTs, then
+// WINDOWPLACEMENT flags, normalized show state, foreground bool and reserved.
+fn valid_placement(p: &[u8]) -> bool {
+    p.len()==64 && rects::decode(&p[..32]).is_some() && u32_at(p,48)<=7
+        && matches!(u32_at(p,52),1|2|3) && u32_at(p,56)<=1 && u32_at(p,60)==0
 }
 
 pub fn text(payload: &[u8]) -> Vec<u16> {
@@ -407,6 +450,66 @@ mod tests {
     }
 
     #[test]
+    fn process_bind_and_icon_payloads_reject_malformed_data() {
+        let mut create = vec![0u8;104];
+        create[..8].copy_from_slice(&1u64.to_le_bytes());
+        create[8..16].copy_from_slice(&2u64.to_le_bytes());
+        create[16..32].copy_from_slice(&rects::encode(&[[0,0,800,600]]));
+        assert!(decode(&frame(Channel::Lifetime,6,&create)).is_ok());
+        for offset in [0,8] {
+            let mut bad=create.clone();bad[offset..offset+8].fill(0);
+            assert!(decode(&frame(Channel::Lifetime,6,&bad)).is_err());
+        }
+        let mut bad=create.clone();bad[36]=1;
+        assert!(decode(&frame(Channel::Lifetime,6,&bad)).is_err());
+        for flags in 1..=3 {
+            let mut recovery=create.clone();recovery[32]=flags;
+            assert!(decode(&frame(Channel::Lifetime,6,&recovery)).is_ok());
+        }
+        let mut bad=create.clone();bad[32]=4;
+        assert!(decode(&frame(Channel::Lifetime,6,&bad)).is_err());
+        let mut placement=vec![0u8;64];
+        placement[..32].copy_from_slice(&rects::encode(&[[0,0,1920,1040],[180,60,1080,710]]));
+        placement[52]=3;placement[56]=1;
+        assert!(decode(&frame(Channel::Window,6,&placement)).is_ok());
+        let mut recovery=create.clone();recovery[32]=2;recovery[40..].copy_from_slice(&placement);
+        assert!(decode(&frame(Channel::Lifetime,6,&recovery)).is_ok());
+        recovery[32]=0;
+        assert!(decode(&frame(Channel::Lifetime,6,&recovery)).is_err());
+        for (offset,value) in [(48,8),(52,0),(52,4),(56,2),(60,1)] {
+            let mut bad=placement.clone();bad[offset]=value;
+            assert!(decode(&frame(Channel::Window,6,&bad)).is_err());
+            recovery[32]=2;recovery[40..].copy_from_slice(&bad);
+            assert!(decode(&frame(Channel::Lifetime,6,&recovery)).is_err());
+        }
+        assert!(decode(&frame(Channel::Window,6,&placement[..63])).is_err());
+        assert_eq!(rule(Channel::Window,6),Some((Class::Snapshot,64)));
+        for kind in [7,8] {
+            assert!(decode(&frame(Channel::Lifetime,kind,&[0;8])).is_err());
+            assert!(decode(&frame(Channel::Lifetime,kind,&1u64.to_le_bytes())).is_ok());
+        }
+        assert!(decode(&frame(Channel::Lifetime,9,&[0,0])).is_ok());
+        assert!(decode(&frame(Channel::Lifetime,9,&[0,0,0,0])).is_err());
+        assert!(decode(&frame(Channel::Lifetime,9,&[1,0])).is_err());
+        let mut icon=vec![0u8;12];icon[..4].copy_from_slice(&1u32.to_le_bytes());
+        icon[4..8].copy_from_slice(&1u32.to_le_bytes());
+        assert!(decode(&frame(Channel::Window,4,&icon)).is_ok());
+        assert!(decode(&frame(Channel::Window,5,&icon[..11])).is_err());
+        icon[..4].copy_from_slice(&257u32.to_le_bytes());
+        assert!(decode(&frame(Channel::Window,4,&icon)).is_err());
+    }
+
+    #[test]
+    fn recovery_empty_keys_are_bounded_nonzero_and_unique() {
+        assert!(decode(&frame(Channel::Lifetime,15,&[1;16])).is_ok());
+        for bytes in [vec![],vec![0;16],vec![1;15],vec![1;32],vec![1;129*16]] {
+            assert!(decode(&frame(Channel::Lifetime,15,&bytes)).is_err());
+        }
+        let keys:Vec<u8>=(1u8..=128).flat_map(|n|[n;16]).collect();
+        assert!(decode(&frame(Channel::Lifetime,15,&keys)).is_ok());
+    }
+
+    #[test]
     fn rectangles_validate_orientation_and_count() {
         let shown = |r: rects::Rect, visible: u8| { let mut p = rects::encode(&[r]); p.push(visible); p };
         assert!(decode(&frame(Channel::Geometry, 0, &shown([1, 2, 3, 4], 1))).is_ok());
@@ -450,5 +553,30 @@ mod tests {
         assert_eq!(window_request::decode(&window_request::encode(&r)), Some(r));
         assert!(decode(&frame(Channel::Window, 0, &window_request::encode(&r))).is_ok());
         assert!(decode(&frame(Channel::Window, 0, &[0; 31])).is_err());
+    }
+}
+
+/// Ephemeral Windows Share request. Never a snapshot or recovery publication.
+/// Session/document/deadline are u64; title and URL lengths are u32 UTF-16 units.
+pub mod share_request {
+    use super::{u32_at,u64_at,text};
+    pub const MAX_BYTES: usize = 32 + 2 * (4096 + 32768);
+    pub fn valid(p: &[u8]) -> bool {
+        if p.len()<32 || p.len()>MAX_BYTES || u64_at(p,0)==0 || u64_at(p,8)==0 || u64_at(p,16)==0 {return false;}
+        let title=u32_at(p,24) as usize;let url=u32_at(p,28) as usize;
+        if !(1..=4096).contains(&title) || !(1..=32768).contains(&url) || p.len()!=32+2*(title+url){return false;}
+        [&p[32..32+2*title],&p[32+2*title..]].iter().all(|bytes| {
+            let units=text(bytes);!units.contains(&0) && String::from_utf16(&units).is_ok()
+        })
+    }
+    pub fn current(p: &[u8],session:u64,document:u64,now:u64)->bool {
+        valid(p) && u64_at(p,0)==session && u64_at(p,8)==document && now<=u64_at(p,16)
+            && u64_at(p,16)-now<=5000
+    }
+    #[cfg(test)] mod tests {
+        use super::*;
+        fn request()->Vec<u8>{let mut p=Vec::new();for n in [2u64,3,6000]{p.extend(n.to_le_bytes());}for n in [1u32,1]{p.extend(n.to_le_bytes());}p.extend([65,0,66,0]);p}
+        #[test]fn scope_and_expiry(){let p=request();assert!(current(&p,2,3,1000));for (s,d,n) in [(1,3,1000),(2,4,1000),(2,3,6001),(2,3,999)]{assert!(!current(&p,s,d,n));}}
+        #[test]fn rejects_malformed(){let p=request();for n in 0..p.len(){assert!(!valid(&p[..n]));}let mut q=p.clone();q[32]=0;assert!(!valid(&q));let mut q=p.clone();q[33]=0xd8;assert!(!valid(&q));let mut q=p;q[24..28].copy_from_slice(&4097u32.to_le_bytes());assert!(!valid(&q));}
     }
 }

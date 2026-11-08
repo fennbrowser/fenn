@@ -1,11 +1,7 @@
-"""Stage the framework-dependent pane into Firefox's dist/bin.
+"""Stage the framework-dependent pane and opt-in shell peers beside fenn.exe.
 
-The pane runs on the shared Microsoft.WindowsAppRuntime.2 framework, which an
-unpackaged Firefox joins at startup through the bootstrapper. Staging therefore
-copies only the pane and the bootstrapper DLL. It also removes the runtime files
-an earlier, self-contained staging recorded, so no second runtime copy is left
-beside fenn.exe. Patch 2 also
-stops Firefox's build from shipping its own app-local Windows App SDK DLLs.
+Only the unpackaged bootstrapper is app-local; the shared Windows App SDK runtime
+comes from the package graph or bootstrapper. Test outputs are never staged.
 """
 import hashlib
 import json
@@ -17,7 +13,15 @@ ROOT = Path(__file__).resolve().parents[1]
 SOURCE = ROOT / "build/winui-pane/x64/Release"
 DEST = ROOT / "build/firefox/dist/bin"
 RECORD = ROOT / "artifacts/setup/winui-pane-staging.json"
-STAGED = ("FennPane.dll", "Microsoft.WindowsAppRuntime.Bootstrap.dll")
+SHELL_SOURCE = ROOT / "build/shell/x64/Release"
+LINK_SOURCE = ROOT / "build/engine-link/x64/Release"
+STAGED = ("FennPane.dll", "Microsoft.WindowsAppRuntime.Bootstrap.dll",
+          "fenn-shell.exe", "fenn-shell.pri", "FennEngineLink.dll")
+
+
+def production_sources(source_dir=SOURCE, shell_dir=SHELL_SOURCE, link_dir=LINK_SOURCE):
+    return [source_dir / STAGED[0], source_dir / STAGED[1],
+            shell_dir / STAGED[2], shell_dir / STAGED[3], link_dir / STAGED[4]]
 
 
 def image_digest(path):
@@ -64,11 +68,11 @@ def remove_self_contained_staging(dest_dir, record):
     return removed
 
 
-def stage(source_dir=SOURCE, dest_dir=DEST, record=RECORD):
-    sources = [source_dir / name for name in STAGED]
+def stage(source_dir=SOURCE, dest_dir=DEST, record=RECORD, *, shell_dir=SHELL_SOURCE, link_dir=LINK_SOURCE):
+    sources = production_sources(source_dir, shell_dir, link_dir)
     missing = [str(p) for p in sources if not p.is_file()]
     if missing:
-        raise RuntimeError(f"Build the pane first (Build-WinUIPane.ps1); missing {missing}")
+        raise RuntimeError(f"Build the pane and shell peers first (Build-WinUIPane.ps1, Build-FennShellMilestone.ps1); missing {missing}")
     removed = remove_self_contained_staging(dest_dir, record)
     for source in sources:
         shutil.copyfile(source, dest_dir / source.name)

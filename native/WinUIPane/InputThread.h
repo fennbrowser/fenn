@@ -20,6 +20,13 @@ inline constexpr UINT InvokeMessage=WM_APP+905;
 // the shell's (CreditMessage, declared with the shell's dispatcher). M5d carries both over the
 // engine connection instead.
 inline constexpr UINT FrameMessage=WM_APP+906;
+#ifdef FENN_ENGINE_LINK
+inline constexpr UINT CreditMessage=WM_APP+907;
+#endif
+// Installed only by the split engine; a failed handoff closes that generation.
+inline bool (*ReturnCredit)(const uint8_t*,size_t) noexcept = nullptr;
+inline constexpr UINT TransportMessage=WM_APP+909;
+inline void (*DrainTransport)() noexcept = nullptr;
 struct Job { std::function<void()> run; HANDLE complete{}; };
 // What the input thread keeps for one shell window. Gecko can set cursor, touch and its
 // accessibility provider before the page child exists; they are applied when it is created.
@@ -45,6 +52,7 @@ inline bool OnThread() noexcept { return State().owner==GetCurrentThreadId(); }
 
 inline void Receive(uint8_t* data, size_t length) noexcept;
 inline LRESULT CALLBACK Dispatch(HWND hwnd, UINT message, WPARAM w, LPARAM l) {
+    if (message==TransportMessage && DrainTransport) { DrainTransport(); return 0; }
     if (message==FrameMessage) { Receive(reinterpret_cast<uint8_t*>(l),static_cast<size_t>(w)); return 0; }
     if (message==InvokeMessage) {
         auto* job=reinterpret_cast<Job*>(l);
@@ -77,7 +85,13 @@ template<class F> HRESULT Call(F run) noexcept {
     if (!PostMessageW(dispatcher,InvokeMessage,0,reinterpret_cast<LPARAM>(&job))) {
         CloseHandle(job.complete); return RO_E_CLOSED;
     }
-    const bool ran=IndependentHost::WaitDeliveringSent(job.complete,State().thread.native_handle());
+    const HANDLE waits[]{job.complete,State().thread.native_handle()};
+    DWORD waitResult{};
+    do {
+        waitResult=MsgWaitForMultipleObjectsEx(2,waits,INFINITE,QS_SENDMESSAGE,0);
+        if (waitResult==WAIT_OBJECT_0+2) { MSG message{}; PeekMessageW(&message,nullptr,0,0,PM_NOREMOVE|PM_QS_SENDMESSAGE); }
+    } while (waitResult==WAIT_OBJECT_0+2);
+    const bool ran=waitResult==WAIT_OBJECT_0;
     CloseHandle(job.complete);
     return ran ? result : RO_E_CLOSED;
 }
@@ -95,7 +109,9 @@ inline void Create(HWND shell, HWND endpoint, COLORREF background) noexcept {
     window.cursor=nullptr; window.cursorOwned=false;
     const HWND page=NativeWindowHost::CreatePageWindow(shell,state);
     if (!page) {
+#ifndef FENN_ENGINE_LINK
         NativeWindowHost::FocusTrace("input-page-failed",reinterpret_cast<uintptr_t>(shell));
+#endif
         delete state;
         return;
     }
@@ -182,7 +198,10 @@ inline HRESULT WINAPI SetAccessibility(HWND shell, IUnknown* provider) noexcept 
             }
             auto& window=State().windows[shell];
             window.accessibility=uia;
-            if (window.state) window.state->accessibility=uia;
+            if (window.state) {
+                window.state->accessibility=uia;
+                NotifyWinEvent(EVENT_OBJECT_REORDER,window.page,OBJID_CLIENT,CHILDID_SELF);
+            }
         }) ? S_OK : RO_E_CLOSED;
     } catch (...) { return winrt::to_hresult(); }
 }
@@ -241,6 +260,7 @@ inline HRESULT WINAPI DrainInput(HWND shell, WinUIPageInputEvent* output, wchar_
 }
 
 // --- The input link ---------------------------------------------------------------------------
+#ifndef FENN_ENGINE_LINK
 // The shell's half, on the shell's thread.
 struct ShellEnd { ShellLinkEnd* link{}; uint64_t revision{}; };
 inline ShellEnd& ShellSide() { static auto* side=new ShellEnd; return *side; }
@@ -299,6 +319,7 @@ inline void RetireShape(HWND shell) noexcept {
     if (side.link && shell_link_serial(side.link,reinterpret_cast<uintptr_t>(shell),false,&serial)==SHELL_STATUS_OK)
         shell_link_retire(side.link,serial);
 }
+#endif
 // The input thread's half. ShellCore validated the payload's layout and rectangles.
 inline void ApplyShape(HWND shell, const uint8_t* payload, size_t length) noexcept {
     auto* window=Find(shell);
@@ -317,7 +338,8 @@ inline void ApplyShape(HWND shell, const uint8_t* payload, size_t length) noexce
         if (!EqualRect(&current,&client))
             SetWindowPos(window->page,nullptr,0,0,client.right-client.left,client.bottom-client.top,
                 SWP_NOZORDER|SWP_NOACTIVATE|SWP_NOOWNERZORDER);
-        HRGN region=NativeWindowHost::PageRegion(client,chrome,exclusions);
+        NativeWindowHost::ApplyStartupPageVisibility(window->page,shell);
+        HRGN region=NativeWindowHost::PageRegion(client,chrome,exclusions,GetDpiForWindow(shell));
         if (region && !SetWindowRgn(window->page,region,TRUE)) DeleteObject(region);
     } catch (...) {}
 }
@@ -343,11 +365,24 @@ inline void Receive(uint8_t* data, size_t length) noexcept {
     for (;;) {
         uint8_t* out{}; size_t size{};
         if (shell_link_take(host.link,false,&out,&size)!=SHELL_STATUS_OK || !out) return;
+        if (ReturnCredit) {
+            const bool accepted=ReturnCredit(out,size);
+            shell_link_free_frame(out,size);
+            if (!accepted) shell_link_close(host.link);
+            if (!accepted) return;
+            continue;
+        }
+#ifndef FENN_ENGINE_LINK
         const HWND target=IndependentHost::State().dispatcher;
         if (!target || !PostMessageW(target,CreditMessage,size,reinterpret_cast<LPARAM>(out))) {
             shell_link_free_frame(out,size);
             return;
         }
+#else
+        shell_link_free_frame(out,size);
+        shell_link_close(host.link);
+        return;
+#endif
     }
 }
 
@@ -358,20 +393,20 @@ inline bool PageKey(const MSG& message) noexcept {
     auto* state=static_cast<NativeWindowHost::PageState*>(GetPropW(message.hwnd,NativeWindowHost::PageProperty));
     return state && state->endpoint;
 }
-inline HRESULT Start() noexcept {
+inline HRESULT Start(uint32_t generation=1) noexcept {
     auto& host=State();
     if (host.thread.joinable()) return S_FALSE;
     const HANDLE ready=CreateEventW(nullptr,TRUE,FALSE,nullptr);
     if (!ready) return E_OUTOFMEMORY;
     try {
-        host.thread=std::thread([&host,ready] {
+        host.thread=std::thread([&host,ready,generation] {
             const HRESULT apartment=CoInitializeEx(nullptr,COINIT_APARTMENTTHREADED);
             WNDCLASSW wc{}; wc.lpfnWndProc=Dispatch; wc.hInstance=GetModuleHandleW(nullptr);
             wc.lpszClassName=L"Fenn.InputDispatcher.v1";
             RegisterClassW(&wc);
             const HWND dispatcher=CreateWindowExW(0,wc.lpszClassName,L"",0,0,0,0,0,HWND_MESSAGE,nullptr,wc.hInstance,nullptr);
             host.owner=GetCurrentThreadId();
-            host.link=shell_link_create(1,nullptr);
+            host.link=shell_link_create(generation,nullptr);
             NativePageInput::Mailboxed()=true;
             host.dispatcher=dispatcher;
             SetEvent(ready);
@@ -407,10 +442,12 @@ inline HRESULT Start() noexcept {
     WaitForSingleObject(ready,10000);
     CloseHandle(ready);
     if (!host.dispatcher) return E_FAIL;
-    NativeWindowHost::RequestPage=RequestPage;
     NativeWindowHost::PageDestroyed=Destroyed;
+#ifndef FENN_ENGINE_LINK
+    NativeWindowHost::RequestPage=RequestPage;
     NativeWindowHost::SendPageShape=SendShape;
     NativeWindowHost::RetirePageShape=RetireShape;
+#endif
     return S_OK;
 }
 // After the shell's thread: its windows' page children are destroyed with them, which needs
@@ -418,9 +455,11 @@ inline HRESULT Start() noexcept {
 inline void Stop() noexcept {
     auto& host=State();
     if (!host.thread.joinable()) return;
+#ifndef FENN_ENGINE_LINK
     NativeWindowHost::RequestPage=nullptr;
     NativeWindowHost::SendPageShape=nullptr;
     NativeWindowHost::RetirePageShape=nullptr;
+#endif
     PostThreadMessageW(host.owner,WM_QUIT,0,0);
     host.thread.join();
 }

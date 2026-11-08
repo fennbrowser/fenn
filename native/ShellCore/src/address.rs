@@ -14,6 +14,7 @@ pub struct AddressState {
     mode_request: Option<u64>,
     deferred: bool,
     submit: Option<u32>,
+    recoverable_edit: bool,
 }
 
 #[repr(C)]
@@ -25,6 +26,7 @@ pub struct ShellAddressState {
     pub edit_acknowledged: u32,
     pub query_settled: u32,
     pub mode_pending: u32,
+    pub recoverable_edit: u32,
 }
 
 #[repr(C)]
@@ -49,12 +51,14 @@ impl AddressState {
             edit_acknowledged: (!self.needs_dispatch && self.acknowledged == self.edit_id) as u32,
             query_settled: self.query_settled as u32,
             mode_pending: self.mode_request.is_some() as u32,
+            recoverable_edit: self.recoverable_edit as u32,
         }
     }
 
     pub fn edit(&mut self) -> bool {
         if self.edit_id == MAX_EDIT_ID { return false; }
         self.edit_id += 1;
+        self.recoverable_edit = true;
         self.needs_dispatch = true;
         self.cancel_submit();
         true
@@ -103,7 +107,7 @@ impl AddressState {
         if intent::decide(incoming, None, observed) == Decision::Drop {
             return ShellAddressAction { decision: Decision::Drop as u32, modifiers: 0 };
         }
-        if incoming == IntentKind::Activate { self.submit.get_or_insert(modifiers); }
+        if incoming == IntentKind::Activate { self.recoverable_edit=false; self.submit.get_or_insert(modifiers); }
         let decision = intent::decide(incoming, self.staged.map(|(_, kind)| kind), observed);
         let mut result = ShellAddressAction { decision: decision as u32, modifiers: 0 };
         match decision {
@@ -150,6 +154,19 @@ mod tests {
     }
     fn enter(s: &mut AddressState, modifiers: u32) -> ShellAddressAction {
         s.action(IntentKind::Activate, observed(), modifiers)
+    }
+
+    #[test]
+    fn recovery_retains_edits_but_not_deferred_or_dispatched_submissions() {
+        let mut state=AddressState::default();
+        assert_eq!(state.state().recoverable_edit,0);
+        state.edit();assert_eq!(state.state().recoverable_edit,1);
+        enter(&mut state,0);assert_eq!(state.state().recoverable_edit,0);
+        state.edit();state.publish(state.state().edit_id,true);
+        state.stage(1,IntentKind::Edit);state.complete(1);
+        assert_eq!(state.state().recoverable_edit,1);
+        enter(&mut state,0);assert_eq!(state.state().recoverable_edit,0);
+        state.edit();assert_eq!(state.state().recoverable_edit,1);
     }
 
     #[test]

@@ -32,7 +32,7 @@ struct IUnknown;
 // v40 retires the native host on Gecko's thread (attach, detach, adopt) and adds window-state
 // requests from Gecko's hidden proxy window to the shell.
 // v42: page IME calls never wait (see publishIndependentInput).
-#define WINUI_PANE_ABI_VERSION 42u
+#define WINUI_PANE_ABI_VERSION 50u
 
 // Scalar key transport, translated exactly once by the Gecko endpoint. The endpoint is nsWindow's
 // own hidden window (the proxy), which stands for the shell on Gecko's thread.
@@ -137,6 +137,15 @@ struct WinUIPaneWindowRequest {
     LONG_PTR value;
     volatile LONG* pending;
 };
+// v43: owner-thread notification, 1 bound/page ready, 2 startup failure, 3 post-bind disconnect.
+// v44: 4 runs on the engine owner thread before page retirement. Revoke local OLE registration
+// synchronously here; do not enter browser commands or post the revocation behind page destruction.
+// v45: process notification 5 revokes a dead shell for an opt-in recovery attempt.
+// v46: notification 6 acknowledges presentation/input readiness.
+// v47: notification 7 restores stock windows after confirmed restart-budget exhaustion.
+// v48: notification 8 drains a pre-bind recovery empty-window request batch.
+// v49: notification 9 suppresses an unbound restored window after reconciliation.
+using WinUIPaneProcessNotifyFn = void (WINAPI*)(void*, HWND, HWND, uint32_t, HRESULT);
 struct WinUIPaneApi {
     uint32_t size;
     uint32_t version;
@@ -251,6 +260,13 @@ struct WinUIPaneApi {
     HRESULT (WINAPI* requestIndependentWindow)(HWND, const WinUIPaneWindowRequest*);
     // v41: where startup transfer replies go; null clears it.
     HRESULT (WINAPI* setStartupSink)(WinUIPaneStartupReplyFn, void*);
+    // One launch token. flags bit 0 confirms Firefox routing/preferences; otherwise hidden.
+    HRESULT (WINAPI* startProcessHost)(const wchar_t*, const wchar_t*, uint32_t);
+    HRESULT (WINAPI* setProcessSink)(WinUIPaneProcessNotifyFn, void*);
+    // Reserve a serial before the shell HWND exists. Never waits for the peer.
+    HRESULT (WINAPI* createProcessWindow)(HWND, uintptr_t, const RECT*, uint32_t);
+    // v50: bounded, ordered and ephemeral. S_OK means queued, never replayed on recovery.
+    HRESULT (WINAPI* requestShare)(HWND, uint64_t, uint64_t, const wchar_t*, const wchar_t*);
 };
 // Pen data can only be read on the thread that owns the window, so the endpoint gets a copy.
 // Sent as WM_POINTER*+WINUI_PANE_ENDPOINT_KEY_OFFSET with this as wParam and the original lParam.

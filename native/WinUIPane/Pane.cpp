@@ -19,6 +19,7 @@
 #include <memory>
 #include <objbase.h>
 #include <cstdio>
+#include "../EngineLink/TestWorkGate.h"
 
 using namespace winrt;
 using namespace Microsoft::UI;
@@ -26,6 +27,7 @@ using namespace Microsoft::UI::Xaml;
 using namespace Microsoft::UI::Xaml::Hosting;
 
 #include "Address.h"
+#include "WindowsShare.h"
 #include "ShellCore.h"
 #include "ChromeLayout.h"
 #include "PageInput.h"
@@ -400,6 +402,15 @@ struct Pane {
     std::function<bool()> startupObserve;
     std::function<bool(NativeAddress::JObject const&)> startupAddressApply;
     uint64_t startupContext{};
+    RECT startupStripBounds{}, startupNavigationBounds{};
+    bool startupStripBoundsPending{}, startupNavigationBoundsPending{};
+    bool KeepStartupBounds() const {
+        if(!startupPresenter || startupContext || !GetPropW(parent,L"Fenn.InteractiveStartup") ||
+           !GetPropW(parent,NativeWindowHost::StartupPageHoldProperty))return false;
+        const auto* host=NativeWindowHost::Get(parent);RECT client{};GetClientRect(parent,&client);
+        return host && host->startupFrameValid && EqualRect(&client,&host->startupFrameClient);
+    }
+
     HWND addressWindow{};
     RECT addressBounds{};
     bool addressBoundsApplied{};
@@ -716,9 +727,11 @@ struct Pane {
     // site getting it right is stated here as well.
     ~Pane() { startupPresenter.reset(); DisarmPresentation(); }
     NativeWindowDrag windowDrag;
+    NativeWindowsShare windowsShare;
     void Close() {
         if (parent) RemoveWindowSubclass(parent, FocusProc, reinterpret_cast<UINT_PTR>(this));
         if (childWindow) RemoveWindowSubclass(childWindow, FocusProc, reinterpret_cast<UINT_PTR>(this));
+        windowsShare.Close();
         windowDrag.Close();
         DisarmPresentation();
         if (!source) return;
@@ -843,8 +856,19 @@ struct Pane {
         if (shell) {
             const auto previous = shell.ModelRevision();
             if (!shell.BeginSnapshot(shell.Stats().generation, revision, count)) return E_INVALIDARG;
-            for (uint32_t i = 0; i < count; ++i)
+            for (uint32_t i = 0; i < count; ++i) {
                 if (!shell.PushSnapshotTab(snapshot[i].id, snapshot[i].title, snapshot[i].commands)) return E_INVALIDARG;
+#ifdef FENN_SHELL_TESTING
+                if(i==0 && count>1 && TestWork::Armed(L"snapshot")) {
+                    SetPropW(parent,L"Fenn.TestSnapshotPushed",reinterpret_cast<HANDLE>(1));
+                    SetPropW(parent,L"Fenn.TestSnapshotCount",reinterpret_cast<HANDLE>(uintptr_t(count)));
+                    SetPropW(parent,L"Fenn.TestSnapshotPrevious",reinterpret_cast<HANDLE>(uintptr_t(previous)));
+                    SetPropW(parent,L"Fenn.TestSnapshotRevision",reinterpret_cast<HANDLE>(uintptr_t(revision)));
+                    TestWork::Reached();
+                    if(!TestWork::WaitRelease())return E_ABORT;
+                }
+#endif
+            }
             uint32_t changes = 0;
             auto status = shell.CommitSnapshot(selected, changes);
             if (status != SHELL_STATUS_OK) return status == SHELL_STATUS_GAP ? E_NOT_VALID_STATE : E_INVALIDARG;
@@ -1648,6 +1672,10 @@ void Initialize() {
         // the shared runtime (package dependency or bootstrapper).
         // Never take shutdown ownership of a dispatcher created by another host.
         phase = "dispatcher";
+#ifdef FENN_SHELL_PROCESS
+        check_bool(bool(Dispatching::DispatcherQueue::GetForCurrentThread()));
+        s.app = Application::Current();
+#else
         if (Dispatching::DispatcherQueue::GetForCurrentThread()) throw_hresult(E_UNEXPECTED);
         s.dispatcher = Dispatching::DispatcherQueueController::CreateOnCurrentThread();
         phase = "application";
@@ -1659,6 +1687,7 @@ void Initialize() {
         check_bool(GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_PIN, L"Microsoft.UI.Xaml.dll", &xaml));
         phase = "xaml-manager";
         s.manager = WindowsXamlManager::InitializeForCurrentThread();
+#endif
         // Browser windows close and open through Firefox; the last one closing must not end this thread's loop.
         phase = "shutdown-mode";
         s.app.DispatcherShutdownMode(DispatcherShutdownMode::OnExplicitShutdown);
@@ -1751,6 +1780,10 @@ HRESULT WINAPI UpdateTabStrip(HWND hwnd, const RECT* rect, BOOL visible) noexcep
             found = s.panes.emplace(hwnd, std::move(pane)).first;
         }
         auto& pane = *found->second;
+        if(visible && pane.boundsApplied && pane.KeepStartupBounds()) {
+            pane.startupStripBounds=*rect;pane.startupStripBoundsPending=true;return S_OK;
+        }
+        pane.startupStripBoundsPending=false;
         auto site = pane.source.SiteBridge();
         HWND child = GetWindowFromWindowId(site.WindowId());
         auto& work = geometryWork();
@@ -1889,6 +1922,10 @@ HRESULT WINAPI UpdateAddress(HWND hwnd, const RECT* rect, BOOL visible) noexcept
             pane.CloseAddressHost(); return S_OK;
         }
         if (!pane.strip) return E_NOTIMPL;
+        if(pane.addressBoundsApplied && pane.KeepStartupBounds()) {
+            pane.startupNavigationBounds=*rect;pane.startupNavigationBoundsPending=true;return S_OK;
+        }
+        pane.startupNavigationBoundsPending=false;
         if (!pane.addressSource) {
             pane.addressSource = XamlSlot::New();
             pane.addressSource.Initialize(GetWindowIdFromWindow(hwnd));
@@ -2357,6 +2394,33 @@ void PageReported(HWND shell, HWND page, WPARAM kind) noexcept {
     } catch (...) {}
 }
 const bool pageReports = (NativeWindowHost::PageReported = &PageReported, true);
+bool RouteBrowserShortcut(Pane& pane, MSG const& message) noexcept {
+    try {
+            if ((message.message == WM_KEYDOWN || message.message == WM_SYSKEYDOWN) &&
+                !(pane.address && pane.address->composing) && !NativeAltGrTextKey(UINT(message.wParam))) {
+                const bool control = (GetKeyState(VK_CONTROL) & 0x8000) != 0;
+                const bool addressShortcut = pane.addressSource &&
+                    (message.wParam == VK_F6 || message.wParam == VK_F5 || message.wParam == VK_F11 ||
+                     (control && (message.wParam == 'K' || message.wParam == 'R')) ||
+                     ((GetKeyState(VK_MENU) & 0x8000) &&
+                      (message.wParam == 'D' || message.wParam == VK_LEFT || message.wParam == VK_RIGHT)));
+                if (addressShortcut || (control && (message.wParam == 'L' || message.wParam == 'T' || message.wParam == 'W' ||
+                                (pane.strip && (message.wParam == VK_TAB || message.wParam == VK_PRIOR ||
+                                                message.wParam == VK_NEXT))))) {
+                    // Capture modifiers on the source queue before focus moves.
+                    // Re-posting a bare key to the input thread loses Ctrl/Alt if
+                    // their real key-up is consumed before that post is handled.
+                    const WPARAM packet=NativeWindowHost::PageKeyPacket(message.wParam);
+                    const HWND page = NativeWindowHost::PageWindow(pane.parent);
+                    SetFocus(page);
+                    if(auto* host=NativeWindowHost::Get(pane.parent);host && host->endpoint)
+                        PostMessageW(host->endpoint,message.message+WINUI_PANE_ENDPOINT_KEY_OFFSET,packet,message.lParam);
+                    return true;
+                }
+            }
+    } catch (...) {}
+    return false;
+}
 BOOL WINAPI Translate(MSG* message) noexcept {
     WorkScope scope{EntryTranslate};
     if (WorkAccountingEnabled()) RecordPumpGap();
@@ -2447,23 +2511,7 @@ BOOL WINAPI Translate(MSG* message) noexcept {
                 }
             }
             if (!ownsMessage) continue;
-            if ((message->message == WM_KEYDOWN || message->message == WM_SYSKEYDOWN) &&
-                !(pane.address && pane.address->composing) && !NativeAltGrTextKey(UINT(message->wParam))) {
-                const bool control = (GetKeyState(VK_CONTROL) & 0x8000) != 0;
-                const bool addressShortcut = pane.addressSource &&
-                    (message->wParam == VK_F6 || message->wParam == VK_F5 || message->wParam == VK_F11 ||
-                     (control && (message->wParam == 'K' || message->wParam == 'R')) ||
-                     ((GetKeyState(VK_MENU) & 0x8000) &&
-                      (message->wParam == 'D' || message->wParam == VK_LEFT || message->wParam == VK_RIGHT)));
-                if (addressShortcut || (control && (message->wParam == 'L' || message->wParam == 'T' || message->wParam == 'W' ||
-                                (pane.strip && (message->wParam == VK_TAB || message->wParam == VK_PRIOR ||
-                                                message->wParam == VK_NEXT))))) {
-                    const HWND page = NativeWindowHost::PageWindow(pane.parent);
-                    SetFocus(page);
-                    PostMessageW(page, message->message, message->wParam, message->lParam);
-                    return TRUE;
-                }
-            }
+            if(RouteBrowserShortcut(pane,*message))return TRUE;
             return ContentPreTranslateMessage(message);
         }
     } catch (...) {}
@@ -2604,7 +2652,7 @@ HRESULT PublishStartupPresentation(HWND hwnd, Windows::Data::Json::JsonObject co
 
 namespace {
 inline constexpr wchar_t InteractiveStartupProperty[]=L"Fenn.InteractiveStartup";
-inline constexpr wchar_t PageHoldProperty[]=L"Fenn.NativeStartupPageHold";
+inline constexpr auto PageHoldProperty=NativeWindowHost::StartupPageHoldProperty;
 inline constexpr UINT_PTR PageHoldTimer=0x46454E;
 inline constexpr UINT PageHoldLimitMs=10000;
 // The compositor window is white until Gecko first presents. While this property is set it
@@ -2613,6 +2661,13 @@ inline constexpr UINT PageHoldLimitMs=10000;
 void EndPageHold(HWND hwnd) {
     if(!RemovePropW(hwnd,PageHoldProperty))return;
     KillTimer(hwnd,PageHoldTimer);
+    NativeWindowHost::RefreshPageBackground(hwnd);
+    // The software page is owned by the input thread/process. Reuse its bounded
+    // shape publication to refresh opacity there; never mutate its HWND here.
+    if(auto* host=NativeWindowHost::Get(hwnd)) {
+        host->pageRegionApplied=false;
+        NativeWindowHost::ApplyPageRegion(hwnd,host);
+    }
     for(HWND child=FindWindowExW(hwnd,nullptr,L"MozillaCompositorWindowClass",nullptr);child;
         child=FindWindowExW(hwnd,child,L"MozillaCompositorWindowClass",nullptr))
         SetWindowPos(child,nullptr,0,0,0,0,SWP_SHOWWINDOW|SWP_NOMOVE|SWP_NOSIZE|SWP_NOZORDER|SWP_NOACTIVATE|SWP_ASYNCWINDOWPOS);
@@ -2621,14 +2676,22 @@ void EndPageHold(HWND hwnd) {
 void BeginPageHold(HWND hwnd) {
     SetPropW(hwnd,PageHoldProperty,reinterpret_cast<HANDLE>(1));
     SetTimer(hwnd,PageHoldTimer,PageHoldLimitMs,nullptr);
+    if(auto* host=NativeWindowHost::Get(hwnd);host && host->page) {
+        host->pageRegionApplied=false;
+        NativeWindowHost::ApplyPageRegion(hwnd,host);
+    }
 }
 HRESULT LayoutInteractiveStartup(HWND hwnd) noexcept {
     WinUIChromeLayout layout{};
-    auto result=MeasureChromeLayout(hwnd,40,TRUE,0,&layout);
+    auto result=MeasureChromeLayout(hwnd,40,TRUE,4,&layout);
     if(FAILED(result))return result;
     if(!layout.fits)return S_FALSE;
     result=UpdateTabStrip(hwnd,&layout.strip,TRUE);
-    return FAILED(result)?result:UpdateAddress(hwnd,&layout.navigation,TRUE);
+    if(SUCCEEDED(result)) {
+        NativeWindowHost::LayoutStartupBackground(hwnd);
+        result=UpdateAddress(hwnd,&layout.navigation,TRUE);
+    }
+    return result;
 }
 LRESULT CALLBACK InteractiveStartupProc(HWND hwnd,UINT msg,WPARAM w,LPARAM l,UINT_PTR id,DWORD_PTR) {
     if(msg==WM_NCDESTROY) {
@@ -2654,10 +2717,11 @@ LRESULT CALLBACK InteractiveStartupProc(HWND hwnd,UINT msg,WPARAM w,LPARAM l,UIN
     }
     return DefSubclassProc(hwnd,msg,w,l);
 }
-HRESULT ShowInteractiveStartup(HWND hwnd, const wchar_t* profile, const wchar_t* presentation) noexcept {
+HRESULT PrepareInteractiveStartup(HWND hwnd, const wchar_t* profile, const wchar_t* presentation) noexcept {
     try {
         if(GetPropW(hwnd,InteractiveStartupProperty))return S_FALSE;
-        check_hresult(LayoutInteractiveStartup(hwnd));
+        const auto layout=LayoutInteractiveStartup(hwnd);
+        if(layout!=S_OK)return layout;
         NativeWindowHost::FocusTrace("start-layout");
         check_hresult(BeginStartupPresenter(hwnd));
         NativeWindowHost::FocusTrace("start-presenter");
@@ -2668,6 +2732,8 @@ HRESULT ShowInteractiveStartup(HWND hwnd, const wchar_t* profile, const wchar_t*
             Pane::SetBackdrop(ready.addressSource,ready.strip->backdrop);
             ready.navigationBackdrop=true;
         }
+        // Even without a cache, construct the inert toolbar before first show.
+        state().panes.at(hwnd)->address->navigation->StartupLayout(nullptr);
         bool initialRtl{};
         auto initialPresentation=NativeStartupLabels::Resolve(presentation,profile,initialRtl);
         ApplyStartupDirection(*state().panes.at(hwnd),initialRtl);
@@ -2682,7 +2748,14 @@ HRESULT ShowInteractiveStartup(HWND hwnd, const wchar_t* profile, const wchar_t*
             Microsoft::UI::Xaml::Automation::AutomationProperties::SetName(pane.address->field,address);
             auto stripLabels=pane.strip->labels;stripLabels.newTab=presenter->labels.newTab;stripLabels.newTabTip=presenter->labels.newTab;
             pane.strip->ApplyLabels(stripLabels);presenter->Refresh(false);
+            if(initialPresentation.HasKey(L"toolbar")) {
+                presenter->toolbarPreview=initialPresentation.GetNamedObject(L"toolbar");
+                pane.address->navigation->StartupLayout(presenter->toolbarPreview);
+            }
         }
+        // Finish the initial control layout before asking Windows to show its
+        // opening fade. This does not show, cloak or recreate the HWND/editor.
+        if(auto* host=NativeWindowHost::Get(hwnd))host->root.UpdateLayout();
         NativeWindowHost::FocusTrace("start-presentation");
         check_bool(SetWindowSubclass(hwnd,InteractiveStartupProc,1,0));
         check_bool(SetPropW(hwnd,InteractiveStartupProperty,reinterpret_cast<HANDLE>(1)));
@@ -2702,16 +2775,6 @@ HRESULT ShowInteractiveStartup(HWND hwnd, const wchar_t* profile, const wchar_t*
             pane.address->Action(L"activate");
         }
 #endif
-        // Measurement switch: skip DWM's window-open transition for the first show only, so its cost
-        // can be separated from construction. Later minimize/maximize transitions are untouched.
-        wchar_t noAnimation[2]{};
-        const bool skipOpenTransition=GetEnvironmentVariableW(L"FENN_NATIVE_NO_OPEN_ANIMATION",noAnimation,2)==1 && noAnimation[0]==L'1';
-        // Activate the first visible window like Firefox's own first window does (nsWindow::CanTakeFocus allows
-        // it when no other window of this process is visible); Windows' foreground lock still protects other
-        // applications. Without activation the editor has no keyboard focus and typed keys are lost until Gecko
-        // asks for focus about 1.6 s later. FENN_NATIVE_STARTUP_NOACTIVATE=1 restores the old behaviour.
-        wchar_t noActivate[2]{};
-        const bool keepInactive=GetEnvironmentVariableW(L"FENN_NATIVE_STARTUP_NOACTIVATE",noActivate,2)==1 && noActivate[0]==L'1';
         BeginPageHold(hwnd);
         // An island's window is white until XAML first composes, in either theme. Clip it away until then
         // rather than hide it: XAML keeps rendering and the OS animation still plays. Never leave it clipped.
@@ -2734,15 +2797,39 @@ HRESULT ShowInteractiveStartup(HWND hwnd, const wchar_t* profile, const wchar_t*
             timer.Tick([timer,reveal](auto const&,auto const&){timer.Stop();reveal();});
             timer.Start();
         }
+        return S_OK;
+    } catch (...) {Destroy(hwnd);return to_hresult();}
+}
+HRESULT ShowInteractiveStartup(HWND hwnd, const wchar_t* profile, const wchar_t* presentation) noexcept {
+    try {
+        const auto prepared=PrepareInteractiveStartup(hwnd,profile,presentation);
+        if(prepared!=S_OK)return prepared;
+        // Measurement switch: skip DWM's window-open transition for the first show only, so its cost
+        // can be separated from construction. Later minimize/maximize transitions are untouched.
+        wchar_t noAnimation[2]{};
+        const bool skipOpenTransition=GetEnvironmentVariableW(L"FENN_NATIVE_NO_OPEN_ANIMATION",noAnimation,2)==1 && noAnimation[0]==L'1';
+        // Activate the first visible window like Firefox's own first window does (nsWindow::CanTakeFocus allows
+        // it when no other window of this process is visible); Windows' foreground lock still protects other
+        // applications. Without activation the editor has no keyboard focus and typed keys are lost until Gecko
+        // asks for focus about 1.6 s later. FENN_NATIVE_STARTUP_NOACTIVATE=1 restores the old behaviour.
+        wchar_t noActivate[2]{};
+        const bool keepInactive=GetEnvironmentVariableW(L"FENN_NATIVE_STARTUP_NOACTIVATE",noActivate,2)==1 && noActivate[0]==L'1';
         if(skipOpenTransition){BOOL disable=TRUE;DwmSetWindowAttribute(hwnd,DWMWA_TRANSITIONS_FORCEDISABLED,&disable,sizeof(disable));}
         ShowWindow(hwnd,GetPropW(hwnd,L"Fenn.NativeStartupMaximized")?SW_SHOWMAXIMIZED:(keepInactive?SW_SHOWNOACTIVATE:SW_SHOWNORMAL));
         if(skipOpenTransition){BOOL disable=FALSE;DwmSetWindowAttribute(hwnd,DWMWA_TRANSITIONS_FORCEDISABLED,&disable,sizeof(disable));}
+        // ShowWindow may activate the top-level before the editor can accept
+        // XAML focus. Request the actual editor focus after it is visible, using
+        // the existing bounded restoration path and never activating a background window.
+        if(!keepInactive && GetForegroundWindow()==hwnd) {
+            if(auto* host=NativeWindowHost::Get(hwnd);host && host->restoreEditorFocus)host->restoreEditorFocus();
+        }
         NativeWindowHost::FocusTrace("start-shown");
         return S_OK;
     } catch (...) {Destroy(hwnd);return to_hresult();}
 }
 }
 
+#ifndef FENN_SHELL_PROCESS
 extern "C" __declspec(dllexport) HRESULT WINAPI WinUIPaneGetApi(uint32_t version, uint32_t size,
                                                                 WinUIPaneApi* output) noexcept {
     if (!output) return E_POINTER;
@@ -2781,12 +2868,35 @@ extern "C" __declspec(dllexport) HRESULT WINAPI WinUIPaneGetApi(uint32_t version
                NativeWindowHost::SetPageCursor,
                NativeWindowHost::RegisterPageTouch,
                IndependentHost::PostWindowRequest,
-               PaneLink::SetStartupSink};
+               PaneLink::SetStartupSink,nullptr,nullptr,nullptr};
     IndependentHost::Route(*output);
     return S_OK;
 }
+#endif
 
 #ifdef WINUI_PANE_TESTING
+// Retain the same weak route used by TargetRequested; the test calls the real
+// asynchronous COM methods after pane destruction and endpoint recreation.
+extern "C" __declspec(dllexport) HRESULT WINAPI WinUIPaneTestGetDropTarget(HWND hwnd, void** target) noexcept {
+    if (!target) return E_POINTER;
+    *target = nullptr;
+    try {
+        auto found = state().panes.find(hwnd);
+        if (found == state().panes.end()) return E_INVALIDARG;
+        found->second->RejectExternalDrops();
+        if (!found->second->dropRoute) return E_PENDING;
+        auto value = make<ChromeDropTarget>(found->second->dropRoute);
+        *target = detach_abi(value);
+        return S_OK;
+    } catch (...) { return to_hresult(); }
+}
+extern "C" __declspec(dllexport) BOOL WINAPI WinUIPaneTestDropTargetRetired(void* target) noexcept {
+    try {
+        SystemDrag::IDropOperationTarget value{nullptr};
+        copy_from_abi(value, target);
+        return get_self<ChromeDropTarget>(value)->route.expired();
+    } catch (...) { return FALSE; }
+}
 static HRESULT WINAPI TestStartupDraft(HWND hwnd,uint32_t operation,const wchar_t* text,uint32_t* pending) {
     auto require=[](bool value){if(!value)throw_hresult(E_FAIL);};
     try {
@@ -2816,6 +2926,8 @@ static HRESULT WINAPI TestStartupDraft(HWND hwnd,uint32_t operation,const wchar_
                 bool(pane.startupPresenter),pane.startupNormalIdentity && pane.startupNormalIdentity(),pane.address->field.Text().c_str(),
                 pane.address->field.SelectionStart(),pane.address->field.SelectionLength(),pane.address->composing);
             require(!pane.startupPresenter && pane.startupNormalIdentity && pane.startupNormalIdentity());
+            require(!pane.strip->startupPresentation && pane.strip->startupLoading.empty());
+            require(pane.address->navigation->startupControls.empty());
             require(pane.address->field.Text()==text && !pane.address->composing);
             if(operation==25)require(pane.address->field.SelectionStart()==2 && pane.address->field.SelectionLength()==3);
             *pending=0;return S_OK;
@@ -2947,12 +3059,81 @@ extern "C" __declspec(dllexport) HRESULT WINAPI WinUIPaneTestLocalStartup(void(W
     HWND hwnd{};
     auto require=[](bool value){if(!value)throw_hresult(E_FAIL);};
     try {
-        RECT bounds{80,80,1080,780};
+        RECT bounds{80,80,81,81};
         check_hresult(NativeWindowHost::CreateStartup(0,WS_OVERLAPPEDWINDOW,bounds,&hwnd));
-        check_hresult(ShowInteractiveStartup(hwnd,nullptr));
+        require(PrepareInteractiveStartup(hwnd,nullptr,nullptr)==S_FALSE);
+        require(IsWindow(hwnd) && !IsWindowVisible(hwnd) && !state().panes.count(hwnd));
+        check_bool(SetWindowPos(hwnd,nullptr,80,80,1000,700,SWP_NOZORDER|SWP_NOACTIVATE));
+        check_hresult(PrepareInteractiveStartup(hwnd,nullptr,LR"({"version":1,"labels":{"newTab":"new","pending":"waiting","full":"full","composition":"composition","address":"address","unavailable":"unavailable","recovery":"recovery","recoveryAction":"action"},"toolbar":{"controls":["back","address","extensions","profile"],"productMenu":true,"menuLabel":"menu","menuTooltip":"menu tip"}})"));
+        require(!IsWindowVisible(hwnd));
+        require(GetPropW(hwnd,PageHoldProperty)!=nullptr);
+        require(PrepareInteractiveStartup(hwnd,nullptr,nullptr)==S_FALSE);
+        ShowWindow(hwnd,SW_SHOWNORMAL);
         auto& pane=*state().panes.at(hwnd);
         {
             auto& local=*std::static_pointer_cast<LocalStartup::Presenter>(pane.startupPresenter);
+            require(pane.strip->startupPresentation && pane.strip->rows.size()==1);
+            auto& nav=*pane.address->navigation;
+            require(nav.startupControls==std::vector<hstring>{L"back",L"address",L"extensions",L"profile"});
+            require(nav.productMenu.button.Visibility()==Visibility::Visible && !nav.productMenu.button.IsEnabled());
+            require(!nav.productMenu.enabled && nav.productMenu.model.Size()==0);
+            require(pane.address->root.Margin().Left==8 && pane.address->root.Margin().Top==4);
+            auto* host=NativeWindowHost::Get(hwnd);
+            require(host->startupPageBackground && !host->startupPageBackground.IsHitTestVisible());
+            require(GetPropW(hwnd,L"Fenn.NativeBackdrop")!=nullptr);
+            RECT client{},content{};GetClientRect(hwnd,&client);
+            require(NativeWindowHost::ContentFrame(client,host->chrome,GetDpiForWindow(hwnd),content));
+            const double scale=96.0/GetDpiForWindow(hwnd);
+            require(std::abs(Controls::Canvas::GetLeft(host->startupPageBackground)-content.left*scale)<.01);
+            require(std::abs(host->startupPageBackground.Width()-(content.right-content.left)*scale)<.01);
+            require(host->startupPageBackground.CornerRadius().BottomLeft==8);
+            require(pane.address->toolbarSurface.BorderThickness().Bottom==1);
+            require(pane.address->toolbarSurface.BorderBrush()!=nullptr);
+            const auto preparedStrip=pane.appliedBounds, preparedNavigation=pane.addressBounds;
+            auto provisionalStrip=preparedStrip, provisionalNavigation=preparedNavigation;
+            OffsetRect(&provisionalStrip,0,4);OffsetRect(&provisionalNavigation,0,4);
+            check_hresult(UpdateTabStrip(hwnd,&provisionalStrip,TRUE));
+            check_hresult(UpdateAddress(hwnd,&provisionalNavigation,TRUE));
+            require(EqualRect(&pane.appliedBounds,&preparedStrip) && EqualRect(&pane.addressBounds,&preparedNavigation));
+            require(pane.startupStripBoundsPending && pane.startupNavigationBoundsPending);
+            // The accepted native allocation supersedes the provisional one.
+            check_hresult(UpdateTabStrip(hwnd,&preparedStrip,TRUE));
+            check_hresult(UpdateAddress(hwnd,&preparedNavigation,TRUE));
+
+            const auto completeChrome=host->chrome;
+            const auto completeExclusions=host->exclusions;
+            const auto framedWidth=host->startupPageBackground.Width();
+            const auto framedLeft=Controls::Canvas::GetLeft(host->startupPageBackground);
+            // The initial Gecko publication can temporarily contain only a
+            // strip; the held backing must not erase the native surround.
+            NativeWindowHost::SetPageRegion(hwnd,{completeChrome.front()},{});
+            require(host->startupPageBackground.Width()==framedWidth);
+            require(Controls::Canvas::GetLeft(host->startupPageBackground)==framedLeft);
+            require(host->startupPageBackground.CornerRadius().BottomLeft==8);
+            RemovePropW(hwnd,PageHoldProperty);
+            NativeWindowHost::RefreshPageBackground(hwnd);
+            require(!host->startupFrameValid);
+            require(Controls::Canvas::GetLeft(host->startupPageBackground)==0);
+            require(host->startupPageBackground.CornerRadius().BottomLeft==0);
+            // Once the hold ends, applied geometry retires any queued bounds;
+            // later adoption must not replay an older provisional rectangle.
+            check_hresult(UpdateTabStrip(hwnd,&preparedStrip,TRUE));
+            check_hresult(UpdateAddress(hwnd,&preparedNavigation,TRUE));
+            require(!pane.startupStripBoundsPending && !pane.startupNavigationBoundsPending);
+            SetPropW(hwnd,PageHoldProperty,reinterpret_cast<HANDLE>(1));
+            NativeWindowHost::SetPageRegion(hwnd,completeChrome,completeExclusions);
+            check_hresult(UpdateTabStrip(hwnd,&preparedStrip,TRUE));
+            check_hresult(UpdateAddress(hwnd,&preparedNavigation,TRUE));
+            require(pane.startupStripBoundsPending && pane.startupNavigationBoundsPending);
+
+
+            const auto first=pane.strip->rows.begin()->first;
+            auto header=pane.strip->rows.at(first).Header().as<Controls::Grid>();
+            auto spinner=header.Children().GetAt(0).as<Controls::Grid>().Children().GetAt(1).as<Controls::ProgressRing>();
+            require(spinner.IsActive() && spinner.Visibility()==Visibility::Visible);
+            require(Automation::AutomationProperties::GetName(pane.strip->rows.at(first))==local.labels.pending);
+            require(pane.address->mode.image.Visibility()==Visibility::Collapsed &&
+                    pane.address->mode.label.Visibility()==Visibility::Collapsed);
             auto field=pane.address->field;
             auto source=pane.addressSource;
             field.Text(L"first search");
@@ -2965,6 +3146,7 @@ extern "C" __declspec(dllexport) HRESULT WINAPI WinUIPaneTestLocalStartup(void(W
             field.Text(L"second search");
             pane.address->Action(L"activate");
             require(local.Run(0) && local.view.tabs==2 && local.view.pending==2);
+            require(!pane.strip->enteringTab && pane.strip->rowAnimations.empty());
             pane.strip->select(1);
             require(field.Text()==L"first search");
             require(field.SelectionStart()==2 && field.SelectionLength()==3);
@@ -3001,6 +3183,9 @@ extern "C" __declspec(dllexport) HRESULT WINAPI WinUIPaneTestLocalStartup(void(W
                 transferOutput.get(),262144)==E_INVALIDARG && transferOutput[0]==L'X');
             check_hresult(StartupTransfer(hwnd,LR"({"version":1,"operation":1,"context":"42"})",
                 transferOutput.get(),262144));
+            require(!pane.startupStripBoundsPending && !pane.startupNavigationBoundsPending);
+            require(EqualRect(&pane.appliedBounds,&preparedStrip) && EqualRect(&pane.addressBounds,&preparedNavigation));
+
             require(send(0)==SHELL_STATUS_OK && send(2)==SHELL_STATUS_OK);
             uint32_t startupNotifications=0;
             check_hresult(SetNotifySink(hwnd,[](void* value)->BOOL {

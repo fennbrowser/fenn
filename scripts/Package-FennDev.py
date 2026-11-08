@@ -362,7 +362,7 @@ def validate_contents(names, read, version, expected_hashes, min_version, runtim
     for candidate in candidates:
         if candidate.lower() in lowered:
             raise ValueError(f"Private Windows App SDK runtime file in package: {candidate}")
-    forbidden = {"fennpanetest.dll", "panecontracttests.exe", "user.js"}
+    forbidden = {"fennpanetest.dll", "panecontracttests.exe", "user.js", "paneincompatiblefixture.dll"}
     if not lane.dev_defaults:
         forbidden.add("fenn-dev.js")
     if any(PurePosixPath(name).name.lower() in forbidden for name in names):
@@ -510,7 +510,7 @@ def payload_status(dist, staged_names):
     `mach package` writes the Firefox ZIP as its last step, so the clean payload
     is current when no dist/bin file (following its symlinks into the source
     tree) is newer than that ZIP. Staged pane files are ignored: the package
-    takes the pane from its own build output, so pane-only changes never need
+    takes native files from their own build outputs, so native-only changes never need
     a repackage. Returns (current, reason).
     """
     zips = [p for p in dist.glob(f"{APP_NAME}-*.zip") if FIREFOX_ZIP.fullmatch(p.name)]
@@ -634,12 +634,12 @@ def main():
                                         ("makeappx.exe", "mt.exe", "signtool.exe", "makepri.exe"))
     clean = objdir / "dist" / APP_NAME
     msix_server = objdir / "dist/bin/msixcomserver.dll"
-    pane_dir = ROOT / "build/winui-pane/x64/Release"
+    native_sources = load_script("Stage-WinUIPane").production_sources()
     if objdir == RELEASE_OBJDIR and not (objdir / "dist/bin" / f"{APP_NAME}.exe").is_file():
         raise FileNotFoundError(f"No release build in {objdir}; build it with FENN_MOZCONFIG=mozconfig.release "
                                 "(see configs/mozconfig.release)")
     for required in (makeappx, mt, signtool, makepri, clean / f"{APP_NAME}.exe", clean / "omni.ja", msix_server,
-                     pane_dir / "FennPane.dll"):
+                     *native_sources):
         if not required.is_file():
             raise FileNotFoundError(f"Missing build prerequisite: {required}")
     print(f"Packaging the Firefox {build_kind} build from {objdir}")
@@ -668,7 +668,8 @@ def main():
     shutil.copytree(clean, payload)
     # This pinned Firefox ZIP manifest omits the MSIX-only background COM server.
     shutil.copyfile(msix_server, payload / msix_server.name)
-    shutil.copyfile(pane_dir / "FennPane.dll", payload / "FennPane.dll")
+    for source in native_sources:
+        shutil.copyfile(source, payload / source.name)
     check_exe_manifest(mt, payload / f"{APP_NAME}.exe", run)
     if lane.dev_defaults:
         defaults = payload / "browser/defaults/preferences/fenn-dev.js"

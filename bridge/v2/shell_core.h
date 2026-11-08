@@ -24,7 +24,7 @@
  layout or meaning of anything in [`ffi`] changes; the native host refuses to
  use a core whose version it was not compiled against.
  */
-#define SHELL_CORE_ABI_VERSION 85
+#define SHELL_CORE_ABI_VERSION 99
 
 #define MAX_EDIT_ID 9007199254740991
 
@@ -168,11 +168,40 @@
 
 #define SHELL_FRAME_LIFETIME_DESTROY_HOST 5
 
+#define SHELL_FRAME_LIFETIME_CREATE 6
+
+#define SHELL_FRAME_LIFETIME_BOUND 7
+
+#define SHELL_FRAME_LIFETIME_PAGE_READY 8
+
+#define SHELL_FRAME_LIFETIME_PROFILE 9
+
+#define SHELL_FRAME_LIFETIME_CONFIRM 10
+
+#define SHELL_FRAME_LIFETIME_PRESENTED 11
+
+#define SHELL_FRAME_LIFETIME_RECOVERY_COMMIT 12
+
+#define SHELL_FRAME_LIFETIME_RECOVERY_DEFERRED 13
+
+#define SHELL_FRAME_LIFETIME_RECOVERY_RESUMED 14
+
+#define SHELL_FRAME_LIFETIME_RECOVERY_EMPTY 15
+
+#define SHELL_FRAME_LIFETIME_RECOVERY_SUPPRESS 16
+
 #define SHELL_FRAME_REFUSED_STRIP 0
 
 #define SHELL_FRAME_REFUSED_ADDRESS 1
 
 #define SHELL_FRAME_REFUSED_BIND 2
+
+/*
+ Keep credited frames plus return credits below each OS adapter route's slots.
+ */
+#define SHELL_PIPE_FLIGHT_FRAMES 4
+
+#define SHELL_PIPE_FLIGHT_BYTES ((4 * 1024) * 1024)
 
 #define SHELL_STARTUP_ROW_CAPACITY 4128
 
@@ -510,6 +539,13 @@ typedef struct ShellCore ShellCore;
 typedef struct ShellLinkEnd ShellLinkEnd;
 
 /*
+ Caller serializes access; this byte queue has no thread-affine UI objects.
+ */
+typedef struct ShellPipeQueue ShellPipeQueue;
+
+typedef struct ShellRecovery ShellRecovery;
+
+/*
  Bounds for one link end. Zero in any field keeps the built-in default.
  */
 typedef struct {
@@ -566,6 +602,78 @@ typedef struct {
   const uint16_t *title;
   uintptr_t title_length;
 } ShellFrameTab;
+
+/*
+ Once retired, a late reply cannot bind or revive the window.
+ */
+typedef struct {
+  uint32_t phase;
+  uint32_t serial;
+  uint64_t shell;
+} ShellPipeBinding;
+
+typedef struct {
+  uint64_t times[2];
+  uint32_t count;
+  uint32_t reserved;
+} ShellRecoveryLedger;
+
+typedef struct {
+  ShellRecoveryLedger shell;
+  ShellRecoveryLedger engine;
+} ShellRecoveryHistory;
+
+typedef struct {
+  uint64_t episode;
+  uint64_t available_at;
+  uint32_t eligible;
+} ShellRecoveryRetry;
+
+/*
+ Per-window readiness barrier. Evidence is supplied only by each resource owner.
+ */
+typedef struct {
+  uint32_t generation;
+  uint32_t window;
+  uint32_t required;
+  uint32_t observed;
+  uint64_t deadline;
+  uint64_t last_time;
+  uint64_t remaining;
+  uint32_t paused;
+  /*
+   0 pending, 1 ready, 2 expired/invalid.
+   */
+  uint32_t phase;
+} ShellRecoveryReadiness;
+
+typedef struct {
+  uint64_t id;
+  uint8_t key[16];
+  uint32_t kind;
+} ShellRecoveryWindow;
+
+typedef struct {
+  uint64_t survivor;
+  uint64_t restored;
+  uint32_t kind;
+} ShellRecoveryWindowEffect;
+
+typedef struct {
+  uint32_t peer;
+  uint32_t generation;
+  uint16_t nonce[32];
+} ShellReconnectDescriptor;
+
+/*
+ Firefox-published identity for one endpoint. Privacy: 0 unknown, 1 normal,
+ 2 private. A zero key means no confirmed normal session-store identity yet.
+ */
+typedef struct {
+  uint64_t revision;
+  uint32_t privacy;
+  uint8_t key[16];
+} ShellRecoveryWindowIdentity;
 
 typedef struct {
   uint32_t presentation;
@@ -1063,6 +1171,7 @@ typedef struct {
   uint32_t edit_acknowledged;
   uint32_t query_settled;
   uint32_t mode_pending;
+  uint32_t recoverable_edit;
 } ShellAddressState;
 
 typedef struct {
@@ -1499,6 +1608,149 @@ ShellStatus shell_frame_tabs_decode(const uint8_t *payload,
                                     uintptr_t *count,
                                     uint32_t *selected,
                                     uint32_t *revision);
+
+/*
+ Validate an ephemeral Share request against the current address/document identity.
+ Borrowed payload; no state, allocation ownership or replay across connections.
+ */
+bool shell_frame_share_current(const uint8_t *payload,
+                               uintptr_t length,
+                               uint64_t session,
+                               uint64_t document,
+                               uint64_t now);
+
+ShellPipeQueue *shell_pipe_queue_create(void);
+
+void shell_pipe_queue_destroy(ShellPipeQueue *queue);
+
+bool shell_pipe_queue_push(ShellPipeQueue *queue,
+                           uint32_t route,
+                           const uint8_t *data,
+                           uintptr_t length);
+
+bool shell_pipe_queue_pop(ShellPipeQueue *queue,
+                          uint32_t *route,
+                          uint8_t **data,
+                          uintptr_t *length);
+
+bool shell_pipe_header(uint32_t route, uintptr_t length, uint8_t *out);
+
+/*
+ Take only the calling owner's route. Other routes remain queued for their own threads.
+ */
+bool shell_pipe_queue_pop_route(ShellPipeQueue *queue,
+                                uint32_t route,
+                                uint8_t **data,
+                                uintptr_t *length);
+
+bool shell_pipe_decode_header(const uint8_t *data, uint32_t *route, uintptr_t *length);
+
+bool shell_pipe_binding(ShellPipeBinding *binding,
+                        uint32_t operation,
+                        uint32_t serial,
+                        uint64_t shell);
+
+bool shell_recovery_history_merge(ShellRecoveryHistory a,
+                                  ShellRecoveryHistory b,
+                                  uint64_t now,
+                                  ShellRecoveryHistory *out);
+
+bool shell_recovery_export(const ShellRecovery *value, uint64_t now, ShellRecoveryLedger *out);
+
+bool shell_recovery_import(ShellRecovery *value, ShellRecoveryLedger ledger, uint64_t now);
+
+/*
+ A read-only monotonic-time status query. Zero episode means no manual retry surface.
+ */
+ShellRecoveryRetry shell_recovery_retry_status(const ShellRecovery *value, uint64_t now);
+
+/*
+ Atomically reserve one explicit attempt without resetting the rolling ledger.
+ */
+bool shell_recovery_retry(ShellRecovery *value, uint64_t episode, uint64_t now);
+
+ShellRecovery *shell_recovery_create(void);
+
+void shell_recovery_destroy(ShellRecovery *value);
+
+/*
+ Operations: 0 begin, 1 finish, 2 permanent stop, 3 await peer exit (at most 2s), 4 query exhausted idle budget, 5 confirmed peer exit, 6 terminal awaiting user retry.
+ */
+bool shell_recovery_event(ShellRecovery *value,
+                          uint32_t operation,
+                          uint64_t now);
+
+ShellRecoveryReadiness shell_recovery_readiness_begin(uint32_t generation,
+                                                      uint32_t window,
+                                                      uint32_t required,
+                                                      uint64_t now);
+
+/*
+ Returns phase, or 3 for a stale identity, clock regression or unknown evidence bit.
+ */
+uint32_t shell_recovery_readiness_observe(ShellRecoveryReadiness *state,
+                                          uint32_t generation,
+                                          uint32_t window,
+                                          uint32_t evidence,
+                                          uint64_t now);
+
+/*
+ Pause only after the supplied resource prerequisites; resuming preserves remaining active time.
+ */
+uint32_t shell_recovery_readiness_pause(ShellRecoveryReadiness *state,
+                                        uint32_t generation,
+                                        uint32_t window,
+                                        uint32_t prerequisites,
+                                        uint64_t now);
+
+uint32_t shell_recovery_readiness_resume(ShellRecoveryReadiness *state,
+                                         uint32_t generation,
+                                         uint32_t window,
+                                         uint64_t now);
+
+/*
+ Kinds: 1 bind, 2 empty tab, 3 close/discard, 4 suppress restored, 5 new shell.
+ # Safety
+ Arrays are valid for their lengths, output has capacity slots, count is
+ writable; outputs are disjoint from inputs. Failure leaves outputs untouched.
+ */
+bool shell_recovery_windows(uint64_t attempt,
+                            const ShellRecoveryWindow *survivors,
+                            uintptr_t ns,
+                            const ShellRecoveryWindow *restored,
+                            uintptr_t nr,
+                            ShellRecoveryWindowEffect *output,
+                            uintptr_t capacity,
+                            uintptr_t *count);
+
+/*
+ # Safety
+ Input is readable for length units; output is writable and disjoint.
+ */
+bool shell_reconnect_parse(const uint16_t *input,
+                           uintptr_t length,
+                           ShellReconnectDescriptor *output);
+
+/*
+ # Safety
+ Output is writable and disjoint from core.
+ */
+ShellStatus shell_core_endpoint(ShellCore *core, uint64_t *output);
+
+/*
+ Revision zero inspects the current identity; otherwise accept a complete
+ Firefox publication for the current endpoint. Key is empty or 32 lowercase
+ hex UTF-16 units. Private publications must have an empty key.
+ # Safety
+ Input key is readable for length units; output is writable and disjoint.
+ */
+ShellStatus shell_core_recovery_identity(ShellCore *core,
+                                         uint64_t session,
+                                         uint64_t revision,
+                                         uint32_t privacy,
+                                         const uint16_t *key,
+                                         uintptr_t length,
+                                         ShellRecoveryWindowIdentity *output);
 
 /*
  Accept a complete startup presentation for this native endpoint. Labels stay

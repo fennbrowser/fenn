@@ -40,15 +40,24 @@ struct NativeWindowCaption {
                     toolbarSurface.IsLoaded() && toolbarSurface.ActualWidth() > 0;
         double left{}, right{};
         if (trim) {
-            // The toolbar is in another island. Use its real screen bounds,
-            // then convert to strip DIPs rather than duplicating frame insets.
-            auto bounds = toolbarSurface.TransformToVisual(nullptr).TransformBounds(
-                {0,0,float(toolbarSurface.ActualWidth()),float(toolbarSurface.ActualHeight())});
-            auto screen = toolbarSurface.XamlRoot().ContentIsland().CoordinateConverter().ConvertLocalToScreen(bounds);
-            auto converter = root.XamlRoot().ContentIsland().CoordinateConverter();
-            auto inverse = root.TransformToVisual(nullptr).Inverse();
-            auto start = inverse.TransformPoint(converter.ConvertScreenToLocal(Windows::Graphics::PointInt32{screen.X,screen.Y}));
-            auto end = inverse.TransformPoint(converter.ConvertScreenToLocal(Windows::Graphics::PointInt32{screen.X+screen.Width,screen.Y}));
+            Windows::Foundation::Point start{}, end{};
+            if (toolbarSurface.XamlRoot() == root.XamlRoot()) {
+                // The desktop shell's regions share a XAML tree. Stay in that
+                // tree: screen-coordinate conversion can be unavailable while
+                // its ContentIsland is transitioning through minimize/restore.
+                auto transform = toolbarSurface.TransformToVisual(root);
+                start = transform.TransformPoint({0,0});
+                end = transform.TransformPoint({float(toolbarSurface.ActualWidth()),0});
+            } else {
+                // Retained separate-island hosting needs the real screen join.
+                auto bounds = toolbarSurface.TransformToVisual(nullptr).TransformBounds(
+                    {0,0,float(toolbarSurface.ActualWidth()),float(toolbarSurface.ActualHeight())});
+                auto screen = toolbarSurface.XamlRoot().ContentIsland().CoordinateConverter().ConvertLocalToScreen(bounds);
+                auto converter = root.XamlRoot().ContentIsland().CoordinateConverter();
+                auto inverse = root.TransformToVisual(nullptr).Inverse();
+                start = inverse.TransformPoint(converter.ConvertScreenToLocal(Windows::Graphics::PointInt32{screen.X,screen.Y}));
+                end = inverse.TransformPoint(converter.ConvertScreenToLocal(Windows::Graphics::PointInt32{screen.X+screen.Width,screen.Y}));
+            }
             auto radius = toolbarSurface.CornerRadius();
             left = start.X + radius.TopLeft;
             right = end.X - radius.TopRight;

@@ -3,26 +3,26 @@ import { test } from "node:test";
 import { WinUIStartupTransfer, WinUIStartupConnection, WinUIStartupRowsPublisher, connectFirefoxStartup } from "../upstream/firefox/browser/base/content/WinUIStartupTransfer.sys.mjs";
 
 const identity = { context: "42", session: "9007199254740993", generation: "7" };
-test("row publisher revises changed snapshots and reprojects unchanged identities after acknowledgment",()=>{
+test("row publisher revises changed snapshots and reprojects unchanged identities after acknowledgment",async()=>{
   const calls=[];let snapshot={ids:["90"],selected:"90"};
   const publisher=new WinUIStartupRowsPublisher(identity,(operation,fields)=>{
     calls.push({operation,...fields});return {...identity,rows:[[1,"1","0",true],[2,"0","90",false]]};
   },()=>snapshot);
-  publisher.publish();publisher.publish();publisher.publish(true);
-  snapshot={ids:["91","90"],selected:"91"};publisher.publish();
+  await publisher.publish();await publisher.publish();await publisher.publish(true);
+  snapshot={ids:["91","90"],selected:"91"};await publisher.publish();
   assert.deepEqual(calls.map(c=>[c.operation,c.revision]),[[11,"1"],[11,"1"],[11,"2"]]);
   assert.deepEqual(publisher.rows[0],[1,"1","0",true]);
 });
 
-test("row publisher refuses invalid snapshots and wrong-endpoint projections without committing",()=>{
+test("row publisher refuses invalid snapshots and wrong-endpoint projections without committing",async()=>{
   let snapshot={ids:["90","90"],selected:"90"};let reply={...identity,session:"8",rows:[]};
   const publisher=new WinUIStartupRowsPublisher(identity,()=>reply,()=>snapshot);
-  assert.throws(()=>publisher.publish());assert.equal(publisher.revision,0n);
-  snapshot={ids:["90"],selected:"90"};assert.throws(()=>publisher.publish());
+  await assert.rejects(()=>publisher.publish());assert.equal(publisher.revision,0n);
+  snapshot={ids:["90"],selected:"90"};await assert.rejects(()=>publisher.publish());
   reply={...identity,rows:[[1,"1","0",true],[1,"0","90",false]]};
-  assert.throws(()=>publisher.publish());assert.equal(publisher.revision,0n);
-  reply={...identity,rows:[[1,"1","0",true]]};publisher.publish();
-  snapshot=null;assert.equal(publisher.publish().length,1);
+  await assert.rejects(()=>publisher.publish());assert.equal(publisher.revision,0n);
+  reply={...identity,rows:[[1,"1","0",true]]};await publisher.publish();
+  snapshot=null;assert.equal((await publisher.publish()).length,1);
 });
 const packet = (request, kind = 1, extra = {}) => ({ ...identity, request: String(request),
   draft: "1", kind, ...extra });
@@ -42,23 +42,25 @@ test("mixed editor selection preserves mappings and validates the destination", 
 test("a safely refused editor switch is acknowledged without losing the connection", async()=>{
   const f=fixture({select:()=>false,selected:()=>false});await f.consumer.execute(packet(1));
   let done=false;const calls=[];
-  const connection=new WinUIStartupConnection(identity,f.consumer,message=>{
+  const connection=new WinUIStartupConnection(identity,f.consumer,async message=>{
     calls.push(message.operation);
     if(message.operation===8)return done?{...identity,kind:0}:packet(2,4,{browser:"91"});
     if(message.operation===6){assert.equal(message.accepted,false);done=true;}
   });
-  await connection.wake();assert.equal(connection.stopped,false);
+  await connection.start();assert.equal(connection.stopped,false);
   await connection.wake();assert.deepEqual(calls,[8,6,8]);
 });
 
 test("connection completes one lease at a time despite repeated wakeups", async () => {
   const f=fixture(); const ack=[];
   const commands=[packet(1),packet(2,2,{browser:"90",text:"queued",modifiers:0})];
-  const connection=new WinUIStartupConnection(identity,f.consumer,message=>{
+  const connection=new WinUIStartupConnection(identity,f.consumer,async message=>{
     if(message.operation===8)return commands[ack.length] || {...identity,kind:0};
     if(message.operation===6)ack.push(message.request);
   });
-  const running=connection.wake();
+  await connection.wake();
+  assert.deepEqual(f.calls,[],"setup holds wakeups until explicit start");
+  const running=connection.start();
   assert.equal(connection.wake(),running);
   await running;
   assert.deepEqual(ack,["1","2"]);
@@ -70,12 +72,12 @@ test("uncertain execution and failed acknowledgment never cause automatic replay
   for(const failAck of [false,true]) {
     const f=fixture(failAck?{}:{create:()=>{throw Error('after effect');}});
     const calls=[];
-    const connection=new WinUIStartupConnection(identity,f.consumer,message=>{
+    const connection=new WinUIStartupConnection(identity,f.consumer,async message=>{
       calls.push(message.operation);
       if(message.operation===8)return packet(1);
       if(message.operation===6)throw Error('lost acknowledgment');
     });
-    await connection.wake();await connection.wake();
+    await connection.start();await connection.wake();
     assert.equal(connection.stopped,true);
     assert.deepEqual(calls,failAck?[8,6,7]:[8,7]);
   }
@@ -83,22 +85,24 @@ test("uncertain execution and failed acknowledgment never cause automatic replay
 
 test("safe rejection is acknowledged once then pauses automatic draining", async () => {
   const f=fixture({create:()=>null});const calls=[];
-  const connection=new WinUIStartupConnection(identity,f.consumer,message=>{
+  const connection=new WinUIStartupConnection(identity,f.consumer,async message=>{
     calls.push(message);
     if(message.operation===8)return packet(1);
   });
-  await connection.wake();await connection.wake();
+  await connection.start();await connection.wake();
   assert.deepEqual(calls.map(c=>c.operation),[8,6,7]);
   assert.equal(calls[1].accepted,false);
   assert.equal(connection.lastOutcome.terminal,true);
 });
 
 test("disconnect while a controller is pending never acknowledges completion", async () => {
-  let finish;const f=fixture({create:()=>new Promise(resolve=>{finish=resolve;})});const calls=[];
-  const connection=new WinUIStartupConnection(identity,f.consumer,message=>{
+  let finish, entered;
+  const started=new Promise(resolve=>entered=resolve);
+  const f=fixture({create:()=>new Promise(resolve=>{finish=resolve;entered();})});const calls=[];
+  const connection=new WinUIStartupConnection(identity,f.consumer,async message=>{
     calls.push(message.operation);if(message.operation===8)return packet(1);
   });
-  const running=connection.wake();await Promise.resolve();await Promise.resolve();
+  const running=connection.start();await started;
   connection.disconnect();finish("90");await running;
   assert.deepEqual(calls,[8,7]);
 });
@@ -178,10 +182,11 @@ test("context teardown fails closed and protocol rejection is not completion", a
 });
 
 
-test("presenter adoption accepts an untouched placeholder and keeps a deferred one connected", () => {
+test("presenter adoption accepts an untouched placeholder and keeps a deferred one connected", async () => {
   const saved = { Services: globalThis.Services, ChromeUtils: globalThis.ChromeUtils, Ci: globalThis.Ci };
+  let observer, nextToken=0;
   try {
-    globalThis.Services = { dirsvc: { get: () => ({ path: "fixture-profile" }) }, tm: { dispatchToMainThread() {} } };
+    globalThis.Services = { obs: { addObserver(value) { observer=value; } }, dirsvc: { get: () => ({ path: "fixture-profile" }) }, tm: { dispatchToMainThread() {} } };
     globalThis.ChromeUtils = { importESModule: () => ({ PrivateBrowsingUtils: { isWindowPrivate: () => false } }) };
     globalThis.Ci = { nsIFile: {} };
     for (const eligible of [true, false]) {
@@ -192,12 +197,15 @@ test("presenter adoption accepts an untouched placeholder and keeps a deferred o
         transferWinUIStartup(input) {
           const request = JSON.parse(input); calls.push(request);
           if (request.operation === 14) { assert.equal(request.browser, "90"); adopted = eligible; }
-          return JSON.stringify({ ...identity, kind: 0, mappings: 0, lost: false, editorBrowser: adopted ? "90" : "0",
-            rows: adopted ? [[2, "0", "90", true]] : [[1, "1", "0", true], [2, "0", "90", false]] });
+          const reply = { ...identity, kind: 0, mappings: 0, lost: false, editorBrowser: adopted ? "90" : "0",
+            rows: adopted ? [[2, "0", "90", true]] : [[1, "1", "0", true], [2, "0", "90", false]] };
+          const token=String(++nextToken);
+          queueMicrotask(()=>observer.observe(null,"winui-startup-reply",`${token}:${JSON.stringify(reply)}`));
+          return token;
         }
       } };
-      const connection = connectFirefoxStartup(window, identity.context, identity.generation);
-      connection.attachPresenter();
+      const connection = await connectFirefoxStartup(window, identity.context, identity.generation);
+      await connection.attachPresenter();
       assert.equal(connection.stopped, false);
       assert.equal(connection.editorReady, eligible);
       assert.equal(synced, eligible ? 1 : 0);
@@ -234,11 +242,11 @@ test("only acknowledged draft retirement removes the consumer mapping",async()=>
   for(const retired of [false,true]) {
     const f=fixture({adopt:()=>true});await f.consumer.execute(packet(1));
     let done=false;
-    const connection=new WinUIStartupConnection(identity,f.consumer,message=>{
+    const connection=new WinUIStartupConnection(identity,f.consumer,async message=>{
       if(message.operation===8)return done?{...identity,kind:0}:packet(2,6,{browser:"90",text:"saved",selectionStart:1,selectionLength:2,modifiers:0,mappings:1});
       if(message.operation===6){done=true;return {mappings:retired?0:1};}
     });
-    await connection.wake();
+    await connection.start();
     assert.equal(f.consumer.mappings.has("1"),!retired);
     assert.equal(connection.stopped,false);
   }

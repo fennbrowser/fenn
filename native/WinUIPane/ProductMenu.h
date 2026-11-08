@@ -230,6 +230,7 @@ struct NativeProductMenu {
     void Apply(Object const& next, bool visible) {
         using namespace Microsoft::UI::Xaml;
         enabled = visible && next.Size() != 0 && next.GetNamedBoolean(L"enabled", false);
+        button.IsEnabled(enabled);
         if (!enabled) {
             updates->Cancel();
             Close();

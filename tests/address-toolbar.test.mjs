@@ -161,6 +161,7 @@ test("a restored Firefox toolbar can fit the stock 32-DIP editor", () => {
 test("focus restoration is independent of suggestion visibility", () => {
   const f=fixture(); f.toolbar.update(); f.toolbar.activate();
   f.toolbar.focusOwned=true;
+  f.window.document.activeElement=f.toolbar.proxy;
   f.owner.addressSession.nativeOpen=false;
   f.toolbar.restore();
   assert.ok(f.calls.some(c=>c[0]==="firefox-focus"));
@@ -186,12 +187,26 @@ test("native mouse focus establishes the Gecko proxy without selecting text or l
   assert.equal(f.toolbar.adoptNativeFocus(),true);
   assert.equal(f.window.document.activeElement,f.toolbar.proxy);
   assert.equal(f.toolbar.focusOwned,true);
-  assert.ok(f.calls.some(c=>c[0]==='host' && c[6]===true && c[7]===false));
+  assert.equal(f.calls.filter(c=>c[0]==='host').length,0,'adoption must not refocus the native editor during a control gesture');
   f.calls.length=0;
   assert.equal(f.toolbar.adoptNativeFocus(),true);
   assert.equal(f.calls.length,0,'repeated native focus observations do not refocus the island');
   f.toolbar.active=false;
   assert.equal(f.toolbar.adoptNativeFocus(),false);
+});
+
+test('host-off rollback returns focus to the native island after Gecko proxy adoption',()=>{
+  for(const pref of ['fenn.winui.window.host','fenn.winui.window.independent']) {
+    const f=fixture();f.toolbar.update();f.toolbar.activate();f.prefs.set(pref,false);
+    f.window.document.activeElement={id:'browser'};
+    f.toolbar.proxy.focus=()=>{f.window.document.activeElement=f.toolbar.proxy;};
+    f.calls.length=0;
+    assert.equal(f.toolbar.adoptNativeFocus(),true);
+    assert.ok(f.calls.some(c=>c[0]==='host' && c[6]===true && c[7]===false));
+    f.calls.length=0;
+    assert.equal(f.toolbar.adoptNativeFocus(),true);
+    assert.equal(f.calls.length,0,'an already-adopted proxy does not repeat the return hop');
+  }
 });
 
 test("Firefox's Customize Toolbar command requests the native editor only while the native toolbar is active", () => {

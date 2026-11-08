@@ -10,6 +10,7 @@ struct Presenter {
     Pane& pane;
     bool applying{};
     bool browserEditor{};
+    NativeNavigationToolbar::JObject toolbarPreview{nullptr};
     std::function<void()> browserAdd;
     // Retries the editor focus until Win32 keyboard focus is inside the island. Right after activation
     // XAML's logical focus is set but the host HWND still owns Win32 focus, so typed keys are lost.
@@ -82,11 +83,14 @@ struct Presenter {
     explicit Presenter(Pane& owner,bool deferred=false) : pane(owner) {if(!deferred)Initialize();}
     void Initialize() {
         auto& address=*pane.address;
+        pane.strip->startupPresentation=true;
         browserAdd=pane.strip->add;
         restore=[this,add=pane.strip->add,select=pane.strip->select,close=pane.strip->close,
                  dispatch=pane.strip->dispatch,preview=pane.strip->preview,
                  drag=pane.strip->view.CanDragTabs(),reorder=pane.strip->view.CanReorderTabs(),
                  presentation=pane.strip->presentation,layout=pane.strip->groupLayout,hasLayout=pane.strip->hasGroupLayout]() mutable {
+            pane.strip->startupPresentation=false;pane.strip->startupLoading.clear();
+            pane.address->navigation->FinishStartupLayout();
             pane.strip->add=add;pane.strip->select=select;pane.strip->close=close;
             pane.strip->dispatch=dispatch;pane.strip->preview=preview;
             pane.strip->view.CanDragTabs(drag);pane.strip->view.CanReorderTabs(reorder);
@@ -151,7 +155,8 @@ struct Presenter {
         pane.strip->groupLayout.clear();pane.strip->hasGroupLayout=true;
         pane.startupKey=[this](MSG const& message){return Key(message);};
         address.root.Visibility(Microsoft::UI::Xaml::Visibility::Visible);
-        address.root.Margin({0,0,0,0});
+        address.root.Margin({8,4,8,4});
+        address.toolbarSurface.Visibility(Microsoft::UI::Xaml::Visibility::Visible);
         address.navigation->Apply({},true);
         address.navigation->Layout({});
         browserTitle=[this](uint64_t id){
@@ -212,19 +217,27 @@ struct Presenter {
         const HWND focused=GetFocus();
         return focused && focused!=pane.parent && IsChild(pane.parent,focused);
     }
+    bool EditorHasKeyboardFocus() const {
+        return IslandHasWin32Focus() && pane.address->field.FocusState()!=FocusState::Unfocused;
+    }
     void RetryEditorFocus(uint32_t start,uint32_t length) {
-        if(IslandHasWin32Focus())return;
+        if(EditorHasKeyboardFocus() || GetForegroundWindow()!=pane.parent)return;
         auto queue=Microsoft::UI::Dispatching::DispatcherQueue::GetForCurrentThread();
         if(!queue)return;
         focusRetries=0;
-        if(!focusRetry)focusRetry=queue.CreateTimer();
+        // A new request supersedes its old caret capture and callback.
+        if(focusRetry)focusRetry.Stop();
+        focusRetry=queue.CreateTimer();
         focusRetry.Interval(std::chrono::milliseconds(20));
         focusRetry.IsRepeating(true);
-        focusRetry.Tick([this,start,length](auto const&,auto const&) {
-            // Stop once focus is in the island, the editor was adopted, composition started, or after about 3 s.
-            if(IslandHasWin32Focus() || browserEditor || pane.address->HasActiveComposition() || ++focusRetries>150) {
+        focusRetry.Tick([this,start,length](auto const& timer,auto const&) {
+            if(timer!=focusRetry)return; // ignore a superseded timer/caret capture
+            // A WinUI bridge HWND can own focus before the TextBox is loaded.
+            // Success requires both; never keep retrying over another foreground window.
+            if(EditorHasKeyboardFocus() || GetForegroundWindow()!=pane.parent || browserEditor ||
+               pane.address->HasActiveComposition() || ++focusRetries>150) {
                 focusRetry.Stop();
-                NativeWindowHost::FocusTrace(IslandHasWin32Focus()?"restore-retry-focused":"restore-retry-gave-up",focusRetries);
+                NativeWindowHost::FocusTrace(EditorHasKeyboardFocus()?"restore-retry-focused":"restore-retry-gave-up",focusRetries);
                 return;
             }
             FocusEditor();
@@ -479,6 +492,9 @@ struct Presenter {
             pane.address->Sync(disabled,true);SetBrowserEditor(false);BindLocalCallbacks();
             pane.address->root.Visibility(Microsoft::UI::Xaml::Visibility::Visible);
             pane.address->navigation->Apply({},true);
+            pane.address->root.Margin({8,4,8,4});
+            pane.address->toolbarSurface.Visibility(Microsoft::UI::Xaml::Visibility::Visible);
+            pane.address->navigation->StartupLayout(toolbarPreview);
             editor=true;
         }
         if(!switching)pane.address->field.IsReadOnly(!view.selected && !browserEditor);
@@ -491,14 +507,13 @@ struct Presenter {
         std::map<uint32_t,uint64_t> nextDrafts;
         std::map<uint32_t,uint64_t> nextBrowsers;
         uint32_t selected{};
-        std::set<uint64_t> pending;
-        for(size_t i=0;i<view.pending;++i){ShellStartupView item{};
-            if(shell_core_startup_read(pane.shell.core,true,i,&item)==SHELL_STATUS_OK)pending.insert(item.tab);}
+        pane.strip->startupLoading.clear();
         for(size_t i=0;i<count;++i) {
             const auto& row=rows[i];
             if(row.draft) {
                 nextDrafts.emplace(row.presentation,row.draft);
-                titles.push_back(pending.contains(row.draft)?labels.pending:labels.newTab);
+                titles.push_back(labels.pending);
+                pane.strip->startupLoading.insert(row.presentation);
             } else {
                 // Browser-owned rows require producer labels, never invented
                 // titles. Commands resolve to browser IDs; mixed editor

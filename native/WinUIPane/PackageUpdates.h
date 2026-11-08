@@ -186,6 +186,9 @@ struct NativePackageUpdates : std::enable_shared_from_this<NativePackageUpdates>
             result->ready = true;
         }
     }
+    // The process carrying Firefox's restart registration. The split shell
+    // borrows the authenticated engine handle for the lifetime of its link.
+    inline static HANDLE restartProcess{};
     static Action Install(HWND owner, std::shared_ptr<Result> result) {
         using namespace winrt::Windows;
         if (result->revoked || !result->ready) co_return;
@@ -193,7 +196,7 @@ struct NativePackageUpdates : std::enable_shared_from_this<NativePackageUpdates>
         // selection. Never replace them with an empty command line.
         wchar_t arguments[RESTART_MAX_CMD_LINE]{};
         DWORD length = RESTART_MAX_CMD_LINE, flags = 0;
-        winrt::check_hresult(GetApplicationRestartSettings(GetCurrentProcess(), arguments, &length, &flags));
+        winrt::check_hresult(GetApplicationRestartSettings(restartProcess ? restartProcess : GetCurrentProcess(), arguments, &length, &flags));
         if (!arguments[0] || (flags & RESTART_NO_PATCH)) winrt::throw_hresult(E_FAIL);
         if (result->source == Source::Store) {
             auto store = Services::Store::StoreContext::GetDefault();

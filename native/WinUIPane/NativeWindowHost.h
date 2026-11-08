@@ -6,6 +6,7 @@
 #include <uiautomation.h>
 #pragma comment(lib,"uiautomationcore.lib")
 #include "shell_core.h"
+#include "NativePageWindow.h"
 
 // The HWND is native-owned; nsWindow remains the logical browser adapter, on its own hidden
 // window on Gecko's thread (the proxy, which is also the endpoint). Gecko keeps its compositor
@@ -13,6 +14,10 @@
 // attached nsWindow, not a disposable compositor HWND (which Gecko may replace after a
 // graphics-device reset).
 namespace NativeWindowHost {
+// Set only by the separate shell after OS pipe authentication. Zero retains in-process ownership.
+inline DWORD RemoteEnginePid{};
+// Separate-process host publishes native placement after Windows applies it.
+inline void (*PlacementChanged)(HWND,int activation) noexcept = nullptr;
 inline constexpr wchar_t Property[] = L"Fenn.NativeWindowHost";
 inline UINT CloseMessage() { static UINT message=RegisterWindowMessageW(L"Fenn.NativeWindowHost.Close.v1"); return message; }
 // Set on the host HWND while the local startup editor owns keyboard focus (before Firefox has
@@ -46,40 +51,6 @@ inline UINT EndpointGeometryMessage() { static UINT message=RegisterWindowMessag
 // Page input arrives on a child window that covers the client area below the chrome's XAML, so
 // the top-level window's own content can change without moving page input. Client coordinates
 // are the top-level's. Gecko's accessibility root names this window (PageWindowProperty).
-inline constexpr wchar_t PageProperty[] = L"Fenn.NativeWindowHost.Page";
-inline constexpr wchar_t PageWindowProperty[] = L"Fenn.PageWindow";
-struct PageState;
-inline COLORREF StartupBackgroundColor() noexcept;
-// Set by the input thread: it owns the states of the page children it created.
-inline void (*PageDestroyed)(HWND page, PageState* state) noexcept = nullptr;
-// Page input state, owned by the thread of the window it serves: the shell's thread for the
-// top-level window until its page child exists, the input thread for the page child (M5c).
-struct PageState {
-    HWND endpoint{};
-    // The shell window a page child belongs to; null for the top-level window's own state.
-    HWND shell{};
-    HBRUSH background{};
-    winrt::com_ptr<IRawElementProviderSimple> accessibility;
-    // This thread holds capture for a page drag: Gecko cannot capture a window it does not own.
-    bool capture{};
-    bool tracking{};
-    HCURSOR cursor{};
-    bool cursorOwned{};
-    PageState()=default;
-    PageState(const PageState&)=delete;
-    PageState& operator=(const PageState&)=delete;
-    ~PageState() {
-        if (background) DeleteObject(background);
-        if (cursorOwned && cursor) DestroyCursor(cursor);
-    }
-};
-// Posted to the shell window by the page child's thread: wParam the page, lParam 1 when it was
-// created, 0 when it was destroyed. A post, so it also crosses a process boundary later.
-inline UINT PageMessage() { static UINT message=RegisterWindowMessageW(L"Fenn.NativeWindowHost.Page.v1"); return message; }
-// Posted to the shell window by the page child's thread when the page is pressed (wParam 1),
-// gains focus (2) or loses it (3); lParam is the page. The shell's own message filter saw these
-// while the page child was its own.
-inline UINT PageReportMessage() { static UINT message=RegisterWindowMessageW(L"Fenn.NativeWindowHost.PageReport.v1"); return message; }
 // Set by the pane: what the shell does with a report (outside-press dismissal, focus observation).
 inline void (*PageReported)(HWND shell, HWND page, WPARAM kind) noexcept = nullptr;
 // Set by the input thread when it runs: creates the page child there instead of here.
@@ -96,8 +67,11 @@ struct Context {
     winrt::Microsoft::UI::Xaml::Window window{nullptr};
     winrt::Microsoft::UI::Xaml::Controls::Canvas root{nullptr};
     HWND bridge{};
+    winrt::Microsoft::UI::Xaml::Controls::Border startupPageBackground{nullptr};
     // The page colour, painted until XAML and Gecko have presented.
     HBRUSH background{};
+    RECT startupFrame{}, startupFrameClient{};
+    bool startupFrameValid{};
     // Native chrome rectangles, and the parts of them where Gecko's own controls show, both in
     // client pixels: the page child covers the rest and these exclusions.
     std::vector<RECT> chrome, exclusions;
@@ -108,6 +82,7 @@ struct Context {
     // Independent browser endpoint. Never call its window procedure on the
     // native UI thread or synchronously wait for its close decision.
     HWND endpoint{};
+    DWORD endpointProcess{};
     // The page input child, created when the endpoint binds.
     HWND page{};
     // Whether the page held focus when the window last deactivated (true before the first).
@@ -124,7 +99,56 @@ struct Context {
     }
 };
 inline Context* Get(HWND hwnd) { return static_cast<Context*>(GetPropW(hwnd,Property)); }
-inline bool Owner(HWND hwnd) { return GetWindowThreadProcessId(hwnd,nullptr)==GetCurrentThreadId(); }
+// The Window's system backdrop is the persistent surround. This inner page
+// backing is present before Gecko and follows the same native slot allocation.
+// Gecko remains above it and owns the actual page pixels and browser controls.
+inline void RefreshPageBackground(HWND hwnd) {
+    auto* host=Get(hwnd);if(!host || !host->startupPageBackground)return;
+    RECT client{},content{};GetClientRect(hwnd,&client);
+    const UINT dpi=GetDpiForWindow(hwnd);
+    bool framed=ContentFrame(client,host->chrome,dpi,content);
+    const bool held=GetPropW(hwnd,StartupPageHoldProperty)!=nullptr;
+    if(held && framed) {
+        host->startupFrame=content;host->startupFrameClient=client;host->startupFrameValid=true;
+    } else if(held && host->startupFrameValid && EqualRect(&client,&host->startupFrameClient)) {
+        // Gecko publishes the strip and navigation bounds separately. An
+        // intermediate nonmatching pair must not expand the opaque startup
+        // backing across the material. Keep only the last complete allocation,
+        // for this client size and only until the page hold ends.
+        content=host->startupFrame;framed=true;
+    } else if(!held)host->startupFrameValid=false;
+    double left{},top{},width=host->root.ActualWidth(),height=host->root.ActualHeight();
+    if(framed) {
+        const double scale=96.0/dpi;
+        left=content.left*scale;top=content.top*scale;
+        width=(content.right-content.left)*scale;height=(content.bottom-content.top)*scale;
+    } else {
+        for(const auto& row:host->chrome)top=(std::max)(top,row.bottom*96.0/dpi);
+        height=(std::max)(0.0,height-top);
+    }
+    auto& page=host->startupPageBackground;
+    using namespace winrt::Microsoft::UI::Xaml;
+    Controls::Canvas::SetLeft(page,left);Controls::Canvas::SetTop(page,top);
+    page.Width((std::max)(0.0,width));page.Height((std::max)(0.0,height));
+    page.CornerRadius(framed?CornerRadius{0,0,8,8}:CornerRadius{});
+}
+inline void LayoutStartupBackground(HWND hwnd) {
+    auto* host=Get(hwnd);if(!host)return;
+    using namespace winrt::Microsoft::UI::Xaml;
+    if(!host->startupPageBackground) {
+        host->startupPageBackground=Controls::Border();
+        host->startupPageBackground.IsHitTestVisible(false);
+        const auto color=StartupBackgroundColor();
+        host->startupPageBackground.Background(Media::SolidColorBrush(winrt::Windows::UI::Color{
+            255,GetRValue(color),GetGValue(color),GetBValue(color)}));
+        host->root.Children().InsertAt(0,host->startupPageBackground);
+        host->root.SizeChanged([hwnd](auto const& sender,auto const&) {
+            auto* current=Get(hwnd);if(!current || sender!=current->root)return;
+            RefreshPageBackground(hwnd);
+        });
+    }
+    RefreshPageBackground(hwnd);
+}
 // The host whose page input this top-level window carries. Page children have their own
 // state (PageState, PageProperty) on the thread that owns them.
 inline Context* ForInput(HWND hwnd) { return Get(hwnd); }
@@ -148,17 +172,6 @@ inline void KeepOrder(HWND hwnd) {
     }
 }
 // The page child's region: its client area less the chrome, plus the exclusions.
-inline HRGN PageRegion(const RECT& client, const std::vector<RECT>& chrome, const std::vector<RECT>& exclusions) {
-    HRGN region=CreateRectRgnIndirect(&client);
-    if (!region) return nullptr;
-    for (auto const& rect : chrome) {
-        if (HRGN cut=CreateRectRgnIndirect(&rect)) { CombineRgn(region,region,cut,RGN_DIFF); DeleteObject(cut); }
-    }
-    for (auto const& rect : exclusions) {
-        if (HRGN add=CreateRectRgnIndirect(&rect)) { CombineRgn(region,region,add,RGN_OR); DeleteObject(add); }
-    }
-    return region;
-}
 // The page child takes input everywhere except the visible native chrome, where Gecko's own
 // controls (exclusions) still belong to the page.
 // Firefox republishes geometry continually, mostly unchanged. Reshaping the page child under a
@@ -182,189 +195,19 @@ inline void ApplyPageRegion(HWND shell, Context* host) {
         if (SendPageShape) SendPageShape(shell,client,host->chrome,host->exclusions);
         return;
     }
-    HRGN region=PageRegion(client,host->chrome,host->exclusions);
+    ApplyStartupPageVisibility(host->page,shell);
+    HRGN region=PageRegion(client,host->chrome,host->exclusions,GetDpiForWindow(shell));
     if (region && !SetWindowRgn(host->page,region,TRUE)) DeleteObject(region);
 }
 inline void SetPageRegion(HWND hwnd, std::vector<RECT> chrome, std::vector<RECT> exclusions) {
     auto* host=Get(hwnd);
     if (!host) return;
     host->chrome=std::move(chrome); host->exclusions=std::move(exclusions);
+    RefreshPageBackground(hwnd);
     ApplyPageRegion(hwnd,host);
 }
 // Page input for the browser behind `window`: the top-level window before the page child exists,
 // the page child after. Returns true when the message is consumed, with its result.
-inline bool ForwardPage(HWND window, PageState* host, UINT message, WPARAM w, LPARAM l, LRESULT& result) {
-    result=0;
-    // Says whether touch or pen made a mouse message. Read before anything here can make this
-    // thread take a sent message, which replaces it: taking capture from a window of another
-    // thread does (WM_CAPTURECHANGED), and a touch tap's promoted press then reached Gecko as a
-    // mouse press.
-    const auto extra=static_cast<uint32_t>(GetMessageExtraInfo());
-    if (message==WM_LBUTTONDOWN || message==WM_RBUTTONDOWN || message==WM_MBUTTONDOWN ||
-        message==WM_LBUTTONDBLCLK || message==WM_RBUTTONDBLCLK || message==WM_MBUTTONDBLCLK) {
-        if (!GetCapture()) { SetCapture(window); host->capture=GetCapture()==window; }
-    }
-    // Leave tracking belongs to this thread, so nsWindow's own request has no effect. As in
-    // nsWindow::CaptureMouse it pauses during a capture; asking again when capture ends
-    // reports a leave at once if the drag ended outside the window.
-    const auto trackLeave=[&]{
-        TRACKMOUSEEVENT track{sizeof(track),TME_LEAVE,window,0};
-        host->tracking=TrackMouseEvent(&track)!=FALSE;
-    };
-    if (message==WM_MOUSEMOVE && !host->tracking && !host->capture) trackLeave();
-    // Stock consumes pen messages, so nothing is promoted to mouse messages here either.
-    if (message==WM_POINTERDOWN || message==WM_POINTERUP || message==WM_POINTERUPDATE || message==WM_POINTERLEAVE) {
-        POINTER_INPUT_TYPE type{};
-        if (GetPointerType(GET_POINTERID_WPARAM(w),&type) && type==PT_PEN) {
-            // Moves can be dropped behind a stalled Gecko; presses and releases cannot.
-            static volatile LONG pending=0;
-            constexpr LONG MaxPendingPen=1024;
-            if (message==WM_POINTERUPDATE && pending>=MaxPendingPen) return true;
-            auto* copy=static_cast<WinUIPanePenMessage*>(HeapAlloc(GetProcessHeap(),HEAP_ZERO_MEMORY,sizeof(WinUIPanePenMessage)));
-            if (!copy) return true;
-            if (message!=WM_POINTERLEAVE && !GetPointerPenInfo(GET_POINTERID_WPARAM(w),&copy->pen)) { HeapFree(GetProcessHeap(),0,copy); return true; }
-            copy->wParam=w; copy->pending=&pending;
-            InterlockedIncrement(&pending);
-            if (!PostMessageW(host->endpoint,message+WINUI_PANE_ENDPOINT_KEY_OFFSET,reinterpret_cast<WPARAM>(copy),l)) {
-                InterlockedDecrement(&pending); HeapFree(GetProcessHeap(),0,copy);
-            }
-            return true;
-        }
-    }
-    // Only the owner's SetCursor counts. An island's own message names its window, not this one.
-    if (message==WM_SETCURSOR && reinterpret_cast<HWND>(w)==window && LOWORD(l)==HTCLIENT && host->cursor) {
-        SetCursor(host->cursor);
-        result=TRUE;
-        return true;
-    }
-    // Gecko reads and closes the handle on its thread, which the OS allows.
-    if (message==WM_TOUCH) {
-        if (!PostMessageW(host->endpoint,message,w,l)) CloseTouchInputHandle(reinterpret_cast<HTOUCHINPUT>(l));
-        return true;
-    }
-    // The commands nsWindow consumes. Others, such as volume, stay with the system.
-    if (message==WM_APPCOMMAND) {
-        switch (GET_APPCOMMAND_LPARAM(l)) {
-            case APPCOMMAND_BROWSER_BACKWARD: case APPCOMMAND_BROWSER_FORWARD: case APPCOMMAND_BROWSER_REFRESH:
-            case APPCOMMAND_BROWSER_STOP: case APPCOMMAND_BROWSER_SEARCH: case APPCOMMAND_BROWSER_FAVORITES:
-            case APPCOMMAND_BROWSER_HOME: case APPCOMMAND_CLOSE: case APPCOMMAND_FIND: case APPCOMMAND_HELP:
-            case APPCOMMAND_NEW: case APPCOMMAND_OPEN: case APPCOMMAND_PRINT: case APPCOMMAND_SAVE:
-            case APPCOMMAND_FORWARD_MAIL: case APPCOMMAND_REPLY_TO_MAIL: case APPCOMMAND_SEND_MAIL:
-            case APPCOMMAND_MEDIA_NEXTTRACK: case APPCOMMAND_MEDIA_PREVIOUSTRACK: case APPCOMMAND_MEDIA_STOP:
-            case APPCOMMAND_MEDIA_PLAY_PAUSE: case APPCOMMAND_COPY: case APPCOMMAND_CUT: case APPCOMMAND_PASTE:
-            case APPCOMMAND_REDO: case APPCOMMAND_UNDO:
-                PostMessageW(host->endpoint,message,w,l);
-                result=TRUE;
-                return true;
-        }
-    }
-    // Offset, so Gecko can tell it from the leave its own tracking of the hidden proxy produces.
-    if (message==WM_MOUSELEAVE) { host->tracking=false; PostMessageW(host->endpoint,message+WINUI_PANE_ENDPOINT_KEY_OFFSET,0,0); }
-    if (message==WM_CAPTURECHANGED && host->capture) { host->capture=false; trackLeave(); }
-    // Only pointer-free notifications cross this boundary. Synchronous
-    // non-client, accessibility, IME and drag messages are not forwarded.
-    if (message==WM_CONTEXTMENU) {
-        // Coordinates (or -1 for keyboard invocation) and source HWND are
-        // scalar values. Gecko owns context targeting and cancellation.
-        PostMessageW(host->endpoint,message,w,l);
-        return true;
-    }
-    switch (message) {
-        case WM_SETFOCUS: case WM_KILLFOCUS:
-        case WM_MOUSEWHEEL: case WM_MOUSEHWHEEL:
-            PostMessageW(host->endpoint,message,w,l); break;
-        // Extra info says whether touch or pen made this message, and it is per thread.
-        case WM_MOUSEMOVE: case WM_LBUTTONDOWN: case WM_LBUTTONUP:
-        case WM_RBUTTONDOWN: case WM_RBUTTONUP: case WM_MBUTTONDOWN: case WM_MBUTTONUP:
-        case WM_LBUTTONDBLCLK: case WM_RBUTTONDBLCLK: case WM_MBUTTONDBLCLK:
-            PostMessageW(host->endpoint,message,
-                (static_cast<WPARAM>(extra)<<32)|(w&0xffffffffu),l);
-            break;
-    }
-    if ((message==WM_LBUTTONUP || message==WM_RBUTTONUP || message==WM_MBUTTONUP) && host->capture &&
-        !(w&(MK_LBUTTON|MK_RBUTTON|MK_MBUTTON)) && GetCapture()==window) ReleaseCapture();
-    if (message==WM_KEYDOWN || message==WM_KEYUP || message==WM_SYSKEYDOWN || message==WM_SYSKEYUP) {
-        uint32_t modifiers=0;
-        for (size_t i=0;i<std::size(WinUIPaneModifierKeys);++i) {
-            const auto state=GetKeyState(WinUIPaneModifierKeys[i]);
-            if (state&0x8000) modifiers|=1u<<(i*2);
-            if (state&1) modifiers|=2u<<(i*2);
-        }
-        PostMessageW(host->endpoint,message+WINUI_PANE_ENDPOINT_KEY_OFFSET,
-            (static_cast<WPARAM>(modifiers)<<32)|(w&0xffffffffu),l);
-    }
-    // Native TranslateMessage chars are deliberately not forwarded. Gecko
-    // translates the transported key with its captured modifier state.
-    if (message==WM_PAINT) {
-        PAINTSTRUCT paint{}; BeginPaint(window,&paint); EndPaint(window,&paint);
-        return true;
-    }
-    return false;
-}
-
-inline LRESULT CALLBACK PageProc(HWND page, UINT message, WPARAM w, LPARAM l) {
-    auto* state=static_cast<PageState*>(GetPropW(page,PageProperty));
-    if (state) {
-        if (message==NativePageInput::LockMessage()) { NativePageInput::Pump(page,w); return 0; }
-        if (message==WM_SETFOCUS) NativePageInput::Focus(page);
-        if (message==WM_KILLFOCUS) NativePageInput::Blur(page);
-        // A page child on another thread tells its shell what the shell's message filter would see.
-        if ((message==WM_SETFOCUS || message==WM_KILLFOCUS) && state->shell && !Owner(state->shell))
-            PostMessageW(state->shell,PageReportMessage(),message==WM_SETFOCUS ? 2 : 3,reinterpret_cast<LPARAM>(page));
-        if (message==WM_GETOBJECT && static_cast<LONG>(l)==UiaRootObjectId && state->accessibility)
-            return UiaReturnRawElementProvider(page,w,l,state->accessibility.get());
-        // Paint what the window itself would show here, its background, until Gecko presents.
-        if (message==WM_ERASEBKGND) {
-            RECT client{};
-            GetClientRect(page,&client);
-            if (state->background) FillRect(reinterpret_cast<HDC>(w),&client,state->background);
-            return 1;
-        }
-        if (state->endpoint) {
-            LRESULT result{};
-            if (ForwardPage(page,state,message,w,l,result)) return result;
-        }
-        if (message==WM_NCDESTROY) {
-            UiaReturnRawElementProvider(page,0,0,nullptr);
-            NativePageInput::Remove(page);
-            RemovePropW(page,PageProperty);
-            RemovePropW(page,WINUI_PANE_ENDPOINT_PROPERTY);
-            if (state->shell) PostMessageW(state->shell,PageMessage(),reinterpret_cast<WPARAM>(page),0);
-            if (PageDestroyed) PageDestroyed(page,state);
-            else delete state;
-        }
-    }
-    return DefWindowProcW(page,message,w,l);
-}
-// Software rendering draws into this window (Gecko's SurfaceTarget) through GDI. It is layered at full
-// opacity so it has its own surface: the WinUI Window extends its frame over the whole client area for
-// the backdrop, where GDI's zero alpha would let the backdrop show through the page.
-// Runs on the thread that will own the page child; the state is the child's from then on.
-inline HWND CreatePageWindow(HWND shell, PageState* state) noexcept {
-    HMODULE module{};
-    if (!GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS|GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
-            reinterpret_cast<LPCWSTR>(PageProc),&module)) return nullptr;
-    constexpr auto name=L"Fenn.NativePageInput.v1";
-    WNDCLASSW wc{};
-    if (!GetClassInfoW(module,name,&wc)) {
-        wc.lpfnWndProc=PageProc; wc.hInstance=module; wc.lpszClassName=name;
-        wc.style=CS_DBLCLKS; wc.hCursor=LoadCursorW(nullptr,IDC_ARROW);
-        if (!RegisterClassW(&wc)) return nullptr;
-    } else if (wc.lpfnWndProc!=PageProc) return nullptr;
-    RECT client{};
-    GetClientRect(shell,&client);
-    HWND page=CreateWindowExW(WS_EX_NOPARENTNOTIFY|WS_EX_LAYERED,name,L"",WS_CHILD|WS_VISIBLE|WS_CLIPSIBLINGS,
-        0,0,client.right,client.bottom,shell,nullptr,module,nullptr);
-    if (!page) return nullptr;
-    SetLayeredWindowAttributes(page,0,255,LWA_ALPHA);
-    state->shell=shell;
-    if (!SetPropW(page,PageProperty,state) || !SetPropW(page,WINUI_PANE_ENDPOINT_PROPERTY,state->endpoint)) {
-        RemovePropW(page,PageProperty); state->shell=nullptr; DestroyWindow(page); return nullptr;
-    }
-    // Software rendering presents into this window from now on.
-    InvalidateRect(page,nullptr,TRUE);
-    return page;
-}
 // The shell takes a page child its window got: it keeps it in order and shaped below the chrome.
 // Below the chrome's XAML and Gecko's compositor. The compositor is disabled, so pointer input
 // passes it and reaches this window, as it reached the top-level window before.
@@ -378,6 +221,9 @@ inline void AdoptPage(HWND hwnd, HWND page) noexcept {
     KeepOrder(hwnd);
     ApplyPageRegion(hwnd,host);
     if (GetFocus()==hwnd) SetFocus(page);
+    // Gecko may have enabled OLE before the input child existed. Let its owner thread
+    // attach the local drag target after this page becomes discoverable.
+    if(host->endpoint)PostMessageW(host->endpoint,EndpointGeometryMessage(),0,0);
 }
 inline void ForgetPage(HWND hwnd, HWND page) noexcept {
     auto* host=Get(hwnd);
@@ -427,6 +273,11 @@ inline LRESULT CALLBACK Base(HWND hwnd, UINT message, WPARAM w, LPARAM l) {
         return 0;
     }
     if (message==PageMessage()) {
+        if (l && RemoteEnginePid) {
+            DWORD pid{};wchar_t role[80]{};const auto page=reinterpret_cast<HWND>(w);
+            GetWindowThreadProcessId(page,&pid);GetClassNameW(page,role,80);
+            if(pid!=RemoteEnginePid || wcscmp(role,L"Fenn.NativePageInput.v1") || GetParent(page)!=hwnd)return 0;
+        }
         if (l) AdoptPage(hwnd,reinterpret_cast<HWND>(w)); else ForgetPage(hwnd,reinterpret_cast<HWND>(w));
         return 0;
     }
@@ -438,6 +289,9 @@ inline LRESULT CALLBACK Base(HWND hwnd, UINT message, WPARAM w, LPARAM l) {
     // dialog that held activation closes. Return it to the editor on the next turn.
     if (message==WM_SETFOCUS) FocusTrace(EditorOwned(hwnd)?"host-setfocus-owned":"host-setfocus",reinterpret_cast<uintptr_t>(hwnd));
     if (message==WM_ACTIVATE) FocusTrace(LOWORD(w)==WA_INACTIVE?"host-deactivate":"host-activate",reinterpret_cast<uintptr_t>(GetFocus()));
+    // The page-focus path below returns early. Publish this transition before
+    // entering it, using wParam rather than the not-yet-updated foreground HWND.
+    if(message==WM_ACTIVATE && PlacementChanged && host->endpoint)PlacementChanged(hwnd,LOWORD(w)!=WA_INACTIVE);
     // WinUI's Window handles activation itself and restores focus to its XAML content, so the
     // window never receives WM_SETFOCUS to pass on to the page. Activation returns focus to the
     // page when the page had it (or nothing had yet); XAML keeps a focus it owned.
@@ -519,12 +373,14 @@ inline LRESULT CALLBACK Base(HWND hwnd, UINT message, WPARAM w, LPARAM l) {
         if (message==TaskbarButtonCreatedMessage()) PostMessageW(host->endpoint,message,w,l);
         if (message==WM_ACTIVATE) PostMessageW(host->endpoint,message,w,l);
         // With a page child, focus messages of the window itself are only a hop to or from the page.
-        if (!(host->page && (message==WM_SETFOCUS || message==WM_KILLFOCUS))) {
+        if (!GetPropW(hwnd,L"Fenn.RecoveryPending") &&
+            !(host->page && (message==WM_SETFOCUS || message==WM_KILLFOCUS))) {
             LRESULT result{};
             if (ForwardPage(hwnd,&host->input,message,w,l,result)) return result;
         }
     }
     const auto result=DefSubclassProc(hwnd,message,w,l);
+    if(PlacementChanged && host->endpoint && message==WM_WINDOWPOSCHANGED)PlacementChanged(hwnd,-1);
     if (message==WM_NCDESTROY) {
         RemoveWindowSubclass(hwnd,BaseSubclass,1);
         RemovePropW(hwnd,PageWindowProperty);
@@ -553,13 +409,6 @@ inline PageState* LocalPageState(Context* host) noexcept {
     return &host->input;
 }
 // Applies a cursor to one page state on its owning thread; the window is the one it serves.
-inline void ApplyPageCursor(PageState* state, HWND window, HCURSOR cursor, BOOL owned) noexcept {
-    const auto previous=state->cursorOwned ? state->cursor : nullptr;
-    state->cursor=cursor; state->cursorOwned=owned!=FALSE;
-    POINT point{};
-    if (GetCapture()==window || (GetCursorPos(&point) && WindowFromPoint(point)==window)) SetCursor(cursor);
-    if (previous && previous!=cursor) DestroyCursor(previous);
-}
 inline HRESULT WINAPI SetPageCursor(HWND hwnd, HCURSOR cursor, BOOL owned) noexcept {
     auto* host=Get(hwnd);
     if (!host || !Owner(hwnd)) { if (owned) DestroyCursor(cursor); return E_INVALIDARG; }
@@ -594,15 +443,6 @@ inline LRESULT CALLBACK BaseSubclass(HWND hwnd, UINT message, WPARAM w, LPARAM l
 }
 // The system app mode, which XAML also follows: the window is this colour until
 // XAML and Gecko's first paint cover it, so a dark theme never flashes white.
-inline COLORREF StartupBackgroundColor() noexcept {
-    HIGHCONTRASTW contrast{sizeof(contrast)};
-    if (SystemParametersInfoW(SPI_GETHIGHCONTRAST,sizeof(contrast),&contrast,0) && (contrast.dwFlags&HCF_HIGHCONTRASTON))
-        return GetSysColor(COLOR_WINDOW);
-    DWORD light=1,size=sizeof(light);
-    RegGetValueW(HKEY_CURRENT_USER,L"Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize",
-        L"AppsUseLightTheme",RRF_RT_REG_DWORD,nullptr,&light,&size);
-    return light?RGB(249,249,251):RGB(43,42,51);
-}
 // Makes a WinUI Window the browser window: binding state, window procedure duties and page colour.
 inline HRESULT Attach(HWND hwnd, winrt::Microsoft::UI::Xaml::Window const& window,
                       winrt::Microsoft::UI::Xaml::Controls::Canvas const& root, HWND bridge) noexcept {
@@ -624,13 +464,14 @@ inline HRESULT BindEndpoint(HWND hwnd, uint64_t generation, uintptr_t identity, 
     DWORD process{};
     const auto thread=GetWindowThreadProcessId(endpoint,&process);
     if (!host || !Owner(hwnd) || !identity || !thread || thread==GetCurrentThreadId() ||
-        process!=GetCurrentProcessId() || !EndpointCloseMessage()) return E_INVALIDARG;
+        (process!=GetCurrentProcessId() && process!=RemoteEnginePid) || !EndpointCloseMessage()) return E_INVALIDARG;
     if (host->state.phase!=6 || host->state.generation!=generation || host->endpoint)
         return E_NOT_VALID_STATE;
     ShellWindowBinding binding{};
     binding.shell=reinterpret_cast<uintptr_t>(hwnd); binding.content=identity;
     if (host->Call(SHELL_WINDOW_HOST_OPERATION_BIND,binding)!=SHELL_STATUS_OK) return E_FAIL;
     host->endpoint=endpoint;
+    host->endpointProcess=process;
     host->input.endpoint=endpoint;
     // Without the child, page input stays on this window, as before it existed.
     if (const auto created=CreatePage(hwnd,host,endpoint); FAILED(created))
@@ -638,6 +479,62 @@ inline HRESULT BindEndpoint(HWND hwnd, uint64_t generation, uintptr_t identity, 
     // A shell shown before Firefox attached already has its taskbar button.
     if (IsWindowVisible(hwnd)) PostMessageW(endpoint,TaskbarButtonCreatedMessage(),0,0);
     return S_OK;
+}
+// A held, signaled peer handle is required: transport loss alone cannot revoke
+// a live browser. Pane/popups must be closed by the caller before re-preparing.
+inline winrt::Microsoft::UI::Xaml::Controls::ContentControl GateChrome(Context* host) {
+    using namespace winrt::Microsoft::UI::Xaml;
+    auto gate=host->window.Content().try_as<Controls::ContentControl>();
+    if(!gate) {
+        gate=Controls::ContentControl();
+        gate.HorizontalContentAlignment(HorizontalAlignment::Stretch);
+        gate.VerticalContentAlignment(VerticalAlignment::Stretch);
+        host->window.Content(nullptr);gate.Content(host->root);host->window.Content(gate);
+    } else if(gate.Content()!=host->root)winrt::throw_hresult(E_NOT_VALID_STATE);
+    gate.IsEnabled(false);
+    return gate;
+}
+inline HRESULT RetireDeadEndpoint(HWND hwnd, HANDLE peer) noexcept {
+    try {
+    auto* host=Get(hwnd);
+    if(!host || !Owner(hwnd) || !peer || !host->endpoint || !host->endpointProcess ||
+       host->state.phase<1 || host->state.phase>3 ||
+       host->endpointProcess==GetCurrentProcessId() || GetProcessId(peer)!=host->endpointProcess ||
+       WaitForSingleObject(peer,0)!=WAIT_OBJECT_0)return E_INVALIDARG;
+    GateChrome(host);
+    if(host->Call(SHELL_WINDOW_HOST_OPERATION_CONTENT_DESTROYED,host->state)!=SHELL_STATUS_OK)return E_NOT_VALID_STATE;
+    host->endpoint=nullptr;host->endpointProcess=0;
+    host->input.endpoint=nullptr;host->page=nullptr;
+    RemovePropW(hwnd,PageWindowProperty);
+    UiaReturnRawElementProvider(hwnd,0,0,nullptr);
+    host->input.accessibility=nullptr;
+    NativePageInput::Remove(hwnd);
+    if(GetCapture()==hwnd)ReleaseCapture();
+    TRACKMOUSEEVENT tracking{sizeof(tracking),TME_CANCEL|TME_LEAVE,hwnd,0};TrackMouseEvent(&tracking);
+    host->input.capture=false;host->input.tracking=false;
+    if(host->input.cursorOwned && host->input.cursor)DestroyCursor(host->input.cursor);
+    host->input.cursor=nullptr;host->input.cursorOwned=false;
+    host->restoreEditorFocus={};host->pageFocusOnActivate=false;
+    RemovePropW(hwnd,EditorOwnedProperty);RemovePropW(hwnd,EditorGraceProperty);
+    host->pageRegionApplied=false;host->chrome.clear();host->exclusions.clear();
+    host->pageRegionChrome.clear();host->pageRegionExclusions.clear();
+    return S_OK;
+    }catch(...){return winrt::to_hresult();}
+}
+inline HRESULT PrepareReplacementEndpoint(HWND hwnd) noexcept {
+    try {
+    auto* host=Get(hwnd);
+    if(!host || !Owner(hwnd) || host->state.phase!=4 || host->endpoint || host->page ||
+       host->input.accessibility || host->root.Children().Size())return E_NOT_VALID_STATE;
+        std::unique_ptr<ShellCore,decltype(&shell_core_destroy)> next{shell_core_create(nullptr),shell_core_destroy};
+        if(!next)return E_OUTOFMEMORY;
+        ShellWindowBinding prepared{},input{};input.shell=reinterpret_cast<uintptr_t>(hwnd);
+        if(shell_core_window_host(next.get(),SHELL_WINDOW_HOST_OPERATION_PREPARE_STARTUP,&input,&prepared)!=SHELL_STATUS_OK)return E_FAIL;
+        host->core=std::move(next);host->state=prepared;
+        for(const auto* name:{L"Fenn.RecoveryPrivacy",L"Fenn.RecoverySessionReady",L"Fenn.RecoveryReady",
+            L"Fenn.RecoveryEvidence",L"Fenn.RecoveryDeferred"})RemovePropW(hwnd,name);
+        return S_OK;
+    }catch(...){return winrt::to_hresult();}
 }
 inline HRESULT ResolveEndpointClose(HWND hwnd, uint64_t generation, uint64_t request, bool allow) noexcept {
     auto* host=Get(hwnd);

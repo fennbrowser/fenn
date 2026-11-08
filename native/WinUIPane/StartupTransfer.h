@@ -113,7 +113,19 @@ HRESULT WINAPI StartupTransfer(HWND hwnd, const wchar_t* input, wchar_t* output,
                 return E_NOT_VALID_STATE;
             check_hresult(BeginStartupPresenter(hwnd));
         }
-        if(operation==1)pane.startupContext=context;
+        if(operation==1) {
+            pane.startupContext=context;
+            // Keep the prepared controls still through provisional DOM bounds.
+            // Adoption applies the latest bounds once, without replacing controls.
+            if(pane.startupStripBoundsPending) {
+                pane.startupStripBoundsPending=false;
+                check_hresult(UpdateTabStrip(hwnd,&pane.startupStripBounds,TRUE));
+            }
+            if(pane.startupNavigationBoundsPending) {
+                pane.startupNavigationBoundsPending=false;
+                check_hresult(UpdateAddress(hwnd,&pane.startupNavigationBounds,TRUE));
+            }
+        }
         JObject result;
         if(operation==18)result.Insert(L"normal",JValue::CreateBooleanValue(FinishStartupPresenter(hwnd)));
         auto put=[&](const wchar_t* name,uint64_t value){result.Insert(name,JValue::CreateStringValue(to_hstring(value)));};

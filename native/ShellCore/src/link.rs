@@ -336,6 +336,41 @@ mod tests {
     }
 
     #[test]
+    fn acknowledged_icons_survive_backpressure_individually() {
+        let (mut a, mut b) = pair(Limits { in_flight_frames: 1, ..Limits::default() });
+        a.send(1, Channel::Requests, 0, 0, &json("{}"));
+        pump(&mut a, &mut b);
+        let icon = [1u32.to_le_bytes(), 1u32.to_le_bytes(), 0xffffffffu32.to_le_bytes()].concat();
+        for (revision, kind) in [(1, 4), (2, 4), (3, 5), (4, 5)] {
+            assert_eq!(a.send(1, Channel::Window, kind, revision, &icon), SendOutcome::Queued);
+        }
+        let mut delivered = Vec::new();
+        loop {
+            ack(&mut a, &mut b);
+            let got = pump(&mut a, &mut b);
+            if got.is_empty() { break; }
+            delivered.extend(got.into_iter().map(|h| (h.kind, h.revision)));
+        }
+        assert_eq!(delivered, vec![(4, 1), (4, 2), (5, 3), (5, 4)],
+            "every accepted icon request must reach its per-revision acknowledgement");
+        assert_eq!(a.counts().coalesced, 0);
+    }
+
+    #[test]
+    fn acknowledged_icons_refuse_overflow_explicitly() {
+        let (mut a, mut b) = pair(Limits { in_flight_frames: 1, outbox_frames: 1, ..Limits::default() });
+        a.send(1, Channel::Requests, 0, 0, &json("{}"));
+        pump(&mut a, &mut b);
+        let icon = [1u32.to_le_bytes(), 1u32.to_le_bytes(), 0xffffffffu32.to_le_bytes()].concat();
+        assert_eq!(a.send(1, Channel::Window, 4, 1, &icon), SendOutcome::Queued);
+        assert_eq!(a.send(1, Channel::Window, 4, 2, &icon), SendOutcome::Overflow,
+            "the caller must unwind a refused request instead of waiting for a missing acknowledgement");
+        ack(&mut a, &mut b);
+        let delivered = pump(&mut a, &mut b);
+        assert_eq!(delivered.iter().map(|h| h.revision).collect::<Vec<_>>(), vec![1]);
+    }
+
+    #[test]
     fn ordered_and_delta_frames_overflow_explicitly() {
         let limits = Limits { in_flight_frames: 1, outbox_frames: 2, ..Limits::default() };
         let (mut a, mut b) = pair(limits);

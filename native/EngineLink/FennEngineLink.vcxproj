@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project DefaultTargets="Build" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup Label="ProjectConfigurations">
+    <ProjectConfiguration Include="Release|x64"><Configuration>Release</Configuration><Platform>x64</Platform></ProjectConfiguration>
+  </ItemGroup>
+  <PropertyGroup Label="Globals">
+    <ProjectGuid>{383EBDBE-88A2-438D-BF38-15A068C675B2}</ProjectGuid>
+    <WindowsTargetPlatformVersion>10.0.26100.0</WindowsTargetPlatformVersion>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
+  <PropertyGroup Label="Configuration">
+    <ConfigurationType>DynamicLibrary</ConfigurationType>
+    <PlatformToolset Condition="'$(VisualStudioVersion)' &gt;= '18.0'">v145</PlatformToolset>
+    <PlatformToolset Condition="'$(VisualStudioVersion)' &lt; '18.0'">v143</PlatformToolset>
+    <CharacterSet>Unicode</CharacterSet>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.props" />
+  <PropertyGroup>
+    <TargetName>FennEngineLink</TargetName>
+    <OutDir>$(MSBuildThisFileDirectory)..\..\build\engine-link\x64\Release\</OutDir>
+    <IntDir>$(MSBuildThisFileDirectory)..\..\build\engine-link\x64\Release\test-obj\</IntDir>
+    <OutDir Condition="'$(FennEngineLinkTesting)'=='true'">$(MSBuildThisFileDirectory)..\..\build\engine-link-test\x64\Release\</OutDir>
+    <IntDir Condition="'$(FennEngineLinkTesting)'=='true'">$(MSBuildThisFileDirectory)..\..\build\engine-link-test\obj\</IntDir>
+  </PropertyGroup>
+  <ItemDefinitionGroup>
+    <ClCompile><AdditionalIncludeDirectories>$(MSBuildThisFileDirectory)..\..\bridge\v2;$(MSBuildThisFileDirectory)..\..\native\WinUIPane\Generated Files;$(MSBuildThisFileDirectory)..\..\.cache\nuget\native\Microsoft.WindowsAppSDK.InteractiveExperiences.2.1.9\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories><ExceptionHandling>Sync</ExceptionHandling><LanguageStandard>stdcpp20</LanguageStandard><WarningLevel>Level4</WarningLevel><TreatWarningAsError>true</TreatWarningAsError><RuntimeLibrary>MultiThreaded</RuntimeLibrary><AdditionalOptions>/utf-8 /bigobj %(AdditionalOptions)</AdditionalOptions></ClCompile>
+    <Link><AdditionalDependencies>$(MSBuildThisFileDirectory)..\..\build\shell-core\x86_64-pc-windows-msvc\release\fenn_shell_core.lib;ntdll.lib;userenv.lib;ws2_32.lib;dbghelp.lib;runtimeobject.lib;d3d11.lib;dwmapi.lib;ole32.lib;oleaut32.lib;uiautomationcore.lib;user32.lib;gdi32.lib;%(AdditionalDependencies)</AdditionalDependencies></Link>
+  </ItemDefinitionGroup>
+  <ItemDefinitionGroup Condition="'$(FennEngineLinkTesting)'=='true'">
+    <ClCompile><PreprocessorDefinitions>FENN_ENGINE_LINK_TESTING;%(PreprocessorDefinitions)</PreprocessorDefinitions></ClCompile>
+  </ItemDefinitionGroup>
+  <ItemGroup><ClCompile Include="EngineLink.cpp"/><ClInclude Include="..\..\bridge\WinUIPaneApi.h"/></ItemGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
+</Project>

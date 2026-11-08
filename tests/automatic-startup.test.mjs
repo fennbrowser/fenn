@@ -3,6 +3,8 @@ import { test } from "node:test";
 import { readFileSync } from "node:fs";
 import { beginAutomaticStartup, advanceAutomaticStartup, registerStartupChromeGate, unsupportedStartupLayout, recoverAutomaticStartup, cacheStartupLabels, prepareStartupPresentation } from "../upstream/firefox/browser/base/content/WinUIAutomaticStartup.sys.mjs";
 
+const settle = () => new Promise(resolve => setImmediate(resolve));
+
 function fixture({ early = true, fail = false, ready = true } = {}) {
   const saved = Object.fromEntries(["Services", "Cc", "Ci", "ChromeUtils", "Localization"].map(k => [k, globalThis[k]]));
   const attrs = new Map(); const calls = []; const prefs = new Map(); const presentations = []; let observer;
@@ -14,10 +16,10 @@ function fixture({ early = true, fail = false, ready = true } = {}) {
   const window = { gWinUIPane: pane, gBrowserInit: { delayedStartupFinished: ready }, addEventListener() {}, removeEventListener() {},
     document: { documentElement: root, getElementById: () => ({}) }, getComputedStyle: () => ({ opacity: "0" }),
     windowUtils: { transferWinUIStartup: input => { const request=JSON.parse(input); if(request.operation===19){presentations.push(request);return "{}";} return JSON.stringify({ early, session: "42" }); } } };
-  const connection = { stopped: false, attachPresenter() { calls.push("attach"); advanceAutomaticStartup(window); },
-    enableNormalTabs() { calls.push("adopt"); },
-    send(op) { calls.push(op); if (fail) throw Error("stale native binding"); } };
-  globalThis.ChromeUtils = { importESModule: () => ({ connectFirefoxStartup(w, context, generation) {
+  const connection = { stopped: false, start() {}, async attachPresenter() { calls.push("attach"); advanceAutomaticStartup(window); },
+    async enableNormalTabs() { calls.push("adopt"); },
+    async send(op) { calls.push(op); if (fail) throw Error("stale native binding"); } };
+  globalThis.ChromeUtils = { importESModule: () => ({ async transferStartup(w, request) { return JSON.parse(w.windowUtils.transferWinUIStartup(JSON.stringify(request))); }, async connectFirefoxStartup(w, context, generation) {
     assert.equal(w, window); assert.equal(context, "42"); assert.equal(generation, "42"); calls.push("connect"); return connection;
   } }) };
   return { window, pane, attrs, calls, prefs, presentations, fireReady() { observer(window); }, restore() {
@@ -25,34 +27,34 @@ function fixture({ early = true, fail = false, ready = true } = {}) {
   } };
 }
 
-test("automatic connection waits for services and both native replacements, and cannot reenter", () => {
+test("automatic connection waits for services and both native replacements, and cannot reenter", async () => {
   const f = fixture({ ready: false });
   try {
-    beginAutomaticStartup(f.window);
+    beginAutomaticStartup(f.window); await settle();
     assert.equal(f.pane.automaticStartup.phase, "waiting");
     f.attrs.set("winui-replaces-tabs", ""); f.attrs.set("winui-hides-nav-bar", "");
-    advanceAutomaticStartup(f.window); assert.deepEqual(f.calls, []);
-    f.fireReady();
+    advanceAutomaticStartup(f.window); await settle(); assert.deepEqual(f.calls, []);
+    f.fireReady(); await settle();
     assert.deepEqual(f.calls, ["connect", "attach", "adopt", 16]);
     assert.equal(f.attrs.get("winui-startup-chrome-ready"), "native");
     assert.equal(f.pane.automaticStartup.initialOpacity, "0");
-    advanceAutomaticStartup(f.window); beginAutomaticStartup(f.window);
+    advanceAutomaticStartup(f.window); await settle(); beginAutomaticStartup(f.window); await settle();
     assert.deepEqual(f.calls, ["connect", "attach", "adopt", 16]);
   } finally { f.restore(); }
 });
 
-test("windows without an early presenter retain Firefox fallback", () => {
+test("windows without an early presenter retain Firefox fallback", async () => {
   const f = fixture({ early: false });
-  try { beginAutomaticStartup(f.window); assert.deepEqual(f.calls, []);
+  try { beginAutomaticStartup(f.window); await settle(); assert.deepEqual(f.calls, []);
     assert.equal(f.attrs.get("winui-startup-chrome-ready"), "fallback");
   } finally { f.restore(); }
 });
 
-test("a failed handoff never unmasks startup chrome or automatically retries", () => {
+test("a failed handoff never unmasks startup chrome or automatically retries", async () => {
   const f = fixture({ fail: true }); const error = console.error; console.error = () => {};
   try {
     f.attrs.set("winui-replaces-tabs", ""); f.attrs.set("winui-hides-nav-bar", "");
-    beginAutomaticStartup(f.window); advanceAutomaticStartup(f.window);
+    beginAutomaticStartup(f.window); await settle(); advanceAutomaticStartup(f.window); await settle();
     assert.equal(f.pane.automaticStartup.phase, "failed");
     assert.equal(f.attrs.has("winui-startup-chrome-ready"), false);
     assert.deepEqual(f.calls, ["connect", "attach", "adopt", 16]);
@@ -75,29 +77,29 @@ test("the early chrome sheet is registered once and scoped to browser chrome", (
 });
 
 
-test("startup labels publish before delayed startup and do not rebuild on unchanged readiness", () => {
+test("startup labels publish before delayed startup and do not rebuild on unchanged readiness", async () => {
   const f=fixture({ready:false});try {
-    beginAutomaticStartup(f.window);
+    beginAutomaticStartup(f.window); await settle();
     assert.equal(f.presentations.length,1);
     assert.equal(f.presentations[0].newTab,"localized:winui-startup-new-tab");
     assert.equal(f.presentations[0].session,"42");
     assert.deepEqual(f.calls,[]);
-    advanceAutomaticStartup(f.window);assert.equal(f.presentations.length,1);
+    advanceAutomaticStartup(f.window); await settle();assert.equal(f.presentations.length,1);
   } finally {f.restore();}
 });
 
-test("unsupported initial layouts stay explicit and preserve the handoff until support returns", () => {
+test("unsupported initial layouts stay explicit and preserve the handoff until support returns", async () => {
   for(const [pref,value,reason] of [["sidebar.verticalTabs",true,"vertical-tabs"],
     ["fenn.winui.tabstrip.replaceFirefoxTabs",false,"retained-tabs"],
     ["fenn.winui.navigation.toolbar.enabled",false,"retained-navigation"]]) {
     const f=fixture();try {
-      f.prefs.set(pref,value);beginAutomaticStartup(f.window);
+      f.prefs.set(pref,value);beginAutomaticStartup(f.window); await settle();
       assert.equal(f.pane.automaticStartup.phase,"blocked");
       assert.equal(f.pane.automaticStartup.reason,reason);
       assert.deepEqual(f.calls,[]);assert.equal(f.presentations.at(-1).blocked,true);
       assert.equal(f.attrs.has("winui-startup-chrome-ready"),false);
       f.prefs.delete(pref);f.attrs.set("winui-replaces-tabs","");f.attrs.set("winui-hides-nav-bar","");
-      advanceAutomaticStartup(f.window);
+      advanceAutomaticStartup(f.window); await settle();
       assert.equal(f.pane.automaticStartup.phase,"connected");
       assert.equal(f.presentations.at(-1).blocked,false);
       assert.deepEqual(f.calls,["connect","attach","adopt",16]);
@@ -114,9 +116,9 @@ test("private and temporary layout restrictions are distinguished", () => {
 });
 
 
-test("startup recovery validates current presentation and policy before changing only its setting", () => {
+test("startup recovery validates current presentation and policy before changing only its setting", async () => {
   const f=fixture();try {
-    f.prefs.set("sidebar.verticalTabs",true);beginAutomaticStartup(f.window);
+    f.prefs.set("sidebar.verticalTabs",true);beginAutomaticStartup(f.window); await settle();
     const state=f.pane.automaticStartup;
     const action={kind:"startup-recovery",session:state.session,revision:String(state.presentationRevision)};
     assert.equal(recoverAutomaticStartup(f.window,{...action,session:"wrong"}),2);
@@ -124,9 +126,9 @@ test("startup recovery validates current presentation and policy before changing
     Services.prefs.prefIsLocked=()=>true;
     assert.equal(recoverAutomaticStartup(f.window,action),2);
     assert.equal(f.prefs.get("sidebar.verticalTabs"),true);
-    advanceAutomaticStartup(f.window);
+    advanceAutomaticStartup(f.window); await settle();
     assert.equal(f.presentations.at(-1).recoverable,false);
-    Services.prefs.prefIsLocked=()=>false;advanceAutomaticStartup(f.window);
+    Services.prefs.prefIsLocked=()=>false;advanceAutomaticStartup(f.window); await settle();
     action.revision=String(state.presentationRevision);
     assert.equal(recoverAutomaticStartup(f.window,action),1);
     assert.equal(f.prefs.get("sidebar.verticalTabs"),false);
@@ -146,7 +148,7 @@ test("startup label cache writes only localized presentation atomically and coal
   await cacheStartupLabels({address:"dernier"},"fr",io,paths);
   release();await pending;
   assert.equal(writes.length,2);
-  assert.deepEqual(writes[1].value,{version:2,locale:"fr",rtl:false,labels:{address:"dernier"}});
+  assert.deepEqual(writes[1].value,{version:3,locale:"fr",rtl:false,labels:{address:"dernier"}});
   assert.equal(writes[0].path,"resolved-profile/fenn-startup-labels.json");
   assert.equal(writes[0].options.tmpPath,writes[0].path+".tmp");
   await cacheStartupLabels({address:"dernier"},"fr",io,paths);assert.equal(writes.length,2);
@@ -168,11 +170,19 @@ test("first startup presentation uses Firefox localization and negotiated direct
         return `localized:${id}`;
       }
     };
+    const importModule=ChromeUtils.importESModule;
+    ChromeUtils.importESModule=path=>path.includes('CustomizableUI')?{CustomizableUI:{}}:
+      path.includes('WinUIToolbarCustomization')?{startupToolbarControls:()=>['back','address','extensions','profile']}:importModule(path);
+    Localization.prototype.formatMessagesSync=()=>[{attributes:[{name:'label',value:'Fenn'},{name:'tooltiptext',value:'Localized menu'}]}];
     const value=JSON.parse(prepareStartupPresentation());
-    assert.equal(value.version,2);assert.equal(value.locale,"ar");assert.equal(value.rtl,true);
-    assert.equal(Object.keys(value.labels).length,8);
+    assert.equal(value.version,3);assert.equal(value.locale,"ar");assert.equal(value.rtl,true);
+    assert.equal(Object.keys(value.labels).length,14);
+    assert.equal(value.labels.engineRetry,"localized:winui-engine-recovery-retry");
     assert.equal(value.labels.address,"localized:winui-startup-address");
-    assert.deepEqual(calls,[{resources:["branding/brand.ftl","browser/tabbrowser.ftl"],sync:true}]);
+    assert.deepEqual(value.toolbar,{controls:['back','address','extensions','profile'],productMenu:true,menuLabel:'Fenn',menuTooltip:'Localized menu'});
+    Services.prefs.setBoolPref('fenn.winui.productmenu.enabled',false);
+    assert.equal(JSON.parse(prepareStartupPresentation()).toolbar.productMenu,false);
+    assert.deepEqual(calls.slice(0,2),[{resources:["branding/brand.ftl","browser/tabbrowser.ftl"],sync:true},{resources:["branding/brand.ftl","browser/appmenu.ftl"],sync:true}]);
   } finally {f.restore();}
 });
 for(const bad of [null,"", "x".repeat(1025), "bad\0label"]) {
@@ -183,3 +193,33 @@ for(const bad of [null,"", "x".repeat(1025), "bad\0label"]) {
     }finally{f.restore();}
   });
 }
+
+
+test("saved startup preview tracks profile placement and menu preference without window data", async () => {
+  const f=fixture();const writes=[],observers=new Map();
+  const saved={IOUtils:globalThis.IOUtils,PathUtils:globalThis.PathUtils};
+  try {
+    globalThis.IOUtils={writeJSON:async(path,value)=>writes.push(structuredClone(value))};
+    globalThis.PathUtils={profileDir:'preview-profile',join:(...parts)=>parts.join('/')};
+    globalThis.Localization=class {
+      formatValueSync(id){return 'localized:'+id;}
+      formatMessagesSync(){return [{attributes:[{name:'label',value:'menu'},{name:'tooltiptext',value:'tip'}]}];}
+    };
+    let controls=['back','address','extensions','profile'];
+    ChromeUtils.importESModule=path=>path.includes('CustomizableUI')?{CustomizableUI:{}}:
+      {startupToolbarControls:()=>[...controls]};
+    Services.prefs.addObserver=(key,callback)=>observers.set(key,callback);
+    Services.obs.addObserver=(callback,key)=>observers.set(key,callback);
+    const module=await import('../upstream/firefox/browser/base/content/WinUIAutomaticStartup.sys.mjs?preview-observers');
+    module.prepareStartupPresentation();await settle();
+    assert.deepEqual(writes.at(-1).toolbar.controls,controls);
+    controls=['profile','back','address','extensions'];
+    observers.get('browser.uiCustomization.state')();await settle();
+    assert.deepEqual(writes.at(-1).toolbar.controls,controls);
+    Services.prefs.setBoolPref('fenn.winui.productmenu.enabled',false);
+    observers.get('fenn.winui.productmenu.enabled')();await settle();
+    assert.equal(writes.at(-1).toolbar.productMenu,false);
+    assert.deepEqual(Object.keys(writes.at(-1).toolbar).sort(),['controls','menuLabel','menuTooltip','productMenu']);
+    assert.equal(observers.size,2);
+  } finally {Object.assign(globalThis,saved);f.restore();}
+});

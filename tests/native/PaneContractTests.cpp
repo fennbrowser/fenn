@@ -32,6 +32,7 @@
 #include <winrt/Microsoft.UI.Interop.h>
 #include <winrt/Microsoft.UI.Input.h>
 #include <UIAutomation.h>
+#include <winrt/Microsoft.UI.Input.DragDrop.h>
 #include <winrt/Microsoft.UI.Xaml.Automation.Peers.h>
 #include <winrt/Microsoft.UI.Xaml.Automation.h>
 #include "../../native/WinUIPane/PackageUpdates.h"
@@ -1795,6 +1796,26 @@ void CheckAddress(WinUIPaneApi& api, HMODULE module, HWND hwnd) {
     Require(!NextRequest(api, hwnd, 6, L"edit", 8).Size(), "disabling cancels the unadmitted edit");
     Require(address.Visibility() == Visibility::Collapsed && list.Items().Size() == 0,
             "disable removes native suggestions");
+    // An open query without visual content must not expose an empty popup border.
+    // Exercise the real publication/control path, including actions without rows.
+    auto popup = address.Children().GetAt(1).as<Controls::Primitives::Popup>();
+    auto waiting = winrt::Windows::Data::Json::JsonObject::Parse(
+        LR"({"version":1,"enabled":true,"session":"empty-popup-test","revision":1,"text":"waiting","open":true,"rows":[]})");
+    Require(SUCCEEDED(publishAddress(waiting.Stringify().c_str())) && !popup.IsOpen() && field.Text()==L"waiting",
+            "open pending query retains the editor without an empty popup");
+    waiting.SetNamedValue(L"rows", winrt::Windows::Data::Json::JsonArray::Parse(
+        LR"([{"id":"arrived","title":"Arrived result"}])"));
+    Require(SUCCEEDED(publishAddress(waiting.Stringify().c_str())) && popup.IsOpen() && list.Items().Size()==1,
+            "first asynchronous result opens the pending popup");
+    waiting.SetNamedValue(L"rows", winrt::Windows::Data::Json::JsonArray());
+    Require(SUCCEEDED(publishAddress(waiting.Stringify().c_str())) && !popup.IsOpen(),
+            "removing the last result hides the empty surface");
+    waiting.SetNamedValue(L"globalActions", winrt::Windows::Data::Json::JsonObject::Parse(globalSnapshot).GetNamedArray(L"globalActions"));
+    Require(SUCCEEDED(publishAddress(waiting.Stringify().c_str())) && popup.IsOpen() && !list.Items().Size(),
+            "global actions alone still open the popup");
+    waiting.SetNamedValue(L"open", winrt::Windows::Data::Json::JsonValue::CreateBooleanValue(false));
+    Require(SUCCEEDED(publishAddress(waiting.Stringify().c_str())) && !popup.IsOpen(),
+            "Firefox dismissal hides a nonempty popup");
     Require(SUCCEEDED(api.updateAddress(hwnd, &addressRect, FALSE)), "close the toolbar address host");
     puts("Native address: real controls, bounded JSON, copied edit, feedback suppression and disable passed");
 }
@@ -6383,7 +6404,7 @@ int wmain(int argc, wchar_t** argv) {
                     return EXCEPTION_CONTINUE_SEARCH;
                 }) != nullptr,
             "install teardown exception guard");
-    Require(argc == 2 || (argc == 3 && (wcscmp(argv[2], L"--local-startup") == 0 || wcscmp(argv[2], L"--startup-thread") == 0 || wcscmp(argv[2], L"--startup-thread-cancel") == 0 || wcscmp(argv[2], L"--startup-surface") == 0 || wcscmp(argv[2], L"--startup-host") == 0 || wcscmp(argv[2], L"--window-host") == 0 || wcscmp(argv[2], L"--chrome-layout") == 0 || wcscmp(argv[2], L"--popup-lifecycle") == 0 || wcscmp(argv[2], L"--page-input") == 0 || wcscmp(argv[2], L"--inspect") == 0 || wcscmp(argv[2], L"--address") == 0 || wcscmp(argv[2], L"--address-host") == 0 ||
+    Require(argc == 2 || (argc == 3 && (wcscmp(argv[2], L"--late-drop") == 0 || wcscmp(argv[2], L"--local-startup") == 0 || wcscmp(argv[2], L"--startup-thread") == 0 || wcscmp(argv[2], L"--startup-thread-cancel") == 0 || wcscmp(argv[2], L"--startup-surface") == 0 || wcscmp(argv[2], L"--startup-host") == 0 || wcscmp(argv[2], L"--window-host") == 0 || wcscmp(argv[2], L"--chrome-layout") == 0 || wcscmp(argv[2], L"--popup-lifecycle") == 0 || wcscmp(argv[2], L"--page-input") == 0 || wcscmp(argv[2], L"--inspect") == 0 || wcscmp(argv[2], L"--address") == 0 || wcscmp(argv[2], L"--address-host") == 0 ||
                                         wcscmp(argv[2], L"--menu") == 0 || wcscmp(argv[2], L"--updates") == 0 || wcscmp(argv[2], L"--strip") == 0 || wcscmp(argv[2], L"--inline") == 0 || wcscmp(argv[2], L"--selection-decorations") == 0 || wcscmp(argv[2], L"--selection-reentrancy") == 0 ||
                                         wcscmp(argv[2], L"--drag") == 0 || wcscmp(argv[2], L"--reorder") == 0 || wcscmp(argv[2], L"--transfers") == 0 || wcscmp(argv[2], L"--drag-close") == 0 ||
                                         wcscmp(argv[2], L"--drag-change") == 0 || wcscmp(argv[2], L"--drag-offset") == 0 || wcscmp(argv[2], L"--drag-scale") == 0 || (wcscmp(argv[2], L"--group-drop") == 0 || wcscmp(argv[2], L"--group-neighbors") == 0 || wcscmp(argv[2], L"--group-cross") == 0))),
@@ -6420,6 +6441,36 @@ int wmain(int argc, wchar_t** argv) {
         using Value=winrt::Windows::Data::Json::JsonValue;
         auto data=Json::Parse(LR"({"version":2,"locale":"ar","rtl":true,"labels":{"newTab":"new","pending":"pending","full":"full","composition":"composition","address":"address","unavailable":"unavailable","recovery":"recovery","recoveryAction":"action"}})");
         Require(NativeStartupLabels::Parse(data.Stringify()).GetNamedBoolean(L"rtl"),"initial RTL presentation accepted");
+        auto recovery=Json::Parse(data.Stringify());recovery.Insert(L"version",Value::CreateNumberValue(3));
+        bool missingRecovery=false;try{NativeStartupLabels::Parse(recovery.Stringify());}catch(...){missingRecovery=true;}
+        Require(missingRecovery,"new cache requires complete recovery labels");
+        for(auto key:{L"engineTitle",L"engineMessage",L"engineRetry",L"engineClose",L"engineWaiting",L"engineDraft"})
+            recovery.GetNamedObject(L"labels").Insert(key,Value::CreateStringValue(L"localized"));
+        Require(NativeStartupLabels::Parse(recovery.Stringify()).GetNamedBoolean(L"rtl"),"recovery cache preserves direction");
+        recovery.GetNamedObject(L"labels").Insert(L"engineRetry",Value::CreateStringValue(L""));
+        missingRecovery=false;try{NativeStartupLabels::Parse(recovery.Stringify());}catch(...){missingRecovery=true;}
+        Require(missingRecovery,"empty recovery label rejected");
+        data.Insert(L"toolbar",Json::Parse(LR"({"controls":["back","address","extensions","profile"],"productMenu":true,"menuLabel":"menu","menuTooltip":"tip"})"));
+        Require(NativeStartupLabels::Parse(data.Stringify()).HasKey(L"toolbar"),"bounded initial toolbar accepted");
+        wchar_t temporary[MAX_PATH]{};Require(GetTempPathW(MAX_PATH,temporary)!=0,"startup cache temp directory");
+        const auto directory=std::wstring(temporary)+L"FennStartupPreview-"+std::to_wstring(GetCurrentProcessId());
+        Require(CreateDirectoryW(directory.c_str(),nullptr)!=0,"isolated startup cache directory");
+        const auto cachePath=directory+L"\\fenn-startup-labels.json";
+        const auto bytes=winrt::to_string(data.Stringify());
+        HANDLE cache=CreateFileW(cachePath.c_str(),GENERIC_WRITE,0,nullptr,CREATE_NEW,FILE_ATTRIBUTE_NORMAL,nullptr);
+        Require(cache!=INVALID_HANDLE_VALUE,"create startup cache");DWORD written{};
+        Require(WriteFile(cache,bytes.data(),DWORD(bytes.size()),&written,nullptr) && written==bytes.size(),"write startup cache");CloseHandle(cache);
+        auto saved=NativeStartupLabels::Read(directory.c_str());
+        Require(saved && saved.GetNamedObject(L"toolbar").Stringify()==data.GetNamedObject(L"toolbar").Stringify(),"validated toolbar preview survives profile cache read");
+        bool direction{};
+        Require(!NativeStartupLabels::Resolve(LR"({"version":2,"locale":"en-US","rtl":false})",directory.c_str(),direction),"locale mismatch refuses cached preview");
+        Require(DeleteFileW(cachePath.c_str()) && RemoveDirectoryW(directory.c_str()),"remove isolated startup cache");
+        for(auto invalid:{LR"(["address","address"])",LR"(["execute-command","address"])",LR"(["back"])",LR"([1])"}) {
+            data.GetNamedObject(L"toolbar").Insert(L"controls",winrt::Windows::Data::Json::JsonArray::Parse(invalid));
+            bool bad=false;try{NativeStartupLabels::Parse(data.Stringify());}catch(...){bad=true;}
+            Require(bad,"invalid initial toolbar refused before showing controls");
+        }
+        data.Remove(L"toolbar");
         data.Insert(L"rtl",Value::CreateStringValue(L"true"));
         bool rejected=false;try{NativeStartupLabels::Parse(data.Stringify());}catch(...){rejected=true;}
         Require(rejected,"reject malformed direction before presentation");
@@ -6540,6 +6591,35 @@ int wmain(int argc, wchar_t** argv) {
             memcmp(&chrome, &untouchedChrome, sizeof(chrome)) == 0, "invalid native layout is atomic");
     Require(api.measureChromeLayout(first, 40, TRUE, 4, nullptr) == E_POINTER, "native layout rejects null output");
     Require(SUCCEEDED(api.measureChromeLayout(first, 40, TRUE, 4, &chrome)), "production native layout measurement");
+    if (argc == 3 && wcscmp(argv[2], L"--late-drop") == 0) {
+        ShowWindow(first, SW_SHOW); Pump();
+        using Target = winrt::Microsoft::UI::Input::DragDrop::IDropOperationTarget;
+        using Operation = winrt::Windows::ApplicationModel::DataTransfer::DataPackageOperation;
+        auto capture = reinterpret_cast<HRESULT(WINAPI*)(HWND, void**)>(GetProcAddress(module, "WinUIPaneTestGetDropTarget"));
+        auto retired = reinterpret_cast<BOOL(WINAPI*)(void*)>(GetProcAddress(module, "WinUIPaneTestDropTargetRetired"));
+        Target old{nullptr};
+        Require(capture && SUCCEEDED(capture(first, winrt::put_abi(old))), "retain actual pane drop route");
+        Require(retired && !retired(winrt::get_abi(old)), "held route is live before destruction");
+        Require(old.DropAsync(nullptr).GetResults() == Operation::None, "live route rejects absent customization drag");
+        Require(SUCCEEDED(api.destroy(first)), "retire old pane and weak route");
+        Require(SUCCEEDED(api.updateTabStrip(first, &rect, TRUE)), "replacement pane on same host");
+        Pump();
+        Target fresh{nullptr};
+        Require(SUCCEEDED(capture(first, winrt::put_abi(fresh))), "fresh pane has its own drop target");
+        Require(retired(winrt::get_abi(old)) && !retired(winrt::get_abi(fresh)), "old route expired; replacement owns a different live route");
+        for (int i = 0; i != 3; ++i) {
+            Require(old.EnterAsync(nullptr, nullptr).GetResults() == Operation::None, "late enter rejected");
+            Require(old.OverAsync(nullptr, nullptr).GetResults() == Operation::None, "late over rejected");
+            old.LeaveAsync(nullptr).GetResults();
+            Require(old.DropAsync(nullptr).GetResults() == Operation::None, "late drop rejected after replacement");
+        }
+        Require(fresh.DropAsync(nullptr).GetResults() == Operation::None, "fresh route preserves external rejection");
+        old = nullptr; fresh = nullptr;
+        Require(SUCCEEDED(api.destroy(first)), "destroy replacement pane");
+        DestroyWindow(first); winrt::clear_factory_cache();
+        Require(SUCCEEDED(api.shutdown()), "late target clean shutdown");
+        CoUninitialize(); puts("PASS: retained chrome target rejects late callbacks after pane replacement"); return 0;
+    }
     if (argc == 3 && wcscmp(argv[2], L"--chrome-layout") == 0) {
         CheckNativeChromeLayout(module, api, first, compositor);
         Require(SUCCEEDED(api.destroy(first)), "destroy native-layout fixture before host");

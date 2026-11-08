@@ -74,7 +74,8 @@ struct NativeAddress {
     Microsoft::UI::Xaml::Controls::StackPanel popupContent{nullptr};
     NativeShellCore& shell;
     // Cached WinUI/JSON observations; lifecycle decisions and IDs live in Rust.
-    winrt::hstring session, pending, visibility, observedText;
+    winrt::hstring session, pending, visibility, observedText, lastEditedText;
+    winrt::hstring shareDocument;
     NativeShellCore::Intent StagedKind() const {
         return NativeShellCore::Intent(shell.AddressState().staged_kind);
     }
@@ -290,6 +291,7 @@ struct NativeAddress {
         if (Decide(NativeShellCore::Edit, StagedKind()) == NativeShellCore::DropIntent) return;
         if (!shell.AddressEdit()) return;
         observedText = field.Text();
+        lastEditedText = observedText;
         observedComposing = composing;
         observedInputType = nextInputType;
         nextInputType = L"insertReplacementText";
@@ -1186,7 +1188,7 @@ struct NativeAddress {
         // Match TabViewItem's live radius and its stock top-corner filter.
         // The square bottom edge joins the page below without a seam.
         toolbarSurface = Markup::XamlReader::Load(
-            LR"(<Grid xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" Background="{ThemeResource LayerOnMicaBaseAltFillColorDefaultBrush}" CornerRadius="{Binding Source={ThemeResource OverlayCornerRadius}, Converter={StaticResource TopCornerRadiusFilterConverter}}"/>)").as<Grid>();
+            LR"(<Grid xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" Background="{ThemeResource LayerOnMicaBaseAltFillColorDefaultBrush}" BorderBrush="{ThemeResource DividerStrokeColorDefaultBrush}" BorderThickness="0,0,0,1" CornerRadius="{Binding Source={ThemeResource OverlayCornerRadius}, Converter={StaticResource TopCornerRadiusFilterConverter}}"/>)").as<Grid>();
         toolbarSurface.Visibility(Visibility::Collapsed);
 
         toolbarRoot.Children().Append(toolbarSurface);
@@ -1326,6 +1328,9 @@ struct NativeAddress {
         const auto clearPrivatePanelState = navigation ? navigation->clearPrivatePanel.Read(snapshot) : JObject();
         const auto productMenuState = NativeProductMenu::Read(snapshot);
         const auto navigationState = NativeNavigationToolbar::Read(snapshot);
+        const auto nextShareDocument = snapshot.GetNamedObject(L"navigation", JObject()).GetNamedString(L"shareDocument", L"0");
+        if(nextShareDocument.empty() || nextShareDocument.size()>20 ||
+           !std::all_of(nextShareDocument.begin(),nextShareDocument.end(),[](wchar_t c){return c>=L'0' && c<=L'9';}))throw_hresult(E_INVALIDARG);
         const auto pinnedState = PinnedExtensionButtons::Read(snapshot);
         const auto paletteState = PinnedExtensionButtons::Read(snapshot,L"palette");
         const auto omnibarLeftState = PinnedExtensionButtons::Read(snapshot, L"omnibarLeft");
@@ -1581,6 +1586,7 @@ struct NativeAddress {
             if(!customizationState.revision) shell.ResetToolbarPublication();
             else if(toolbarDecision==SHELL_TOOLBAR_PUBLICATION_ACCEPTED)
                 shell.ToolbarPublication(customizationState.revision, customizationState.fingerprint, true);
+            shareDocument=nextShareDocument;
             navigation->Apply(navigationState, navigationToolbar && snapshot.HasKey(L"navigation"));
             navigation->pinned.externalLayout = customizationState.revision != 0;
             navigation->pinned.Apply(pinnedState, navigationToolbar);
@@ -1716,7 +1722,10 @@ struct NativeAddress {
         syncing = false;
         if (popup) {
             PlacePopup();
-            popup.IsOpen(checkedOpen);
+            // Firefox may open the query before its first result arrives. Keep
+            // that logical state, but do not paint an empty padded border.
+            // Retained visual rows still count even while their actions are stale.
+            popup.IsOpen(checkedOpen && (suggestions.list.Items().Size() || !actions.visuals.empty()));
         }
         if (contextDecision == SHELL_ADDRESS_SECTION_DECISION_ACCEPTED)
             shell.AddressSection(SHELL_PUBLICATION_CHANNEL_ADDRESS_CONTEXT_MENU, nextSession, contextGeneration, contextFingerprint, contextEligible, true);

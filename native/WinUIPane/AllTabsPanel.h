@@ -223,6 +223,10 @@ struct NativeAllTabsPanel {
             // later keyboard activation is a fresh native interaction.
             list.PreviewKeyDown([this,alive,current](auto const&,auto const& args){
                 if(alive.expired() || current.expired())return;
+                // Standard WinUI Application hosting has no pane message-pump
+                // filter. Cancel on the routed key, not a timer's key-state poll
+                // which can miss a complete press between drag ticks.
+                if(args.Key()==winrt::Windows::System::VirtualKey::Escape && dragging && dragging() && cancelDrag){cancelDrag();args.Handled(true);return;}
                 if((args.Key()==winrt::Windows::System::VirtualKey::Enter || args.Key()==winrt::Windows::System::VirtualKey::Space) && (!dragging || !dragging()))suppressClick=false;
             });
             list.ItemClick([this,alive,current](auto const&,auto const& args){if(!alive.expired() && !current.expired()){if(GetEnvironmentVariableW(L"FENN_PANE_DIAGNOSTICS",nullptr,0))fprintf(stderr,"AllTabs item-click row=%u suppressed=%d\n",winrt::unbox_value<uint32_t>(args.ClickedItem()),suppressClick);if(!suppressClick)Send(1,winrt::unbox_value<uint32_t>(args.ClickedItem()));}});

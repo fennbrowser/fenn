@@ -60,8 +60,16 @@ impl Rows {
         // editor became browser-owned. Orphans awaiting Close are not adopted.
         let mut retired=Vec::new();
         let mut rows=Vec::new();
+        // An untouched automatic placeholder is not a second tab. Keep the
+        // accepted browser snapshot private until its explicit retirement;
+        // editing/creating a draft immediately restores the normal mixed view.
+        // This is presentation only: no browser ID is guessed or adopted here.
+        let placeholder_only=s.selected==1 && h.editor_browser==0 &&
+            s.tabs.len()==1 && s.tabs[0].id==1 && !s.tabs[0].touched &&
+            s.tabs[0].revision==0 && s.tabs[0].text.is_empty() && s.submissions.is_empty() &&
+            h.mappings.is_empty();
         for browser in browsers {
-            if represented.contains(browser) {continue;}
+            if placeholder_only || represented.contains(browser) {continue;}
             let row=ShellStartupRow {presentation:allocate(&mut aliases,*browser)?,browser:*browser,
                 draft:0,selected:s.selected==0 && *browser==browser_selected};
             if self.startup_order.contains(&row.presentation) && !h.mappings.values().any(|id|id==browser) {
@@ -152,11 +160,37 @@ mod tests {
     }
     #[test]
     fn untouched_initial_draft_is_not_adopted_and_capacity_rejection_is_atomic() {
-        let (_,h,mut r)=fixture();let mut s=Startup::default();s.add();
+        let (_,mut h,mut r)=fixture();let mut s=Startup::default();s.add();
         let before=r.update(&s,&h,1,&[90],90).unwrap();
-        assert_eq!(before.len(),2);assert!(before[1].selected);assert_eq!(before[1].browser,0);
+        assert_eq!(before.len(),1);assert!(before[0].selected);assert_eq!(before[0].browser,0);
         let huge:Vec<_>=(1..=STARTUP_BROWSER_ROWS as u64+1).collect();
         assert!(r.update(&s,&h,2,&huge,1).is_err());
         assert_eq!(r.update(&s,&h,0,&[],0).unwrap(),before);
+        assert!(h.adopt_placeholder(&mut s,90));
+        let after=r.update(&s,&h,0,&[],0).unwrap();
+        assert_eq!(after.len(),1);assert_eq!(after[0].browser,90);assert!(after[0].selected);
+    }
+    #[test]
+    fn waiting_placeholder_preserves_snapshot_and_never_hides_user_drafts() {
+        let (_,h,mut r)=fixture();let mut s=Startup::default();s.add();
+        let loading=r.update(&s,&h,1,&[90,91],91).unwrap();
+        assert_eq!(loading.len(),1);
+        assert!(s.park_editor());
+        let browser_selected=r.update(&s,&h,0,&[],0).unwrap();
+        assert_eq!(browser_selected.len(),3);assert!(browser_selected[1].selected);
+        // Set the model back to its untouched fixture, without simulating an
+        // explicit user return (which intentionally marks the draft touched).
+        s.selected=1;
+        s.editor(1,&[],0,0,true);
+        assert_eq!(r.update(&s,&h,0,&[],0).unwrap(),loading);
+        s.editor(1,&[65],1,0,true);
+        let edited=r.update(&s,&h,0,&[],0).unwrap();
+        assert_eq!(edited.len(),3);assert_eq!(edited[0].browser,90);assert_eq!(edited[1].browser,91);
+        assert_eq!(edited[2].presentation,loading[0].presentation);assert!(edited[2].selected);
+        assert!(s.tabs[0].composing);assert_eq!(s.tabs[0].text,[65]);
+        s.editor(1,&[],0,0,false);
+        assert_eq!(r.update(&s,&h,0,&[],0).unwrap().len(),3); // touched stays intentional
+        let mut s=Startup::default();s.add();s.add();
+        assert_eq!(r.update(&s,&h,0,&[],0).unwrap().len(),4);
     }
 }

@@ -123,8 +123,8 @@ class DevPackageTests(unittest.TestCase):
             source, dest, record = root / "source", root / "dest", root / "record.json"
             (dest / "en-us").mkdir(parents=True)
             source.mkdir()
-            with self.assertRaisesRegex(RuntimeError, "Build the pane first"):
-                staging.stage(source, dest, record)
+            with self.assertRaisesRegex(RuntimeError, "Build the pane and shell peers first"):
+                staging.stage(source, dest, record, shell_dir=source, link_dir=source)
             for name in staging.STAGED:
                 (source / name).write_bytes(name.encode())
             # A self-contained staging left the pane runtime beside firefox.exe.
@@ -133,12 +133,31 @@ class DevPackageTests(unittest.TestCase):
             record.write_text(json.dumps({"files": [
                 {"file": name, "sha256": "x", "imageSha256": "x", "preserved": True}
                 for name in ("Microsoft.UI.Xaml.dll", "en-us/Microsoft.ui.xaml.dll.mui")]}))
-            staging.stage(source, dest, record)
+            staging.stage(source, dest, record, shell_dir=source, link_dir=source)
             self.assertEqual(sorted(p.relative_to(dest).as_posix() for p in dest.rglob("*")),
                              sorted(["unrelated.dll", *staging.STAGED]))  # Unrecorded files stay.
             self.assertNotIn("imageSha256", record.read_text())
-            staging.stage(source, dest, record)  # A framework-dependent record removes nothing.
+            staging.stage(source, dest, record, shell_dir=source, link_dir=source)  # A framework-dependent record removes nothing.
             self.assertTrue((dest / "unrelated.dll").exists())
+
+    def test_missing_peer_is_rejected_before_existing_staging_is_modified(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            pane, shell, link, dest = [root / name for name in ("pane", "shell", "link", "dest")]
+            for folder in (pane, shell, link, dest): folder.mkdir()
+            sources = staging.production_sources(pane, shell, link)
+            self.assertEqual([p.name for p in sources], list(staging.STAGED))
+            for source in sources[:-1]: source.write_bytes(source.name.encode())
+            (dest / "FennPane.dll").write_bytes(b"previous")
+            with self.assertRaisesRegex(RuntimeError, "FennEngineLink.dll"):
+                staging.stage(pane, dest, root / "record.json", shell_dir=shell, link_dir=link)
+            self.assertEqual((dest / "FennPane.dll").read_bytes(), b"previous")
+            sources[-1].write_bytes(b"link")
+            staging.stage(pane, dest, root / "record.json", shell_dir=shell, link_dir=link)
+            receipt = json.loads((root / "record.json").read_text())
+            self.assertEqual({row["file"] for row in receipt["files"]}, set(staging.STAGED))
+            for row in receipt["files"]:
+                self.assertEqual(row["sha256"], hashlib.sha256((dest / row["file"]).read_bytes()).hexdigest())
 
     def test_header_runtime_minimum_matches_the_pane_sdk(self):
         header = (ROOT / "bridge/WinUIPaneApi.h").read_text(encoding="utf-8")
