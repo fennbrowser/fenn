@@ -2482,7 +2482,9 @@ BOOL WINAPI Translate(MSG* message) noexcept {
                     if (pane.address) pane.address->ScheduleFocusObservation();
                     break;
             }
+#if !defined(FENN_SHELL_PROCESS) || defined(WINUI_PANE_TESTING)
             if (pane.windowDrag.TranslateContextMenu(*message)) return TRUE;
+#endif
             HWND child = pane.childWindow;
             bool ownsMessage = message->hwnd == child || IsChild(child, message->hwnd);
             if (!ownsMessage && pane.addressWindow)

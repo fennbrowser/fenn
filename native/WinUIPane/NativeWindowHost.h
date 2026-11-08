@@ -102,6 +102,13 @@ inline Context* Get(HWND hwnd) { return static_cast<Context*>(GetPropW(hwnd,Prop
 // The Window's system backdrop is the persistent surround. This inner page
 // backing is present before Gecko and follows the same native slot allocation.
 // Gecko remains above it and owns the actual page pixels and browser controls.
+#ifdef FENN_SHELL_PROCESS
+inline LONG ContentBridgeTopInset(HWND hwnd, const Context& host) {
+    POINT bridgeOrigin{}, clientOrigin{};
+    if (!ClientToScreen(host.bridge, &bridgeOrigin) || !ClientToScreen(hwnd, &clientOrigin)) return 0;
+    return (std::max)(0L, bridgeOrigin.y - clientOrigin.y);
+}
+#endif
 inline void RefreshPageBackground(HWND hwnd) {
     auto* host=Get(hwnd);if(!host || !host->startupPageBackground)return;
     RECT client{},content{};GetClientRect(hwnd,&client);
@@ -126,6 +133,13 @@ inline void RefreshPageBackground(HWND hwnd) {
         for(const auto& row:host->chrome)top=(std::max)(top,row.bottom*96.0/dpi);
         height=(std::max)(0.0,height-top);
     }
+#ifdef FENN_SHELL_PROCESS
+    // Match the page's owner-client top edge even when WinUI reserves a
+    // physical pixel above its XAML content for the restored window frame.
+    const double inset = (std::min)(top, ContentBridgeTopInset(hwnd, *host) * 96.0 / dpi);
+    top -= inset;
+    height += inset;
+#endif
     auto& page=host->startupPageBackground;
     using namespace winrt::Microsoft::UI::Xaml;
     Controls::Canvas::SetLeft(page,left);Controls::Canvas::SetTop(page,top);

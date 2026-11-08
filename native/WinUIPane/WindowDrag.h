@@ -24,9 +24,15 @@ struct NativeWindowDrag {
     weak_ref<Controls::Button> addButton;
     bool visible{}, updating{}, checkingLayout{};
     // A caption press on empty strip waits here for the drag threshold; see Proc.
-    bool pendingCaption{}, pendingContextMenu{};
+    bool pendingCaption{};
     POINT pendingStart{};
-    std::vector<Rect> ownedCaption, ownedPass, caption, pass;
+    std::vector<Rect> ownedPass, caption, pass;
+#if !defined(FENN_SHELL_PROCESS) || defined(WINUI_PANE_TESTING)
+    bool pendingContextMenu{};
+#endif
+#ifndef FENN_SHELL_PROCESS
+    std::vector<Rect> ownedCaption;
+#endif
     std::vector<Rect> systemMinimize, systemMaximize, systemClose;
     std::shared_ptr<int> lifetime = std::make_shared<int>(0);
     // Explicit tokens: the current SDK input source does not supply a usable
@@ -65,6 +71,7 @@ struct NativeWindowDrag {
         });
         return true;
     }
+#if !defined(FENN_SHELL_PROCESS) || defined(WINUI_PANE_TESTING)
     bool TranslateContextMenu(MSG const& message) {
         // The SDK caption-input child can handle the click without forwarding
         // WM_NCRBUTTONUP to the owner. Route our own caption regions before
@@ -82,6 +89,7 @@ struct NativeWindowDrag {
         }
         return false;
     }
+#endif
     static LRESULT CALLBACK Proc(HWND hwnd, UINT msg, WPARAM w, LPARAM l, UINT_PTR id, DWORD_PTR data) noexcept {
         auto self = reinterpret_cast<NativeWindowDrag*>(data);
         try {
@@ -89,6 +97,10 @@ struct NativeWindowDrag {
                 GetEnvironmentVariableW(L"FENN_PANE_DIAGNOSTICS", nullptr, 0))
                 fprintf(stderr, "WinUIPane system-caption msg=%x hit=%llu region=%d\n", msg,
                         static_cast<unsigned long long>(w), self->SystemButtonAt(ScreenPoint(l)));
+#ifndef FENN_SHELL_PROCESS
+            // The separate shell's WinUI Window owns non-client hit testing.
+            // The rollback host still needs to reconcile Gecko's hit targets
+            // with the SDK regions registered for the native strip.
             if (msg == WM_NCHITTEST && self->visible) {
                 if (auto button = self->SystemButtonAt(ScreenPoint(l)); button != HTNOWHERE) return button;
                 auto normal = DefSubclassProc(hwnd, msg, w, l);
@@ -114,10 +126,13 @@ struct NativeWindowDrag {
                     [&](auto rect) { return Contains(rect, p); });
                 if (!passthrough) return 0;
             }
+#endif
             if ((msg == WM_NCRBUTTONUP || msg == WM_CONTEXTMENU) &&
                 self->ShowCaptionMenu(ScreenPoint(l))) return 0;
+#if !defined(FENN_SHELL_PROCESS) || defined(WINUI_PANE_TESTING)
             if (msg == WM_CANCELMODE || (msg == WM_ACTIVATE && LOWORD(w) == WA_INACTIVE))
                 self->pendingContextMenu = false;
+#endif
             // Handing a plain caption press to DefWindowProc starts the system move
             // loop at once. That loop blocks this thread's dispatcher and island
             // rendering until release, so activation fades land late. Hold the press
@@ -161,7 +176,17 @@ struct NativeWindowDrag {
             if (msg == WM_ACTIVATE && self->strip) self->strip->allTabs.SetWindowActive(LOWORD(w) != WA_INACTIVE);
             if (msg == WM_WINDOWPOSCHANGED && self->strip) {
                 self->strip->captionDirty = true;
+#ifdef FENN_SHELL_PROCESS
+                // Let WinUI finish positioning the content bridge first.
+                const auto weak = std::weak_ptr<int>(self->lifetime);
+                const auto result = DefSubclassProc(hwnd, msg, w, l);
+                if (!weak.expired()) {
+                    try { self->windowCaption.Update(); } catch (...) {}
+                }
+                return result;
+#else
                 self->windowCaption.Update();
+#endif
             }
             if (msg == WM_NCDESTROY) {
                 self->windowCaption.Close(false);
@@ -252,17 +277,24 @@ struct NativeWindowDrag {
             ++strip->captionPasses;
 #endif
             windowCaption.Update();
-            std::vector<Rect> excluded, area;
+            std::vector<Rect> excluded;
+#ifndef FENN_SHELL_PROCESS
+            std::vector<Rect> area;
+#endif
             if (visible) {
+#ifndef FENN_SHELL_PROCESS
                 auto bounds = Bounds(strip->root);
                 if (bounds.Width > 0 && bounds.Height > 0) area.push_back(bounds);
+#endif
                 Exclusions(strip->root, excluded);
                 excluded.insert(excluded.end(), clipped.begin(), clipped.end());
             }
             // Passthrough holes keep real WinUI buttons and tab rows in
             // charge of their own input, even inside the caption rectangle.
             Replace(Kind::Passthrough, ownedPass, excluded);
+#ifndef FENN_SHELL_PROCESS
             Replace(Kind::Caption, ownedCaption, area);
+#endif
             RefreshCache();
             strip->captionDirty = false;
         } catch (...) { updating = false; throw; }
@@ -333,7 +365,12 @@ struct NativeWindowDrag {
         }
         if (owner) RemoveWindowSubclass(owner, Proc, reinterpret_cast<UINT_PTR>(this));
         try {
-            if (input) { Replace(Kind::Caption, ownedCaption, {}); Replace(Kind::Passthrough, ownedPass, {}); }
+            if (input) {
+#ifndef FENN_SHELL_PROCESS
+                Replace(Kind::Caption, ownedCaption, {});
+#endif
+                Replace(Kind::Passthrough, ownedPass, {});
+            }
         } catch (...) {}
         input = nullptr; strip = nullptr; owner = nullptr;
     }

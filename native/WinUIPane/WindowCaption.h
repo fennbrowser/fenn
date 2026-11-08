@@ -9,6 +9,9 @@ struct NativeWindowCaption {
     using Height = Microsoft::UI::Windowing::TitleBarHeightOption;
     using Theme = Microsoft::UI::Windowing::TitleBarTheme;
     TitleBar bar{nullptr};
+#ifdef FENN_SHELL_PROCESS
+    Window window{nullptr};
+#endif
     Controls::Grid root{nullptr};
     Controls::ColumnDefinition leftInset{nullptr}, rightInset{nullptr};
     Controls::Border leftBottomLine{nullptr}, rightBottomLine{nullptr};
@@ -17,6 +20,19 @@ struct NativeWindowCaption {
     std::vector<Controls::Border> bottomLines;
     int64_t toolbarRadiusToken{}, toolbarVisibilityToken{};
     void UpdateBottomLines() {
+#ifdef FENN_SHELL_PROCESS
+        // The WinUI Window can inset its content bridge by a physical top
+        // border pixel. Gecko's page still starts at the owner-client toolbar
+        // boundary, so that inset can put our bottom stroke under the page.
+        if (toolbarSurface && toolbarSurface.XamlRoot()) {
+            const auto* host = NativeWindowHost::Get(owner);
+            if (host) {
+                const double inset = NativeWindowHost::ContentBridgeTopInset(owner, *host) /
+                    toolbarSurface.XamlRoot().RasterizationScale();
+                if (toolbarSurface.Margin().Bottom != inset) toolbarSurface.Margin({0, 0, 0, inset});
+            }
+        }
+#endif
         if (!root || !root.IsLoaded()) return;
         auto tabs = root.Children().GetAt(0).as<Controls::TabView>();
         if (!Media::VisualTreeHelper::GetChildrenCount(tabs)) return;
@@ -108,6 +124,10 @@ struct NativeWindowCaption {
         bar = Microsoft::UI::Windowing::AppWindow::GetFromWindowId(
             Microsoft::UI::GetWindowIdFromWindow(hwnd)).TitleBar();
         previousExtended = bar.ExtendsContentIntoTitleBar();
+#ifdef FENN_SHELL_PROCESS
+        window = NativeWindowHost::Get(hwnd)->window;
+        previousExtended = window.ExtendsContentIntoTitleBar();
+#endif
         previousHeight = bar.PreferredHeightOption();
         previousTheme = bar.PreferredTheme();
         previousBackground = bar.ButtonBackgroundColor();
@@ -150,7 +170,12 @@ struct NativeWindowCaption {
         visible = value;
         if (value) {
             check_bool(SetPropW(owner, WINUI_PANE_SYSTEM_CAPTION_PROPERTY, reinterpret_cast<HANDLE>(1)));
+#ifdef FENN_SHELL_PROCESS
+            window.ExtendsContentIntoTitleBar(true);
+            window.SetTitleBar(root);
+#else
             bar.ExtendsContentIntoTitleBar(true);
+#endif
             // Start with the default; Update selects Tall for a 48-DIP host.
             bar.PreferredHeightOption(Height::Standard);
             // Reveal the island's live themed background. Windows retains all
@@ -163,7 +188,12 @@ struct NativeWindowCaption {
             RemovePropW(owner, WINUI_PANE_SYSTEM_CAPTION_PROPERTY);
             if (trailing) trailing.Visibility(Visibility::Collapsed);
             bar.PreferredHeightOption(previousHeight);
+#ifdef FENN_SHELL_PROCESS
+            window.SetTitleBar(nullptr);
+            window.ExtendsContentIntoTitleBar(previousExtended);
+#else
             bar.ExtendsContentIntoTitleBar(previousExtended);
+#endif
             bar.PreferredTheme(previousTheme);
             bar.ButtonBackgroundColor(previousBackground);
             bar.ButtonInactiveBackgroundColor(previousInactiveBackground);
