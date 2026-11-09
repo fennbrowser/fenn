@@ -4,9 +4,8 @@ namespace Product {
 struct SurvivorWindow {
     HWND window{};
     ShellRecoveryWindow identity{};
-    std::wstring draft;
-    int selection{},length{};
-    bool hasDraft{},focused{};
+    ShellPresentation::Draft draft;
+    bool hasDraft{};
 };
 struct PendingEngineWindow {
     std::vector<uint8_t> create,publication;
@@ -44,7 +43,7 @@ inline bool SurvivingWindows() {
 }
 inline LRESULT CALLBACK RecoverySurvivorClosed(HWND window,UINT message,WPARAM w,LPARAM l,UINT_PTR,DWORD_PTR) {
     if(message==WM_NCDESTROY) {
-        for(auto& item:survivors)if(item.window==window) {item.identity.kind=3;item.draft.clear();item.hasDraft=false;}
+        for(auto& item:survivors)if(item.window==window) {item.identity.kind=3;item.draft.text.clear();item.hasDraft=false;}
         RemoveWindowSubclass(window,RecoverySurvivorClosed,1);
         // CreateProcess can fail before a pipe exists, so last-close teardown
         // must not depend on receiving a transport-disconnect wake.
@@ -100,7 +99,7 @@ inline std::vector<wchar_t> EngineEnvironment(const std::wstring& descriptor) {
     result.push_back(0);return result;
 }
 inline void RetainEngineWindows() {
-    std::vector<HWND> windows;for(const auto& item:state().panes)windows.push_back(item.first);
+    auto windows=ShellPresentation::PaneWindows();
     // Binding can precede pane creation. An interrupted replacement must retire
     // those endpoints too, or terminal Close still targets its dead engine.
     for(const auto& item:survivors)if(IsWindow(item.window))windows.push_back(item.window);
@@ -111,7 +110,7 @@ inline void RetainEngineWindows() {
         auto old=std::find_if(survivors.begin(),survivors.end(),[&](const auto& item){return item.window==window && item.identity.kind==1;});
         ShellRecoveryWindowIdentity identity{};
         const auto known=shell_core_recovery_identity(host->core.get(),host->state.generation,0,0,nullptr,0,&identity)==SHELL_STATUS_OK;
-        if((known && identity.privacy!=1) || (!known && old==survivors.end())) {Destroy(window);NativeWindowHost::Destroy(window);continue;}
+        if((known && identity.privacy!=1) || (!known && old==survivors.end())) {ShellPresentation::DestroyPane(window);NativeWindowHost::Destroy(window);continue;}
         // The disabled replacement editor does not own a still-pending draft.
         // Keep the surviving window's original identity and text until its
         // readiness commit transfers that text to a live address session.
@@ -121,16 +120,7 @@ inline void RetainEngineWindows() {
             saved.window=window;check_bool(shell_core_endpoint(host->core.get(),&saved.identity.id)==SHELL_STATUS_OK);saved.identity.kind=1;
             memcpy(saved.identity.key,identity.key,16);
         }
-        const auto pane=state().panes.find(window);
-        if(!saved.hasDraft && pane!=state().panes.end() && pane->second->address) {
-            auto& address=*pane->second->address;
-            const auto text=address.field.Text();
-            if(!address.composing && text.size()<=32768 &&
-               (text!=address.observedText || (address.shell.AddressState().recoverable_edit && text==address.lastEditedText))) {
-                saved.hasDraft=true;saved.draft=text.c_str();saved.selection=address.field.SelectionStart();saved.length=address.field.SelectionLength();
-                saved.focused=address.field.FocusState()!=FocusState::Unfocused;
-            }
-        }
+        if(!saved.hasDraft)saved.hasDraft=ShellPresentation::CaptureDraft(window,saved.draft);
         EnginePipe::Trace("engine-draft-captured",uint32_t(saved.identity.id),saved.hasDraft);
         if(GetEnvironmentVariableW(L"FENN_PANE_DIAGNOSTICS",nullptr,0)) {
             SetPropW(window,L"Fenn.RecoveryDraftCaptured",reinterpret_cast<HANDLE>(uintptr_t(saved.hasDraft+1)));
@@ -172,7 +162,7 @@ inline void RetainEngineWindows() {
         // Detached popup trees retain their separately approved retirement rule.
         for(auto const& child:host->root.Children())retainProviders(retainProviders,child);
         check_hresult(NativeWindowHost::RetireDeadEndpoint(window,connection->PeerHandle()));
-        check_hresult(Destroy(window));host->root.Children().Clear();
+        check_hresult(ShellPresentation::DestroyPane(window));host->root.Children().Clear();
         for(auto const& retiredProvider:retiredProviders)check_hresult(UiaDisconnectProvider(retiredProvider.second.get()));
         check_hresult(NativeWindowHost::PrepareReplacementEndpoint(window));
         if(old==survivors.end())survivors.push_back(std::move(saved));else *old=std::move(saved);
@@ -180,8 +170,8 @@ inline void RetainEngineWindows() {
     }
 }
 inline void QueueEngineReplacement() {
-    NativePackageUpdates::restartProcess=nullptr;NativeWindowHost::RemoteEnginePid=0;
-    PaneLink::ShellTransport=nullptr;PaneLink::Native().link=nullptr;
+    ShellPresentation::SetRestartProcess(nullptr);NativeWindowHost::RemoteEnginePid=0;
+    PaneLink::SetProcessShellTransport(nullptr,nullptr);
     for(auto*& link:links){shell_link_destroy(link);link=nullptr;}
     cleanupReady=false;
     connectionCleanup=std::thread([old=std::move(connection)]() mutable {
@@ -246,8 +236,8 @@ inline void EngineRecoveryTick() {
         if(!server || server.get()==INVALID_HANDLE_VALUE){EngineTerminal();return;}
         generation=nextGeneration;confirmed=false;recoveryLaunch=true;startup=nullptr;engineFailureCode=0;
         links[0]=EnginePipe::Link(generation);links[1]=EnginePipe::Link(generation);
-        check_bool(links[0] && links[1]);PaneLink::Generation=generation;PaneLink::Native().link=links[0];
-        PaneLink::ShellTransport=PipeSend;connection=std::make_unique<EnginePipe::Connection>();
+        check_bool(links[0] && links[1]);PaneLink::SetProcessShellTransport(links[0],PipeSend);
+        connection=std::make_unique<EnginePipe::Connection>();
         auto advertisedGeneration=generation;
         auto executable=EnginePipe::Sibling(L"fenn.exe");
 #ifdef FENN_SHELL_TESTING
@@ -261,14 +251,14 @@ inline void EngineRecoveryTick() {
         const auto command=QuoteEngineArgument(executable)+L" --wait-for-browser --new-instance --profile "+QuoteEngineArgument(profile);
         check_bool(shell_recovery_export(engineBudget,GetTickCount64(),&engineHistory.engine));
         engineLaunch=std::make_unique<EnginePipe::ProcessLaunch>(*connection,std::move(server),executable,command,
-            generation,dispatcher,nullptr,EngineEnvironment(descriptor),true,engineHistory);
+            generation,dispatcher,nullptr,0,EngineEnvironment(descriptor),true,engineHistory);
         EnginePipe::Trace("engine-recovery-launch",0,generation);
     }
     if(engineLaunch) {
         if(!engineLaunch->Done())return;
         const auto result=engineLaunch->Result();enginePid=engineLaunch->Pid();engineLaunch.reset();
         if(FAILED(result)){engineFailureCode=DWORD(result);EngineTerminal();return;}
-        if(connection->Ready()){enginePid=connection->PeerPid();NativeWindowHost::RemoteEnginePid=enginePid;NativePackageUpdates::restartProcess=connection->PeerHandle();}
+        if(connection->Ready()){enginePid=connection->PeerPid();NativeWindowHost::RemoteEnginePid=enginePid;ShellPresentation::SetRestartProcess(connection->PeerHandle());}
     }
     if(!engineRestoring){if(connection && connection->Closed())Pump();return;}
     if(!SurvivingWindows()){EngineTerminal();app.Exit();return;}
@@ -301,21 +291,21 @@ inline bool EngineDraftEditorReady(HWND window) {
     if(saved==survivors.end() || !saved->hasDraft)return true;
     // A disabled startup snapshot succeeds even before the editor exists.
     // A retained edit needs a live address session before readiness can commit.
-    const auto pane=state().panes.find(window);
-    return pane!=state().panes.end() && pane->second->address && !pane->second->address->session.empty();
+    return ShellPresentation::AddressSessionReady(window);
 }
 inline void RestoreEngineDraft(HWND window) {
     if(!engineRestoring)return;
     auto saved=std::find_if(survivors.begin(),survivors.end(),[&](const auto& item){return item.window==window;});
     if(saved==survivors.end() || !saved->hasDraft)return;
-    const auto pane=state().panes.find(window);if(pane==state().panes.end() || !pane->second->address){EnginePipe::Trace("engine-draft-no-editor");return;}
-    auto& address=*pane->second->address;
-    address.field.Text(saved->draft);address.field.Select(saved->selection,saved->length);address.Edit();
-    EnginePipe::Trace("engine-draft-applied",uint32_t(saved->identity.id),address.session.empty()?0:1);
+    bool sessionReady{};
+    if(!ShellPresentation::RestoreDraft(window,saved->draft,sessionReady)) {
+        EnginePipe::Trace("engine-draft-no-editor");return;
+    }
+    EnginePipe::Trace("engine-draft-applied",uint32_t(saved->identity.id),sessionReady?1:0);
     if(GetEnvironmentVariableW(L"FENN_PANE_DIAGNOSTICS",nullptr,0))
-        SetPropW(window,L"Fenn.RecoveryDraftApplied",reinterpret_cast<HANDLE>(uintptr_t(address.session.empty()?1:2)));
-    if(saved->focused && GetForegroundWindow()==window)address.field.Focus(FocusState::Programmatic);
-    saved->draft.clear();saved->hasDraft=false;
+        SetPropW(window,L"Fenn.RecoveryDraftApplied",reinterpret_cast<HANDLE>(uintptr_t(sessionReady?2:1)));
+    if(saved->draft.focused && GetForegroundWindow()==window)ShellPresentation::FocusEditor(window);
+    saved->draft.text.clear();saved->hasDraft=false;
 }
 inline bool EngineRecoveryFrame(const ShellFrameView& view) {
     if(engineTerminal)return true;
@@ -330,7 +320,7 @@ inline bool EngineRecoveryFrame(const ShellFrameView& view) {
     }
     const auto found=restoredWindows.find(view.window);
     if(found==restoredWindows.end() || view.channel!=SHELL_FRAME_TAB_MENU)return false;
-    const auto value=NativeTabMenu::Object::Parse(PaneLink::Text(view.payload,view.length));
+    const auto value=Windows::Data::Json::JsonObject::Parse(PaneLink::Text(view.payload,view.length));
     if(!value.HasKey(L"recoveryWindow"))return true;
     check_bool(view.length<=512 && value.Size()==3 && value.GetNamedNumber(L"version")==2 && value.GetNamedBoolean(L"publishOnly"));
     const auto identity=value.GetNamedObject(L"recoveryWindow");

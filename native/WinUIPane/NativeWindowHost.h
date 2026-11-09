@@ -67,6 +67,7 @@ struct Context {
     winrt::Microsoft::UI::Xaml::Window window{nullptr};
     winrt::Microsoft::UI::Xaml::Controls::Canvas root{nullptr};
     HWND bridge{};
+    winrt::Microsoft::UI::Xaml::Controls::Grid startupPageBackgroundScope{nullptr};
     winrt::Microsoft::UI::Xaml::Controls::Border startupPageBackground{nullptr};
     // The page colour, painted until XAML and Gecko have presented.
     HBRUSH background{};
@@ -142,7 +143,8 @@ inline void RefreshPageBackground(HWND hwnd) {
 #endif
     auto& page=host->startupPageBackground;
     using namespace winrt::Microsoft::UI::Xaml;
-    Controls::Canvas::SetLeft(page,left);Controls::Canvas::SetTop(page,top);
+    Controls::Canvas::SetLeft(host->startupPageBackgroundScope,left);
+    Controls::Canvas::SetTop(host->startupPageBackgroundScope,top);
     page.Width((std::max)(0.0,width));page.Height((std::max)(0.0,height));
     page.CornerRadius(framed?CornerRadius{0,0,8,8}:CornerRadius{});
 }
@@ -150,12 +152,25 @@ inline void LayoutStartupBackground(HWND hwnd) {
     auto* host=Get(hwnd);if(!host)return;
     using namespace winrt::Microsoft::UI::Xaml;
     if(!host->startupPageBackground) {
-        host->startupPageBackground=Controls::Border();
-        host->startupPageBackground.IsHitTestVisible(false);
-        const auto color=StartupBackgroundColor();
-        host->startupPageBackground.Background(Media::SolidColorBrush(winrt::Windows::UI::Color{
-            255,GetRValue(color),GetGValue(color),GetBValue(color)}));
-        host->root.Children().InsertAt(0,host->startupPageBackground);
+        // This backing survives startup beneath Gecko's antialiased rounded edge.
+        // A captured startup colour leaves a light fringe after a dark-mode switch.
+        host->startupPageBackgroundScope=Markup::XamlReader::Load(LR"(<Grid
+            xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+            xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+            IsHitTestVisible="False">
+          <Grid.Resources>
+            <ResourceDictionary>
+              <ResourceDictionary.ThemeDictionaries>
+                <ResourceDictionary x:Key="Light"><SolidColorBrush x:Key="FennPageBackingBrush" Color="#F9F9FB"/></ResourceDictionary>
+                <ResourceDictionary x:Key="Default"><SolidColorBrush x:Key="FennPageBackingBrush" Color="#2B2A33"/></ResourceDictionary>
+                <ResourceDictionary x:Key="HighContrast"><SolidColorBrush x:Key="FennPageBackingBrush" Color="{ThemeResource SystemColorWindowColor}"/></ResourceDictionary>
+              </ResourceDictionary.ThemeDictionaries>
+            </ResourceDictionary>
+          </Grid.Resources>
+          <Border Background="{ThemeResource FennPageBackingBrush}" IsHitTestVisible="False"/>
+        </Grid>)").as<Controls::Grid>();
+        host->startupPageBackground=host->startupPageBackgroundScope.Children().GetAt(0).as<Controls::Border>();
+        host->root.Children().InsertAt(0,host->startupPageBackgroundScope);
         host->root.SizeChanged([hwnd](auto const& sender,auto const&) {
             auto* current=Get(hwnd);if(!current || sender!=current->root)return;
             RefreshPageBackground(hwnd);
@@ -270,9 +285,11 @@ inline LRESULT CALLBACK Base(HWND hwnd, UINT message, WPARAM w, LPARAM l) {
     if (!host) return DefSubclassProc(hwnd,message,w,l);
     static const UINT focusMessage=RegisterWindowMessageW(L"Fenn.NativeWindowHost.Focus.v1");
     if (focusMessage && message==focusMessage) {
-        // An old endpoint must not focus a detached/rebound native window.
-        // This runs on the native owner; Gecko never borrows its input queue.
-        if (host->endpoint && reinterpret_cast<HWND>(w)==host->endpoint && IsWindowEnabled(hwnd)) {
+        // This posted request restores focus within the active shell. SetFocus on
+        // an inactive shell's child can activate that shell again, causing both
+        // windows to keep posting focus requests after a tab tear-out.
+        if (host->endpoint && reinterpret_cast<HWND>(w)==host->endpoint &&
+            GetForegroundWindow()==hwnd && IsWindowEnabled(hwnd)) {
             // Gecko's startup focus requests (window focus, then urlbar and content) are meant
             // for a window nobody has typed into. While the native editor owns focus, keep it.
             const HWND focused=GetFocus();
@@ -494,6 +511,18 @@ inline HRESULT BindEndpoint(HWND hwnd, uint64_t generation, uintptr_t identity, 
     if (IsWindowVisible(hwnd)) PostMessageW(endpoint,TaskbarButtonCreatedMessage(),0,0);
     return S_OK;
 }
+inline HRESULT BindBrowserEndpoint(HWND hwnd, uintptr_t identity, HWND endpoint) noexcept {
+    auto* host=Get(hwnd);
+    if (!host) return E_INVALIDARG;
+    if (host->state.phase==0) {
+        ShellWindowBinding binding{}; binding.shell=reinterpret_cast<uintptr_t>(hwnd);
+        if (host->Call(SHELL_WINDOW_HOST_OPERATION_PREPARE_STARTUP,binding)!=SHELL_STATUS_OK) return E_FAIL;
+    }
+    return BindEndpoint(hwnd,host->state.generation,identity,endpoint);
+}
+inline HRESULT WINAPI SetTitle(HWND hwnd, const wchar_t* title) noexcept {
+    return SetWindowTextW(hwnd,title) ? S_OK : HRESULT_FROM_WIN32(GetLastError());
+}
 // A held, signaled peer handle is required: transport loss alone cannot revoke
 // a live browser. Pane/popups must be closed by the caller before re-preparing.
 inline winrt::Microsoft::UI::Xaml::Controls::ContentControl GateChrome(Context* host) {
@@ -557,6 +586,9 @@ inline HRESULT ResolveEndpointClose(HWND hwnd, uint64_t generation, uint64_t req
     decision.generation=generation; decision.close_request=request;
     return host->Call(allow ? SHELL_WINDOW_HOST_OPERATION_APPROVE_CLOSE :
         SHELL_WINDOW_HOST_OPERATION_CANCEL_CLOSE,decision)==SHELL_STATUS_OK ? S_OK : E_NOT_VALID_STATE;
+}
+inline HRESULT CancelEndpointClose(HWND hwnd, uint64_t generation, uint64_t request) noexcept {
+    return ResolveEndpointClose(hwnd,generation,request,false);
 }
 // Gecko asked for this on its proxy window. Applied here, where the shell lives, so Gecko never
 // waits for this thread; the proxy follows once the shell reports its new state.

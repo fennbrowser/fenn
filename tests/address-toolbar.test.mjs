@@ -25,7 +25,7 @@ function fixture() {
   const slot = element(), input = element(), switcher = element(), root = element();
   input.closest = () => slot;
   input.setAttribute("placeholder", "Localized address");
-  const prefs = new Map([["fenn.winui.address.toolbar.enabled",true],["fenn.winui.navigation.toolbar.enabled",false]]);
+  const prefs = new Map([["fenn.winui.navigation.toolbar.enabled",true]]);
   const owner = {attached:true,element:element(),schedule() {},invalidateAddress() {},
     addressSession:{releaseNativePresentation() {calls.push(["release"]);}},
     addressAvailable() {
@@ -54,6 +54,7 @@ function fixture() {
     WinUINavigationState:context.WinUINavigationState,NAVIGATION_COMMANDS:context.NAVIGATION_COMMANDS})};
   vm.runInContext(source, context);
   const toolbar = new context.WinUIAddressToolbar(window, owner);
+  toolbar.row.getBoundingClientRect = () => ({x:0,y:40,width:800,height:40});
   calls.length = 0;
   return {toolbar,window,owner,prefs,calls,listeners,input,root,switcher,elements,element};
 }
@@ -77,7 +78,7 @@ test("a cancelled startup frame cannot hide the restored Firefox editor", () => 
   f.window.cancelAnimationFrame = id => {cancelled=id;};
   f.toolbar.update(); f.toolbar.activate();
   assert.equal(f.input.attributes.has("aria-hidden"),false);
-  f.prefs.set("fenn.winui.address.toolbar.enabled",false);
+  f.prefs.set("fenn.winui.navigation.toolbar.enabled",false);
   f.toolbar.restore();
   assert.equal(cancelled,17);
   frame();
@@ -112,7 +113,7 @@ test("layout and preference fallback detach only the address host", () => {
     f=>f.root.setAttribute("customizing",""),
     f=>{f.window.PrivateBrowsingUtils.isWindowPrivate=()=>true;f.prefs.set("fenn.winui.address.private",false);},
     f=>f.prefs.set("sidebar.verticalTabs",true),
-    f=>f.prefs.set("fenn.winui.address.toolbar.enabled",false)]) {
+    f=>f.prefs.set("fenn.winui.navigation.toolbar.enabled",false)]) {
     const f=fixture(); f.toolbar.update(); f.toolbar.activate(); unsupported(f);
     assert.equal(f.toolbar.update(),false);
     assert.equal(f.owner.attached,true);
@@ -144,18 +145,17 @@ test("failed focus hands the same interaction to Firefox", () => {
 
 test("an undersized toolbar keeps the original field", () => {
   const f=fixture();
-  f.toolbar.slot.getBoundingClientRect = () => ({x:100,y:40,width:600,height:24});
+  f.toolbar.row.getBoundingClientRect = () => ({x:0,y:40,width:1000,height:24});
   assert.equal(f.toolbar.update(),false);
   assert.equal(f.input.attributes.has("aria-hidden"),false);
 });
 
-test("a restored Firefox toolbar can fit the stock 32-DIP editor", () => {
+test("toolbar geometry does not depend on the retained input slot", () => {
   const f=fixture();
-  f.toolbar.slot.getBoundingClientRect = () => ({x:100,y:44,width:600,height:28});
-  f.window.document.getElementById = () => ({getBoundingClientRect:()=>({height:36})});
+  f.toolbar.slot.getBoundingClientRect = () => { throw new Error("retired input-slot geometry"); };
   assert.equal(f.toolbar.update(),true);
-  assert.equal(f.toolbar.bounds().height,32);
-  assert.equal(f.toolbar.bounds().y,42);
+  assert.equal(f.toolbar.bounds().height,40);
+  assert.equal(f.toolbar.bounds().width,800);
 });
 
 test("focus restoration is independent of suggestion visibility", () => {
@@ -195,19 +195,6 @@ test("native mouse focus establishes the Gecko proxy without selecting text or l
   assert.equal(f.toolbar.adoptNativeFocus(),false);
 });
 
-test('host-off rollback returns focus to the native island after Gecko proxy adoption',()=>{
-  for(const pref of ['fenn.winui.window.host','fenn.winui.window.independent']) {
-    const f=fixture();f.toolbar.update();f.toolbar.activate();f.prefs.set(pref,false);
-    f.window.document.activeElement={id:'browser'};
-    f.toolbar.proxy.focus=()=>{f.window.document.activeElement=f.toolbar.proxy;};
-    f.calls.length=0;
-    assert.equal(f.toolbar.adoptNativeFocus(),true);
-    assert.ok(f.calls.some(c=>c[0]==='host' && c[6]===true && c[7]===false));
-    f.calls.length=0;
-    assert.equal(f.toolbar.adoptNativeFocus(),true);
-    assert.equal(f.calls.length,0,'an already-adopted proxy does not repeat the return hop');
-  }
-});
 
 test("Firefox's Customize Toolbar command requests the native editor only while the native toolbar is active", () => {
   const f = fixture();
@@ -235,7 +222,6 @@ test("Firefox's Customize Toolbar command requests the native editor only while 
 
 function navigationFixture() {
   const f = fixture();
-  f.prefs.set("fenn.winui.address.toolbar.enabled", false);
   f.prefs.set("fenn.winui.navigation.toolbar.enabled", true);
   f.toolbar.row.getBoundingClientRect = () => ({x:0,y:40,width:1000,height:40});
   return f;
@@ -269,18 +255,21 @@ test("navigation refusal and unsupported contexts release reserved space", () =>
   }
 });
 
-test("changing presentation releases old geometry and retains the strip", () => {
+test("disabling navigation restores Firefox even with a stale address-only preference", () => {
   const f = navigationFixture();
   f.toolbar.update(); f.toolbar.activate();
   f.prefs.set("fenn.winui.navigation.toolbar.enabled", false);
   f.prefs.set("fenn.winui.address.toolbar.enabled", true);
-  assert.equal(f.toolbar.update(), true);
+  assert.equal(f.toolbar.update(), false);
   assert.equal(f.toolbar.row.hidden, true);
-  assert.equal(f.toolbar.bounds().width, 600);
   assert.equal(f.toolbar.active, false);
+  assert.equal(f.input.attributes.has("aria-hidden"), false);
+  assert.equal(f.owner.attached, true);
+  f.prefs.set("fenn.winui.navigation.toolbar.enabled", true);
+  assert.equal(f.toolbar.update(), true);
   f.toolbar.activate();
   assert.equal(f.toolbar.active, true);
-  assert.equal(f.owner.attached, true);
+  assert.equal(f.toolbar.bounds().width, 1000);
 });
 
 function navigationCommandsFixture() {

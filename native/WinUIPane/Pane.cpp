@@ -26,6 +26,7 @@ using namespace Microsoft::UI;
 using namespace Microsoft::UI::Xaml;
 using namespace Microsoft::UI::Xaml::Hosting;
 
+#include "ApplicationSetup.h"
 #include "Address.h"
 #include "WindowsShare.h"
 #include "ShellCore.h"
@@ -38,6 +39,9 @@ using namespace Microsoft::UI::Xaml::Hosting;
 #include "WindowDrag.h"
 #include "StartupSurface.h"
 #include "StartupLabels.h"
+#ifdef FENN_SHELL_PROCESS
+#include "ShellPresentation.h"
+#endif
 
 namespace {
 bool DiagnosticsEnabled();
@@ -1675,6 +1679,7 @@ void Initialize() {
 #ifdef FENN_SHELL_PROCESS
         check_bool(bool(Dispatching::DispatcherQueue::GetForCurrentThread()));
         s.app = Application::Current();
+        check_bool(bool(s.app)); // ShellApp already configured its resources.
 #else
         if (Dispatching::DispatcherQueue::GetForCurrentThread()) throw_hresult(E_UNEXPECTED);
         s.dispatcher = Dispatching::DispatcherQueueController::CreateOnCurrentThread();
@@ -1688,19 +1693,10 @@ void Initialize() {
         phase = "xaml-manager";
         s.manager = WindowsXamlManager::InitializeForCurrentThread();
 #endif
-        // Browser windows close and open through Firefox; the last one closing must not end this thread's loop.
-        phase = "shutdown-mode";
-        s.app.DispatcherShutdownMode(DispatcherShutdownMode::OnExplicitShutdown);
-        phase = "resources";
-        s.app.Resources().MergedDictionaries().Append(Controls::XamlControlsResources());
-        // The same holds for the controls module these resources (and TabView)
-        // live in: unloaded by COM teardown, its static destructors fault.
-        phase = "controls-module-lifetime";
-        HMODULE controls{};
-        if (GetModuleHandleW(L"Microsoft.UI.Xaml.Controls.dll"))
-            check_bool(GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_PIN, L"Microsoft.UI.Xaml.Controls.dll", &controls));
-        // Firefox caps a tab at 225 CSS px; the stock TabView default is 240.
-        s.app.Resources().Insert(box_value(L"TabViewItemMaxWidth"), box_value(225.0));
+#ifndef FENN_SHELL_PROCESS
+        phase = "application-resources";
+        ApplicationSetup::Configure(s.app);
+#endif
         s.initialization = S_OK;
     } catch (...) {
         s.initialization = to_hresult();
@@ -1712,6 +1708,7 @@ void Initialize() {
 HRESULT ShowInteractiveStartup(HWND hwnd, const wchar_t* profile, const wchar_t* presentation = nullptr) noexcept;
 HRESULT CreateBrowserWindow(const RECT& bounds, HWND* output) noexcept {
     try {
+        check_hresult(Check());
         Initialize();
         Window window;
         Controls::Canvas root;
@@ -1720,6 +1717,11 @@ HRESULT CreateBrowserWindow(const RECT& bounds, HWND* output) noexcept {
         // XAML's content window. Its class name is the only handle the Window gives to it.
         const HWND bridge = FindWindowExW(hwnd, nullptr, L"Microsoft.UI.Content.DesktopChildSiteBridge", nullptr);
         check_bool(hwnd && bridge);
+        // Match the startup XAML theme before the HWND is shown. Otherwise DWM
+        // starts with its light shadow and darkens it when Gecko first publishes
+        // its colour scheme. Later nsWindow::SetColorScheme updates remain authoritative.
+        const BOOL dark = Application::Current().RequestedTheme() == ApplicationTheme::Dark;
+        DwmSetWindowAttribute(hwnd, DWMWA_USE_IMMERSIVE_DARK_MODE, &dark, sizeof(dark));
         check_hresult(NativeWindowHost::Attach(hwnd, window, root, bridge));
         check_bool(SetWindowPos(hwnd, nullptr, bounds.left, bounds.top, bounds.right - bounds.left,
                                 bounds.bottom - bounds.top, SWP_NOZORDER | SWP_NOACTIVATE));
@@ -1738,8 +1740,14 @@ HRESULT ShowStartupSurfaceForProfile(HWND hwnd, const wchar_t* profile, const wc
         Initialize();
         NativeWindowHost::FocusTrace("start-xaml-initialized");
         wchar_t interactive[2]{};
-        if(GetEnvironmentVariableW(L"FENN_NATIVE_INTERACTIVE_STARTUP",interactive,2)==1 && (interactive[0]==L'1' || interactive[0]==L'2') &&
-            GetPropW(hwnd,L"Fenn.NativeStartupOrigin")==reinterpret_cast<HANDLE>(2))
+        bool showEditor=GetEnvironmentVariableW(L"FENN_NATIVE_INTERACTIVE_STARTUP",interactive,2)==1 && interactive[0]==L'1';
+#ifdef WINUI_PANE_TESTING
+        // Synthetic handoff fixtures start only through Firefox's routed host.
+        // Production binaries have no manual/pre-profile startup mode.
+        wchar_t manual[2]{};
+        showEditor=showEditor || (GetEnvironmentVariableW(L"FENN_TEST_MANUAL_STARTUP",manual,2)==1 && manual[0]==L'1');
+#endif
+        if(showEditor && GetPropW(hwnd,L"Fenn.NativeStartupOrigin")==reinterpret_cast<HANDLE>(2))
             return ShowInteractiveStartup(hwnd,profile,presentation);
         return NativeStartupSurface::Show(hwnd);
     } catch (...) { return to_hresult(); }
@@ -1790,7 +1798,7 @@ HRESULT WINAPI UpdateTabStrip(HWND hwnd, const RECT* rect, BOOL visible) noexcep
         ++work.updates;
         const RECT requested{rect->left, rect->top, rect->right, rect->bottom};
         if (!pane.boundsApplied || !EqualRect(&pane.appliedBounds, &requested)) {
-            operation = "move-island";
+            operation = "move-region";
             site.MoveAndResize({rect->left, rect->top, rect->right - rect->left, rect->bottom - rect->top});
             // Caption and passthrough rectangles use owner-client coordinates.
             // A position-only island move need not cause any XAML layout event.
@@ -1802,11 +1810,9 @@ HRESULT WINAPI UpdateTabStrip(HWND hwnd, const RECT* rect, BOOL visible) noexcep
             ++work.geometryApplied;
         }
         operation = "restack";
-        // Firefox's compositor is a sibling HWND covering the client area: below an island, above
-        // the Window's XAML. Ask the window where things actually are: a restack by anything else is undone.
-        if (visible && pane.source.Restack()) ++work.restacks;
+        // Keep the shared XAML bridge below the page and Gecko compositor.
         NativeWindowHost::KeepOrder(hwnd);
-        operation = "show-island";
+        operation = "show-region";
         if (pane.appliedVisible != int(bool(visible))) {
             if (visible)
                 site.Show();
@@ -1860,7 +1866,6 @@ HRESULT WINAPI Clip(HWND hwnd, const RECT* exclusions, uint32_t count) noexcept 
         pane.appliedExclusions.assign(exclusions, exclusions + count);
         pane.appliedClipClient = size;
         pane.clipApplied = true;
-        pane.source.Clip(pane.appliedExclusions);
         pane.windowDrag.SetClip(bounds, pane.appliedExclusions);
         pane.ApplyPageRegion();
         ++work.clipsApplied;
@@ -1949,7 +1954,6 @@ HRESULT WINAPI UpdateAddress(HWND hwnd, const RECT* rect, BOOL visible) noexcept
             pane.addressBounds = *rect;
             pane.addressBoundsApplied = true;
         }
-        pane.addressSource.BringToTop();
         NativeWindowHost::KeepOrder(hwnd);
         site.Show();
         pane.ApplyPageRegion();
@@ -2580,7 +2584,12 @@ HRESULT BeginStartupPresenter(HWND hwnd) noexcept;
 bool FinishStartupPresenter(HWND hwnd);
 HRESULT PublishStartupPresentation(HWND hwnd, Windows::Data::Json::JsonObject const& message);
 #include "StartupTransfer.h"
+#if !defined(FENN_SHELL_PROCESS) || defined(WINUI_PANE_TESTING)
 #include "IndependentHost.h"
+#else
+#include "ProcessShellTransport.h"
+#include "ShellFramePresentation.h"
+#endif
 #include "LocalStartup.h"
 HRESULT BeginStartupPresenter(HWND hwnd) noexcept {
     try {
@@ -2831,6 +2840,112 @@ HRESULT ShowInteractiveStartup(HWND hwnd, const wchar_t* profile, const wchar_t*
 }
 }
 
+#ifdef FENN_SHELL_PROCESS
+namespace ShellPresentation {
+namespace {
+auto* FindPane(HWND hwnd) {
+    const auto found=state().panes.find(hwnd);
+    return found==state().panes.end()?nullptr:found->second.get();
+}
+auto* FindAddress(HWND hwnd) {
+    const auto pane=FindPane(hwnd);
+    return pane?pane->address.get():nullptr;
+}
+}
+
+HRESULT ShowInteractiveStartup(HWND hwnd, const wchar_t* profile, const wchar_t* presentation) noexcept {
+    return ::ShowInteractiveStartup(hwnd,profile,presentation);
+}
+HRESULT PrepareInteractiveStartup(HWND hwnd, const wchar_t* profile, const wchar_t* presentation) noexcept {
+    return ::PrepareInteractiveStartup(hwnd,profile,presentation);
+}
+HRESULT ReportedFocusAddress(HWND hwnd, BOOL selectAll) noexcept { return ::ReportedFocusAddress(hwnd,selectAll); }
+HRESULT ReportedSyncTabs(HWND hwnd, const WinUITab* tabs, uint32_t count, uint32_t selected, uint32_t revision) noexcept {
+    return ::ReportedSyncTabs(hwnd,tabs,count,selected,revision);
+}
+HRESULT PostedSyncAddress(HWND hwnd, const wchar_t* input) noexcept { return ::PostedSyncAddress(hwnd,input); }
+HRESULT DestroyPane(HWND hwnd) noexcept { return Destroy(hwnd); }
+
+std::vector<HWND> PaneWindows() {
+    std::vector<HWND> windows;
+    for(const auto& item:state().panes)windows.push_back(item.first);
+    return windows;
+}
+bool HasAddress(HWND hwnd) { return FindAddress(hwnd)!=nullptr; }
+bool AddressSessionReady(HWND hwnd) {
+    const auto address=FindAddress(hwnd);
+    return address && !address->session.empty();
+}
+bool CaptureDraft(HWND hwnd, Draft& draft) {
+    const auto address=FindAddress(hwnd);
+    if(!address)return false;
+    const auto text=address->field.Text();
+    if(address->composing || text.size()>32768 ||
+       (text==address->observedText && !(address->shell.AddressState().recoverable_edit && text==address->lastEditedText)))
+        return false;
+    draft={text.c_str(),address->field.SelectionStart(),address->field.SelectionLength(),
+           address->field.FocusState()!=FocusState::Unfocused};
+    return true;
+}
+bool RestoreDraft(HWND hwnd, const Draft& draft, bool& sessionReady) {
+    const auto address=FindAddress(hwnd);
+    if(!address)return false;
+    address->field.Text(draft.text);
+    address->field.Select(draft.selection,draft.length);
+    address->Edit();
+    sessionReady=!address->session.empty();
+    return true;
+}
+void FocusEditor(HWND hwnd) {
+    if(const auto address=FindAddress(hwnd))address->field.Focus(FocusState::Programmatic);
+}
+ShareIdentity ShareScope(HWND hwnd) {
+    const auto address=FindAddress(hwnd);
+    if(!address)return {};
+    return {_wcstoui64(address->session.c_str(),nullptr,10),_wcstoui64(address->shareDocument.c_str(),nullptr,10)};
+}
+bool ShareCurrent(HWND hwnd, const uint8_t* bytes, size_t length) {
+    const auto address=FindAddress(hwnd);
+    if(!address || address->root.Visibility()!=Visibility::Visible || !address->navigation || !address->navigation->visible)
+        return false;
+    const auto identity=ShareScope(hwnd);
+    return shell_frame_share_current(bytes,length,identity.session,identity.document,GetTickCount64());
+}
+HRESULT OpenShare(HWND hwnd, const hstring& title, const hstring& url, const std::function<bool()>& current) {
+    const auto pane=FindPane(hwnd);
+    return pane?pane->windowsShare.Open(hwnd,title,url,current):RO_E_CLOSED;
+}
+
+void InstallKeyRouting(HWND window) {
+    auto* host=NativeWindowHost::Get(window);
+    if(!host || GetPropW(window,L"Fenn.ProcessKeyRouting"))return;
+    host->root.PreviewKeyDown([window](Windows::Foundation::IInspectable const& sender,Microsoft::UI::Xaml::Input::KeyRoutedEventArgs const& args) noexcept {
+        try {
+            auto* current=NativeWindowHost::Get(window);
+            auto pane=state().panes.find(window);
+            if(!current || !SameObject(sender,current->root) || pane==state().panes.end() || args.Handled())return;
+            const auto status=args.KeyStatus();
+            const uint32_t bits=status.RepeatCount | (status.ScanCode<<16) | (uint32_t(status.IsExtendedKey)<<24) |
+                (uint32_t(status.IsMenuKeyDown)<<29) | (uint32_t(status.WasKeyDown)<<30) | (uint32_t(status.IsKeyReleased)<<31);
+            const MSG message{current->bridge,UINT(status.IsMenuKeyDown?WM_SYSKEYDOWN:WM_KEYDOWN),WPARAM(args.Key()),LPARAM(bits),DWORD(GetMessageTime()),{}};
+            // Application owns this message loop, so the in-process Translate
+            // hook cannot dismiss customization during a native toolbar drag.
+            if(args.Key()==Windows::System::VirtualKey::Escape && pane->second->address &&
+               pane->second->address->navigation &&
+               pane->second->address->navigation->customization.DismissOnEscape()) {
+                args.Handled(true);return;
+            }
+            if((pane->second->startupKey && pane->second->startupKey(message)) || RouteBrowserShortcut(*pane->second,message))args.Handled(true);
+        }catch(...){}
+    });
+    check_bool(SetPropW(window,L"Fenn.ProcessKeyRouting",reinterpret_cast<HANDLE>(1)));
+}
+void SetRestartProcess(HANDLE process) noexcept { NativePackageUpdates::restartProcess=process; }
+void ApplyFrame(const ShellFrameView& view, WinUIPaneNotifyFn notify) { ShellFramePresentation::Apply(view,notify); }
+void PrepareAndNotify(HWND hwnd) noexcept { ShellFramePresentation::PrepareAndNotify(hwnd); }
+}
+#endif
+
 #ifndef FENN_SHELL_PROCESS
 extern "C" __declspec(dllexport) HRESULT WINAPI WinUIPaneGetApi(uint32_t version, uint32_t size,
                                                                 WinUIPaneApi* output) noexcept {
@@ -2854,19 +2969,19 @@ extern "C" __declspec(dllexport) HRESULT WINAPI WinUIPaneGetApi(uint32_t version
                UpdateAddress,
                FocusAddress,
                MeasureChromeLayout,
-               // A native host exists only on the independent thread, which Route installs.
-               [](DWORD, const wchar_t*, DWORD, const RECT*, HWND, HINSTANCE, HWND* output) noexcept {
-                   if (output) *output=nullptr; return E_NOTIMPL; },
+               // Browser callers use the routed owner-thread API; native contract
+               // hosts can create the same WinUI Window on their own UI thread.
+               IndependentHost::Create,
                NativeWindowHost::Destroy,
                ShowStartupSurface,
                DismissStartupSurface,
                IndependentHost::Start,
-               IndependentHost::Bind,
-               IndependentHost::Resolve,
+               NativeWindowHost::BindBrowserEndpoint,
+               NativeWindowHost::CancelEndpointClose,
                NativeWindowHost::SetAccessibility,
                NativePageInput::Publish, NativePageInput::Drain, NativePageInput::Commit, NativePageInput::Geometry,
                IndependentHost::DirectStartup,
-               IndependentHost::SetTitle,
+               NativeWindowHost::SetTitle,
                NativeWindowHost::SetPageCursor,
                NativeWindowHost::RegisterPageTouch,
                IndependentHost::PostWindowRequest,
@@ -3086,9 +3201,21 @@ extern "C" __declspec(dllexport) HRESULT WINAPI WinUIPaneTestLocalStartup(void(W
             RECT client{},content{};GetClientRect(hwnd,&client);
             require(NativeWindowHost::ContentFrame(client,host->chrome,GetDpiForWindow(hwnd),content));
             const double scale=96.0/GetDpiForWindow(hwnd);
-            require(std::abs(Controls::Canvas::GetLeft(host->startupPageBackground)-content.left*scale)<.01);
+            require(std::abs(Controls::Canvas::GetLeft(host->startupPageBackgroundScope)-content.left*scale)<.01);
             require(std::abs(host->startupPageBackground.Width()-(content.right-content.left)*scale)<.01);
             require(host->startupPageBackground.CornerRadius().BottomLeft==8);
+            // Switch both directions on the same backing; construction-only colour
+            // selection must not pass this check.
+            const auto originalTheme=host->root.RequestedTheme();
+            for (auto theme : {ElementTheme::Light,ElementTheme::Dark,ElementTheme::Light}) {
+                host->root.RequestedTheme(theme);
+                host->root.UpdateLayout();
+                const auto color=host->startupPageBackground.Background().as<Media::SolidColorBrush>().Color();
+                const bool light=theme==ElementTheme::Light;
+                require(color.A==255 && color.R==(light?249:43) &&
+                    color.G==(light?249:42) && color.B==(light?251:51));
+            }
+            host->root.RequestedTheme(originalTheme);
             require(pane.address->toolbarSurface.BorderThickness().Bottom==1);
             require(pane.address->toolbarSurface.BorderBrush()!=nullptr);
             const auto preparedStrip=pane.appliedBounds, preparedNavigation=pane.addressBounds;
@@ -3105,17 +3232,17 @@ extern "C" __declspec(dllexport) HRESULT WINAPI WinUIPaneTestLocalStartup(void(W
             const auto completeChrome=host->chrome;
             const auto completeExclusions=host->exclusions;
             const auto framedWidth=host->startupPageBackground.Width();
-            const auto framedLeft=Controls::Canvas::GetLeft(host->startupPageBackground);
+            const auto framedLeft=Controls::Canvas::GetLeft(host->startupPageBackgroundScope);
             // The initial Gecko publication can temporarily contain only a
             // strip; the held backing must not erase the native surround.
             NativeWindowHost::SetPageRegion(hwnd,{completeChrome.front()},{});
             require(host->startupPageBackground.Width()==framedWidth);
-            require(Controls::Canvas::GetLeft(host->startupPageBackground)==framedLeft);
+            require(Controls::Canvas::GetLeft(host->startupPageBackgroundScope)==framedLeft);
             require(host->startupPageBackground.CornerRadius().BottomLeft==8);
             RemovePropW(hwnd,PageHoldProperty);
             NativeWindowHost::RefreshPageBackground(hwnd);
             require(!host->startupFrameValid);
-            require(Controls::Canvas::GetLeft(host->startupPageBackground)==0);
+            require(Controls::Canvas::GetLeft(host->startupPageBackgroundScope)==0);
             require(host->startupPageBackground.CornerRadius().BottomLeft==0);
             // Once the hold ends, applied geometry retires any queued bounds;
             // later adoption must not replay an older provisional rectangle.
@@ -3448,19 +3575,7 @@ extern "C" __declspec(dllexport) HRESULT WINAPI WinUIPaneTestGetGeometryWork(uin
     values[5] = work.clipsApplied;
     return S_OK;
 }
-// Test-only scaling and content inspection. Not exported by the shipped DLL.
-// Exercise real island rasterization without changing desktop display settings.
-extern "C" __declspec(dllexport) HRESULT WINAPI WinUIPaneTestSetIslandScale(HWND hwnd, float scale) noexcept {
-    try {
-        check_hresult(Check(hwnd));
-        auto found = state().panes.find(hwnd);
-        if (found == state().panes.end() || !std::isfinite(scale) || scale < 1 || scale > 3) return E_INVALIDARG;
-        found->second->source.SiteBridge().OverrideScale(scale);
-        return S_OK;
-    } catch (...) {
-        return to_hresult();
-    }
-}
+// Test-only content inspection. Not exported by the shipped DLL.
 extern "C" __declspec(dllexport) HRESULT WINAPI WinUIPaneTestGetContent(HWND hwnd, void** output) noexcept {
     try {
         if (!output) return E_POINTER;

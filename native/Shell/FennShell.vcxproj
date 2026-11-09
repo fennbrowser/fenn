@@ -166,6 +166,7 @@
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="ShellMain.cpp" />
+    <ClCompile Include="..\WinUIPane\Pane.cpp" />
   </ItemGroup>
   <ItemGroup>
     <!-- Inputs for the incremental check below: cargo does its own dependency

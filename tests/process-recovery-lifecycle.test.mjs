@@ -98,6 +98,22 @@ test("recovery waits for surviving windows and never replays startup", async () 
     assert.equal(tasks.length, 0);
     g.close(); h.close();
     assert.equal(observers.size, 0);
+    const i = make("i"), j = make("j");
+    const restartsBeforeClose = gpuRestarts;
+    i.notify("7"); j.notify("7");
+    assert.equal(tasks.length, 1);
+    i.close(); j.close();
+    tasks.shift()();
+    assert.equal(gpuRestarts, restartsBeforeClose, "queued stock completion cannot restart GPU after all windows close");
+    assert.equal(i.paint(), undefined);
+    assert.equal(j.paint(), undefined);
+    const k = make("k");
+    k.notify("7"); tasks.shift()();
+    const retiredStockPaint = k.paint();
+    k.close(); ++gpu; retiredStockPaint();
+    assert.equal(k.state(), "fallback", "closed stock window rejects its retired paint callback");
+    assert.equal(observers.size, 0);
+
     await Promise.resolve();
   } finally {
     for (const window of windows) if (!window.closed) window.close();

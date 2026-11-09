@@ -52,6 +52,35 @@ static void Require(bool value, const char* message) {
         ExitProcess(1);
     }
 }
+// Contract fixtures own a real native Window and a separate endpoint thread.
+// They exercise regions and page exclusions, never DesktopWindowXamlSource.
+static WinUIPaneApi fixtureApi{};
+struct FixtureEndpoint {
+    HWND hwnd{};
+    HANDLE ready=CreateEventW(nullptr,TRUE,FALSE,nullptr);
+    std::thread thread;
+    FixtureEndpoint() : thread([this] {
+        hwnd=CreateWindowExW(0,L"STATIC",L"Contract endpoint",0,0,0,0,0,HWND_MESSAGE,nullptr,GetModuleHandleW(nullptr),nullptr);
+        SetEvent(ready);
+        MSG message{};
+        while(GetMessageW(&message,nullptr,0,0)>0) DispatchMessageW(&message);
+        DestroyWindow(hwnd);
+    }) { WaitForSingleObject(ready,INFINITE); CloseHandle(ready); }
+    ~FixtureEndpoint() { PostThreadMessageW(GetWindowThreadProcessId(hwnd,nullptr),WM_QUIT,0,0); thread.join(); }
+};
+static HWND CreateFixtureWindow(DWORD ex,const wchar_t*,const wchar_t* title,DWORD style,
+                                int x,int y,int width,int height,HWND parent,HMENU,HINSTANCE instance,void*) {
+    static FixtureEndpoint endpoint;
+    RECT bounds{x,y,x+width,y+height}; HWND hwnd{};
+    Require(SUCCEEDED(fixtureApi.createWindowHost(ex,title,style,&bounds,parent,instance,&hwnd)),"create Window-backed fixture");
+    Require(SUCCEEDED(fixtureApi.bindIndependentEndpoint(hwnd,reinterpret_cast<uintptr_t>(endpoint.hwnd),endpoint.hwnd)),"bind fixture endpoint and page input window");
+    SetWindowTextW(hwnd,title);
+    return hwnd;
+}
+static BOOL DestroyFixtureWindow(HWND hwnd) {
+    if(GetPropW(hwnd,L"Fenn.NativeWindowHost")) return SUCCEEDED(fixtureApi.destroyWindowHost(hwnd));
+    return DestroyWindow(hwnd);
+}
 static BOOL(WINAPI* translatePane)(MSG*) = nullptr;
 // SendInput maps an absolute coordinate to pixel dx * extent / 65536, truncated.
 // Round up so the cursor lands on the requested pixel; scaling by 65535 and
@@ -3325,7 +3354,7 @@ static void CheckInlineGroups(HMODULE module, WinUIPaneApi& api, HWND host, bool
             settle();
             Require(!tooltip.IsOpen(), "background strip cannot reopen tooltip over another window");
         }
-        DestroyWindow(sibling);
+        DestroyFixtureWindow(sibling);
         SetForegroundWindow(host);
         settle();
         Require(Automation::AutomationProperties::GetItemStatus(first.as<Controls::TabViewItem>()) == L"Aktiver Tab",
@@ -3751,22 +3780,6 @@ static void CheckInlineGroups(HMODULE module, WinUIPaneApi& api, HWND host, bool
         puts("CHECKS PASSED: title-only layout skips width/ambient/separator/caption work; changed geometry refreshes all four");
         a.Margin(savedMargin);
         settle();
-        auto setLayoutScale = reinterpret_cast<HRESULT(WINAPI*)(HWND, float)>(
-            GetProcAddress(module, "WinUIPaneTestSetIslandScale"));
-        Require(setLayoutScale != nullptr, "island scale inspection available");
-        const float savedScale = float(root.XamlRoot().RasterizationScale());
-        const float changedScale = savedScale == 1.25f ? 1.5f : 1.25f;
-        const auto beforeScale = passes();
-        Require(SUCCEEDED(setLayoutScale(host, changedScale)), "change real island rasterization scale");
-        settle();
-        Require(std::abs(root.XamlRoot().RasterizationScale() - changedScale) < .001,
-            "layout test observes the new island scale");
-        const auto afterScale = passes();
-        for (size_t i = 0; i < afterScale.size(); ++i)
-            Require(afterScale[i] > beforeScale[i], "scale change refreshes each layout consumer");
-        Require(SUCCEEDED(setLayoutScale(host, savedScale)), "restore island rasterization scale");
-        settle();
-        puts("CHECKS PASSED: real island scale changes invalidate width/ambient/separator/caption geometry");
         auto aTransform = a.RenderTransform().as<Media::TranslateTransform>();
         auto bTransform = b.RenderTransform().as<Media::TranslateTransform>();
         const auto originalWidth = groupVisual.Size().x;
@@ -3953,7 +3966,14 @@ static void CheckInlineGroups(HMODULE module, WinUIPaneApi& api, HWND host, bool
             WinUITab opened[]{{41,L"Home"},{42,L"Research page"},{43,L"New tab"}};
             lastGroup(27,false);
             Require(SUCCEEDED(api.syncTabs(host,opened,2,42, NextTabRevision(), &selected)), "activate the trailing group's member");
-            settle(); settle();
+            // The Window may realize the regrouped rows after several rendered frames.
+            // Begin continuity assertions only once the initial light exists; never
+            // force a refresh or relax the per-frame checks after the next mutation.
+            const auto litStarted=GetTickCount64();
+            while((bottomGlow.Children().Count()!=1 || halo.Children().Count()!=1) &&
+                  GetTickCount64()-litStarted<3000) { Pump(); Sleep(10); }
+            fprintf(stderr,"Trailing group readiness: ms=%llu bottom=%u halo=%u loaded=%d\n",
+                GetTickCount64()-litStarted,bottomGlow.Children().Count(),halo.Children().Count(),root.IsLoaded());
             Require(bottomGlow.Children().Count() == 1 && halo.Children().Count() == 1, "trailing active group is lit");
             auto litGroup = bottomGlow.Children().First().Current();
             auto litHalo = halo.Children().First().Current();
@@ -4340,6 +4360,7 @@ static void CheckInlineGroups(HMODULE module, WinUIPaneApi& api, HWND host, bool
                 fflush(stdout);
                 Require(recaught && !query(0) && query(1) == 0,
                     "a group that settles wider re-catches its highlights without lighting up again");
+                const auto expandedWidth=reachSurface().Width();
                 layout(false); settle();
                 // Ungrouping removes the outline surface, which hosts the color
                 // pools: it must dim with them rather than vanish at once.
@@ -4358,10 +4379,15 @@ static void CheckInlineGroups(HMODULE module, WinUIPaneApi& api, HWND host, bool
                 Require(regrouped && !query(0), "regrouping in a full snapshot shows the group already lit");
                 // Keep one realized member in the group when the other leaves
                 // during the reveal below.
-                layout(true); settle(); settle();
+                layout(true);
+                Require(waitFor([&] { return reachSurface() &&
+                    std::abs(reachSurface().Width()-expandedWidth)<1 && !query(0) && !query(1); }),
+                    "regrouped Window rows settle before testing immediate option changes");
                 // groupGlowFadeOut off (its default): glow still lights up, but goes at once.
                 setOption(L"groupGlowFadeOut", false); settle();
                 setOption(L"groupGlow", false); settle();
+                fprintf(stderr,"Immediate glow release: bottom=%u spill=%u halo=%u fading=%u outline=%d\n",
+                    bottomGlow.Children().Count(),spill.Children().Count(),halo.Children().Count(),query(1),bool(outline()));
                 Require(bottomGlow.Children().Count() == 0 && spill.Children().Count() == 0 && halo.Children().Count() == 0 &&
                     query(1) == 0 && !outline(), "without the fade-out, extinguished glow is released at once");
                 setOption(L"groupGlow", true);
@@ -5514,7 +5540,7 @@ static void CheckGroupCrossWindowAdopt(HMODULE module, WinUIPaneApi& api, bool a
     };
     RECT rect{0, 0, 600, 48};
     // Fresh windows clear of the shared host, which still carries earlier group fixtures.
-    HWND host = CreateWindowExW(0, L"STATIC", L"Group drag source", WS_OVERLAPPEDWINDOW, 1000, 200, 640, 240,
+    HWND host = CreateFixtureWindow(0, L"STATIC", L"Group drag source", WS_OVERLAPPEDWINDOW, 1000, 200, 640, 240,
                                 nullptr, nullptr, GetModuleHandleW(nullptr), nullptr);
     Require(host != nullptr, "source window for cross-window group drag");
     Require(SUCCEEDED(api.updateTabStrip(host, &rect, TRUE)), "source strip for cross-window group drag");
@@ -5527,12 +5553,12 @@ static void CheckGroupCrossWindowAdopt(HMODULE module, WinUIPaneApi& api, bool a
         L"\"rows\":[{\"id\":11,\"detail\":\"\",\"flags\":0},{\"id\":22,\"detail\":\"\",\"flags\":0},{\"id\":101,\"detail\":\"\",\"flags\":0}],"
         L"\"layout\":[{\"group\":7,\"tab\":0},{\"group\":7,\"tab\":11},{\"group\":7,\"tab\":22},{\"group\":0,\"tab\":101}]}}").c_str());
 
-    HWND host2 = CreateWindowExW(0, L"STATIC", L"Group drop target", WS_OVERLAPPEDWINDOW, 1000, 480, 640, 240,
+    HWND host2 = CreateFixtureWindow(0, L"STATIC", L"Group drop target", WS_OVERLAPPEDWINDOW, 1000, 480, 640, 240,
                                   nullptr, nullptr, GetModuleHandleW(nullptr), nullptr);
     Require(host2 != nullptr, "destination window for cross-window group drag");
     HWND covered{};
     if (overlap) {
-        HWND candidate = CreateWindowExW(0, L"STATIC", L"Covered group drop target", WS_OVERLAPPEDWINDOW,
+        HWND candidate = CreateFixtureWindow(0, L"STATIC", L"Covered group drop target", WS_OVERLAPPEDWINDOW,
                                          1000, 480, 640, 240, nullptr, nullptr, GetModuleHandleW(nullptr), nullptr);
         Require(candidate != nullptr, "covered destination window for overlapping group drag");
         // state().panes is ordered by numeric HWND. Make that first candidate
@@ -5720,11 +5746,11 @@ static void CheckGroupCrossWindowAdopt(HMODULE module, WinUIPaneApi& api, bool a
     }
     if (covered) {
         Require(SUCCEEDED(api.destroy(covered)), "destroy covered cross-window group pane");
-        DestroyWindow(covered);
+        DestroyFixtureWindow(covered);
     }
     Require(SUCCEEDED(api.destroy(host2)) && SUCCEEDED(api.destroy(host)), "destroy cross-window group panes");
-    DestroyWindow(host2);
-    DestroyWindow(host);
+    DestroyFixtureWindow(host2);
+    DestroyFixtureWindow(host);
     settle();
 }
 
@@ -6003,7 +6029,7 @@ static void CheckTabStripDetach(HMODULE module, WinUIPaneApi& api, HWND host, bo
 enum class AdoptScenario { Drop, RejectDrop, CloseAfterDrop, CloseSourceAfterDrop, CloseTarget, CloseSource, ChangeThenClose, ChangeThenDrop, Offset };
 
 static void CheckTabStripCrossWindowAdopt(HMODULE module, WinUIPaneApi& api, HWND host,
-                                         AdoptScenario scenario = AdoptScenario::Drop, float sourceScale = 1, float targetScale = 1) {
+                                         AdoptScenario scenario = AdoptScenario::Drop, bool secondGap = false) {
     using namespace winrt;
     using namespace winrt::Microsoft::UI::Xaml;
     auto inspect = reinterpret_cast<HRESULT(WINAPI*)(HWND, void**)>(GetProcAddress(module, "WinUIPaneTestGetContent"));
@@ -6030,12 +6056,7 @@ static void CheckTabStripCrossWindowAdopt(HMODULE module, WinUIPaneApi& api, HWN
         SendInput(1, &input, sizeof(INPUT));
     };
 
-    const bool scaled = sourceScale != 1 || targetScale != 1;
-    auto setScale = [&](HWND window, float scale) {
-        auto apply = reinterpret_cast<HRESULT(WINAPI*)(HWND, float)>(GetProcAddress(module, "WinUIPaneTestSetIslandScale"));
-        Require(apply && SUCCEEDED(apply(window, scale)), "set real island rasterization scale");
-    };
-    RECT rect = scenario == AdoptScenario::Offset ? RECT{40, 90, 600, scaled ? 186 : 138} : RECT{0, 0, 600, 48};
+    RECT rect = scenario == AdoptScenario::Offset ? RECT{40, 90, 600, secondGap ? 186 : 138} : RECT{0, 0, 600, 48};
     Require(SUCCEEDED(api.updateTabStrip(host, &rect, TRUE)), "create strip presentation for adopt test");
     ShowWindow(host, SW_SHOW);
     WinUITab tabs[]{{33, L"Source tab"}};
@@ -6051,31 +6072,25 @@ static void CheckTabStripCrossWindowAdopt(HMODULE module, WinUIPaneApi& api, HWN
         Sleep(10);
     }
     Require(sourceTab.IsLoaded() && sourceTab.ActualWidth() > 0, "source tab realized before adopt drag");
-    // OverrideScale does not change the HWND's desktop DPI. Capture the
-    // independently reported physical press target first, while UIA still
-    // represents that real desktop coordinate system, then change only the
-    // island scale exercised by the drag routing below.
     auto sourceBounds = TabScreenBounds(host, L"FennTab-33");
-    setScale(host, sourceScale);
     settle(30);
 
-    HWND host2 = CreateWindowExW(0, L"STATIC", L"Cross-window drop target", WS_OVERLAPPEDWINDOW, 680, 0, 820, 260,
+    HWND host2 = CreateFixtureWindow(0, L"STATIC", L"Cross-window drop target", WS_OVERLAPPEDWINDOW, 680, 0, 820, 260,
                                   nullptr, nullptr, GetModuleHandleW(nullptr), nullptr);
     Require(host2 != nullptr, "second host for cross-window adopt test");
-    RECT rect2 = scenario == AdoptScenario::Offset ? RECT{20, 70, 780, scaled ? 166 : 118} : RECT{0, 0, 400, 48};
+    RECT rect2 = scenario == AdoptScenario::Offset ? RECT{20, 70, 780, secondGap ? 166 : 118} : RECT{0, 0, 400, 48};
     Require(SUCCEEDED(api.updateTabStrip(host2, &rect2, TRUE)), "create strip presentation on second host");
-    setScale(host2, targetScale);
     ShowWindow(host2, SW_SHOW);
     WinUITab tabs2[]{{44, L"Other window's tab"}, {55, L"Removed destination tab"}, {66, L"Last destination tab"}};
     const bool changeTarget = scenario == AdoptScenario::ChangeThenClose || scenario == AdoptScenario::ChangeThenDrop;
-    const uint32_t targetCount = changeTarget || scaled ? 3 : 1;
+    const uint32_t targetCount = changeTarget || secondGap ? 3 : 1;
     uint32_t selected2{};
     Require(SUCCEEDED(api.syncTabs(host2, tabs2, targetCount, 44, NextTabRevision(), &selected2)),
             "sync second host's strip snapshot for adopt test");
     UIElement content2{nullptr};
     Require(SUCCEEDED(inspect(host2, put_abi(content2))), "inspect second host's strip");
     auto view2 = content2.as<Controls::Grid>().Children().GetAt(0).as<Controls::TabView>();
-    auto destTab = view2.TabItems().GetAt(scaled ? 1 : 0).as<Controls::TabViewItem>();
+    auto destTab = view2.TabItems().GetAt(secondGap ? 1 : 0).as<Controls::TabViewItem>();
     for (int i = 0; i < 300 && (!destTab.IsLoaded() || destTab.ActualWidth() == 0); ++i) {
         Pump();
         Sleep(10);
@@ -6086,20 +6101,9 @@ static void CheckTabStripCrossWindowAdopt(HMODULE module, WinUIPaneApi& api, HWN
             "old adoption rejection cannot reveal a newer source departure; latest rejection restores it");
     settle(30);
 
-    // At a synthetic 200% override WinUI's external UIA provider exposes a
-    // zero target rectangle indefinitely, so destination placement uses the
-    // live island converter. The source press above remains UIA-grounded, and
-    // the queued adoption's exact destination index independently verifies
-    // the logical landing result.
     POINT sourceClient{(sourceBounds.left + sourceBounds.right) / 2, (sourceBounds.top + sourceBounds.bottom) / 2};
-    auto destBounds = scaled ? ElementScreenBounds(destTab)
-                             : TabScreenBounds(host2, L"FennTab-44");
-    if (scaled) {
-        fprintf(stderr, "Island scales source=%.2f target=%.2f\n", view.XamlRoot().RasterizationScale(), view2.XamlRoot().RasterizationScale());
-        Require(std::abs(view.XamlRoot().RasterizationScale() - sourceScale) < .01 &&
-                std::abs(view2.XamlRoot().RasterizationScale() - targetScale) < .01, "WinUI applied both distinct scales");
-    }
-    POINT destPoint{destBounds.left + (scaled ? (destBounds.right - destBounds.left) * 2 / 5 : 5), (destBounds.top + destBounds.bottom) / 2};
+    auto destBounds = TabScreenBounds(host2, secondGap ? L"FennTab-55" : L"FennTab-44");
+    POINT destPoint{destBounds.left + (secondGap ? (destBounds.right - destBounds.left) * 2 / 5 : 5), (destBounds.top + destBounds.bottom) / 2};
     fprintf(stderr, "Adopt test: dragging from (%ld,%ld) toward (%ld,%ld)\n", sourceClient.x, sourceClient.y,
             destPoint.x, destPoint.y);
 
@@ -6116,16 +6120,15 @@ static void CheckTabStripCrossWindowAdopt(HMODULE module, WinUIPaneApi& api, HWN
     settle();
     send(MOUSEEVENTF_LEFTDOWN);
     settle();
-    Require(sourceTab.Opacity() == 1, "a stationary press does not promote an offset or scaled drag");
-    if (scaled) {
+    Require(sourceTab.Opacity() == 1, "a stationary press does not promote an offset or secondGap drag");
+    if (secondGap) {
         // Change both host and island positions after the gesture starts.
         // The next hit test must use the live placement, not a cached origin.
         SetWindowPos(host2, nullptr, 680, 100, 0, 0, SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
         OffsetRect(&rect2, 9, 13);
         Require(SUCCEEDED(api.updateTabStrip(host2, &rect2, TRUE)), "move target island during drag");
         settle();
-        destBounds = scaled ? ElementScreenBounds(destTab)
-                            : TabScreenBounds(host2, L"FennTab-55");
+        destBounds = TabScreenBounds(host2, L"FennTab-55");
         destPoint = {(destBounds.left * 3 + destBounds.right * 2) / 5,
                      (destBounds.top + destBounds.bottom) / 2};
     }
@@ -6169,7 +6172,7 @@ static void CheckTabStripCrossWindowAdopt(HMODULE module, WinUIPaneApi& api, HWN
                 "closing source resets the surviving destination preview");
         Require(!NextRequest(api, host2, 5).Size(), "source close does not commit a foreign adopt");
         Require(SUCCEEDED(api.destroy(host2)), "destroy target after source cancellation");
-        DestroyWindow(host2);
+        DestroyFixtureWindow(host2);
         puts("CHECKS PASSED: source teardown clears the foreign preview");
         return;
     }
@@ -6181,7 +6184,7 @@ static void CheckTabStripCrossWindowAdopt(HMODULE module, WinUIPaneApi& api, HWN
                 static_cast<unsigned long>(closed), sourceTab.Opacity());
         send(MOUSEEVENTF_LEFTUP);
         Require(SUCCEEDED(closed), "destination with active foreign preview tears down without stale indices");
-        DestroyWindow(host2);
+        DestroyFixtureWindow(host2);
         settle();
         Require(sourceTab.Opacity() == 1, "closing the hovered destination restores the surviving source row");
         CheckAttachedTabAppearance(sourceTab);
@@ -6216,7 +6219,7 @@ static void CheckTabStripCrossWindowAdopt(HMODULE module, WinUIPaneApi& api, HWN
     CheckAttachedTabAppearance(sourceTab);
     Require(SUCCEEDED(api.syncTabs(host,tabs,1,33, NextTabRevision(), &selected)), "old source snapshot during adoption");
     Require(sourceTab.Opacity() == 0, "old source snapshot preserves pending departure");
-    if (!changeTarget && !scaled) {
+    if (!changeTarget && !secondGap) {
         Require(destTab.RenderTransform().as<Media::TranslateTransform>().X() > 0,
                 "destination gap survives release until adoption is published");
         Require(SUCCEEDED(api.syncTabs(host2,tabs2,targetCount,44, NextTabRevision(), &selected2)), "old destination snapshot during adoption");
@@ -6226,7 +6229,7 @@ static void CheckTabStripCrossWindowAdopt(HMODULE module, WinUIPaneApi& api, HWN
     if (scenario == AdoptScenario::CloseAfterDrop) {
         Require(SUCCEEDED(api.destroy(host2)), "destination closes before adoption outcome");
         Require(sourceTab.Opacity() == 1, "closing pending destination restores source tab");
-        DestroyWindow(host2);
+        DestroyFixtureWindow(host2);
         return;
     }
     if (scenario == AdoptScenario::CloseSourceAfterDrop) {
@@ -6234,7 +6237,7 @@ static void CheckTabStripCrossWindowAdopt(HMODULE module, WinUIPaneApi& api, HWN
         Require(NextRequest(api,host2,5,L"strip-adopt",40,2).Size(), "pending outcome survives source teardown");
         Require(destTab.RenderTransform().as<Media::TranslateTransform>().X() == 0, "failed adoption clears gap after source teardown");
         Require(SUCCEEDED(api.destroy(host2)), "destroy pending target");
-        DestroyWindow(host2);
+        DestroyFixtureWindow(host2);
         return;
     }
     auto adoptRequest = NextRequest(api, host2, 5, L"strip-adopt",40,scenario == AdoptScenario::RejectDrop ? 2 : 1);
@@ -6245,7 +6248,7 @@ static void CheckTabStripCrossWindowAdopt(HMODULE module, WinUIPaneApi& api, HWN
     Require(adoptEvent.GetNamedNumber(L"id") == 33 &&
                 adoptEvent.GetNamedNumber(L"sourceHwnd") == double(reinterpret_cast<uintptr_t>(host)),
             "dropping a tab onto another window's strip queues a validated adopt request there");
-    if (scaled) Require(adoptEvent.GetNamedNumber(L"index") == 1, "scaled drop resolves the UIA-targeted second tab gap");
+    if (secondGap) Require(adoptEvent.GetNamedNumber(L"index") == 1, "secondGap drop resolves the UIA-targeted second tab gap");
     if (scenario == AdoptScenario::ChangeThenDrop)
         Require(adoptEvent.GetNamedNumber(L"index") == 0, "drop uses the refreshed destination insertion index");
     if (scenario == AdoptScenario::RejectDrop) {
@@ -6259,7 +6262,7 @@ static void CheckTabStripCrossWindowAdopt(HMODULE module, WinUIPaneApi& api, HWN
         Require(SUCCEEDED(api.syncTabs(host,nullptr,0,0, NextTabRevision(), &selected)), "source publishes departure");
     }
     Require(SUCCEEDED(api.destroy(host2)), "destroy second host's pane");
-    DestroyWindow(host2);
+    DestroyFixtureWindow(host2);
 }
 
 // Diagnostic: `--record-frames <hwnd hex> <ms> <csv>` records the top 48
@@ -6329,7 +6332,7 @@ static HWND CreateCompositorSibling(HWND parent) {
         return RegisterClassExW(&type) != 0;
     }();
     Require(registered, "register the simulated compositor class");
-    return CreateWindowExW(0, L"MozillaCompositorWindowClass", L"Simulated compositor", WS_CHILD | WS_VISIBLE, 0, 0,
+    return CreateWindowExW(0, L"MozillaCompositorWindowClass", L"Simulated compositor", WS_CHILD | WS_VISIBLE | WS_DISABLED, 0, 0,
                            640, 480, parent, nullptr, GetModuleHandleW(nullptr), nullptr);
 }
 static HWND IslandOf(HWND host) {
@@ -6407,7 +6410,7 @@ int wmain(int argc, wchar_t** argv) {
     Require(argc == 2 || (argc == 3 && (wcscmp(argv[2], L"--late-drop") == 0 || wcscmp(argv[2], L"--local-startup") == 0 || wcscmp(argv[2], L"--startup-thread") == 0 || wcscmp(argv[2], L"--startup-thread-cancel") == 0 || wcscmp(argv[2], L"--startup-surface") == 0 || wcscmp(argv[2], L"--startup-host") == 0 || wcscmp(argv[2], L"--window-host") == 0 || wcscmp(argv[2], L"--chrome-layout") == 0 || wcscmp(argv[2], L"--popup-lifecycle") == 0 || wcscmp(argv[2], L"--page-input") == 0 || wcscmp(argv[2], L"--inspect") == 0 || wcscmp(argv[2], L"--address") == 0 || wcscmp(argv[2], L"--address-host") == 0 ||
                                         wcscmp(argv[2], L"--menu") == 0 || wcscmp(argv[2], L"--updates") == 0 || wcscmp(argv[2], L"--strip") == 0 || wcscmp(argv[2], L"--inline") == 0 || wcscmp(argv[2], L"--selection-decorations") == 0 || wcscmp(argv[2], L"--selection-reentrancy") == 0 ||
                                         wcscmp(argv[2], L"--drag") == 0 || wcscmp(argv[2], L"--reorder") == 0 || wcscmp(argv[2], L"--transfers") == 0 || wcscmp(argv[2], L"--drag-close") == 0 ||
-                                        wcscmp(argv[2], L"--drag-change") == 0 || wcscmp(argv[2], L"--drag-offset") == 0 || wcscmp(argv[2], L"--drag-scale") == 0 || (wcscmp(argv[2], L"--group-drop") == 0 || wcscmp(argv[2], L"--group-neighbors") == 0 || wcscmp(argv[2], L"--group-cross") == 0))),
+                                        wcscmp(argv[2], L"--drag-change") == 0 || wcscmp(argv[2], L"--drag-offset") == 0 || (wcscmp(argv[2], L"--group-drop") == 0 || wcscmp(argv[2], L"--group-neighbors") == 0 || wcscmp(argv[2], L"--group-cross") == 0))),
             "DLL path and optional --inspect required");
     // Before the DLL loads, because the pane reads this once. Without it the
     // request path's stages are counted but never timed, and the assertions
@@ -6432,6 +6435,7 @@ int wmain(int argc, wchar_t** argv) {
     Require(get(WINUI_PANE_ABI_VERSION, sizeof(api) - 1, &api) == E_NOINTERFACE, "reject size");
     Require(get(WINUI_PANE_ABI_VERSION, sizeof(api), nullptr) == E_POINTER, "reject null output");
     Require(SUCCEEDED(get(WINUI_PANE_ABI_VERSION, sizeof(api), &api)), "ABI handshake");
+    fixtureApi=api;
     {
         HWND output=reinterpret_cast<HWND>(1);
         const std::wstring oversized(32769,L'x');
@@ -6577,7 +6581,11 @@ int wmain(int argc, wchar_t** argv) {
             "stage-counter export exists only in the test DLL");
     RECT rect{0, 0, 640, 40};
     Require(api.updateTabStrip(nullptr, &rect, TRUE) == E_INVALIDARG, "reject null HWND");
-    HWND first = CreateWindowExW(0, L"STATIC", L"Pane contract test", WS_OVERLAPPEDWINDOW, 0, 0, 640, 480, nullptr,
+    HWND stock=CreateWindowExW(0,L"STATIC",L"Rejected host-off fixture",WS_OVERLAPPEDWINDOW,0,0,640,480,nullptr,nullptr,GetModuleHandleW(nullptr),nullptr);
+    Require(stock && api.updateTabStrip(stock,&rect,TRUE)==E_INVALIDARG,"reject host-off island attachment");
+    Require(!GetWindow(stock,GW_CHILD),"rejected host has no XAML island");
+    DestroyWindow(stock);
+    HWND first = CreateFixtureWindow(0, L"STATIC", L"Pane contract test", WS_OVERLAPPEDWINDOW, 0, 0, 640, 480, nullptr,
                                  nullptr, GetModuleHandleW(nullptr), nullptr);
     Require(first != nullptr, "first host");
     HWND compositor = CreateCompositorSibling(first);
@@ -6598,14 +6606,23 @@ int wmain(int argc, wchar_t** argv) {
         auto capture = reinterpret_cast<HRESULT(WINAPI*)(HWND, void**)>(GetProcAddress(module, "WinUIPaneTestGetDropTarget"));
         auto retired = reinterpret_cast<BOOL(WINAPI*)(void*)>(GetProcAddress(module, "WinUIPaneTestDropTargetRetired"));
         Target old{nullptr};
-        Require(capture && SUCCEEDED(capture(first, winrt::put_abi(old))), "retain actual pane drop route");
+        Require(capture != nullptr, "drop target inspection available");
+        HRESULT captured=E_PENDING;
+        for(int i=0;i<200 && captured==E_PENDING;++i) {
+            Pump(); Sleep(10); captured=capture(first,winrt::put_abi(old));
+        }
+        Require(SUCCEEDED(captured), "retain loaded Window region drop route");
         Require(retired && !retired(winrt::get_abi(old)), "held route is live before destruction");
         Require(old.DropAsync(nullptr).GetResults() == Operation::None, "live route rejects absent customization drag");
         Require(SUCCEEDED(api.destroy(first)), "retire old pane and weak route");
         Require(SUCCEEDED(api.updateTabStrip(first, &rect, TRUE)), "replacement pane on same host");
         Pump();
         Target fresh{nullptr};
-        Require(SUCCEEDED(capture(first, winrt::put_abi(fresh))), "fresh pane has its own drop target");
+        captured=E_PENDING;
+        for(int i=0;i<200 && captured==E_PENDING;++i) {
+            Pump(); Sleep(10); captured=capture(first,winrt::put_abi(fresh));
+        }
+        Require(SUCCEEDED(captured), "fresh loaded region has its own drop target");
         Require(retired(winrt::get_abi(old)) && !retired(winrt::get_abi(fresh)), "old route expired; replacement owns a different live route");
         for (int i = 0; i != 3; ++i) {
             Require(old.EnterAsync(nullptr, nullptr).GetResults() == Operation::None, "late enter rejected");
@@ -6616,14 +6633,14 @@ int wmain(int argc, wchar_t** argv) {
         Require(fresh.DropAsync(nullptr).GetResults() == Operation::None, "fresh route preserves external rejection");
         old = nullptr; fresh = nullptr;
         Require(SUCCEEDED(api.destroy(first)), "destroy replacement pane");
-        DestroyWindow(first); winrt::clear_factory_cache();
+        DestroyFixtureWindow(first); winrt::clear_factory_cache();
         Require(SUCCEEDED(api.shutdown()), "late target clean shutdown");
         CoUninitialize(); puts("PASS: retained chrome target rejects late callbacks after pane replacement"); return 0;
     }
     if (argc == 3 && wcscmp(argv[2], L"--chrome-layout") == 0) {
         CheckNativeChromeLayout(module, api, first, compositor);
         Require(SUCCEEDED(api.destroy(first)), "destroy native-layout fixture before host");
-        DestroyWindow(first);
+        DestroyFixtureWindow(first);
         winrt::clear_factory_cache();
         Require(SUCCEEDED(api.shutdown()), "native-layout clean shutdown");
         CoUninitialize();
@@ -6659,7 +6676,7 @@ int wmain(int argc, wchar_t** argv) {
         Require(SUCCEEDED(api.updateAddress(first, &addressRect, FALSE)), "detach update-menu fixture host");
         CheckPackageUpdates(first);
         Require(SUCCEEDED(api.destroy(first)), "update fixture pane teardown");
-        DestroyWindow(first);
+        DestroyFixtureWindow(first);
         Require(SUCCEEDED(api.shutdown()), "update fixture shutdown");
         FreeLibrary(module);
         CoUninitialize();
@@ -6667,7 +6684,7 @@ int wmain(int argc, wchar_t** argv) {
     }
     if (argc == 3 && wcscmp(argv[2], L"--address-host") == 0) {
         using namespace winrt::Microsoft::UI::Xaml;
-        RECT stripRect{0,0,640,40}, addressRect{100,44,570,76};
+        RECT stripRect{0,0,640,40}, addressRect{0,40,640,88};
         ShowWindow(first, SW_SHOW);
         Require(SUCCEEDED(api.updateTabStrip(first,&stripRect,TRUE)), "strip host");
         auto inspect = reinterpret_cast<HRESULT(WINAPI*)(HWND,void**)>(GetProcAddress(module,"WinUIPaneTestGetAddressContent"));
@@ -6682,11 +6699,11 @@ int wmain(int argc, wchar_t** argv) {
         try {
         for (int cycle=0; cycle<5; ++cycle) {
             Require(SUCCEEDED(api.updateAddress(first,&addressRect,TRUE)), "independent address attach");
-            Require(SUCCEEDED(api.syncAddress(first, LR"({"version":1,"enabled":true,"session":"toolbar-contract","revision":1,"editId":0,"sequence":1,"open":false,"text":"initial","rows":[]})")), "toolbar publication");
+            Require(SUCCEEDED(api.syncAddress(first, LR"({"version":1,"enabled":true,"navigationToolbar":true,"session":"toolbar-contract","revision":1,"editId":0,"sequence":1,"open":false,"text":"initial","rows":[]})")), "toolbar publication");
             UIElement content{nullptr};
             Require(SUCCEEDED(inspect(first,winrt::put_abi(content))), "address content");
             auto toolbarRoot=content.as<Controls::Grid>();
-            Require(!addressBackdrop(), "legacy input-slot has no system backdrop");
+            Require(bool(addressBackdrop()), "full navigation row has its system backdrop from first publication");
             // The navigation row's panels join the grid only once Firefox
             // publishes them, so reach the address root through its field.
             std::function<FrameworkElement(DependencyObject const&)> findField = [&](DependencyObject const& node) -> FrameworkElement {
@@ -6829,8 +6846,9 @@ int wmain(int argc, wchar_t** argv) {
                 Require(SUCCEEDED(api.syncAddress(first,status.Stringify().c_str())), "revoke status indicators");
                 Require(!privateButton.Parent() && !analysis.Parent() && !privateButton.IsEnabled() && !analysis.IsEnabled(), "inactive status detaches and disables buttons");
             }
+            auto sharedBackdrop=addressBackdrop();
             Require(SUCCEEDED(api.syncAddress(first, LR"({"version":1,"enabled":false})")), "disable navigation with address");
-            Require(!addressBackdrop(), "disabling navigation releases its system backdrop");
+            Require(sharedBackdrop && addressBackdrop()==sharedBackdrop, "disabling one region preserves the shared Window backdrop");
             for (auto const& control : {profile, extensions, appMenu})
                 Require(!control.Parent() && !control.IsEnabled(), "disable detaches and revokes trailing menu buttons");
             Require(pinned.Children().Size()==0 && embedded.Children().Size()==0, "disable revokes pinned and embedded controls");
@@ -6846,7 +6864,7 @@ int wmain(int argc, wchar_t** argv) {
             return 1;
         }
         Require(SUCCEEDED(api.destroy(first)), "destroy dual host");
-        DestroyWindow(first);
+        DestroyFixtureWindow(first);
         winrt::clear_factory_cache();
         Require(SUCCEEDED(api.shutdown()), "dual host clean shutdown");
         CoUninitialize();
@@ -6858,7 +6876,7 @@ int wmain(int argc, wchar_t** argv) {
         // resize/animation fixture and its asynchronous island layout.
         CheckTabStrip(module, api, first, true, wcscmp(argv[2], L"--selection-reentrancy") == 0);
         Require(SUCCEEDED(api.destroy(first)), "destroy selection fixture before host");
-        DestroyWindow(first);
+        DestroyFixtureWindow(first);
         winrt::clear_factory_cache();
         Require(SUCCEEDED(api.shutdown()), "selection fixture clean shutdown");
         CoUninitialize();
@@ -6873,7 +6891,7 @@ int wmain(int argc, wchar_t** argv) {
         }
         CheckInlineGroups(module, api, first, wcscmp(argv[2], L"--inline") == 0);
         Require(SUCCEEDED(api.destroy(first)), "destroy inline groups before host");
-        DestroyWindow(first);
+        DestroyFixtureWindow(first);
         winrt::clear_factory_cache();
         Require(SUCCEEDED(api.shutdown()), "strip clean shutdown");
         CoUninitialize();
@@ -6881,7 +6899,7 @@ int wmain(int argc, wchar_t** argv) {
         return 0;
     }
     if (argc == 3 && (wcscmp(argv[2], L"--drag") == 0 || wcscmp(argv[2], L"--reorder") == 0 || wcscmp(argv[2], L"--transfers") == 0 || wcscmp(argv[2], L"--drag-close") == 0 ||
-                      wcscmp(argv[2], L"--drag-change") == 0 || wcscmp(argv[2], L"--drag-offset") == 0 || wcscmp(argv[2], L"--drag-scale") == 0 || (wcscmp(argv[2], L"--group-drop") == 0 || wcscmp(argv[2], L"--group-neighbors") == 0 || wcscmp(argv[2], L"--group-cross") == 0))) {
+                      wcscmp(argv[2], L"--drag-change") == 0 || wcscmp(argv[2], L"--drag-offset") == 0 || (wcscmp(argv[2], L"--group-drop") == 0 || wcscmp(argv[2], L"--group-neighbors") == 0 || wcscmp(argv[2], L"--group-cross") == 0))) {
         auto dragTicks = [&] {
             auto counts = reinterpret_cast<HRESULT(WINAPI*)(const wchar_t*, uint64_t*)>(
                 GetProcAddress(module, "WinUIPaneTestGetEntryCalls"));
@@ -6924,15 +6942,9 @@ int wmain(int argc, wchar_t** argv) {
                 settled = groupSlide(first,2);
             }
             Require(SUCCEEDED(settled), "after sliding, group only at the actual tab position without resetting its offset");
-        } else if (wcscmp(argv[2], L"--drag-scale") == 0) {
-            CheckTabStripCrossWindowAdopt(module, api, first, AdoptScenario::Offset, 1.25f, 1.5f);
-            CheckTabStripCrossWindowAdopt(module, api, first, AdoptScenario::Offset, 1.5f, 2.f);
-            // OverrideScale changes the island, not this fixed-DPI VM's HWND
-            // input/UIA coordinate system. A synthetic 200% source therefore
-            // cannot supply an independent physical press target; real
-            // 200%-source coverage belongs to the mixed-DPI/manual lane.
         } else if (wcscmp(argv[2], L"--drag-offset") == 0) {
             CheckTabStripCrossWindowAdopt(module, api, first, AdoptScenario::Offset);
+            CheckTabStripCrossWindowAdopt(module, api, first, AdoptScenario::Offset, true);
         } else if (wcscmp(argv[2], L"--drag-close") == 0) {
             CheckTabStripCrossWindowAdopt(module, api, first, AdoptScenario::CloseTarget);
         } else if (wcscmp(argv[2], L"--drag-change") == 0) {
@@ -6949,7 +6961,7 @@ int wmain(int argc, wchar_t** argv) {
             CheckTabStripCrossWindowAdopt(module, api, first, AdoptScenario::ChangeThenClose);
             CheckTabStripCrossWindowAdopt(module, api, first, AdoptScenario::ChangeThenDrop);
             CheckTabStripCrossWindowAdopt(module, api, first, AdoptScenario::Offset);
-            CheckTabStripCrossWindowAdopt(module, api, first, AdoptScenario::Offset, 1.25f, 1.5f);
+            CheckTabStripCrossWindowAdopt(module, api, first, AdoptScenario::Offset, true);
             CheckTabStripCrossWindowAdopt(module, api, first, AdoptScenario::CloseSource);
             // Last: its published presentation outlives the check.
             CheckGroupDragEdgeScroll(module, api, first);
@@ -6976,7 +6988,7 @@ int wmain(int argc, wchar_t** argv) {
         }
         Require(dragTicks() == ticksAfterGestures, "a completed drag leaves no per-message session work behind");
         Require(SUCCEEDED(api.destroy(first)), "destroy drag test island");
-        DestroyWindow(first);
+        DestroyFixtureWindow(first);
         winrt::clear_factory_cache();
         Require(SUCCEEDED(api.shutdown()), "drag test clean shutdown");
         CoUninitialize();
@@ -6992,7 +7004,7 @@ int wmain(int argc, wchar_t** argv) {
             // Its own endpoint: the panic check deliberately poisons a core and
             // drops the pane to its snapshot-only fallback, which must not leak
             // into the other fixtures.
-            HWND core = CreateWindowExW(0, L"STATIC", L"Shell core host", WS_OVERLAPPEDWINDOW, 0, 0, 640, 480, nullptr,
+            HWND core = CreateFixtureWindow(0, L"STATIC", L"Shell core host", WS_OVERLAPPEDWINDOW, 0, 0, 640, 480, nullptr,
                                         nullptr, GetModuleHandleW(nullptr), nullptr);
             Require(core && SUCCEEDED(api.updateTabStrip(core, &rect, TRUE)), "shell core island");
             ShowWindow(core, SW_SHOW);
@@ -7019,11 +7031,11 @@ int wmain(int argc, wchar_t** argv) {
                 Require(stageCounter(L"wakeup", L"n", nullptr) == E_POINTER, "reject a null output");
             }
             Require(SUCCEEDED(api.destroy(core)), "shell core island teardown");
-            DestroyWindow(core);
+            DestroyFixtureWindow(core);
             Pump();
         }
         for (int cycle = 0; cycle < 20; ++cycle) {
-            HWND second = CreateWindowExW(0, L"STATIC", L"Menu lifecycle host", WS_OVERLAPPEDWINDOW, 0, 0, 640, 480,
+            HWND second = CreateFixtureWindow(0, L"STATIC", L"Menu lifecycle host", WS_OVERLAPPEDWINDOW, 0, 0, 640, 480,
                                           nullptr, nullptr, GetModuleHandleW(nullptr), nullptr);
             Require(second && SUCCEEDED(api.updateTabStrip(second, &rect, TRUE)), "menu secondary island");
             if (!cycle) {
@@ -7032,11 +7044,11 @@ int wmain(int argc, wchar_t** argv) {
                 CheckContextMenu(module, api, second);
             }
             Require(SUCCEEDED(api.destroy(second)), "menu secondary island teardown");
-            DestroyWindow(second);
+            DestroyFixtureWindow(second);
             Pump();
         }
         Require(SUCCEEDED(api.destroy(first)), "focused menu teardown");
-        DestroyWindow(first);
+        DestroyFixtureWindow(first);
         Require(SUCCEEDED(api.shutdown()), "focused menu shutdown");
         FreeLibrary(module);
         CoUninitialize();
@@ -7110,7 +7122,7 @@ int wmain(int argc, wchar_t** argv) {
         SUCCEEDED(api.syncTabs(first, tabs, 2, 11, NextTabRevision(), &requested)),
         "restore tabs");
     HWND island = IslandOf(first);
-    Require(island != nullptr && Above(island, compositor), "island above compositor sibling");
+    Require(island != nullptr && Above(compositor, island), "shared XAML bridge below compositor sibling");
     ShowWindow(first, SW_SHOWNOACTIVATE);
     for (int i = 0; i < 20; ++i) {
         Pump();
@@ -7123,19 +7135,19 @@ int wmain(int argc, wchar_t** argv) {
             fprintf(stderr,"Address popup lifecycle cycle=%d\n",cycle);
             CheckAddress(api,module,first);
             CheckStockFlyout(module,first);
-            HWND second=CreateWindowExW(0,L"STATIC",L"Popup lifecycle sibling",WS_OVERLAPPEDWINDOW,80,80,640,480,nullptr,nullptr,GetModuleHandleW(nullptr),nullptr);
+            HWND second=CreateFixtureWindow(0,L"STATIC",L"Popup lifecycle sibling",WS_OVERLAPPEDWINDOW,80,80,640,480,nullptr,nullptr,GetModuleHandleW(nullptr),nullptr);
             Require(second && SUCCEEDED(api.updateTabStrip(second,&rect,TRUE)),"create popup lifecycle sibling");
             ShowWindow(second,SW_SHOW);
             Require(SUCCEEDED(api.syncTabs(second,tabs,2,11,NextTabRevision(),&requested)),"publish sibling tabs after address close");
             auto row=StripRow(StripView(module,second),11);
             CheckStockFlyout(module,second);
             Require(SUCCEEDED(api.destroy(second)),"destroy popup lifecycle sibling");
-            DestroyWindow(second);
+            DestroyFixtureWindow(second);
             CheckStockFlyout(module,first);
         }
         CheckContextMenu(module,api,first);
         Require(SUCCEEDED(api.destroy(first)),"destroy popup lifecycle host");
-        DestroyWindow(first);
+        DestroyFixtureWindow(first);
         winrt::clear_factory_cache();
         Require(SUCCEEDED(api.shutdown()),"popup lifecycle shutdown");
         CoUninitialize();
@@ -7151,7 +7163,7 @@ int wmain(int argc, wchar_t** argv) {
             return 1;
         }
         Require(SUCCEEDED(api.destroy(first)), "address destroy");
-        DestroyWindow(first);
+        DestroyFixtureWindow(first);
         winrt::clear_factory_cache();
         Require(SUCCEEDED(api.shutdown()), "address shutdown");
         CoUninitialize();
@@ -7338,20 +7350,22 @@ int wmain(int argc, wchar_t** argv) {
     Require(SetWindowPos(compositor, HWND_TOP, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE),
             "simulate compositor restacking");
     Require(SUCCEEDED(api.updateTabStrip(first, &rect, TRUE)), "restore island stacking");
-    Require(Above(island, compositor), "island remains above restacked compositor");
+    Require(Above(compositor, island), "shared bridge remains below compositor");
     RECT cuts[]{{0, 0, 30, 40}, {100, 0, 200, 40}};
     Require(SUCCEEDED(api.clip(first, cuts, 2)), "clip overlapping overlays");
     Pump();
+    const HWND page=reinterpret_cast<HWND>(GetPropW(first,L"Fenn.PageWindow"));
+    Require(page != nullptr,"native page input window");
     HRGN region = CreateRectRgn(0, 0, 0, 0);
-    Require(GetWindowRgn(island, region) == COMPLEXREGION, "nonrectangular island region");
-    Require(!PtInRegion(region, 10, 20) && !PtInRegion(region, 150, 20), "covered areas excluded");
-    Require(PtInRegion(region, 50, 20) && PtInRegion(region, 600, 20), "uncovered areas preserved");
+    Require(GetWindowRgn(page, region) == COMPLEXREGION, "page region includes retained-control exclusions");
+    Require(PtInRegion(region, 10, 20) && PtInRegion(region, 150, 20), "retained-control exclusions route to the page");
+    Require(!PtInRegion(region, 50, 20) && !PtInRegion(region, 600, 20), "native chrome routes around the page");
     Require(api.clip(first, nullptr, 1) == E_INVALIDARG, "reject null exclusions");
     RECT full{0, 0, 640, 40};
     Require(SUCCEEDED(api.clip(first, &full, 1)), "fully covered pane");
-    Require(GetWindowRgn(island, region) == NULLREGION, "full cover has empty region");
+    Require(GetWindowRgn(page, region) != ERROR && PtInRegion(region, 10, 20), "full retained cover routes to the page");
     Require(SUCCEEDED(api.clip(first, nullptr, 0)), "restore full pane");
-    Require(GetWindowRgn(island, region) == SIMPLEREGION && PtInRegion(region, 10, 10), "restored region");
+    Require(GetWindowRgn(page, region) != ERROR && !PtInRegion(region, 10, 20), "restored native region bypasses page input");
     DeleteObject(region);
     if (argc == 3) {
         // Firefox calls update() and clip() from a requestAnimationFrame
@@ -7399,8 +7413,8 @@ int wmain(int argc, wchar_t** argv) {
         work(before);
         Require(SUCCEEDED(api.updateTabStrip(first, &rect, TRUE)), "same geometry, restacked sibling");
         work(after);
-        Require(after[2] == before[2] + 1, "a restacked island is put back on top with no other change");
-        Require(Above(island, compositor), "island is above the compositor again");
+        Require(after[2] == before[2], "regions never restack individual islands");
+        Require(Above(compositor, island), "compositor remains above shared bridge");
         Require(after[1] == before[1], "restacking alone does not re-apply geometry");
         // The same exclusions against the same client rect are the same region.
         Require(SUCCEEDED(api.clip(first, cuts, 2)), "settle exclusions before counting");
@@ -7423,7 +7437,7 @@ int wmain(int argc, wchar_t** argv) {
         work(after);
         Require(after[5] == before[5] + 1, "a changed region is set on the window");
         HRGN restored = CreateRectRgn(0, 0, 0, 0);
-        Require(GetWindowRgn(island, restored) == SIMPLEREGION, "the changed region reached the window");
+        Require(GetWindowRgn(page, restored) != ERROR && !PtInRegion(restored, 10, 20), "the changed region reached the window");
         DeleteObject(restored);
         // Every ABI entry point accounts for its own calls, which is what makes
         // native cost attributable at all. The count is what this pins; the
@@ -7479,12 +7493,16 @@ int wmain(int argc, wchar_t** argv) {
     std::thread worker([&] { otherThread = api.updateTabStrip(first, &rect, TRUE); });
     worker.join();
     Require(otherThread == RPC_E_WRONG_THREAD, "reject wrong-thread update");
+    HWND wrongThreadWindow=reinterpret_cast<HWND>(1);
+    std::thread createWorker([&] { otherThread=api.createWindowHost(0,L"Rejected",WS_OVERLAPPEDWINDOW,&rect,nullptr,nullptr,&wrongThreadWindow); });
+    createWorker.join();
+    Require(otherThread==RPC_E_WRONG_THREAD && !wrongThreadWindow,"reject wrong-thread native Window creation atomically");
     std::thread clipWorker([&] { otherThread = api.clip(first, nullptr, 0); });
     clipWorker.join();
     Require(otherThread == RPC_E_WRONG_THREAD, "reject wrong thread");
     if (argc == 3) CheckAddress(api, module, first);
     for (int cycle = 0; cycle < 20; ++cycle) {
-        HWND second = CreateWindowExW(0, L"STATIC", L"Second pane host", WS_OVERLAPPEDWINDOW, 0, 0, 640, 480, nullptr,
+        HWND second = CreateFixtureWindow(0, L"STATIC", L"Second pane host", WS_OVERLAPPEDWINDOW, 0, 0, 640, 480, nullptr,
                                       nullptr, GetModuleHandleW(nullptr), nullptr);
         Require(second != nullptr, "second host");
         Require(SUCCEEDED(api.updateTabStrip(second, &rect, TRUE)), "create second island");
@@ -7503,7 +7521,7 @@ int wmain(int argc, wchar_t** argv) {
         }
         Require(SUCCEEDED(api.clip(second, cuts, 2)), "second window clipping");
         HRGN firstRegion = CreateRectRgn(0, 0, 0, 0);
-        Require(GetWindowRgn(island, firstRegion) == SIMPLEREGION && PtInRegion(firstRegion, 10, 10),
+        Require(GetWindowRgn(page, firstRegion) != ERROR && !PtInRegion(firstRegion, 10, 20),
                 "second window clipping leaves first unchanged");
         DeleteObject(firstRegion);
         Pump();
@@ -7541,18 +7559,30 @@ int wmain(int argc, wchar_t** argv) {
         }
         Require(SUCCEEDED(api.destroy(second)), "destroy before HWND, including an open menu");
         Require(SUCCEEDED(api.destroy(second)), "idempotent destroy");
-        DestroyWindow(second);
+        DestroyFixtureWindow(second);
         Require(SUCCEEDED(api.updateTabStrip(first, &rect, TRUE)), "first island survives second close");
         Pump();
     }
+    {
+        using namespace winrt::Microsoft::UI::Xaml;
+        const auto app=Application::Current();
+        uint32_t controlResources=0;
+        for (const auto& dictionary:app.Resources().MergedDictionaries())
+            if (dictionary.try_as<Controls::XamlControlsResources>()) ++controlResources;
+        Require(controlResources==1, "one control-resource dictionary after repeated window creation");
+        Require(winrt::unbox_value<double>(app.Resources().Lookup(winrt::box_value(L"TabViewItemMaxWidth")))==225.0,
+                "application retains Firefox tab width policy");
+        Require(app.DispatcherShutdownMode()==DispatcherShutdownMode::OnExplicitShutdown,
+                "browser window closure leaves application shutdown explicit");
+    }
     Require(SUCCEEDED(api.destroy(first)), "destroy first island");
-    DestroyWindow(first);
+    DestroyFixtureWindow(first);
     winrt::clear_factory_cache();
     Require(SUCCEEDED(api.shutdown()), "dispatcher shutdown");
     Require(api.updateTabStrip(nullptr, &rect, TRUE) == RO_E_CLOSED, "reject after shutdown");
     CoUninitialize();
     puts(
-        "CHECKS PASSED (process exit still required): ABI rejection, strip island stacking above compositor, thread "
+        "CHECKS PASSED (process exit still required): ABI rejection, shared Window ordering and page exclusion regions, thread "
         "affinity, partial clipping/restoration, tab snapshots, keyboard selection, stale selection rejection, UIA "
         "selection and accessible titles, native close via UIA/keyboard, close queue and stale IDs, new tab via "
         "UIA/Space/Enter and per-window queue, 20 two-window lifecycles, shutdown");

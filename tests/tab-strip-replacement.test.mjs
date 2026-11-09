@@ -188,10 +188,10 @@ test("the retained Firefox toolbar hides only while the native navigation row is
   f.prefs.set(pane.hideToolbarPref, true);
   pane.updateToolbarHidden();
   assert.equal(hidden(), true);
-  pane.addressToolbar.navigation = false;
+  pane.addressToolbar.active = false;
   pane.updateToolbarHidden();
-  assert.equal(hidden(), false, "input-slot mode keeps the toolbar");
-  pane.addressToolbar.navigation = true;
+  assert.equal(hidden(), false, "inactive native navigation keeps the Firefox toolbar");
+  pane.addressToolbar.active = true;
   pane.updateToolbarHidden();
   root.toggleAttribute("customizing", true);
   pane.updateToolbarHidden();

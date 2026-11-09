@@ -7,6 +7,7 @@
 #include <tuple>
 #include <set>
 #include "StartupPlacement.h"
+#include "WindowTitleFrame.h"
 #include "shell_core.h"
 
 // Development-only owning-thread dispatcher. Gecko can wait for bounded pane
@@ -29,6 +30,7 @@ struct Host {
 inline Host& State() { static auto host=new Host; return *host; }
 }
 #include "PaneLink.h"
+#include "ShellFramePresentation.h"
 // The input link's credit returns reach the shell here (InputThread.h).
 namespace InputThread {
 inline constexpr UINT CreditMessage=WM_APP+907;
@@ -188,18 +190,6 @@ inline HRESULT WINAPI PostDestroyHost(HWND hwnd) noexcept {
     PaneLink::Retire(hwnd);
     return result;
 }
-// The pane's wakeup can fire inside its own drain bookkeeping, so the batch is prepared on a later
-// turn and sent to Gecko as a frame. An empty frame only wakes Gecko, as the wakeup did before.
-inline void PrepareAndNotify(HWND hwnd) noexcept {
-    try {
-        static thread_local std::vector<wchar_t> buffer(262144);
-        buffer[0]=0;
-        const auto result=PrepareDrain(hwnd,buffer.data(),uint32_t(buffer.size()));
-        if (FAILED(result) && DiagnosticsEnabled()) fprintf(stderr,"WinUIPane drain failed hr=%08x\n",unsigned(result));
-        const size_t units=result==S_OK ? wcsnlen(buffer.data(),buffer.size()) : 0;
-        PaneLink::ShellSend(hwnd,SHELL_FRAME_REQUESTS,0,0,buffer.data(),units*sizeof(wchar_t));
-    } catch (...) {}
-}
 inline BOOL WINAPI NotifyPrepared(void* context) noexcept {
     struct Job : Work { HWND hwnd; };
     auto* job=new (std::nothrow) Job;
@@ -207,7 +197,7 @@ inline BOOL WINAPI NotifyPrepared(void* context) noexcept {
     job->complete=nullptr; job->hwnd=static_cast<HWND>(context);
     job->run=[](Work* work) {
         std::unique_ptr<Job> job(static_cast<Job*>(work));
-        PrepareAndNotify(job->hwnd);
+        ShellFramePresentation::PrepareAndNotify(job->hwnd);
     };
     if (!PostMessageW(State().dispatcher,InvokeMessage,0,reinterpret_cast<LPARAM>(job))) { delete job; return FALSE; }
     return TRUE;
@@ -323,23 +313,10 @@ inline HRESULT Create(DWORD ex, const wchar_t*, DWORD style, const RECT* bounds,
     // window class whose default procedure could execute on this UI thread.
     return NativeWindowHost::CreateStartup(ex,style,*bounds,output);
 }
-inline HRESULT Bind(HWND hwnd, uintptr_t identity, HWND endpoint) noexcept {
-    auto* host=NativeWindowHost::Get(hwnd);
-    if (!host) return E_INVALIDARG;
-    if (host->state.phase==0) {
-        ShellWindowBinding binding{}; binding.shell=reinterpret_cast<uintptr_t>(hwnd);
-        if (host->Call(SHELL_WINDOW_HOST_OPERATION_PREPARE_STARTUP,binding)!=SHELL_STATUS_OK) return E_FAIL;
-    }
-    return NativeWindowHost::BindEndpoint(hwnd,host->state.generation,identity,endpoint);
-}
-inline HRESULT Resolve(HWND hwnd, uint64_t generation, uint64_t request) noexcept {
-    return NativeWindowHost::ResolveEndpointClose(hwnd,generation,request,false);
-}
 inline HRESULT WINAPI PostBind(HWND hwnd, uintptr_t identity, HWND endpoint) noexcept;
-inline HRESULT WINAPI DestroyHostRetired(HWND hwnd) noexcept;
 // An overflowing link refuses this like any ordered frame; it no longer waits.
 inline HRESULT WINAPI PostResolve(HWND hwnd, uint64_t generation, uint64_t request) noexcept {
-    if (State().owner==GetCurrentThreadId()) return Resolve(hwnd,generation,request);
+    if (State().owner==GetCurrentThreadId()) return NativeWindowHost::CancelEndpointClose(hwnd,generation,request);
     const uint64_t payload[2]{generation,request};
     return PaneLink::Send(hwnd,SHELL_FRAME_CLOSE,0,0,payload,sizeof(payload));
 }
@@ -364,14 +341,12 @@ inline HRESULT WINAPI PostDismissSurface(HWND hwnd) noexcept {
     if (FAILED(result)) result=Call<DismissStartupSurface>(hwnd);
     return FAILED(result) ? result : retired ? S_OK : S_FALSE;
 }
-inline HRESULT WINAPI SetTitle(HWND hwnd, const wchar_t* title) noexcept {
-    return SetWindowTextW(hwnd,title) ? S_OK : HRESULT_FROM_WIN32(GetLastError());
-}
 // Longer titles are cut to the frame's bound; the window caption shows far less.
 inline HRESULT WINAPI PostTitle(HWND hwnd, const wchar_t* title) noexcept {
-    if (State().owner==GetCurrentThreadId()) return SetTitle(hwnd,title);
+    if (State().owner==GetCurrentThreadId()) return NativeWindowHost::SetTitle(hwnd,title);
     if (!title) return E_POINTER;
-    return PaneLink::Send(hwnd,SHELL_FRAME_WINDOW,1,0,title,wcsnlen(title,32768)*sizeof(wchar_t));
+    const auto payload=WindowTitleFrame::Encode(title,WindowTitleFrame::MaxUnits);
+    return PaneLink::Send(hwnd,SHELL_FRAME_WINDOW,WindowTitleFrame::Kind,0,payload.data,payload.bytes);
 }
 // A refused cursor only leaves the previous one showing, until the next change.
 inline HRESULT WINAPI PostPageCursor(HWND hwnd, HCURSOR cursor, BOOL owned) noexcept {
@@ -391,121 +366,18 @@ inline HRESULT WINAPI PostWindowRequest(HWND hwnd, const WinUIPaneWindowRequest*
     if (State().owner==GetCurrentThreadId()) return NativeWindowHost::ApplyWindowRequest(hwnd,*request);
     return PaneLink::SendRequest(hwnd,*request);
 }
-// Frames from Gecko, applied on the shell's thread through the same handlers the posted calls used.
-inline void ShellApply(const ShellFrameView& v) {
-    auto& shell=PaneLink::Native();
-    if (v.channel==SHELL_FRAME_LIFETIME && v.kind==SHELL_FRAME_LIFETIME_INTRODUCE) {
-        // Only a window of this thread can be introduced. Any other, such as a Gecko window opened
-        // with the native host turned off, can have no pane here, and Gecko is told so.
-        const auto hwnd=reinterpret_cast<HWND>(static_cast<uintptr_t>(PaneLink::Read<uint64_t>(v.payload)));
-        if (!IsWindow(hwnd) || GetWindowThreadProcessId(hwnd,nullptr)!=GetCurrentThreadId() ||
-            shell_link_adopt(shell.link,v.window,reinterpret_cast<uintptr_t>(hwnd))!=SHELL_STATUS_OK)
-            PaneLink::ShellRefuseSerial(v.window,SHELL_FRAME_REFUSED_STRIP);
-        return;
-    }
-    uintptr_t handle{};
-    if (shell_link_handle(shell.link,v.window,&handle)!=SHELL_STATUS_OK) {
-        // A startup transfer is always answered, or Gecko's startup would wait for it forever.
-        if (v.channel==SHELL_FRAME_STARTUP) {
-            const HRESULT refused=E_INVALIDARG;
-            PaneLink::ShellSendSerial(v.window,SHELL_FRAME_STARTUP,0,v.revision,&refused,sizeof(refused));
-        }
-        return;
-    }
-    const auto hwnd=reinterpret_cast<HWND>(handle);
-    const auto text=[&]{return PaneLink::Text(v.payload,v.length);};
-    switch (v.channel) {
-        case SHELL_FRAME_GEOMETRY:
-            if (v.kind==2) {
-                std::vector<RECT> rects(v.length/sizeof(RECT));
-                if (!rects.empty()) memcpy(rects.data(),v.payload,rects.size()*sizeof(RECT));
-                ReportedClip(hwnd,rects.data(),uint32_t(rects.size()));
-            } else {
-                const auto rect=PaneLink::Read<RECT>(v.payload);
-                const BOOL visible=v.payload[sizeof(RECT)];
-                const auto result=v.kind==0 ? ReportedUpdateTabStrip(hwnd,&rect,visible) : ReportedUpdateAddress(hwnd,&rect,visible);
-                // Without a pane there is no request queue to report through, so the link says it.
-                if (FAILED(result) && !state().panes.count(hwnd)) {
-                    const uint16_t surface=v.kind==0 ? SHELL_FRAME_REFUSED_STRIP : SHELL_FRAME_REFUSED_ADDRESS;
-                    PaneLink::ShellSend(hwnd,SHELL_FRAME_WINDOW,3,0,&surface,sizeof(surface));
-                }
-            }
-            break;
-        case SHELL_FRAME_TABS:
-            if (v.kind==1) { PostedApplyTabDelta(hwnd,text().c_str()); break; }
-            {
-                std::vector<ShellFrameTab> rows(10000);
-                size_t count{}; uint32_t selected{}, revision{};
-                if (shell_frame_tabs_decode(v.payload,v.length,rows.data(),rows.size(),&count,&selected,&revision)!=SHELL_STATUS_OK) break;
-                std::vector<std::wstring> titles; titles.reserve(count);
-                std::vector<WinUITab> tabs(count);
-                for (size_t i=0;i<count;++i) {
-                    titles.emplace_back(rows[i].title_length,L'\0');
-                    if (rows[i].title_length) memcpy(titles.back().data(),rows[i].title,rows[i].title_length*sizeof(wchar_t));
-                    tabs[i]={rows[i].id,titles.back().c_str(),rows[i].commands};
-                }
-                ReportedSyncTabs(hwnd,tabs.data(),uint32_t(count),selected,revision);
-            }
-            break;
-        case SHELL_FRAME_ADDRESS: PostedSyncAddress(hwnd,text().c_str()); break;
-        case SHELL_FRAME_TAB_MENU: PostedSyncTabMenu(hwnd,text().c_str()); break;
-        case SHELL_FRAME_FOCUS:
-            if (v.kind==0) ReportedFocus(hwnd,v.payload[0]); else ReportedFocusAddress(hwnd,v.payload[0]);
-            break;
-        case SHELL_FRAME_WINDOW:
-            if (v.kind==0) {
-                const auto r=PaneLink::Read<ShellFrameWindowRequest>(v.payload);
-                const WinUIPaneWindowRequest request{r.kind,r.flags,{r.rect[0],r.rect[1],r.rect[2],r.rect[3]},
-                    static_cast<LONG_PTR>(r.value),nullptr};
-                NativeWindowHost::ApplyWindowRequest(hwnd,request,false);
-                auto* host=NativeWindowHost::Get(hwnd);
-                const uint64_t endpoint=host ? reinterpret_cast<uintptr_t>(host->endpoint) : 0;
-                PaneLink::ShellSend(hwnd,SHELL_FRAME_WINDOW,2,v.revision,&endpoint,sizeof(endpoint));
-            } else if (v.kind==1) SetTitle(hwnd,text().c_str());
-            break;
-        case SHELL_FRAME_REQUESTS: CompleteRequests(hwnd,text().c_str()); break;
-        case SHELL_FRAME_STARTUP: {
-            static thread_local std::vector<wchar_t> reply(262144);
-            reply[0]=0;
-            const HRESULT result=StartupTransfer(hwnd,text().c_str(),reply.data(),uint32_t(reply.size()));
-            const size_t units=SUCCEEDED(result) ? wcsnlen(reply.data(),reply.size()) : 0;
-            std::vector<uint8_t> payload(sizeof(HRESULT)+units*sizeof(wchar_t));
-            memcpy(payload.data(),&result,sizeof(HRESULT));
-            if (units) memcpy(payload.data()+sizeof(HRESULT),reply.data(),units*sizeof(wchar_t));
-            PaneLink::ShellSend(hwnd,SHELL_FRAME_STARTUP,0,v.revision,payload.data(),payload.size());
-            break;
-        }
-        case SHELL_FRAME_CLOSE:
-            Resolve(hwnd,PaneLink::Read<uint64_t>(v.payload),PaneLink::Read<uint64_t>(v.payload+8));
-            break;
-        case SHELL_FRAME_LIFETIME:
-            if (v.kind==SHELL_FRAME_LIFETIME_WAKEUP_ON) SetNotifySink(hwnd,NotifyPrepared,hwnd);
-            else if (v.kind==SHELL_FRAME_LIFETIME_WAKEUP_OFF) SetNotifySink(hwnd,nullptr,nullptr);
-            else if (v.kind==SHELL_FRAME_LIFETIME_DESTROY) Destroy(hwnd);
-            else if (v.kind==SHELL_FRAME_LIFETIME_DESTROY_HOST) DestroyHostRetired(hwnd);
-            else if (v.kind==SHELL_FRAME_LIFETIME_BIND) {
-                const auto identity=static_cast<uintptr_t>(PaneLink::Read<uint64_t>(v.payload));
-                const auto endpoint=reinterpret_cast<HWND>(static_cast<uintptr_t>(PaneLink::Read<uint64_t>(v.payload+8)));
-                if (FAILED(Bind(hwnd,identity,endpoint))) {
-                    const uint16_t refused=SHELL_FRAME_REFUSED_BIND;
-                    PaneLink::ShellSend(hwnd,SHELL_FRAME_WINDOW,3,0,&refused,sizeof(refused));
-                }
-            }
-            break;
-    }
-}
 inline void ShellReceive(uint8_t* data, size_t length) noexcept {
     auto& shell=PaneLink::Native();
     ShellFrameView view{};
     if (shell.link && shell_link_receive(shell.link,data,length,&view)==SHELL_STATUS_OK && view.delivered)
-        try { ShellApply(view); } catch (...) {}
+        try { ShellFramePresentation::Apply(view,NotifyPrepared); } catch (...) {}
     shell_link_free_frame(data,length);
     PaneLink::FlushShell();
 }
 // A refused bind cannot be undone in Gecko after nsWindow::Create returned, so the engine half
 // closes that browser window: a window that never bound was a window creation failure before.
 inline HRESULT WINAPI PostBind(HWND hwnd, uintptr_t identity, HWND endpoint) noexcept {
-    if (State().owner==GetCurrentThreadId()) return Bind(hwnd,identity,endpoint);
+    if (State().owner==GetCurrentThreadId()) return NativeWindowHost::BindBrowserEndpoint(hwnd,identity,endpoint);
     if (!identity || !endpoint) return E_INVALIDARG;
     const uint64_t payload[2]{identity,reinterpret_cast<uintptr_t>(endpoint)};
     PaneLink::RememberEndpoint(hwnd,endpoint);
@@ -541,11 +413,6 @@ inline HRESULT WINAPI DirectStartup(HWND hwnd, const wchar_t* input, wchar_t* ou
         swprintf_s(output,capacity,L"%llu",static_cast<unsigned long long>(request));
         return S_OK;
     } catch (...) { return E_OUTOFMEMORY; }
-}
-inline HRESULT WINAPI DestroyHostRetired(HWND hwnd) noexcept {
-    const auto result=NativeWindowHost::Destroy(hwnd);
-    PaneLink::ShellRetire(hwnd);
-    return result;
 }
 inline BOOL WINAPI IgnoreTranslate(MSG*) noexcept { return FALSE; }
 inline void Route(WinUIPaneApi& api) {

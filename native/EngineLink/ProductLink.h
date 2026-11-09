@@ -1,5 +1,6 @@
 #pragma once
 #include "../WinUIPane/ChromeLayout.h"
+#include "../WinUIPane/WindowTitleFrame.h"
 #include "IconPixels.h"
 #include "ProcessLaunch.h"
 #include "TestWorkGate.h"
@@ -77,6 +78,12 @@ inline HRESULT Text(HWND hwnd,uint16_t channel,uint16_t kind,const wchar_t* valu
     auto* window=Find(hwnd);if(!window || !value)return E_INVALIDARG;
     const size_t length=wcsnlen(value,1048577);if(length>1048576)return E_INVALIDARG;
     return Send(*window,channel,kind,value,length*sizeof(wchar_t));
+}
+inline HRESULT WINAPI SetTitle(HWND hwnd,const wchar_t* title) noexcept {
+    auto* window=Find(hwnd);if(!window || !title)return E_INVALIDARG;
+    const auto payload=WindowTitleFrame::Encode(title,1048577);
+    if(payload.bytes>1048576*sizeof(wchar_t))return E_INVALIDARG;
+    return Send(*window,SHELL_FRAME_WINDOW,WindowTitleFrame::Kind,payload.data,payload.bytes);
 }
 inline void Settle(uint32_t serial) {
     for(auto it=pending.begin();it!=pending.end();) {
@@ -546,7 +553,7 @@ inline HRESULT WINAPI Start(const wchar_t* profile,const wchar_t* presentation,u
                     InputThread::State().dispatcher,InputThread::TransportMessage,false,recoveryHistory);
                 EnginePipe::Trace("engine-reconnected",0,generation);
             } else launch=std::make_unique<EnginePipe::ProcessLaunch>(*pipe,std::move(server),executable,
-                std::move(command),generation,wake,InputThread::State().dispatcher,std::vector<wchar_t>{},false,recoveryHistory);
+                std::move(command),generation,wake,InputThread::State().dispatcher,InputThread::TransportMessage,std::vector<wchar_t>{},false,recoveryHistory);
         }
         if(thread!=GetCurrentThreadId() || failed)return RO_E_CLOSED;
         CompleteLaunch();
@@ -708,7 +715,7 @@ inline HRESULT GetApi(uint32_t version,uint32_t size,WinUIPaneApi* out) noexcept
     out->bindIndependentEndpoint=[](HWND h,uintptr_t,HWND p)noexcept {auto* w=Find(h);return w && w->proxy==p &&
         w->binding.phase==2 && w->pageReady && EnginePipe::Owns(h,peer)?S_OK:E_PENDING;};
     out->cancelIndependentClose=[](HWND h,uint64_t g,uint64_t r)noexcept {auto* w=Find(h);const uint64_t p[]{g,r};return w?Send(*w,SHELL_FRAME_CLOSE,0,p,16):E_INVALIDARG;};
-    out->setIndependentTitle=[](HWND h,const wchar_t* s)noexcept{return Text(h,SHELL_FRAME_WINDOW,1,s);};
+    out->setIndependentTitle=SetTitle;
     out->requestIndependentWindow=WindowRequest;out->startupTransfer=Startup;out->setStartupSink=SetStartup;
     out->setIndependentAccessibility=InputThread::SetAccessibility;out->setIndependentCursor=InputThread::SetCursor;
     out->registerIndependentTouch=InputThread::RegisterTouch;out->publishIndependentInput=InputThread::PublishInput;

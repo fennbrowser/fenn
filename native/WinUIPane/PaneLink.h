@@ -5,33 +5,19 @@
 #include <string>
 #include <vector>
 
-// The engine-shell link in one process (M5b; the native shell process design).
-//
-// Gecko's calls become frames (ShellCore's frame and link modules). The engine half runs on Gecko's
-// thread and the shell half on the native thread; each owns one ShellLinkEnd. This header only moves
-// bytes: engine to shell as a posted message to the native dispatcher, shell to engine through an
-// inbox that a message-only window on Gecko's thread drains. M5d replaces both with a pipe.
+// Rollback-only loopback: Gecko and the native UI thread own separate endpoints.
+// Frames move via posted messages and the Gecko-thread inbox; no pipe selection
+// or process recovery state belongs to this transport.
+#include "ShellLink.h"
+#ifdef FENN_SHELL_PROCESS
+// The optional pane inspection build of the executable still exposes rollback
+// test entry points, but process sends always use the explicit pipe transport.
+#include "ProcessShellTransport.h"
+#endif
 namespace PaneLink {
 inline constexpr UINT FrameMessage=WM_APP+902;
 inline constexpr UINT WakeMessage=WM_APP+903;
-inline uint32_t Generation=1;
-// Split shell installs a byte-only adapter; loopback remains the default contract transport.
-inline bool (*ShellTransport)(const uint8_t*,size_t) noexcept = nullptr;
-
-inline HRESULT Result(ShellLinkSend outcome) noexcept {
-    switch (outcome) {
-        case SHELL_LINK_SEND_QUEUED: case SHELL_LINK_SEND_COALESCED: return S_OK;
-        case SHELL_LINK_SEND_OVERFLOW: return E_OUTOFMEMORY;
-        case SHELL_LINK_SEND_CLOSED: return RO_E_CLOSED;
-        default: return E_INVALIDARG;
-    }
-}
-inline std::wstring Text(const uint8_t* payload, size_t length) {
-    std::wstring text(length/2,L'\0');
-    if (length) memcpy(text.data(),payload,length&~size_t(1));
-    return text;
-}
-template<class T> T Read(const uint8_t* payload) { T value{}; memcpy(&value,payload,sizeof(T)); return value; }
+inline constexpr uint32_t Generation=1;
 
 // Shell to engine: frames wait here until Gecko's thread takes them.
 struct Inbox {
@@ -297,53 +283,18 @@ inline void Retire(HWND hwnd) noexcept {
     shell_link_retire(engine.link,serial);
 }
 
-// --- Shell half: the native thread ----------------------------------------------------------
-struct Shell { ShellLinkEnd* link{}; };
-inline Shell& Native() { static auto* shell=new Shell; return *shell; }
+
 inline void StartShell() noexcept { Native().link=shell_link_create(Generation,nullptr); }
-inline void FlushShell() noexcept {
+#ifndef FENN_SHELL_PROCESS
+void FlushShell() noexcept {
     auto& shell=Native();
     if (!shell.link) return;
     for (;;) {
         uint8_t* data{}; size_t length{};
         if (shell_link_take(shell.link,false,&data,&length)!=SHELL_STATUS_OK || !data) return;
-        if(ShellTransport) {
-            const bool sent=ShellTransport(data,length);shell_link_free_frame(data,length);
-            if(!sent){shell_link_close(shell.link);return;}
-        } else DeliverToEngine(data,length);
+        // Ownership transfers to the inbox, which releases each received frame.
+        DeliverToEngine(data,length);
     }
 }
-inline HRESULT ShellSend(HWND hwnd, uint16_t channel, uint16_t kind, uint64_t revision, const void* payload, size_t length) noexcept {
-    auto& shell=Native();
-    if (!shell.link) return RO_E_CLOSED;
-    uint32_t serial{};
-    if (shell_link_serial(shell.link,reinterpret_cast<uintptr_t>(hwnd),false,&serial)!=SHELL_STATUS_OK) return E_INVALIDARG;
-    ShellLinkSend outcome{};
-    if (shell_link_send(shell.link,serial,channel,kind,revision,static_cast<const uint8_t*>(payload),length,&outcome)!=SHELL_STATUS_OK)
-        return E_UNEXPECTED;
-    FlushShell();
-    return Result(outcome);
-}
-// For a window this side never adopted, so it has no handle here.
-inline void ShellSendSerial(uint32_t serial, uint16_t channel, uint16_t kind, uint64_t revision, const void* payload, size_t length) noexcept {
-    auto& shell=Native();
-    if (!shell.link) return;
-    ShellLinkSend outcome{};
-    shell_link_send(shell.link,serial,channel,kind,revision,static_cast<const uint8_t*>(payload),length,&outcome);
-    FlushShell();
-}
-inline void ShellRefuseSerial(uint32_t serial, uint16_t surface) noexcept {
-    auto& shell=Native();
-    if (!shell.link) return;
-    ShellLinkSend outcome{};
-    shell_link_send(shell.link,serial,SHELL_FRAME_WINDOW,3,0,reinterpret_cast<const uint8_t*>(&surface),sizeof(surface),&outcome);
-    FlushShell();
-}
-// A destroyed window: frames still on their way for it are dropped, and its handle can be reused.
-inline void ShellRetire(HWND hwnd) noexcept {
-    auto& shell=Native();
-    uint32_t serial{};
-    if (shell.link && shell_link_serial(shell.link,reinterpret_cast<uintptr_t>(hwnd),false,&serial)==SHELL_STATUS_OK)
-        shell_link_retire(shell.link,serial);
-}
+#endif
 }

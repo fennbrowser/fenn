@@ -46,7 +46,7 @@ inline Placement Read(const std::wstring& profile) noexcept {
 inline void ApplyDefault(HWND hwnd) {
     const UINT dpi=GetDpiForWindow(hwnd);
     MONITORINFO monitor{sizeof(monitor)};
-    check_bool(GetMonitorInfoW(MonitorFromWindow(hwnd,MONITOR_DEFAULTTOPRIMARY),&monitor));
+    winrt::check_bool(GetMonitorInfoW(MonitorFromWindow(hwnd,MONITOR_DEFAULTTOPRIMARY),&monitor));
     const auto& work=monitor.rcWork;
     const double availableWidth=double(work.right-work.left)*96.0/dpi, availableHeight=double(work.bottom-work.top)*96.0/dpi;
     const double targetWidth=1280.0, targetHeight=1040.0;
@@ -57,9 +57,9 @@ inline void ApplyDefault(HWND hwnd) {
     const int w=std::min<int>(outerWidth,work.right-work.left), h=std::min<int>(outerHeight,work.bottom-work.top);
     const int x=std::clamp<int>(work.left+MulDiv(4,dpi,96),work.left,work.right-w);
     const int y=std::clamp<int>(work.top+MulDiv(4,dpi,96),work.top,work.bottom-h);
-    check_bool(SetWindowPos(hwnd,nullptr,x,y,w,h,SWP_NOZORDER|SWP_NOACTIVATE));
+    winrt::check_bool(SetWindowPos(hwnd,nullptr,x,y,w,h,SWP_NOZORDER|SWP_NOACTIVATE));
     if (width<targetWidth && height<targetHeight)
-        check_bool(SetPropW(hwnd,L"Fenn.NativeStartupMaximized",reinterpret_cast<HANDLE>(1)));
+        winrt::check_bool(SetPropW(hwnd,L"Fenn.NativeStartupMaximized",reinterpret_cast<HANDLE>(1)));
 }
 inline void Apply(HWND hwnd, const Placement& placement) {
     if (!placement.saved) { ApplyDefault(hwnd); return; }
@@ -69,13 +69,13 @@ inline void Apply(HWND hwnd, const Placement& placement) {
     const int width=MulDiv(placement.bounds.right-placement.bounds.left,dpi,96);
     const int height=MulDiv(placement.bounds.bottom-placement.bounds.top,dpi,96);
     MONITORINFO monitor{sizeof(monitor)};
-    check_bool(GetMonitorInfoW(MonitorFromWindow(hwnd,MONITOR_DEFAULTTONEAREST),&monitor));
+    winrt::check_bool(GetMonitorInfoW(MonitorFromWindow(hwnd,MONITOR_DEFAULTTONEAREST),&monitor));
     const auto& work=monitor.rcWork;
     const int w=std::min<int>(width,work.right-work.left), h=std::min<int>(height,work.bottom-work.top);
     const int x=std::clamp<int>(placement.bounds.left,work.left,work.right-w);
     const int y=std::clamp<int>(placement.bounds.top,work.top,work.bottom-h);
-    check_bool(SetWindowPos(hwnd,nullptr,x,y,w,h,SWP_NOZORDER|SWP_NOACTIVATE));
+    winrt::check_bool(SetWindowPos(hwnd,nullptr,x,y,w,h,SWP_NOZORDER|SWP_NOACTIVATE));
     if (placement.maximized)
-        check_bool(SetPropW(hwnd,L"Fenn.NativeStartupMaximized",reinterpret_cast<HANDLE>(1)));
+        winrt::check_bool(SetPropW(hwnd,L"Fenn.NativeStartupMaximized",reinterpret_cast<HANDLE>(1)));
 }
 }

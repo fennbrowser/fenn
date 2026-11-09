@@ -36,10 +36,10 @@ class ProcessLaunch {
 public:
     static constexpr UINT Completed=WM_APP+926;
     ProcessLaunch(Connection& connection,winrt::handle server,std::wstring executable,
-                  std::wstring command,uint32_t generation,HWND target,HWND input,
+                  std::wstring command,uint32_t generation,HWND target,HWND input,UINT inputMessage,
                   std::vector<wchar_t> environment={},bool launcherChild=false,ShellRecoveryHistory budget={}) {
         worker=std::thread([this,&connection,server=std::move(server),executable=std::move(executable),
-                            command=std::move(command),environment=std::move(environment),generation,target,input,launcherChild,budget]() mutable {
+                            command=std::move(command),environment=std::move(environment),generation,target,input,inputMessage,launcherChild,budget]() mutable {
             result=[&]() -> HRESULT {
                 try {
                     STARTUPINFOW info{sizeof(info)};Child child;
@@ -62,7 +62,7 @@ public:
                     if(!DuplicateHandle(GetCurrentProcess(),child.info.hProcess,GetCurrentProcess(),
                         peer.put(),0,FALSE,DUPLICATE_SAME_ACCESS))return HRESULT_FROM_WIN32(GetLastError());
                     connection.Start(server.detach(),peer.detach(),pid,generation,target,true,Protocol,
-                        input,InputThread::TransportMessage,launcherChild,budget);
+                        input,inputMessage,launcherChild,budget);
 #ifdef FENN_ENGINE_LINK_TESTING
                     wchar_t fault[64]{};
                     if(GetEnvironmentVariableW(L"FENN_TEST_PROCESS_FAULT",fault,64)<64 &&

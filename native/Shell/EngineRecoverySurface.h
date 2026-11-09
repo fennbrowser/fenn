@@ -68,7 +68,7 @@ inline void ShowEngineTerminal() {
         const auto draftLabel=EngineLabel(L"engineDraft",L"Unsent address text");
         draft.Header(box_value(draftLabel));Automation::AutomationProperties::SetName(draft,draftLabel);
         draft.FlowDirection(FlowDirection::LeftToRight);draft.TextReadingOrder(TextReadingOrder::DetectFromContent);
-        draft.Text(saved.hasDraft?hstring(saved.draft):hstring{});
+        draft.Text(saved.hasDraft?hstring(saved.draft.text):hstring{});
         draft.Visibility(saved.hasDraft?Visibility::Visible:Visibility::Collapsed);
         panel.waiting=panel.root.FindName(L"Waiting").as<Controls::TextBlock>();
         panel.waiting.Text(EngineLabel(L"engineWaiting",L"Retry will be available shortly. Recovery will not start automatically."));

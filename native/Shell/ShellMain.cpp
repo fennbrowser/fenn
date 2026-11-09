@@ -1,9 +1,15 @@
 #include "../WinUIPane/pch.h"
-#include "../WinUIPane/Pane.cpp"
+#include "../WinUIPane/ShellPresentation.h"
+#include "../WinUIPane/ApplicationSetup.h"
 #include "../../bridge/WinUIPaneApi.h"
 #include <winrt/Microsoft.UI.Xaml.XamlTypeInfo.h>
 #include <winrt/Microsoft.UI.Xaml.Hosting.h>
 #include <winrt/Microsoft.UI.Xaml.Media.h>
+#include <winrt/Microsoft.UI.Xaml.Automation.h>
+#include <winrt/Windows.Data.Json.h>
+#include <algorithm>
+#include <cmath>
+#include <map>
 #include <winrt/Microsoft.UI.Interop.h>
 #include <winrt/Microsoft.UI.Windowing.h>
 #include <appmodel.h>
@@ -18,7 +24,11 @@
 #include "../EngineLink/WindowPlacement.h"
 #include "../EngineLink/Milestone.h"
 #include "../WinUIPane/ShellCore.h"
-#include "../WinUIPane/PageInput.h"
+#include "../WinUIPane/StartupPlacement.h"
+#include "../WinUIPane/StartupLabels.h"
+#include <winrt/Microsoft.UI.Xaml.Automation.Peers.h>
+#include <set>
+#include <thread>
 using namespace winrt;
 #ifdef FENN_SHELL_TESTING
 // Faults exist only in the separate shell-test output, never in the staged product binary.
@@ -57,6 +67,11 @@ void ImportEngineRecoveryHistory();
 inline HWND recoveredTarget{};
 inline bool engineRestoring{},applyingRecovered{};
 inline constexpr UINT EngineCleanupDone=WM_APP+930;
+inline constexpr UINT PrepareRequests=WM_APP+932;
+inline BOOL WINAPI NotifyPrepared(void* context) noexcept {
+    // Draining synchronously would reenter the pane's notification bookkeeping.
+    return PostMessageW(dispatcher,PrepareRequests,0,reinterpret_cast<LPARAM>(context));
+}
 inline std::wstring profile,presentation;
 inline bool confirmed{};
 inline HWND startup{};
@@ -168,30 +183,6 @@ inline void RetireShape(HWND window) noexcept {
         shell_link_retire(links[1],serial);
     if(engineRestoring)PostMessageW(dispatcher,EnginePipe::Wake,0,0);
 }
-inline void InstallKeyRouting(HWND window) {
-    auto* host=NativeWindowHost::Get(window);
-    if(!host || GetPropW(window,L"Fenn.ProcessKeyRouting"))return;
-    host->root.PreviewKeyDown([window](Windows::Foundation::IInspectable const& sender,Microsoft::UI::Xaml::Input::KeyRoutedEventArgs const& args) noexcept {
-        try {
-            auto* current=NativeWindowHost::Get(window);
-            auto pane=state().panes.find(window);
-            if(!current || !SameObject(sender,current->root) || pane==state().panes.end() || args.Handled())return;
-            const auto status=args.KeyStatus();
-            const uint32_t bits=status.RepeatCount | (status.ScanCode<<16) | (uint32_t(status.IsExtendedKey)<<24) |
-                (uint32_t(status.IsMenuKeyDown)<<29) | (uint32_t(status.WasKeyDown)<<30) | (uint32_t(status.IsKeyReleased)<<31);
-            const MSG message{current->bridge,UINT(status.IsMenuKeyDown?WM_SYSKEYDOWN:WM_KEYDOWN),WPARAM(args.Key()),LPARAM(bits),DWORD(GetMessageTime()),{}};
-            // Application owns this message loop, so the in-process Translate
-            // hook cannot dismiss customization during a native toolbar drag.
-            if(args.Key()==Windows::System::VirtualKey::Escape && pane->second->address &&
-               pane->second->address->navigation &&
-               pane->second->address->navigation->customization.DismissOnEscape()) {
-                args.Handled(true);return;
-            }
-            if((pane->second->startupKey && pane->second->startupKey(message)) || RouteBrowserShortcut(*pane->second,message))args.Handled(true);
-        }catch(...){}
-    });
-    check_bool(SetPropW(window,L"Fenn.ProcessKeyRouting",reinterpret_cast<HANDLE>(1)));
-}
 inline HWND Startup() {
     if(startup && IsWindow(startup))return startup;
     const auto placement=NativeStartupPlacement::Read(profile);
@@ -199,8 +190,8 @@ inline HWND Startup() {
     NativeStartupPlacement::Apply(startup,placement);
     SetPropW(startup,L"Fenn.NativeStartupOrigin",reinterpret_cast<HANDLE>(2));
     // Called only after Firefox confirms routing, never on speculative process creation.
-    check_hresult(ShowInteractiveStartup(startup,profile.c_str(),presentation.empty()?nullptr:presentation.c_str()));
-    InstallKeyRouting(startup);
+    check_hresult(ShellPresentation::ShowInteractiveStartup(startup,profile.c_str(),presentation.empty()?nullptr:presentation.c_str()));
+    ShellPresentation::InstallKeyRouting(startup);
     EnginePipe::Trace("show-startup");
     return startup;
 }
@@ -241,7 +232,7 @@ inline void Apply(const ShellFrameView& view) {
             // the first window. Prepare while hidden; Firefox still owns show,
             // placement and activation. Recovery retains its separate presenter.
             if(!(data.flags&2)) {
-                const auto prepared=PrepareInteractiveStartup(window,profile.c_str(),presentation.empty()?nullptr:presentation.c_str());
+                const auto prepared=ShellPresentation::PrepareInteractiveStartup(window,profile.c_str(),presentation.empty()?nullptr:presentation.c_str());
                 check_hresult(prepared);
                 if(prepared==S_FALSE)check_bool(SetPropW(window,L"Fenn.PendingStartupPreparation",reinterpret_cast<HANDLE>(1)));
             }
@@ -253,8 +244,8 @@ inline void Apply(const ShellFrameView& view) {
             return;
         }
 #endif
-        check_hresult(IndependentHost::Bind(window,data.identity,endpoint));
-        InstallKeyRouting(window);
+        check_hresult(NativeWindowHost::BindBrowserEndpoint(window,data.identity,endpoint));
+        ShellPresentation::InstallKeyRouting(window);
         if(data.flags&2){
             BeginReadiness(window,view.window);
             if(!reused && !EnginePlacement::Restore(window,data.placement))ShowWindow(window,SW_SHOWNOACTIVATE);
@@ -276,7 +267,7 @@ inline void Apply(const ShellFrameView& view) {
     // Firefox can create a later proxy with provisional, too-small bounds.
     // Retry after its placement request, before processing show or publication.
     if(GetPropW(window,L"Fenn.PendingStartupPreparation")) {
-        const auto prepared=PrepareInteractiveStartup(window,profile.c_str(),presentation.empty()?nullptr:presentation.c_str());
+        const auto prepared=ShellPresentation::PrepareInteractiveStartup(window,profile.c_str(),presentation.empty()?nullptr:presentation.c_str());
         check_hresult(prepared);
         if(prepared==S_OK)RemovePropW(window,L"Fenn.PendingStartupPreparation");
     }
@@ -288,7 +279,7 @@ inline void Apply(const ShellFrameView& view) {
         RemovePropW(window,L"Fenn.RecoveryDeferred");
         SetPropW(window,L"Fenn.RecoveryReady",reinterpret_cast<HANDLE>(1));
         if(auto focus=deferredAddressFocus.find(window);focus!=deferredAddressFocus.end()) {
-            if(GetForegroundWindow()==window)ReportedFocusAddress(window,focus->second!=0);
+            if(GetForegroundWindow()==window)ShellPresentation::ReportedFocusAddress(window,focus->second!=0);
             deferredAddressFocus.erase(focus);
         }
         RestoreEngineDraft(window);
@@ -297,7 +288,7 @@ inline void Apply(const ShellFrameView& view) {
     }
     if(view.channel==SHELL_FRAME_LIFETIME && view.kind==SHELL_FRAME_LIFETIME_DESTROY_HOST){readiness.erase(window);deferredAddressFocus.erase(window);softwareSurfaces.erase(window);}
     if(view.channel==SHELL_FRAME_TAB_MENU) {
-        const auto value=NativeTabMenu::Object::Parse(PaneLink::Text(view.payload,view.length));
+        const auto value=Windows::Data::Json::JsonObject::Parse(PaneLink::Text(view.payload,view.length));
         if(value.HasKey(L"recoveryWindow")) {
             check_bool(view.length<=512 && value.Size()==3 && value.GetNamedNumber(L"version")==2 && value.GetNamedBoolean(L"publishOnly"));
             const auto identity=value.GetNamedObject(L"recoveryWindow");
@@ -336,14 +327,14 @@ inline void Apply(const ShellFrameView& view) {
             if(rows[i].title_length)memcpy(titles.back().data(),rows[i].title,rows[i].title_length*sizeof(wchar_t));
             tabs[i]={rows[i].id,titles.back().c_str(),rows[i].commands};
         }
-        if(SUCCEEDED(ReportedSyncTabs(window,tabs.data(),uint32_t(count),selected,revision)))Observe(window,1);
+        if(SUCCEEDED(ShellPresentation::ReportedSyncTabs(window,tabs.data(),uint32_t(count),selected,revision)))Observe(window,1);
         return;
     }
     if(readiness.contains(window) && view.channel==SHELL_FRAME_FOCUS && view.kind==1) {
         deferredAddressFocus[window]=view.payload[0];return;
     }
     if(readiness.contains(window) && view.channel==SHELL_FRAME_ADDRESS) {
-        if(SUCCEEDED(PostedSyncAddress(window,PaneLink::Text(view.payload,view.length).c_str())) && EngineDraftEditorReady(window))Observe(window,2);
+        if(SUCCEEDED(ShellPresentation::PostedSyncAddress(window,PaneLink::Text(view.payload,view.length).c_str())) && EngineDraftEditorReady(window))Observe(window,2);
         return;
     }
     if(view.channel==SHELL_FRAME_LIFETIME && view.kind==SHELL_FRAME_LIFETIME_PAGE_READY) {
@@ -358,31 +349,22 @@ inline void Apply(const ShellFrameView& view) {
         // An OS gesture is never deferred into a recovered window or replayed.
         auto report=[&](HRESULT hr,uint32_t phase=0) {
             uint8_t result[24]{};memcpy(result,&hr,4);memcpy(result+4,&phase,4);
-            auto pane=state().panes.find(window);
-            if(pane!=state().panes.end() && pane->second->address) {
-                const uint64_t session=_wcstoui64(pane->second->address->session.c_str(),nullptr,10);
-                const uint64_t document=_wcstoui64(pane->second->address->shareDocument.c_str(),nullptr,10);
-                memcpy(result+8,&session,8);memcpy(result+16,&document,8);
-            }
+            const auto identity=ShellPresentation::ShareScope(window);
+            memcpy(result+8,&identity.session,8);memcpy(result+16,&identity.document,8);
             PaneLink::ShellSend(window,SHELL_FRAME_WINDOW,8,view.revision,result,sizeof(result));
         };
         if(readiness.contains(window)){report(E_PENDING);return;}
         if(GetForegroundWindow()!=window){report(E_ACCESSDENIED);return;}
-        auto found=state().panes.find(window);if(found==state().panes.end() || !found->second->address){report(RO_E_CLOSED);return;}
+        if(!ShellPresentation::HasAddress(window)){report(RO_E_CLOSED);return;}
         auto bytes=std::make_shared<std::vector<uint8_t>>(view.payload,view.payload+view.length);
         auto current=[window,bytes,epoch=generation]() {
             if(epoch!=generation || !connection || connection->Closed() || !connection->Ready() || readiness.contains(window))return false;
-            auto pane=state().panes.find(window);
-            if(pane==state().panes.end() || !pane->second->address)return false;
-            auto& address=*pane->second->address;
-            if(address.root.Visibility()!=Visibility::Visible || (!address.navigation || !address.navigation->visible))return false;
-            return shell_frame_share_current(bytes->data(),bytes->size(),_wcstoui64(address.session.c_str(),nullptr,10),
-                _wcstoui64(address.shareDocument.c_str(),nullptr,10),GetTickCount64());
+            return ShellPresentation::ShareCurrent(window,bytes->data(),bytes->size());
         };
         if(!current()){report(E_NOT_VALID_STATE);return;}
         const size_t title=PaneLink::Read<uint32_t>(view.payload+24),url=PaneLink::Read<uint32_t>(view.payload+28);
         const auto text=reinterpret_cast<const wchar_t*>(view.payload+32);
-        report(found->second->windowsShare.Open(window,hstring(text,uint32_t(title)),hstring(text+title,uint32_t(url)),current),1);
+        report(ShellPresentation::OpenShare(window,hstring(text,uint32_t(title)),hstring(text+title,uint32_t(url)),current),1);
         return;
     }
     if(view.channel==SHELL_FRAME_WINDOW && (view.kind==4 || view.kind==5)) {
@@ -392,7 +374,7 @@ inline void Apply(const ShellFrameView& view) {
         const uint64_t endpoint=reinterpret_cast<uintptr_t>(NativeWindowHost::Get(window)->endpoint);
         PaneLink::ShellSend(window,SHELL_FRAME_WINDOW,2,view.revision,&endpoint,sizeof(endpoint));return;
     }
-    IndependentHost::ShellApply(view);
+    ShellPresentation::ApplyFrame(view,NotifyPrepared);
 }
 #ifdef FENN_SHELL_TESTING
 // Hold the authenticated recovery stream in its existing bounded transport
@@ -428,7 +410,7 @@ inline void Pump() {
     ImportEngineRecoveryHistory();
     if(engineRestoring && connection->Ready()) {
         enginePid=connection->PeerPid();NativeWindowHost::RemoteEnginePid=enginePid;
-        NativePackageUpdates::restartProcess=connection->PeerHandle();
+        ShellPresentation::SetRestartProcess(connection->PeerHandle());
     }
     uint32_t route{};uint8_t* bytes{};size_t length{};
     while(connection->Take(route,bytes,length)) {
@@ -441,7 +423,7 @@ inline void Pump() {
     if(connection->Closed()) {
         EnginePipe::Trace("peer-closed");
         if(RecoverEngine())return;
-        std::vector<HWND> windows;for(const auto& item:state().panes)windows.push_back(item.first);
+        auto windows=ShellPresentation::PaneWindows();
         if(startup)windows.push_back(startup);
         for(HWND window:windows)if(IsWindow(window))NativeWindowHost::Destroy(window);
         app.Exit();return;
@@ -557,7 +539,10 @@ LRESULT CALLBACK Dispatch(HWND window,UINT message,WPARAM w,LPARAM l) {
             if(message==EnginePipe::Wake){Product::Pump();return 0;}
             if(message==WM_TIMER && w==3){Product::CheckReadiness();return 0;}
             if(message==WM_TIMER && w==5){KillTimer(window,5);Product::RefreshEngineTerminal();return 0;}
-            if(message==IndependentHost::InvokeMessage)return IndependentHost::Dispatch(window,message,w,l);
+            if(message==Product::PrepareRequests) {
+                ShellPresentation::PrepareAndNotify(reinterpret_cast<HWND>(l));
+                return 0;
+            }
             return DefWindowProcW(window,message,w,l);
         }
         if (message==EnginePipe::Wake) { Pump(); return 0; }
@@ -572,7 +557,7 @@ struct ShellApp : ApplicationT<ShellApp,Markup::IXamlMetadataProvider> {
     Markup::IXamlType GetXamlType(hstring const& name) { return metadata.GetXamlType(name); }
     com_array<Markup::XmlnsDefinition> GetXmlnsDefinitions() { return metadata.GetXmlnsDefinitions(); }
     void OnLaunched(LaunchActivatedEventArgs const&) {
-        Resources().MergedDictionaries().Append(Controls::XamlControlsResources());
+        ApplicationSetup::Configure(Application::Current());
     }
 };
 }
@@ -616,16 +601,14 @@ int WINAPI wWinMain(HINSTANCE,HINSTANCE,PWSTR,int) {
         init_apartment(apartment_type::single_threaded);
         Application::Start([&](auto&&) {
             app=make<ShellApp>();
-            app.DispatcherShutdownMode(DispatcherShutdownMode::OnExplicitShutdown);
             WNDCLASSW wc{}; wc.lpfnWndProc=Dispatch; wc.hInstance=GetModuleHandleW(nullptr); wc.lpszClassName=L"Fenn.SplitShellDispatcher.v1";
             RegisterClassW(&wc);
             dispatcher=CreateWindowExW(0,wc.lpszClassName,L"",0,0,0,0,0,HWND_MESSAGE,nullptr,wc.hInstance,nullptr);
             links[0]=EnginePipe::Link(generation,!product); links[1]=EnginePipe::Link(generation,!product);
             if(product) {
-                NativePackageUpdates::restartProcess=parent;
-                PaneLink::Generation=generation;PaneLink::Native().link=links[0];PaneLink::ShellTransport=Product::PipeSend;
+                ShellPresentation::SetRestartProcess(parent);
+                PaneLink::SetProcessShellTransport(links[0],Product::PipeSend);
                 NativeWindowHost::PlacementChanged=Product::PlacementChanged;
-                IndependentHost::State().dispatcher=dispatcher;IndependentHost::State().owner=GetCurrentThreadId();
                 NativeWindowHost::RemoteEnginePid=enginePid;
                 NativeWindowHost::RequestPage=[](HWND,HWND,COLORREF)noexcept{return true;};
                 NativeWindowHost::SendPageShape=Product::Shape;NativeWindowHost::RetirePageShape=Product::RetireShape;
@@ -640,7 +623,7 @@ int WINAPI wWinMain(HINSTANCE,HINSTANCE,PWSTR,int) {
             connection->Start(pipe,parent,expectedEngine,generation,dispatcher,false,protocol);
             if(!product)SetTimer(dispatcher,1,10000,nullptr);
         });
-        NativePackageUpdates::restartProcess=nullptr;
+        ShellPresentation::SetRestartProcess(nullptr);
         if(product)Product::StopEngineRecovery();
         if(connection)connection->Stop();
         for (auto* link:links) shell_link_destroy(link);

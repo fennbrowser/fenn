@@ -126,7 +126,7 @@ index 1fbef26996f..7c5875a33f0 100644
 +#endif
  
 diff --git a/browser/app/profile/firefox.js b/browser/app/profile/firefox.js
-index 0f4b2915ad2..ca74e4cd66a 100644
+index 0f4b2915ad2..3c815e7d5df 100644
 --- a/browser/app/profile/firefox.js
 +++ b/browser/app/profile/firefox.js
 @@ -322,3 +322,4 @@ pref("browser.shell.displayKitImageBehindSetDefaultBrowserButton", "off");
@@ -179,7 +179,7 @@ index 0f4b2915ad2..ca74e4cd66a 100644
 +// Keep its inspection shortcut out of page context menus unless requested.
 +pref("fenn.contextMenu.inspectAccessibility", false);
  
-@@ -3877,2 +3886,70 @@ pref("distribution.mozillaonline.ignore", true);
+@@ -3877,2 +3886,69 @@ pref("distribution.mozillaonline.ignore", true);
  
 +// The native tab strip is on by default in every lane (unpackaged launcher and
 +// MSIX alike); turn it off to fall back to Firefox's own UI. Firefox keeps its
@@ -207,7 +207,6 @@ index 0f4b2915ad2..ca74e4cd66a 100644
 +// Opt-in: with glow animations, extinguished glow dims out instead of
 +// disappearing at once.
 +pref("fenn.winui.tabstrip.groupGlowFadeOut", false);
-+pref("fenn.winui.address.toolbar.enabled", false);
 +// Native page actions start pinned; choices are saved per profile.
 +pref("fenn.winui.address.actions.reader", true);
 +pref("fenn.winui.address.actions.pip", true);
@@ -1233,10 +1232,10 @@ index bdf2c9c2928..3c00d8625fa 100644
 +    if (!this.contentData || this.window.gContextMenu !== this) { return; }
  
 diff --git a/browser/base/jar.mn b/browser/base/jar.mn
-index b2b5db6040b..331f925f52e 100644
+index b2b5db6040b..e414a97a611 100644
 --- a/browser/base/jar.mn
 +++ b/browser/base/jar.mn
-@@ -35,2 +35,46 @@ browser.jar:
+@@ -35,2 +35,47 @@ browser.jar:
          content/browser/browser.js                    (content/browser.js)
 +        content/browser/browser-winui-pane.js          (content/browser-winui-pane.js)
 +        content/browser/WinUITabMenuCommands.sys.mjs      (content/WinUITabMenuCommands.sys.mjs)
@@ -1246,6 +1245,7 @@ index b2b5db6040b..331f925f52e 100644
 +        content/browser/WinUIAutomaticStartup.sys.mjs     (content/WinUIAutomaticStartup.sys.mjs)
 +        content/browser/WinUIStartupPaint.sys.mjs         (content/WinUIStartupPaint.sys.mjs)
 +        content/browser/WinUIStartupPaintChild.sys.mjs    (content/WinUIStartupPaintChild.sys.mjs)
++        content/browser/WinUIProcessRecovery.sys.mjs      (content/WinUIProcessRecovery.sys.mjs)
 +        content/browser/WinUIProcessStartup.sys.mjs       (content/WinUIProcessStartup.sys.mjs)
 +        content/browser/WinUIRecoveryIdentity.sys.mjs     (content/WinUIRecoveryIdentity.sys.mjs)
 +        content/browser/WinUIStartupTransfer.sys.mjs     (content/WinUIStartupTransfer.sys.mjs)
@@ -1283,7 +1283,7 @@ index b2b5db6040b..331f925f52e 100644
 +        content/browser/WinUINavigationState.sys.mjs    (content/WinUINavigationState.sys.mjs)
 +        content/browser/WinUIAddressToolbar.css         (content/WinUIAddressToolbar.css)
  *       content/browser/browser.xhtml                 (content/browser.xhtml)
-@@ -106 +150,17 @@ browser.jar:
+@@ -106 +151,17 @@ browser.jar:
  % override chrome://global/locale/appstrings.properties chrome://browser/locale/appstrings.properties
 +
 +        content/browser/urlbar/UrlbarResultActions.mjs (../components/urlbar/content/UrlbarResultActions.mjs)
@@ -10137,33 +10137,23 @@ index 58c9e15a4b6..90fbe5375eb 100644
 +    "FennPageGeometry.cpp",
      "FilePickerParent.cpp",
 diff --git a/mozglue/misc/PreXULSkeletonUI.cpp b/mozglue/misc/PreXULSkeletonUI.cpp
-index b359494c6fb..3954abd0c69 100644
+index b359494c6fb..b2f6ecd0a0c 100644
 --- a/mozglue/misc/PreXULSkeletonUI.cpp
 +++ b/mozglue/misc/PreXULSkeletonUI.cpp
 @@ -5,2 +5,3 @@
  #include "PreXULSkeletonUI.h"
 +#include "FennStartupWindow.h"
  
-@@ -1818,2 +1819,18 @@ static Result<Ok, PreXULSkeletonUIError> CreateAndStorePreXULSkeletonUIImpl(
+@@ -1818,2 +1819,8 @@ static Result<Ok, PreXULSkeletonUIError> CreateAndStorePreXULSkeletonUIImpl(
  
 +  if (FennProcessShellRequested()) {
 +    PrepareFennProcessShell(hInstance, argc, argv);
 +    return Ok();
 +  }
-+  if (FennStartupWindowRequested()) {
-+    // Unsupported independent-host launch modes defer to Firefox's own
-+    // profile/remoting decision and the resolved-profile native creation hook.
-+    if (!PrepareFennStartupWindow(hInstance, argc, argv) &&
-+        !FennIndependentHostRequested()) {
-+      return Err(PreXULSkeletonUIError::CreateWindowFailed);
-+    }
-+    return Ok();
-+  }
-+
 +  if (FennIndependentHostRequested()) return Ok(); // No provisional Firefox window.
 +
    const TimeStamp skeletonStart = TimeStamp::Now();
-@@ -2069,2 +2086,3 @@ void CreateAndStorePreXULSkeletonUI(HINSTANCE hInstance, int argc,
+@@ -2069,2 +2076,3 @@ void CreateAndStorePreXULSkeletonUI(HINSTANCE hInstance, int argc,
  void CleanupProcessRuntime() {
 +  CleanupFennStartupWindow();
    delete sProcessRuntime;
@@ -11245,6 +11235,126 @@ index 30846e96272..985c9f8934e 100644
 +    }
 +#endif
      /* the nativeWindow pointer is converted to and exposed as a string. This
+diff --git a/browser/base/content/WinUIProcessRecovery.sys.mjs b/browser/base/content/WinUIProcessRecovery.sys.mjs
+new file mode 100644
+index 00000000000..bb72ba58e27
+--- /dev/null
++++ b/browser/base/content/WinUIProcessRecovery.sys.mjs
+@@ -0,0 +1,114 @@
++/* This Source Code Form is subject to the terms of the Mozilla Public
++ * License, v. 2.0. If a copy of the MPL was not distributed with this
++ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
++
++// Cross-window Firefox recovery barriers. Native recovery budgets, peer identity
++// and transport remain in ShellCore and the native host; this owns only browser
++// restoration/compositor readiness and the associated listener lifetimes.
++export class ProcessRecoveryCoordinator {
++  #recoveringWindows = new Set();
++  #reboundWindows = new Set();
++  #paintWaiters = new Map();
++  #stockWindows = new Set();
++  #stockScheduled = false;
++  #engineRecoveryPending;
++
++  get restoringEngine() {
++    return this.#engineRecoveryPending ??= Services.env.get("FENN_ENGINE_RECOVERED") === "1";
++  }
++
++  begin(window) {
++    this.#cancelPaint(window);
++    this.#reboundWindows.delete(window);
++    this.#recoveringWindows.add(window);
++  }
++
++  forget(window) {
++    this.#cancelPaint(window);
++    this.#recoveringWindows.delete(window);
++    this.#reboundWindows.delete(window);
++  }
++
++  rebound(window) {
++    this.#recoveringWindows.delete(window);
++    this.#reboundWindows.add(window);
++    this.finishRecovery();
++  }
++
++  queueStockFallback(window) {
++    this.#stockWindows.add(window);
++    if (!this.#stockScheduled) {
++      this.#stockScheduled = true;
++      Services.tm.dispatchToMainThread(() => this.#finishStockFallback());
++    }
++  }
++
++  close(window) {
++    this.forget(window);
++    this.#stockWindows.delete(window);
++    this.finishRecovery();
++  }
++
++  #finishStockFallback() {
++    this.#stockScheduled = false;
++    const survivors = [...this.#stockWindows].filter(window => !window.closed);
++    this.#stockWindows.clear();
++    const oldGPU = survivors[0]?.windowUtils.gpuProcessPid;
++    for (const window of survivors) {
++      this.#cancelPaint(window);
++      const painted = () => {
++        if (this.#paintWaiters.get(window) !== painted || window.closed || window.windowUtils.gpuProcessPid <= 0 || window.windowUtils.gpuProcessPid === oldGPU) return;
++        this.#cancelPaint(window);
++        window.document.documentElement.setAttribute("winui-startup-chrome-ready", "stock-ready");
++      };
++      this.#paintWaiters.set(window, painted);
++      window.addEventListener("MozAfterPaint", painted);
++    }
++    survivors[0]?.windowUtils.terminateGPUProcess();
++  }
++
++  #cancelPaint(window) {
++    const listener = this.#paintWaiters.get(window);
++    if (listener) {
++      window.removeEventListener("MozAfterPaint", listener);
++      window.removeEventListener("SSTabRestored", listener);
++    }
++    this.#paintWaiters.delete(window);
++  }
++
++  finishRecovery() {
++    if (this.#recoveringWindows.size) return;
++    const freshEngine = this.#engineRecoveryPending;
++    this.#engineRecoveryPending = false;
++    const survivor = [...this.#reboundWindows].find(window => !window.closed);
++    if (survivor) {
++      const oldGPU = survivor.windowUtils.gpuProcessPid;
++      for (const window of this.#reboundWindows) {
++        if (window.closed) continue;
++        this.#cancelPaint(window);
++        let initialPaintReady = !freshEngine;
++        const painted = () => {
++          if (!initialPaintReady || this.#paintWaiters.get(window) !== painted || window.closed || window.windowUtils.gpuProcessPid <= 0 ||
++              (!freshEngine && window.windowUtils.gpuProcessPid === oldGPU) ||
++              (freshEngine && window.SessionStore.isTabRestoring(window.gBrowser.selectedTab))) return;
++          this.#cancelPaint(window);
++          const features = Cc["@mozilla.org/gfx/info;1"].getService(Ci.nsIGfxInfo).getFeatures();
++          window.gWinUIPane.publish(true);
++          window.windowUtils.syncWinUITabMenu(JSON.stringify({version:2,publishOnly:true,recoveryPainted:true,
++            software:features.compositor === "webrender_software"}));
++        };
++        this.#paintWaiters.set(window, painted);
++        window.addEventListener("MozAfterPaint", painted);
++        if (freshEngine) window.addEventListener("SSTabRestored", painted);
++        // A replacement engine owns a fresh compositor and new document actors.
++        // Both initial painting and the selected tab's SessionStore restoration
++        // must finish. Its restored document replaces the provisional address
++        // session; accepting a retained draft earlier would lose that edit.
++        // Do not kill the compositor while restored actors initialize.
++        if (freshEngine) window.gBrowserInit.firstContentWindowPaintPromise.then(() => { initialPaintReady = true; painted(); });
++      }
++    }
++    this.#reboundWindows.clear();
++    if (!freshEngine) survivor?.windowUtils.terminateGPUProcess();
++  }
++}
 diff --git a/browser/base/content/WinUIStartupPaint.sys.mjs b/browser/base/content/WinUIStartupPaint.sys.mjs
 new file mode 100644
 index 00000000000..063163a3db4
@@ -11351,96 +11461,39 @@ index 00000000000..191b99ce150
 +}
 diff --git a/browser/base/content/WinUIProcessStartup.sys.mjs b/browser/base/content/WinUIProcessStartup.sys.mjs
 new file mode 100644
-index 00000000000..16b96c0c3d3
+index 00000000000..58588ca6159
 --- /dev/null
 +++ b/browser/base/content/WinUIProcessStartup.sys.mjs
-@@ -0,0 +1,198 @@
+@@ -0,0 +1,125 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 +
-+// A per-window UI observer. Firefox still owns routing, privacy, navigation and close decisions.
-+const recoveringWindows = new Set();
-+const reboundWindows = new Set();
-+const paintWaiters = new Map();
-+const stockWindows = new Set();
-+let stockScheduled = false;
-+let engineRecoveryPending;
++import { ProcessRecoveryCoordinator } from "./WinUIProcessRecovery.sys.mjs";
 +
-+function finishStockFallback() {
-+  stockScheduled = false;
-+  const survivors = [...stockWindows].filter(window => !window.closed);
-+  stockWindows.clear();
-+  const oldGPU = survivors[0]?.windowUtils.gpuProcessPid;
-+  for (const window of survivors) {
-+    cancelPaint(window);
-+    const painted = () => {
-+      if (paintWaiters.get(window) !== painted || window.closed || window.windowUtils.gpuProcessPid <= 0 || window.windowUtils.gpuProcessPid === oldGPU) return;
-+      cancelPaint(window);
-+      window.document.documentElement.setAttribute("winui-startup-chrome-ready", "stock-ready");
-+    };
-+    paintWaiters.set(window, painted);
-+    window.addEventListener("MozAfterPaint", painted);
-+  }
-+  survivors[0]?.windowUtils.terminateGPUProcess();
-+}
++// One coordinator per browser process; this module routes each window's native
++// notifications without owning cross-window paint or restoration barriers.
++const recovery = new ProcessRecoveryCoordinator();
++const ProcessEvent = { BOUND: "1", RECOVERING: "5", READY: "6", STOCK: "7", EMPTY: "8", SUPPRESS: "9" };
 +
-+function cancelPaint(window) {
-+  const listener = paintWaiters.get(window);
-+  if (listener) {
-+    window.removeEventListener("MozAfterPaint", listener);
-+    window.removeEventListener("SSTabRestored", listener);
-+  }
-+  paintWaiters.delete(window);
-+}
-+
-+function finishRecovery() {
-+  if (recoveringWindows.size) return;
-+  const freshEngine = engineRecoveryPending;
-+  engineRecoveryPending = false;
-+  const survivor = [...reboundWindows].find(window => !window.closed);
-+  if (survivor) {
-+    const oldGPU = survivor.windowUtils.gpuProcessPid;
-+    for (const window of reboundWindows) {
-+      if (window.closed) continue;
-+      cancelPaint(window);
-+      let initialPaintReady = !freshEngine;
-+      const painted = () => {
-+        if (!initialPaintReady || paintWaiters.get(window) !== painted || window.closed || window.windowUtils.gpuProcessPid <= 0 ||
-+            (!freshEngine && window.windowUtils.gpuProcessPid === oldGPU) ||
-+            (freshEngine && window.SessionStore.isTabRestoring(window.gBrowser.selectedTab))) return;
-+        cancelPaint(window);
-+        const features = Cc["@mozilla.org/gfx/info;1"].getService(Ci.nsIGfxInfo).getFeatures();
-+        window.gWinUIPane.publish(true);
-+        window.windowUtils.syncWinUITabMenu(JSON.stringify({version:2,publishOnly:true,recoveryPainted:true,
-+          software:features.compositor === "webrender_software"}));
-+      };
-+      paintWaiters.set(window, painted);
-+      window.addEventListener("MozAfterPaint", painted);
-+      if (freshEngine) window.addEventListener("SSTabRestored", painted);
-+      // A replacement engine owns a fresh compositor and new document actors.
-+      // Both initial painting and the selected tab's SessionStore restoration
-+      // must finish. Its restored document replaces the provisional address
-+      // session; accepting a retained draft earlier would lose that edit.
-+      // Do not kill the compositor while restored actors initialize.
-+      if (freshEngine) window.gBrowserInit.firstContentWindowPaintPromise.then(() => { initialPaintReady = true; painted(); });
-+    }
-+  }
-+  reboundWindows.clear();
-+  if (!freshEngine) survivor?.windowUtils.terminateGPUProcess();
++function beginStartup(window, pane) {
++  const startup = ChromeUtils.importESModule("chrome://browser/content/WinUIAutomaticStartup.sys.mjs");
++  pane.automaticStartupModule = startup;
++  startup.beginAutomaticStartup(window);
++  ChromeUtils.importESModule("chrome://browser/content/WinUIStartupPaint.sys.mjs").revealStartupPage(window);
 +}
 +
 +export function watchProcessWindow(window) {
 +  if (Services.env.get("FENN_NATIVE_SHELL_PROCESS") !== "1") return;
 +  const pane = window.gWinUIPane;
-+  engineRecoveryPending ??= Services.env.get("FENN_ENGINE_RECOVERED") === "1";
++  const restoringEngine = recovery.restoringEngine;
 +  const identity = Services.env.get("FENN_NATIVE_SHELL_RECOVERY") === "1"
-+    ? ChromeUtils.importESModule("chrome://browser/content/WinUIRecoveryIdentity.sys.mjs").watchRecoveryIdentity(window, { restoring: engineRecoveryPending })
++    ? ChromeUtils.importESModule("chrome://browser/content/WinUIRecoveryIdentity.sys.mjs").watchRecoveryIdentity(window, { restoring: restoringEngine })
 +    : null;
 +  let endpoint = window.docShell.treeOwner.QueryInterface(Ci.nsIBaseWindow).nativeHandle;
 +  let ready = false;
-+  let recovering = engineRecoveryPending;
-+  if (recovering) recoveringWindows.add(window);
++  let recovering = restoringEngine;
++  if (recovering) recovery.begin(window);
 +  let terminal = false;
 +  const fallback = () => {
 +    window.document.documentElement.removeAttribute("winui-native-frame");
@@ -11449,63 +11502,7 @@ index 00000000000..16b96c0c3d3
 +    pane.uninit();
 +    window.document.documentElement.setAttribute("winui-startup-chrome-ready", "fallback");
 +  };
-+  const observer = (_, topic, data) => {
-+    const [kind, proxy, shell] = String(data).split(":");
-+    if (terminal || (endpoint !== proxy && endpoint !== shell)) return;
-+    if (kind === "9") {
-+      if (engineRecoveryPending && !ready) {
-+        terminal = true;
-+        identity?.close();
-+        window.close();
-+      }
-+      return;
-+    }
-+    if (kind === "8") {
-+      if (engineRecoveryPending && !ready) {
-+        ChromeUtils.importESModule("chrome://browser/content/WinUIRecoveryIdentity.sys.mjs")
-+          .createRecoveryEmptyWindows(window, window.windowUtils.drainWinUIRequests());
-+      }
-+      return;
-+    }
-+    if (kind === "7") {
-+      terminal = true;
-+      cancelPaint(window);
-+      recoveringWindows.delete(window);
-+      reboundWindows.delete(window);
-+      endpoint = proxy;
-+      fallback();
-+      stockWindows.add(window);
-+      if (!stockScheduled) {
-+        stockScheduled = true;
-+        Services.tm.dispatchToMainThread(finishStockFallback);
-+      }
-+      return;
-+    }
-+    if (kind === "5") {
-+      identity?.disconnect();
-+      cancelPaint(window);
-+      endpoint = proxy;
-+      recovering = true;
-+      ready = false;
-+      reboundWindows.delete(window);
-+      recoveringWindows.add(window);
-+      pane.startupConnection?.disconnect();
-+      pane.uninit();
-+      window.document.documentElement.setAttribute("winui-startup-chrome-ready", "recovering");
-+      return;
-+    }
-+    if (kind === "6") {
-+      window.document.documentElement.setAttribute("winui-startup-chrome-ready", "ready");
-+      return;
-+    }
-+    if (kind !== "1") {
-+      cancelPaint(window);
-+      recoveringWindows.delete(window);
-+      reboundWindows.delete(window);
-+      fallback();
-+      finishRecovery();
-+      return;
-+    }
++  const bind = () => {
 +    if (ready) {
 +      if (window.document.documentElement.getAttribute("winui-startup-chrome-ready") === "rebound") {
 +        // A minimized binding can accept geometry without creating controls.
@@ -11529,27 +11526,67 @@ index 00000000000..16b96c0c3d3
 +    identity?.bind();
 +    if (recovering) {
 +      recovering = false;
-+      recoveringWindows.delete(window);
 +      window.document.documentElement.setAttribute("winui-startup-chrome-ready", "rebound");
-+      reboundWindows.add(window);
-+      finishRecovery();
++      recovery.rebound(window);
 +      return;
 +    }
-+    const startup = ChromeUtils.importESModule("chrome://browser/content/WinUIAutomaticStartup.sys.mjs");
-+    pane.automaticStartupModule = startup;
-+    startup.beginAutomaticStartup(window);
-+    ChromeUtils.importESModule("chrome://browser/content/WinUIStartupPaint.sys.mjs").revealStartupPage(window);
++    beginStartup(window, pane);
++  };
++  const observer = (_, topic, data) => {
++    const [kind, proxy, shell] = String(data).split(":");
++    if (terminal || (endpoint !== proxy && endpoint !== shell)) return;
++    if (kind === ProcessEvent.SUPPRESS) {
++      if (recovery.restoringEngine && !ready) {
++        terminal = true;
++        identity?.close();
++        window.close();
++      }
++      return;
++    }
++    if (kind === ProcessEvent.EMPTY) {
++      if (recovery.restoringEngine && !ready) {
++        ChromeUtils.importESModule("chrome://browser/content/WinUIRecoveryIdentity.sys.mjs")
++          .createRecoveryEmptyWindows(window, window.windowUtils.drainWinUIRequests());
++      }
++      return;
++    }
++    if (kind === ProcessEvent.STOCK) {
++      terminal = true;
++      recovery.forget(window);
++      endpoint = proxy;
++      fallback();
++      recovery.queueStockFallback(window);
++      return;
++    }
++    if (kind === ProcessEvent.RECOVERING) {
++      identity?.disconnect();
++      recovery.begin(window);
++      endpoint = proxy;
++      recovering = true;
++      ready = false;
++      pane.startupConnection?.disconnect();
++      pane.uninit();
++      window.document.documentElement.setAttribute("winui-startup-chrome-ready", "recovering");
++      return;
++    }
++    if (kind === ProcessEvent.READY) {
++      window.document.documentElement.setAttribute("winui-startup-chrome-ready", "ready");
++      return;
++    }
++    if (kind !== ProcessEvent.BOUND) {
++      recovery.forget(window);
++      fallback();
++      recovery.finishRecovery();
++      return;
++    }
++    bind();
 +  };
 +  Services.obs.addObserver(observer, "fenn-process-window");
-+  if (engineRecoveryPending) identity?.bind();
++  if (restoringEngine) identity?.bind();
 +  window.addEventListener("unload", () => {
 +    identity?.close();
-+    cancelPaint(window);
-+    recoveringWindows.delete(window);
-+    reboundWindows.delete(window);
-+    stockWindows.delete(window);
 +    Services.obs.removeObserver(observer,"fenn-process-window");
-+    finishRecovery();
++    recovery.close(window);
 +  }, {once:true});
 +  if (Services.env.get("FENN_NATIVE_HOST_FAILED") === "1") fallback();
 +}
@@ -12496,10 +12533,10 @@ index 00000000000..975fd14c587
 +}
 diff --git a/mozglue/misc/FennStartupWindow.cpp b/mozglue/misc/FennStartupWindow.cpp
 new file mode 100644
-index 00000000000..27008fc7d9a
+index 00000000000..1e4f85ac782
 --- /dev/null
 +++ b/mozglue/misc/FennStartupWindow.cpp
-@@ -0,0 +1,202 @@
+@@ -0,0 +1,161 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -12590,10 +12627,6 @@ index 00000000000..27008fc7d9a
 +  DWORD size=GetEnvironmentVariableW(L"FENN_NATIVE_STARTUP_HOST",value,2);
 +  return size ? size==1 && value[0]==L'2' : FennDevelopmentNativeHostDefault();
 +}
-+bool FennStartupWindowRequested() {
-+  wchar_t value[2]{};
-+  return GetEnvironmentVariableW(L"FENN_NATIVE_STARTUP_HOST", value, 2) == 1 && value[0] == L'2';
-+}
 +bool PrepareFennStartupWindowForProfile(HINSTANCE instance,const wchar_t* profilePath,const wchar_t* presentation) {
 +  if(sThread || sTaken || !profilePath || !LoadWindowFunctions())return false;
 +  sThread=GetCurrentThreadId();
@@ -12626,43 +12659,6 @@ index 00000000000..27008fc7d9a
 +  };
 +  if(prepare())return true;
 +  sThread=0;sMode=false;sIndependent=false;return false;
-+}
-+bool PrepareFennStartupWindow(HINSTANCE instance, int argc, char** argv) {
-+  if (sThread || sTaken) return false;
-+  // Independent startup must wait for Firefox's profile lock and actual
-+  // browser-open decision, including the older loading-only host switch.
-+  // Only explicit interactive mode 2 retains the isolated early test fixture.
-+  wchar_t interactive[2]{};
-+  const DWORD interactiveSize = GetEnvironmentVariableW(
-+      L"FENN_NATIVE_INTERACTIVE_STARTUP", interactive, 2);
-+  if ((interactiveSize == 1 && interactive[0] == L'1') ||
-+      (FennIndependentHostRequested() &&
-+       !(interactiveSize == 1 && interactive[0] == L'2'))) return false;
-+  // Only the explicit isolated-profile lane may create a pre-Gecko window.
-+  // Named/default profiles, remoting, private and administrative modes defer
-+  // to Firefox's routing. Unknown switches must never create a speculative UI.
-+  bool isolated = false;
-+  const char* profilePath = nullptr;
-+  for (int i = 1; i < argc; ++i) {
-+    const char* raw = argv[i];
-+    if (*raw != '-') continue; // Firefox retains URL/search interpretation.
-+    const char* arg = raw;
-+    while (*arg == '-') ++arg;
-+    if (!_stricmp(arg, "no-remote")) { isolated = true; continue; }
-+    if (!_stricmp(arg, "profile")) {
-+      if (profilePath || i + 1 >= argc || !*argv[i + 1] || *argv[i + 1] == '-') return false;
-+      profilePath = argv[++i]; continue;
-+    }
-+    if (!_stricmp(arg, "marionette") || !_stricmp(arg, "foreground")) continue;
-+    return false;
-+  }
-+  // Only the independent native thread hosts a window; there is no host on Gecko's thread.
-+  wchar_t mode[2]{};
-+  if (!isolated || !profilePath ||
-+      GetEnvironmentVariableW(L"FENN_NATIVE_STARTUP_HOST", mode, 2) != 1 || mode[0] != L'2') return false;
-+  wchar_t profileWide[32768]{};
-+  if (!MultiByteToWideChar(CP_UTF8,MB_ERR_INVALID_CHARS,profilePath,-1,profileWide,32768)) return false;
-+  return PrepareFennStartupWindowForProfile(instance,profileWide);
 +}
 +bool FennStartupWindowMode() { return sMode; }
 +bool FennStartupWindowIndependent() { return sIndependent; }
@@ -12704,10 +12700,10 @@ index 00000000000..27008fc7d9a
 +}
 diff --git a/mozglue/misc/FennStartupWindow.h b/mozglue/misc/FennStartupWindow.h
 new file mode 100644
-index 00000000000..f62254fc249
+index 00000000000..4bb3d442b6a
 --- /dev/null
 +++ b/mozglue/misc/FennStartupWindow.h
-@@ -0,0 +1,29 @@
+@@ -0,0 +1,26 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -12718,12 +12714,9 @@ index 00000000000..f62254fc249
 +namespace mozilla {
 +MFBT_API bool FennProcessShellRequested();
 +MFBT_API bool PrepareFennProcessShell(HINSTANCE, int, char**);
-+MFBT_API bool FennStartupWindowRequested();
 +MFBT_API bool FennDevelopmentNativeHostDefault();
 +MFBT_API bool FennIndependentHostRequested();
 +MFBT_API bool PrepareFennStartupWindowForProfile(HINSTANCE, const wchar_t*, const wchar_t* = nullptr);
-+// Called only after parent-process COM/security and DPI initialization.
-+MFBT_API bool PrepareFennStartupWindow(HINSTANCE, int argc, char** argv);
 +MFBT_API bool FennStartupWindowMode();
 +MFBT_API bool FennStartupWindowIndependent();
 +MFBT_API bool FennStartupWindowReady();
@@ -12883,7 +12876,7 @@ index 00000000000..7eb6bb931fd
 +}
 diff --git a/browser/base/content/WinUIChromeLayout.css b/browser/base/content/WinUIChromeLayout.css
 new file mode 100644
-index 00000000000..4cd78df9bf9
+index 00000000000..8dc7fe66a43
 --- /dev/null
 +++ b/browser/base/content/WinUIChromeLayout.css
 @@ -0,0 +1,51 @@
@@ -12931,11 +12924,11 @@ index 00000000000..4cd78df9bf9
 +  background: transparent !important;
 +}
 +
-+/* WinUI paints the persistent toolbar divider before Gecko starts. Nova's
++/* Both native Window hosts paint the toolbar divider. Nova's
 +   unsplit page border would add a second line below it. Remove that redundant
 +   inset so page content begins directly below the native divider.
 +   Split-view focus borders and stock/fallback layouts remain Firefox-owned. */
-+:root[winui-native-frame][winui-native-layout] #tabbrowser-tabpanels > :not(.split-view-panel) .browserContainer {
++:root[winui-native-layout] #tabbrowser-tabpanels > :not(.split-view-panel) .browserContainer {
 +  border-block-start: none !important;
 +}
 diff --git a/browser/base/content/WinUIBackForwardMenu.sys.mjs b/browser/base/content/WinUIBackForwardMenu.sys.mjs
@@ -30201,15 +30194,15 @@ index 00000000000..39117cb2f96
 +}
 diff --git a/browser/base/content/WinUIAddressToolbar.sys.mjs b/browser/base/content/WinUIAddressToolbar.sys.mjs
 new file mode 100644
-index 00000000000..87206156e9f
+index 00000000000..f725a9fd9f2
 --- /dev/null
 +++ b/browser/base/content/WinUIAddressToolbar.sys.mjs
-@@ -0,0 +1,642 @@
+@@ -0,0 +1,622 @@
 +export class WinUIAddressToolbar {
 +  constructor(window, owner) {
 +    this.window = window;
 +    this.owner = owner;
-+    this.navigation = false;
++    this.navigation = true;
 +    const document = window.document;
 +    this.input = window.gURLBar.inputField;
 +    this.slot = this.input.closest(".urlbar-input-box");
@@ -30246,7 +30239,6 @@ index 00000000000..87206156e9f
 +    this.input.addEventListener("beforeselect", this.beforeFocus);
 +    this.proxy.addEventListener("focus", this.proxyFocus);
 +    this.resize = new window.ResizeObserver(() => owner.invalidateAddress());
-+    this.resize.observe(this.slot);
 +    this.resize.observe(this.row);
 +    // Observe Firefox's command authority and live localized button labels.
 +    // Progress alone can fire before command disabled states are updated.
@@ -30339,8 +30331,7 @@ index 00000000000..87206156e9f
 +  supported() {
 +    const { window, owner } = this;
 +    return owner.attached && !this.failed &&
-+      (Services.prefs.getBoolPref("fenn.winui.address.toolbar.enabled", false) ||
-+       this.navigationRequested) &&
++      this.navigationRequested &&
 +      !window.fullScreen && !window.document.fullscreenElement &&
 +      !window.document.documentElement.hasAttribute("customizing") &&
 +      !Services.prefs.getBoolPref("sidebar.verticalTabs", false) &&
@@ -30648,14 +30639,9 @@ index 00000000000..87206156e9f
 +      }
 +      this.restore(); return false;
 +    }
-+    const navigation = this.navigationRequested;
-+    if (this.navigation !== navigation) {
-+      this.restore();
-+      this.navigation = navigation;
-+    }
-+    this.row.hidden = !navigation;
++    this.row.hidden = false;
 +    const rect = this.bounds();
-+    if (rect.width < (navigation ? 528 : 240) || rect.height < (navigation ? 40 : 32)) {
++    if (rect.width < 528 || rect.height < 40) {
 +      this.noteFallback("toolbar-insufficient-space");
 +      this.restore();
 +      return false;
@@ -30709,14 +30695,6 @@ index 00000000000..87206156e9f
 +    // search-switcher pointer gesture between press and release. The proxy's
 +    // winui-native-focus attribute keeps this mirror inside Gecko.
 +    if (!this.active) return false;
-+    // The retained host-off island has no independent-window focus guard:
-+    // Gecko's proxy focus takes Win32 focus there, so preserve its return hop.
-+    if (!Services.prefs.getBoolPref("fenn.winui.window.host", true) ||
-+        !Services.prefs.getBoolPref("fenn.winui.window.independent", true)) {
-+      if (this.window.document.activeElement !== this.proxy) return this.focus(false);
-+      this.focusOwned = true;
-+      return true;
-+    }
 +    try {
 +      this.focusing = true;
 +      if (this.window.document.activeElement !== this.proxy) this.proxy.focus({preventScroll:true});
@@ -30801,13 +30779,8 @@ index 00000000000..87206156e9f
 +  }
 +  bounds() {
 +    this.owner.chromeLayout?.update();
-+    if (this.navigation && this.owner.chromeLayout?.plan) return this.owner.chromeLayout.plan.navigation;
-+    if (this.navigation) return this.row.getBoundingClientRect();
-+    const rect = this.slot.getBoundingClientRect();
-+    const container = this.input.closest(".urlbar-input-container").getBoundingClientRect();
-+    const toolbar = this.window.document.getElementById("nav-bar")?.getBoundingClientRect();
-+    const height = Math.max(container.height, toolbar?.height || 0) >= 32 ? Math.max(32, rect.height) : rect.height;
-+    return {x:rect.x, y:rect.y - (height - rect.height)/2, width:rect.width, height};
++    if (this.owner.chromeLayout?.plan) return this.owner.chromeLayout.plan.navigation;
++    return this.row.getBoundingClientRect();
 +  }
 +  close() {
 +    this.restore();
@@ -30985,17 +30958,16 @@ index 00000000000..102270633fe
 +}
 diff --git a/browser/base/content/browser-winui-pane.js b/browser/base/content/browser-winui-pane.js
 new file mode 100644
-index 00000000000..e0cdab1eb64
+index 00000000000..567667b7311
 --- /dev/null
 +++ b/browser/base/content/browser-winui-pane.js
-@@ -0,0 +1,2489 @@
+@@ -0,0 +1,2484 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 +
 +var gWinUIPane = {
 +  pref: "fenn.winui.pane.enabled",
-+  addressToolbarPref: "fenn.winui.address.toolbar.enabled",
 +  addressPrivatePref: "fenn.winui.address.private",
 +  navigationToolbarPref: "fenn.winui.navigation.toolbar.enabled",
 +  hideToolbarPref: "fenn.winui.navigation.hideFirefoxToolbar",
@@ -31360,7 +31332,6 @@ index 00000000000..e0cdab1eb64
 +    Services.prefs.addObserver(this.groupGlowAnimationsPref, this);
 +    Services.prefs.addObserver(this.groupGlowFadeOutPref, this);
 +    for (const pref of this.groupingPrefs) Services.prefs.addObserver(pref, this);
-+    Services.prefs.addObserver(this.addressToolbarPref, this);
 +    Services.prefs.addObserver(this.addressPrivatePref, this);
 +    Services.prefs.addObserver(this.navigationToolbarPref, this);
 +    this.schedule();
@@ -31781,8 +31752,7 @@ index 00000000000..e0cdab1eb64
 +
 +  syncAddress() {
 +    if (!this.attached || this.processingAction) return;
-+    const toolbarRequested = Services.prefs.getBoolPref(this.addressToolbarPref, false) ||
-+      Services.prefs.getBoolPref(this.navigationToolbarPref, true);
++    const toolbarRequested = Services.prefs.getBoolPref(this.navigationToolbarPref, true);
 +    if (toolbarRequested && !this.addressToolbar) {
 +      const { WinUIAddressToolbar } = ChromeUtils.importESModule(
 +        "chrome://browser/content/WinUIAddressToolbar.sys.mjs"
@@ -33131,7 +33101,7 @@ index 00000000000..e0cdab1eb64
 +      this.invalidateAddress();
 +      return;
 +    }
-+    if (data === this.addressToolbarPref || data === this.navigationToolbarPref) {
++    if (data === this.navigationToolbarPref) {
 +      if (this.addressToolbar) this.addressToolbar.failed = false;
 +      // Turning the surface on or off changes what the next publication says,
 +      // including the one that tells native to hide it.
@@ -33250,8 +33220,7 @@ index 00000000000..e0cdab1eb64
 +  },
 +
 +  refreshAddress(requested) {
-+    if (requested && (this.addressToolbar || Services.prefs.getBoolPref(this.addressToolbarPref, false) ||
-+        Services.prefs.getBoolPref(this.navigationToolbarPref, true))) this.addressDirty = true;
++    if (requested && (this.addressToolbar ||   Services.prefs.getBoolPref(this.navigationToolbarPref, true))) this.addressDirty = true;
 +  },
 +
 +  schedulePublication() {
@@ -33448,7 +33417,6 @@ index 00000000000..e0cdab1eb64
 +    Services.prefs.removeObserver(this.groupGlowAnimationsPref, this);
 +    Services.prefs.removeObserver(this.groupGlowFadeOutPref, this);
 +    for (const pref of this.groupingPrefs) Services.prefs.removeObserver(pref, this);
-+    Services.prefs.removeObserver(this.addressToolbarPref, this);
 +    Services.prefs.removeObserver(this.navigationToolbarPref, this);
 +    Services.prefs.removeObserver("privacy.userContext.enabled", this);
 +    Services.prefs.removeObserver("browser.nova.enabled", this);
@@ -33480,10 +33448,10 @@ index 00000000000..e0cdab1eb64
 +}, { once: true });
 diff --git a/widget/windows/WinUIPrototype.cpp b/widget/windows/WinUIPrototype.cpp
 new file mode 100644
-index 00000000000..2683d8a9290
+index 00000000000..eb1a0419ed2
 --- /dev/null
 +++ b/widget/windows/WinUIPrototype.cpp
-@@ -0,0 +1,1177 @@
+@@ -0,0 +1,1179 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -33788,7 +33756,9 @@ index 00000000000..2683d8a9290
 +      constexpr UINT geometry=SWP_NOMOVE|SWP_NOSIZE;
 +      const bool topmost=!(flags&SWP_NOZORDER) &&
 +          (pos->hwndInsertAfter==HWND_TOPMOST || pos->hwndInsertAfter==HWND_NOTOPMOST);
-+      if ((flags&geometry)!=geometry || (flags&SWP_FRAMECHANGED) || topmost) {
++      // Layout-only frame refreshes stay on the proxy. Real shell style changes
++      // refresh the shell frame in ApplyWindowRequest.
++      if ((flags&geometry)!=geometry || topmost) {
 +        RequestShell(*link,WinUIPaneWindowPosition,topmost ? flags : flags|SWP_NOZORDER,
 +                     RECT{pos->x,pos->y,pos->x+pos->cx,pos->y+pos->cy},
 +                     reinterpret_cast<LONG_PTR>(pos->hwndInsertAfter));
@@ -34364,6 +34334,7 @@ index 00000000000..2683d8a9290
 +bool GetWinUIChromeLayout(HWND aWindow, uint32_t aStripHeight, bool aNavigation,
 +                         uint32_t aInset, nsTArray<LayoutDeviceIntRect>& aRects) {
 +  aRects.Clear();
++  if (!ProxyOf(aWindow)) return false;
 +  if(auto* link=ProxyOf(aWindow);link && link->processPending)return false;
 +  if (!XRE_IsParentProcess() || !NS_IsMainThread() || sPaneStopped ||
 +      !Preferences::GetBool("fenn.winui.chrome.layout", false) || !PaneEnabled() || !LoadPane())
@@ -34391,7 +34362,7 @@ index 00000000000..2683d8a9290
 +  if(auto* link=ProxyOf(aWindow);link && link->processPending)return false;
 +  if (!XRE_IsParentProcess() || !NS_IsMainThread() || sPaneStopped)
 +    return false;
-+  if (!PaneEnabled()) {
++  if (!ProxyOf(aWindow) || !PaneEnabled()) {
 +    DestroyWinUIPane(aWindow);
 +    return false;
 +  }
@@ -34465,11 +34436,10 @@ index 00000000000..2683d8a9290
 +
 +bool UpdateWinUIAddress(HWND aWindow, const RECT& aRect, bool aVisible,
 +                       bool aFocus, bool aSelectAll) {
++  if (!ProxyOf(aWindow)) return false;
 +  if (!NS_IsMainThread() || !XRE_IsParentProcess() || sPaneStopped ||
 +      !sPaneApi.updateAddress || !PaneEnabled()) return false;
 +  if (aVisible && !Preferences::GetBool(
-+          "fenn.winui.address.toolbar.enabled", false) &&
-+      !Preferences::GetBool(
 +          "fenn.winui.navigation.toolbar.enabled", false)) return false;
 +  if (ProxyOf(aWindow) && IsIconic(ShellOfProxy(aWindow))) return true;
 +  aWindow = ShellOfProxy(aWindow);

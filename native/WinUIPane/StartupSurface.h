@@ -15,9 +15,7 @@ inline HRESULT Close(HWND hwnd);
 inline bool Eligible(HWND hwnd) {
     if (!hwnd || !NativeWindowHost::Owner(hwnd)) return false;
     if (auto* host = NativeWindowHost::Get(hwnd)) return host->state.phase == 6;
-    wchar_t name[64]{};
-    return GetPropW(hwnd, L"Fenn.NativeStartupOrigin") == reinterpret_cast<HANDLE>(1) &&
-        GetClassNameW(hwnd, name, 64) && !wcscmp(name, L"Fenn.NativeStartupBootstrap.v1");
+    return false;
 }
 
 struct Surface {
@@ -37,12 +35,6 @@ struct Surface {
         }
         try {
             if (message == WM_SIZE) self->Resize();
-            // Before Gecko attaches, honor Windows' suggested physical bounds.
-            if (message == WM_DPICHANGED && !NativeWindowHost::Get(hwnd)) {
-                const auto& r = *reinterpret_cast<RECT*>(l);
-                SetWindowPos(hwnd, nullptr, r.left, r.top, r.right-r.left, r.bottom-r.top,
-                             SWP_NOZORDER | SWP_NOACTIVATE);
-            }
         } catch (...) { /* No exceptions across a Windows callback. */ }
         return DefSubclassProc(hwnd, message, w, l);
     }
