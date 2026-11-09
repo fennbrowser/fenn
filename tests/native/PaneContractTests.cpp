@@ -305,6 +305,22 @@ static void AwaitLiveTree(winrt::Microsoft::UI::Xaml::FrameworkElement const& el
         fprintf(stderr, "Island content tree went live after %llums\n", static_cast<unsigned long long>(waited));
     Require(element.IsLoaded(), "the island's content tree goes live");
 }
+// A visible preview HWND can precede its asynchronous RenderTargetBitmap.
+static RECT AwaitDragPreview(HWND window) {
+    const auto started = GetTickCount64();
+    RECT bounds{};
+    do {
+        GetWindowRect(window, &bounds);
+        if (bounds.right > bounds.left && bounds.bottom > bounds.top) {
+            if (GetTickCount64() - started > 1000)
+                fprintf(stderr, "Drag preview painted after %llums\n", static_cast<unsigned long long>(GetTickCount64() - started));
+            return bounds;
+        }
+        Pump(); Sleep(10);
+    } while (GetTickCount64() - started < LiveTreeTimeoutMs);
+    Require(false, "asynchronous drag preview paints within the readiness deadline");
+    return bounds;
+}
 static winrt::Microsoft::UI::Xaml::FrameworkElement FindInTabList(winrt::Microsoft::UI::Xaml::Controls::TabView const& view,
                                                                  winrt::hstring const& id);
 // The host island's strip TabView, once its content tree is live.
@@ -5596,58 +5612,34 @@ static void CheckGroupCrossWindowAdopt(HMODULE module, WinUIPaneApi& api, bool a
     settle(60);
     // Live XAML positions in the destination view: UIA queries are not reliable
     // while the gesture owns capture, and these include the gap's transforms.
-    auto inspect = reinterpret_cast<HRESULT(WINAPI*)(HWND, void**)>(GetProcAddress(module, "WinUIPaneTestGetContent"));
-    UIElement content2{nullptr};
-    Require(inspect && SUCCEEDED(inspect(host2, put_abi(content2))), "inspect destination strip");
-    auto view2 = content2.as<Controls::Grid>().Children().GetAt(0).as<Controls::TabView>();
-    // Innermost match: a group header's container can share its button's ID,
-    // and the gap moves the button itself.
-    std::function<FrameworkElement(DependencyObject const&, hstring const&)> findId = [&](DependencyObject const& node, hstring const& id) -> FrameworkElement {
-        for (int i = 0; i < Media::VisualTreeHelper::GetChildrenCount(node); ++i)
-            if (auto found = findId(Media::VisualTreeHelper::GetChild(node, i), id)) return found;
-        if (auto element = node.try_as<FrameworkElement>(); element && Automation::AutomationProperties::GetAutomationId(element) == id) return element;
-        return nullptr;
-    };
-    // Group header IDs also appear outside the tab list (the strip header's
-    // group affordances), so search only the stock TabListView.
-    std::function<FrameworkElement(DependencyObject const&)> tabList = [&](DependencyObject const& node) -> FrameworkElement {
-        if (auto element = node.try_as<FrameworkElement>(); element && element.Name() == L"TabListView") return element;
-        for (int i = 0; i < Media::VisualTreeHelper::GetChildrenCount(node); ++i)
-            if (auto found = tabList(Media::VisualTreeHelper::GetChild(node, i))) return found;
-        return nullptr;
-    };
-    auto inList = [&](Controls::TabView const& view, hstring const& id) -> FrameworkElement {
-        auto list = tabList(view);
-        Require(list != nullptr, "TabView exposes its tab list");
-        return findId(list, id);
-    };
+    auto view2 = StripView(module, host2);
+    for (auto id : {201u, 203u, 202u}) StripRow(view2, id);
+    auto targetHeader = FindInTabList(view2, L"FennInlineGroup-9");
+    Require(targetHeader != nullptr, "destination group header realized before the group drag");
+    AwaitLiveTree(targetHeader);
     auto leftOf = [&](wchar_t const* id) {
-        auto element = inList(view2, id);
+        auto element = FindInTabList(view2, id);
         Require(element != nullptr, "destination element realized");
         return double(element.TransformToVisual(view2).TransformPoint({0, 0}).X);
     };
-    const double ninthLeft = leftOf(L"FennInlineGroup-9"), memberLeft = leftOf(L"FennTab-203"), firstLeft = leftOf(L"FennTab-201");
-    UIElement content1{nullptr};
-    Require(SUCCEEDED(inspect(host, put_abi(content1))), "inspect source strip");
-    auto view1 = content1.as<Controls::Grid>().Children().GetAt(0).as<Controls::TabView>();
-    auto loaded = [&] {
-        for (uint32_t i = 0; i < view1.TabItems().Size(); ++i)
-            if (!view1.TabItems().GetAt(i).as<Controls::TabViewItem>().IsLoaded()) return false;
-        return view1.TabItems().Size() == 3 && inList(view1, L"FennInlineGroup-7");
-    };
-    for (int i = 0; i < 300 && !loaded(); ++i) settle(1);
-    Require(loaded(), "source rows and group header realized before the group drag");
-    // Screen points from live XAML: each island sits at the strip rect in its
-    // host's client area, scaled by the island's rasterization scale. UIA is
-    // not dependable for these freshly created hosts.
-    auto screenAt = [&](HWND window, Controls::TabView const& view, wchar_t const* id, double fx) {
-        auto element = inList(view, id);
+    auto view1 = StripView(module, host);
+    Require(view1.TabItems().Size() == 3, "source has all three published rows");
+    for (auto id : {11u, 22u, 101u}) StripRow(view1, id);
+    auto header = FindInTabList(view1, L"FennInlineGroup-7");
+    Require(header != nullptr, "source group header realized before the group drag");
+    AwaitLiveTree(header);
+    SetWindowPos(host, HWND_TOP, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+    SetForegroundWindow(host);
+    for (int attempt = 0; attempt < 30 && GetForegroundWindow() != host; ++attempt) { SetForegroundWindow(host); settle(10); }
+    Require(GetForegroundWindow() == host, "source window owns foreground before the group drag");
+    // Use the Window's live XAML converter rather than reconstructing its
+    // screen origin from the host client area and a historical island offset.
+    auto screenAt = [&](Controls::TabView const& view, wchar_t const* id, double fx) {
+        auto element = FindInTabList(view, id);
         Require(element != nullptr, "group header realized for screen mapping");
         const auto local = element.TransformToVisual(nullptr).TransformPoint({float(element.ActualWidth() * fx), float(element.ActualHeight() / 2)});
-        const double scale = view.XamlRoot().RasterizationScale();
-        POINT origin{rect.left, rect.top};
-        ClientToScreen(window, &origin);
-        return POINT{origin.x + LONG(local.X * scale), origin.y + LONG(local.Y * scale)};
+        const auto screen = view.XamlRoot().ContentIsland().CoordinateConverter().ConvertLocalToScreen(local);
+        return POINT{screen.X, screen.Y};
     };
     // Both strips overflow; scroll each to its start so the headers are in view.
     std::function<Controls::ScrollViewer(DependencyObject const&)> scrollerOf = [&](DependencyObject const& n) -> Controls::ScrollViewer {
@@ -5659,35 +5651,46 @@ static void CheckGroupCrossWindowAdopt(HMODULE module, WinUIPaneApi& api, bool a
         if (auto scroller = scrollerOf(view))
             scroller.ChangeView(winrt::box_value(0.0).as<winrt::Windows::Foundation::IReference<double>>(), nullptr, nullptr, true);
     settle(30);
-    const POINT start = screenAt(host, view1, L"FennInlineGroup-7", .5);
+    const double ninthLeft = leftOf(L"FennInlineGroup-9"), memberLeft = leftOf(L"FennTab-203"), firstLeft = leftOf(L"FennTab-201");
+    const POINT start = screenAt(view1, L"FennInlineGroup-7", .5);
     {
         POINT origin{rect.left, rect.top};
         ClientToScreen(host, &origin);
         Require(start.x > origin.x && start.x < origin.x + rect.right, "the source group header is inside its strip");
     }
     // Left quarter of the destination group's header: before the whole group.
-    const POINT drop = screenAt(host2, view2, L"FennInlineGroup-9", .25);
+    const POINT drop = screenAt(view2, L"FennInlineGroup-9", .25);
     if (covered)
         Require(GetAncestor(WindowFromPoint(drop), GA_ROOTOWNER) == host2,
                 "the overlapping fixture exposes the intended visible destination");
-    SetWindowPos(host, HWND_TOP, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
-    SetForegroundWindow(host);
-    for (int attempt = 0; attempt < 30 && GetForegroundWindow() != host; ++attempt) { SetForegroundWindow(host); settle(10); }
-    Require(GetForegroundWindow() == host, "source window owns foreground before the group drag");
-    SetCursorPos(start.x, start.y); settle();
+    // Match the browser suites' move_pointer_across_foreground_window: later
+    // WinUI windows can retain stale pointer state after a direct target jump.
+    // Arrive through the page and chrome before the single pickup press.
+    RECT arrival{};
+    Require(GetWindowRect(host, &arrival), "source bounds for physical pointer arrival");
+    const LONG width = arrival.right - arrival.left, height = arrival.bottom - arrival.top;
+    for (const POINT point : {POINT{width/2,height/2}, POINT{width/2,60}, POINT{width/2,20},
+                             POINT{width/3,20}, POINT{width/2,60}, POINT{width/2,height/2},
+                             POINT{width/2+100,height/2+100}}) {
+        for (LONG nudge = 0; nudge < 8; ++nudge) {
+            moveTo(arrival.left + point.x + nudge, arrival.top + point.y); settle(3);
+        }
+        settle(40);
+    }
+    moveTo(start.x, start.y);
+    const auto pointerStarted = GetTickCount64();
+    auto headerButton = header.as<Controls::Primitives::ButtonBase>();
+    while (!headerButton.IsPointerOver() && GetTickCount64() - pointerStarted < LiveTreeTimeoutMs) {
+        Pump(); Sleep(10);
+    }
+    Require(headerButton.IsPointerOver(), "group header receives physical pointer entry before pickup");
     send(MOUSEEVENTF_LEFTDOWN); settle();
     moveTo(start.x + 12, start.y); settle();
     for (int step = 1; step <= 20; ++step) { moveTo(start.x + 12 + (drop.x - start.x - 12) * step / 20, start.y + (drop.y - start.y) * step / 20); settle(5); }
     settle(40);
     auto previews = DragPreviewWindows();
     Require(previews.size() == 1 && IsWindowVisible(previews[0]), "over another window's strip the group still follows the cursor");
-    RECT shown{};
-    // The snapshot is asynchronous; the window is sized when it is first painted.
-    for (int i = 0; i < 200; ++i) {
-        GetWindowRect(previews[0], &shown);
-        if (shown.right > shown.left) break;
-        settle(1);
-    }
+    const auto shown = AwaitDragPreview(previews[0]);
     if (!overlap)
         Require(shown.top < drop.y && shown.bottom > drop.y && shown.left <= drop.x && shown.right >= drop.x,
                 "the floating group sits in the destination strip's row band under the cursor");
@@ -5713,7 +5716,7 @@ static void CheckGroupCrossWindowAdopt(HMODULE module, WinUIPaneApi& api, bool a
         Require(GroupHiddenWhileLeaving(view1, L"FennInlineGroup-7", {11, 22}),
                 "the source keeps the group hidden while the other window adopts it");
     } else {
-        auto button = inList(view1, L"FennInlineGroup-7");
+        auto button = FindInTabList(view1, L"FennInlineGroup-7");
         Require(button && button.Opacity() == 1 && button.IsHitTestVisible() && !GroupHiddenWhileLeaving(view1, L"FennInlineGroup-7", {11, 22}),
                 "a refused adopt shows the group in its own window again");
         for (uint32_t i = 0; i < view1.TabItems().Size(); ++i)
@@ -5727,7 +5730,7 @@ static void CheckGroupCrossWindowAdopt(HMODULE module, WinUIPaneApi& api, bool a
         // Firefox's adoption arrives as a new layout with the group in place.
         publish2(101, L",{\"id\":12,\"name\":\"First\",\"label\":\"First\",\"collapsed\":true}", L",{\"group\":12,\"tab\":0}");
         settle(40);
-        auto landed = inList(view2, L"FennInlineGroup-12");
+        auto landed = FindInTabList(view2, L"FennInlineGroup-12");
         Require(landed && landed.ActualWidth() > 0 &&
                 leftOf(L"FennInlineGroup-12") + landed.ActualWidth() <= leftOf(L"FennInlineGroup-9") + .5,
                 "the published group replaces the held gap");
@@ -5737,7 +5740,7 @@ static void CheckGroupCrossWindowAdopt(HMODULE module, WinUIPaneApi& api, bool a
         MenuPublish(api, host, LR"({"version":2,"publishOnly":true,"strip":{"version":2,"base":0,"revision":2,"rtl":false,"windowDragSession":5,"groupsLabel":"Groups","groups":[],"rows":[{"id":101,"detail":"","flags":0}],"layout":[{"group":0,"tab":101}]}})");
         Require(SUCCEEDED(api.syncTabs(host, rest, 1, 101, NextTabRevision(), &selected)), "the group's tabs leave the source");
         settle();
-        Require(!inList(view1, L"FennInlineGroup-7"), "the source's publication removes the departed group");
+        Require(!FindInTabList(view1, L"FennInlineGroup-7"), "the source's publication removes the departed group");
         puts(overlap ? "CHECKS PASSED: an overlapping group drop selects only the visible destination"
                      : "CHECKS PASSED: a group dropped on another window is adopted there");
     } else {
@@ -5826,8 +5829,7 @@ static void CheckGroupDragEdgeScroll(HMODULE module, WinUIPaneApi& api, HWND hos
         Require(decoration() == 0, "a torn-off group leaves no outline or glow in the strip");
         {
             Require(previews.size() == 1 && IsWindowVisible(previews[0]), "a group pulled off the strip follows the cursor in a floating window");
-            RECT shown{};
-            GetWindowRect(previews[0], &shown);
+            const auto shown = AwaitDragPreview(previews[0]);
             Require(shown.right - shown.left > 8 && shown.top < away.y && shown.bottom > away.y &&
                     shown.left <= away.x && shown.right >= away.x, "the floating group stays under the cursor at its grab point");
         }
@@ -6410,7 +6412,7 @@ int wmain(int argc, wchar_t** argv) {
     Require(argc == 2 || (argc == 3 && (wcscmp(argv[2], L"--late-drop") == 0 || wcscmp(argv[2], L"--local-startup") == 0 || wcscmp(argv[2], L"--startup-thread") == 0 || wcscmp(argv[2], L"--startup-thread-cancel") == 0 || wcscmp(argv[2], L"--startup-surface") == 0 || wcscmp(argv[2], L"--startup-host") == 0 || wcscmp(argv[2], L"--window-host") == 0 || wcscmp(argv[2], L"--chrome-layout") == 0 || wcscmp(argv[2], L"--popup-lifecycle") == 0 || wcscmp(argv[2], L"--page-input") == 0 || wcscmp(argv[2], L"--inspect") == 0 || wcscmp(argv[2], L"--address") == 0 || wcscmp(argv[2], L"--address-host") == 0 ||
                                         wcscmp(argv[2], L"--menu") == 0 || wcscmp(argv[2], L"--updates") == 0 || wcscmp(argv[2], L"--strip") == 0 || wcscmp(argv[2], L"--inline") == 0 || wcscmp(argv[2], L"--selection-decorations") == 0 || wcscmp(argv[2], L"--selection-reentrancy") == 0 ||
                                         wcscmp(argv[2], L"--drag") == 0 || wcscmp(argv[2], L"--reorder") == 0 || wcscmp(argv[2], L"--transfers") == 0 || wcscmp(argv[2], L"--drag-close") == 0 ||
-                                        wcscmp(argv[2], L"--drag-change") == 0 || wcscmp(argv[2], L"--drag-offset") == 0 || (wcscmp(argv[2], L"--group-drop") == 0 || wcscmp(argv[2], L"--group-neighbors") == 0 || wcscmp(argv[2], L"--group-cross") == 0))),
+                                        wcscmp(argv[2], L"--drag-change") == 0 || wcscmp(argv[2], L"--drag-offset") == 0 || (wcscmp(argv[2], L"--group-drop") == 0 || wcscmp(argv[2], L"--group-neighbors") == 0 || wcscmp(argv[2], L"--group-cross") == 0 || wcscmp(argv[2], L"--group-detach") == 0))),
             "DLL path and optional --inspect required");
     // Before the DLL loads, because the pane reads this once. Without it the
     // request path's stages are counted but never timed, and the assertions
@@ -6899,7 +6901,7 @@ int wmain(int argc, wchar_t** argv) {
         return 0;
     }
     if (argc == 3 && (wcscmp(argv[2], L"--drag") == 0 || wcscmp(argv[2], L"--reorder") == 0 || wcscmp(argv[2], L"--transfers") == 0 || wcscmp(argv[2], L"--drag-close") == 0 ||
-                      wcscmp(argv[2], L"--drag-change") == 0 || wcscmp(argv[2], L"--drag-offset") == 0 || (wcscmp(argv[2], L"--group-drop") == 0 || wcscmp(argv[2], L"--group-neighbors") == 0 || wcscmp(argv[2], L"--group-cross") == 0))) {
+                      wcscmp(argv[2], L"--drag-change") == 0 || wcscmp(argv[2], L"--drag-offset") == 0 || (wcscmp(argv[2], L"--group-drop") == 0 || wcscmp(argv[2], L"--group-neighbors") == 0 || wcscmp(argv[2], L"--group-cross") == 0 || wcscmp(argv[2], L"--group-detach") == 0))) {
         auto dragTicks = [&] {
             auto counts = reinterpret_cast<HRESULT(WINAPI*)(const wchar_t*, uint64_t*)>(
                 GetProcAddress(module, "WinUIPaneTestGetEntryCalls"));
@@ -6910,6 +6912,10 @@ int wmain(int argc, wchar_t** argv) {
         };
         if (wcscmp(argv[2], L"--group-neighbors") == 0) {
             CheckGroupNeighbors(api,first);
+        } else if (wcscmp(argv[2], L"--group-detach") == 0) {
+            CheckGroupDragEdgeScroll(module, api, first, false, GroupDetach::Release);
+            CheckGroupDragEdgeScroll(module, api, first, false, GroupDetach::Return);
+            CheckGroupDragEdgeScroll(module, api, first, false, GroupDetach::Sole);
         } else if (wcscmp(argv[2], L"--group-cross") == 0) {
             // Only the cross-window group checks: a fast loop while working on them.
             CheckGroupCrossWindowAdopt(module, api, true);

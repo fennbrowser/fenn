@@ -56,24 +56,11 @@ struct NativeWindowCaption {
                     toolbarSurface.IsLoaded() && toolbarSurface.ActualWidth() > 0;
         double left{}, right{};
         if (trim) {
-            Windows::Foundation::Point start{}, end{};
-            if (toolbarSurface.XamlRoot() == root.XamlRoot()) {
-                // The desktop shell's regions share a XAML tree. Stay in that
-                // tree: screen-coordinate conversion can be unavailable while
-                // its ContentIsland is transitioning through minimize/restore.
-                auto transform = toolbarSurface.TransformToVisual(root);
-                start = transform.TransformPoint({0,0});
-                end = transform.TransformPoint({float(toolbarSurface.ActualWidth()),0});
-            } else {
-                // Retained separate-island hosting needs the real screen join.
-                auto bounds = toolbarSurface.TransformToVisual(nullptr).TransformBounds(
-                    {0,0,float(toolbarSurface.ActualWidth()),float(toolbarSurface.ActualHeight())});
-                auto screen = toolbarSurface.XamlRoot().ContentIsland().CoordinateConverter().ConvertLocalToScreen(bounds);
-                auto converter = root.XamlRoot().ContentIsland().CoordinateConverter();
-                auto inverse = root.TransformToVisual(nullptr).Inverse();
-                start = inverse.TransformPoint(converter.ConvertScreenToLocal(Windows::Graphics::PointInt32{screen.X,screen.Y}));
-                end = inverse.TransformPoint(converter.ConvertScreenToLocal(Windows::Graphics::PointInt32{screen.X+screen.Width,screen.Y}));
-            }
+            // Both supported hosts place chrome in one Window tree. Avoid
+            // screen conversion during ContentIsland minimize/restore transitions.
+            auto transform = toolbarSurface.TransformToVisual(root);
+            auto start = transform.TransformPoint({0,0});
+            auto end = transform.TransformPoint({float(toolbarSurface.ActualWidth()),0});
             auto radius = toolbarSurface.CornerRadius();
             left = start.X + radius.TopLeft;
             right = end.X - radius.TopRight;

@@ -20,7 +20,6 @@ struct NativeToolbarCustomization {
     std::map<winrt::hstring,Microsoft::UI::Xaml::Controls::TextBlock> textBlocks;
     Button reset{nullptr}, undoReset{nullptr};
     Button anchor{nullptr};
-    HWND ownerHwnd{};
     Microsoft::UI::Xaml::FrameworkElement toolbar{nullptr};
     double popupAnchorX{};
     bool popupFromPointer{};
@@ -278,26 +277,24 @@ struct NativeToolbarCustomization {
     }
     void Buttons() {reset.IsEnabled(state.canReset);undoReset.IsEnabled(state.canUndoReset);}
     bool PlacePopup(bool capture=false) {
-        if(placingPopup || !popup || !popup.Child() || !anchor || !toolbar || !anchor.XamlRoot() || !ownerHwnd)return false;
-        auto window=GetAncestor(ownerHwnd,GA_ROOT);
-        RECT client{};
-        if(!window || !GetClientRect(window,&client))return false;
-        MapWindowPoints(window,nullptr,reinterpret_cast<POINT*>(&client),2);
-        auto converter=anchor.XamlRoot().ContentIsland().CoordinateConverter();
-        auto start=converter.ConvertScreenToLocal(winrt::Windows::Graphics::PointInt32{client.left,client.top});
-        auto end=converter.ConvertScreenToLocal(winrt::Windows::Graphics::PointInt32{client.right,client.bottom});
+        if(placingPopup || !popup || !popup.Child() || !anchor || !toolbar || !anchor.XamlRoot())return false;
+        const auto xamlRoot=toolbar.XamlRoot();
+        const auto size=xamlRoot.Size();
         auto row=toolbar.TransformToVisual(nullptr).TransformBounds({0,0,float(toolbar.ActualWidth()),float(toolbar.ActualHeight())});
         if(capture) {
             POINT cursor{};
-            if(GetCursorPos(&cursor) && (popupFromPointer || PtInRect(&client,cursor)))
-                popupAnchorX=converter.ConvertScreenToLocal(winrt::Windows::Graphics::PointInt32{cursor.x,cursor.y}).X;
-            else popupAnchorX=anchor.TransformToVisual(nullptr).TransformPoint({0,0}).X;
+            popupAnchorX=anchor.TransformToVisual(nullptr).TransformPoint({0,0}).X;
+            if(GetCursorPos(&cursor)) {
+                const auto point=xamlRoot.ContentIsland().CoordinateConverter().ConvertScreenToLocal(
+                    winrt::Windows::Graphics::PointInt32{cursor.x,cursor.y});
+                if(popupFromPointer || (point.X>=0 && point.Y>=0 && point.X<size.Width && point.Y<size.Height))popupAnchorX=point.X;
+            }
         }
         placingPopup=true;
         struct Reset { bool& flag; ~Reset(){flag=false;} } placingGuard{placingPopup};
-        const double left=start.X+8,right=std::max(left,double(end.X)-8);
-        const double top=std::max(double(start.Y)+8,double(row.Y+row.Height)+4);
-        const double height=std::max(0.0,double(end.Y)-8-top);
+        const double left=8,right=std::max(left,double(size.Width)-8);
+        const double top=std::max(8.0,double(row.Y+row.Height)+4);
+        const double height=std::max(0.0,double(size.Height)-8-top);
         auto child=popup.Child().as<Microsoft::UI::Xaml::FrameworkElement>();
         if(child.MaxWidth()!=right-left)child.MaxWidth(right-left);
         if(child.MaxHeight()!=height)child.MaxHeight(height);
@@ -310,11 +307,14 @@ struct NativeToolbarCustomization {
         const double width=child.DesiredSize().Width;
         const bool rtl=child.FlowDirection()==Microsoft::UI::Xaml::FlowDirection::RightToLeft;
         const double x=std::clamp(popupAnchorX-(rtl?width:0),left,std::max(left,right-width));
-        // This unparented Popup uses XamlRoot-local offsets. Keep WinUI's own
-        // surface/scrolling; allow it outside the 40-DIP island, inside Firefox.
+        // Keep a windowed, nonmodal Popup above the engine's page HWND. The
+        // root-constrained placement trial failed toolbar-to-palette dragging.
+        // Clamp the measured surface within the shared Window tree instead.
         popup.PlacementTarget(nullptr);
         popup.DesiredPlacement(Microsoft::UI::Xaml::Controls::Primitives::PopupPlacementMode::Auto);
-        if(popup.HorizontalOffset()!=x)popup.HorizontalOffset(x);
+        // A windowed RTL child extends left from its offset, not right.
+        const double offset=x+(rtl?width:0);
+        if(popup.HorizontalOffset()!=offset)popup.HorizontalOffset(offset);
         if(popup.VerticalOffset()!=top)popup.VerticalOffset(top);
         return height>0;
     }

@@ -11,7 +11,8 @@
 //! Sending never blocks. Frames wait in an outbox until the receiver has
 //! returned enough credit, and the outbox applies each channel's
 //! [`Class`](crate::frame::Class): a snapshot replaces its unsent predecessor
-//! in place, so it keeps that predecessor's position among ordered frames;
+//! in place only within the trailing snapshot batch. Ordered frames and
+//! deltas are barriers: later snapshots cannot change their prerequisites;
 //! deltas and ordered frames are refused when the outbox is full. Credit
 //! comes back in cumulative control frames, which the same bytes can carry
 //! over a pipe.
@@ -25,7 +26,8 @@ pub struct Limits {
     pub in_flight_frames: usize,
     pub in_flight_bytes: usize,
     /// Frames and bytes waiting for credit. Snapshots beyond this are still
-    /// admitted while they coalesce, up to `snapshot_keys` distinct keys.
+    /// admitted while they coalesce, up to `snapshot_keys` queued snapshots.
+    /// A barrier can leave more than one snapshot for the same key queued.
     pub outbox_frames: usize,
     pub outbox_bytes: usize,
     pub snapshot_keys: usize,
@@ -139,8 +141,9 @@ impl Endpoint {
             return SendOutcome::Invalid;
         }
         if class == Class::Snapshot {
-            if let Some(slot) = self.outbox.iter_mut().find(|p| p.class == Class::Snapshot &&
-                p.window == window && p.channel == channel && p.kind == kind) {
+            if let Some(slot) = self.outbox.iter_mut().rev()
+                .take_while(|p| p.class == Class::Snapshot)
+                .find(|p| p.window == window && p.channel == channel && p.kind == kind) {
                 self.outbox_bytes = self.outbox_bytes - slot.payload.len() + payload.len();
                 slot.payload = payload.to_vec();
                 slot.revision = revision;
@@ -320,8 +323,8 @@ mod tests {
         assert_eq!(pump(&mut a, &mut b).len(), 1);
         // The receiver is stalled: everything below waits in the outbox.
         a.send(1, Channel::Geometry, 0, 10, &shown([0, 0, 1, 1]));
-        a.send(1, Channel::Requests, 0, 2, &json("{}"));
         assert_eq!(a.send(1, Channel::Geometry, 0, 11, &shown([0, 0, 9, 9])), SendOutcome::Coalesced);
+        a.send(1, Channel::Requests, 0, 2, &json("{}"));
         a.send(2, Channel::Geometry, 0, 12, &shown([0, 0, 2, 2]));
         let mut seen = Vec::new();
         loop {
@@ -332,6 +335,42 @@ mod tests {
         }
         assert_eq!(seen, vec![(1, Channel::Geometry, 11), (1, Channel::Requests, 2), (2, Channel::Geometry, 12)],
             "the newest geometry, at the first geometry's place");
+        assert_eq!(a.counts().coalesced, 1);
+    }
+
+    #[test]
+    fn address_publication_keeps_its_surface_alive_until_delivery() {
+        let (mut a, mut b) = pair(Limits { in_flight_frames: 1, ..Limits::default() });
+        a.send(1, Channel::Requests, 0, 0, &json("{}"));
+        pump(&mut a, &mut b); // Keep the following show/publish/hide burst queued.
+        let visible = shown([0, 40, 800, 80]);
+        let mut hidden = visible.clone();
+        *hidden.last_mut().unwrap() = 0;
+        a.send(1, Channel::Geometry, 1, 1, &visible);
+        a.send(1, Channel::Address, 0, 2, &json(r#"{"version":1,"enabled":true}"#));
+        assert_eq!(a.send(1, Channel::Geometry, 1, 3, &hidden), SendOutcome::Queued,
+            "hiding must not replace the show needed by the queued address publication");
+        let mut delivered = Vec::new();
+        loop {
+            ack(&mut a, &mut b);
+            let got = pump(&mut a, &mut b);
+            if got.is_empty() { break; }
+            delivered.extend(got.into_iter().map(|h| (h.channel, h.revision)));
+        }
+        assert_eq!(delivered, vec![(Channel::Geometry, 1), (Channel::Address, 2), (Channel::Geometry, 3)]);
+    }
+
+    #[test]
+    fn delta_barriers_preserve_geometry_and_snapshot_bounds() {
+        let (mut a, mut b) = pair(Limits { snapshot_keys: 2, ..Limits::default() });
+        a.send(1, Channel::Geometry, 0, 1, &shown([0, 0, 100, 40]));
+        a.send(1, Channel::Tabs, 1, 2, &json("{}"));
+        assert_eq!(a.send(1, Channel::Geometry, 0, 3, &shown([0, 0, 200, 40])), SendOutcome::Queued);
+        // Within the new snapshot batch, resizing still coalesces.
+        assert_eq!(a.send(1, Channel::Geometry, 0, 4, &shown([0, 0, 300, 40])), SendOutcome::Coalesced);
+        a.send(1, Channel::Focus, 0, 5, &[1]);
+        assert_eq!(a.send(1, Channel::Geometry, 0, 6, &shown([0, 0, 400, 40])), SendOutcome::Overflow);
+        assert_eq!(pump(&mut a, &mut b).iter().map(|h| h.revision).collect::<Vec<_>>(), vec![1, 2, 4, 5]);
         assert_eq!(a.counts().coalesced, 1);
     }
 

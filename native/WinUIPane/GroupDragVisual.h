@@ -12,7 +12,6 @@ struct GroupDragVisual {
     Thickness margin{};
     double grabX{}, top{};
     bool detached{};
-    Microsoft::UI::Dispatching::DispatcherQueueTimer timer{nullptr};
     void Create(Controls::Grid const& root) {
         if (layer) return;
         layer = Markup::XamlReader::Load(LR"(
@@ -70,7 +69,6 @@ struct GroupDragVisual {
         layer.Opacity(value ? 0 : 1);
     }
     void Hide() {
-        if (timer) timer.Stop();
         Detach(false);
         if (button) {
             if (chip.Child()==button) chip.Child(nullptr);

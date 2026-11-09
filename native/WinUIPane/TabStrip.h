@@ -47,10 +47,6 @@ struct NativeTabStrip {
     Controls::ToolTip addToolTip{nullptr}, allTabsToolTip{nullptr};
     Controls::Border groupIndicator{nullptr};
     Microsoft::UI::Dispatching::DispatcherQueueTimer groupTimer{nullptr};
-    // Ticks an armed or live tab drag. Once XAML has the pointer, WinUI can
-    // deliver input inside Gecko's PeekMessage without returning a message,
-    // so the pump's Translate hook alone may not run until release.
-    Microsoft::UI::Dispatching::DispatcherQueueTimer tabDragTimer{nullptr};
     uint32_t groupingDelay{240}, groupCandidate{}, armedGroupTarget{};
     uint32_t joinGroup{}, joinTarget{};
     bool joinBefore{};
@@ -171,7 +167,7 @@ struct NativeTabStrip {
     // converge on that one function, so which one fires first never
     // matters for correctness.
     std::function<void(uint32_t)> armDragSession;
-    std::function<void()> tickDragSession;
+    std::function<void()> tickDragSession, startDragSessionTimer;
     std::map<uint32_t, Controls::TabViewItem> rows;
     // Favicons are the small end of what NativeAddress's row images (104,
     // 65536) allow: one glyph-sized icon per tab, but potentially many more
@@ -1645,29 +1641,6 @@ struct NativeTabStrip {
         if (core) shell_core_tab_drag_state(core, &state);
         return state;
     }
-    void StartGroupDragTimer() {
-        if(!groupDragVisual.timer){groupDragVisual.timer=root.DispatcherQueue().CreateTimer();groupDragVisual.timer.Interval(std::chrono::milliseconds(16));groupDragVisual.timer.Tick([this,alive=std::weak_ptr<int>(lifetime)](auto&&,auto&&){if(alive.expired())return;try{if(tickDragSession)tickDragSession();}catch(...){}});}
-        groupDragVisual.timer.Start();
-    }
-    void StartTabDragTimer() {
-        if (!tabDragTimer) {
-            tabDragTimer = root.DispatcherQueue().CreateTimer();
-            tabDragTimer.Interval(std::chrono::milliseconds(16));
-            tabDragTimer.Tick([this, alive = std::weak_ptr<int>(lifetime)](auto const& timer, auto const&) {
-                if (alive.expired()) return;
-                // Like the pump's Translate hook: an exception escaping a
-                // timer callback would fail-fast the browser.
-                try {
-                    // A routed capture-loss callback can finish the local drag
-                    // before this tick. Still retire the shared session and its
-                    // raw HWND capture; the standalone Window has no Translate hook.
-                    if (tickDragSession) tickDragSession();
-                    if (Drag().phase == DragPhase::None) timer.Stop();
-                } catch (...) {}
-            });
-        }
-        tabDragTimer.Start();
-    }
     bool ArmDrag(uint32_t tab, Windows::Foundation::Point point) {
         groupSlide.Cancel();
         return core && shell_core_tab_drag_arm(core, tab, point.X, point.Y) == SHELL_STATUS_OK;
@@ -1807,14 +1780,7 @@ struct NativeTabStrip {
             auto found=inlineGroups.runs.find(id);
             if (found!=inlineGroups.runs.end())
                 groupDragVisual.Arm(found->second.button,args.GetCurrentPoint(groupDragVisual.layer).Position());
-            if (!groupDragVisual.timer) {
-                groupDragVisual.timer=root.DispatcherQueue().CreateTimer();
-                groupDragVisual.timer.Interval(std::chrono::milliseconds(16));
-                groupDragVisual.timer.Tick([this, alive=std::weak_ptr<int>(lifetime)](auto&&,auto&&) {
-                    if (!alive.expired() && tickDragSession) tickDragSession();
-                });
-            }
-            groupDragVisual.timer.Start();
+            if (startDragSessionTimer) startDragSessionTimer();
             // Button retains its stock click/capture until movement promotes the drag.
         };
         inlineGroups.hover.allowed = [this] { return !IsDragging() && !GroupDrag().phase && !(GetKeyState(VK_LBUTTON) & 0x8000) && root.IsLoaded() && root.Visibility() == Visibility::Visible; };
@@ -1958,7 +1924,6 @@ struct NativeTabStrip {
         groupDragVisual.Hide();
         StopGroupSelectionGuard();
         if (groupTimer) groupTimer.Stop();
-        if (tabDragTimer) tabDragTimer.Stop();
         lifetime.reset();
         if (core) shell_core_transfer_cancel(core);
         try { ReconcileTransfers(); } catch (...) { /* An island may also be closing. */ }
@@ -4087,7 +4052,7 @@ struct NativeTabStrip {
                                 if (!ArmDrag(id, point.Position())) return;
                                 if (!row.CapturePointer(args.Pointer())) { FinishDrag(id); return; }
                                 ::SetCapture(ownerHwnd);
-                                StartTabDragTimer();
+                                if (startDragSessionTimer) startDragSessionTimer();
                             })),
                         true);
                     row.AddHandler(
