@@ -7,9 +7,9 @@
   },
   "firefox": {
     "repository": "https://github.com/mozilla-firefox/firefox.git",
-    "commit": "9a2dc53c369c7ae5172018b35988e1d2ffeff402",
-    "version": "159.0",
-    "rebasedOn": "2026-10-27",
+    "commit": "6181e6b5f28a8fbae1d5c3ef6f6626b5a2180213",
+    "version": "159.0.1",
+    "rebasedOn": "2026-11-09",
     "cloneDepth": 1,
     "buildJobs": 8,
     "debugSymbols": false
