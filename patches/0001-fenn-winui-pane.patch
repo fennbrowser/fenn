@@ -126,7 +126,7 @@ index 1fbef26996f..7c5875a33f0 100644
 +#endif
  
 diff --git a/browser/app/profile/firefox.js b/browser/app/profile/firefox.js
-index 0f4b2915ad2..5c82ff3a4e9 100644
+index 0f4b2915ad2..ebdaa60ce7c 100644
 --- a/browser/app/profile/firefox.js
 +++ b/browser/app/profile/firefox.js
 @@ -322,3 +322,4 @@ pref("browser.shell.displayKitImageBehindSetDefaultBrowserButton", "off");
@@ -179,7 +179,7 @@ index 0f4b2915ad2..5c82ff3a4e9 100644
 +// Keep its inspection shortcut out of page context menus unless requested.
 +pref("fenn.contextMenu.inspectAccessibility", false);
  
-@@ -3877,2 +3886,72 @@ pref("distribution.mozillaonline.ignore", true);
+@@ -3877,2 +3886,66 @@ pref("distribution.mozillaonline.ignore", true);
  
 +// The native tab strip is on by default in every lane (unpackaged launcher and
 +// MSIX alike); turn it off to fall back to Firefox's own UI. Firefox keeps its
@@ -217,16 +217,10 @@ index 0f4b2915ad2..5c82ff3a4e9 100644
 +pref("fenn.winui.bookmarks.toolbar.enabled", false);
 +// Native presentation is eligible only with the live native navigation toolbar.
 +pref("fenn.winui.newtab.enabled", true);
-+// Explicit development-build trial, shared by unpackaged and development MSIX.
-+#ifdef FENN_DEVELOPMENT_NATIVE_HOST
++// Both shell routes use a native Window by default.
 +pref("fenn.winui.chrome.layout", true);
 +pref("fenn.winui.window.host", true);
 +pref("fenn.winui.window.independent", true);
-+#else
-+pref("fenn.winui.chrome.layout", false);
-+pref("fenn.winui.window.host", false);
-+pref("fenn.winui.window.independent", false);
-+#endif
 +// Hide Firefox's retained toolbar below the native navigation row while that row
 +// is active. Controls the row does not yet host (for example
 +// unplaced items and some extensions) are reachable only in customization mode,
@@ -13381,7 +13375,7 @@ index 00000000000..975fd14c587
 +}
 diff --git a/mozglue/misc/FennStartupWindow.cpp b/mozglue/misc/FennStartupWindow.cpp
 new file mode 100644
-index 00000000000..1e4f85ac782
+index 00000000000..1740e55dd9c
 --- /dev/null
 +++ b/mozglue/misc/FennStartupWindow.cpp
 @@ -0,0 +1,161 @@
@@ -13473,7 +13467,7 @@ index 00000000000..1e4f85ac782
 +  if(FennProcessShellRequested())return false;
 +  wchar_t value[2]{};
 +  DWORD size=GetEnvironmentVariableW(L"FENN_NATIVE_STARTUP_HOST",value,2);
-+  return size ? size==1 && value[0]==L'2' : FennDevelopmentNativeHostDefault();
++  return !size || (size == 1 && value[0] == L'2');
 +}
 +bool PrepareFennStartupWindowForProfile(HINSTANCE instance,const wchar_t* profilePath,const wchar_t* presentation) {
 +  if(sThread || sTaken || !profilePath || !LoadWindowFunctions())return false;
