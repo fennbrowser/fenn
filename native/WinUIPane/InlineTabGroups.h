@@ -561,11 +561,14 @@ struct InlineTabGroups {
             const double slot = double(totalPx / count + (index++ < totalPx % count ? 1 : 0)) / scale;
             const double cap = std::clamp(slot - margin.Left - margin.Right, minTab, maxTab);
             if (std::abs(row.MaxWidth() - cap) > .5) row.MaxWidth(cap);
-            // TabView's Equal mode writes its own Width, which caps a tab that
-            // was given a spare pixel. A matching minimum pins the split exactly
-            // while the tabs fill the strip and restores the stock minimum after.
-            const double floorWidth = cap < maxTab ? cap : minTab;
-            if (std::abs(row.MinWidth() - floorWidth) > .01) row.MinWidth(floorWidth);
+            // Equal-mode tabs must fill their assigned slot even at the maximum.
+            // TabView can leave Width unset or retain an early narrow measure
+            // after startup/realization until pointer hover requests another
+            // measure. Restoring the stock minimum here let short titles settle
+            // at content width (about 104 DIP) despite a 225-DIP slot.
+            // Match both bounds throughout the range; pinned rows are excluded
+            // above and group resize animations suspend this pass.
+            if (std::abs(row.MinWidth() - cap) > .01) row.MinWidth(cap);
             const double desired = row.DesiredSize().Width;
             expected += std::min(desired > 0 ? desired : average, cap + margin.Left + margin.Right);
         }
