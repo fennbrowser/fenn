@@ -560,11 +560,13 @@ struct NativeNavigationToolbar {
             if(child!=surface && std::find(desired.begin(),desired.end(),child)==desired.end())host.Children().RemoveAt(i-1);
         }
         for(auto const& child:desired) {uint32_t index;if(!host.Children().IndexOf(child,index))host.Children().Append(child);}
+        uint32_t surfaceIndex;
+        const uint32_t firstControl = host.Children().IndexOf(surface,surfaceIndex) ? 1 : 0;
         for(uint32_t i=0;i<desired.size();i++) {
             auto child=desired[i];
             if(child==address || child==buttons[5])continue;
             uint32_t index;host.Children().IndexOf(child,index);
-            if(index!=i+1){host.Children().RemoveAt(index);host.Children().InsertAt(i+1,child);}
+            if(index!=i+firstControl){host.Children().RemoveAt(index);host.Children().InsertAt(i+firstControl,child);}
         }
         for(auto it=spacers.begin();it!=spacers.end();) {if(!keep.contains(it->first))it=spacers.erase(it);else ++it;}
         Arrange(desired,false);

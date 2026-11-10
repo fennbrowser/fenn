@@ -16,6 +16,10 @@ function fixture() {
     return {
       attributes, setAttribute(k,v) { attributes.set(k,v); calls.push(["attribute",k,v]); },
       hasAttribute(k) { return attributes.has(k); },
+      toggleAttribute(k, force) {
+        if (force) attributes.set(k, "");
+        else attributes.delete(k);
+      },
       style:{},
       removeAttribute(k) { attributes.delete(k); }, getAttribute(k) { return attributes.get(k); },
       append() {}, after() {}, remove() { this.removed = true; }, focus() {calls.push(["proxy-focus"]);}, addEventListener(k,fn) { listeners.set(k,fn); }, removeEventListener() {},
@@ -34,6 +38,8 @@ function fixture() {
     recordAddressFallback(reason) {calls.push(["fallback-reason",reason]);},
     addressFallback(reason) {calls.push(["fallback"]); this.recordAddressFallback(reason); toolbar.restore();}};
   const window = {document:{documentElement:root,querySelectorAll:()=>[...elements.values()],createElementNS:element,getElementById:id=>elements.get(id)},
+    docShell:{outerWindowID:1},
+    clearTimeout,
     gURLBar:{inputField:input,querySelector:()=>switcher,focus() {calls.push(["firefox-focus"]);}},
     commandListeners:[],
     addEventListener(type,listener,capture) {this.commandListeners.push({type,listener,capture});},
@@ -50,7 +56,12 @@ function fixture() {
   vm.runInContext(readFileSync(new URL("../upstream/firefox/browser/base/content/WinUIHistoryMenu.sys.mjs",import.meta.url),"utf8").replace(/^import .*;$/m,"").replace("export class WinUIHistoryMenu","this.WinUIHistoryMenu=class WinUIHistoryMenu"),context);
   vm.runInContext(readFileSync(new URL("../upstream/firefox/browser/base/content/WinUINavigationState.sys.mjs",import.meta.url),"utf8").replace(/^export /gm,"")+";this.WinUINavigationState=WinUINavigationState;this.NAVIGATION_COMMANDS=NAVIGATION_COMMANDS;",context);
   vm.runInContext(readFileSync(new URL("../upstream/firefox/browser/base/content/WinUIProductMenu.sys.mjs",import.meta.url),"utf8").replace(/^export /gm,"")+";this.WinUIProductMenu=WinUIProductMenu;",context);
+  const bookmarksSource = readFileSync(new URL("../upstream/firefox/browser/base/content/WinUIBookmarksToolbar.sys.mjs", import.meta.url), "utf8")
+    .replace(/^import .*;$/m, "")
+    .replace("export class WinUIBookmarksToolbar", "this.WinUIBookmarksToolbar = class WinUIBookmarksToolbar");
+  vm.runInContext(bookmarksSource, context);
   context.ChromeUtils={importESModule:()=>({WinUIBackForwardMenu:class {snapshot(){return {enabled:false};}dismiss(){}close(){}},WinUIPageContextMenu:class {snapshot(){return {enabled:false};}dismiss(){}close(){}},WinUISelectedTranslationsPanel:class {snapshot(){return {enabled:false};}dismiss(){}close(){}},WinUITranslationsPanel:class {snapshot(){return {enabled:false};}dismiss(){}close(){}},WinUIConnectionPanel:class {snapshot(){return {enabled:false};}dismiss(){}close(){}},WinUINotificationPanel:class {snapshot(){return {enabled:false};}dismiss(){}close(){}},WinUISitePermissionsPanel:class {snapshot(){return {enabled:false};}dismiss(){}close(){}},WinUIBookmarkPanel:class {snapshot(){return {enabled:false};}dismiss(){}retire(){}close(){}},WinUIProfilerPanel:class {snapshot(){return {enabled:false};}dismiss(){}close(){}},WinUIPrivacyPanels:class {snapshot(){return {forgetPanel:{enabled:false},clearPrivatePanel:{enabled:false}};}dismissAll(){}close(){}},WinUITabGroupsMenu:class {snapshot(){return {enabled:false};}close(){}},WinUIDeveloperMenu:class {snapshot(){return {enabled:false};}close(){}},WinUIOverflowMenu:class {snapshot(){return {enabled:true};}close(){}},WinUIProfileMenu:class {snapshot(){return {enabled:true};}close(){}},WinUIDownloadsPanel:class {snapshot(){return {enabled:true};}close(){}},WinUIHistoryMenu:context.WinUIHistoryMenu,WinUIProductMenu:context.WinUIProductMenu,
+    WinUIBookmarksToolbar:context.WinUIBookmarksToolbar,
     WinUINavigationState:context.WinUINavigationState,NAVIGATION_COMMANDS:context.NAVIGATION_COMMANDS})};
   vm.runInContext(source, context);
   const toolbar = new context.WinUIAddressToolbar(window, owner);

@@ -47,40 +47,57 @@ namespace {
 bool DiagnosticsEnabled();
 namespace SystemDrag = Microsoft::UI::Input::DragDrop;
 // The island's drop target, set before WinUI creates XAML DragEventArgs: it replaces XAML's own.
-// It rejects external system drags (AllowDrop=false only rejects them after that unsafe dispatch has
-// happened). In a browser window the island also holds the toolbar, so it brings the toolbar
-// editor's own drag to the toolbar through `route`, which reads no drag data unless that drag is
-// under way. It owns no pane, controls, drag data or deferred work, and holds the route weakly: an
-// in-flight leave/drop remains safe even after the island that requested it is destroyed.
+// Reject external drags before XAML dispatch. The bookmark row explicitly accepts
+// web links, and the toolbar editor accepts its own drags. The target holds the
+// pane route weakly across leave/drop and asynchronous URL reads.
 struct ChromeDropTarget : implements<ChromeDropTarget, SystemDrag::IDropOperationTarget> {
     using Operation = Windows::ApplicationModel::DataTransfer::DataPackageOperation;
     enum Phase { Enter, Over, Leave, Drop };
-    // True when the drag is accepted as a move.
-    using Route = std::function<bool(Phase, SystemDrag::DragInfo const&, SystemDrag::DragUIOverride const*)>;
+    using Route = std::function<Operation(Phase, SystemDrag::DragInfo const&, SystemDrag::DragUIOverride const*, POINT, hstring const&)>;
     std::weak_ptr<Route> route;
     explicit ChromeDropTarget(std::weak_ptr<Route> route) : route(std::move(route)) {}
-    Operation Call(Phase phase, SystemDrag::DragInfo const& info, SystemDrag::DragUIOverride const* ui) const noexcept {
+    Operation Call(Phase phase, SystemDrag::DragInfo const& info, SystemDrag::DragUIOverride const* ui,
+                   POINT cursor, hstring const& url = {}) const noexcept {
         try {
-            if (auto routed = route.lock(); routed && (*routed)(phase, info, ui)) return Operation::Move;
+            if (auto routed = route.lock()) return (*routed)(phase, info, ui, cursor, url);
         } catch (...) {}
         return Operation::None;
     }
     Windows::Foundation::IAsyncOperation<Operation> EnterAsync(SystemDrag::DragInfo const& info,
                                                               SystemDrag::DragUIOverride const& ui) {
-        const auto operation = Call(Enter, info, &ui);
+        POINT cursor{};
+        if (!GetCursorPos(&cursor)) co_return Operation::None;
+        const auto operation = Call(Enter, info, &ui, cursor);
         if (operation == Operation::None && DiagnosticsEnabled()) fprintf(stderr, "WinUIPane external drag rejected\n");
         co_return operation;
     }
     Windows::Foundation::IAsyncOperation<Operation> OverAsync(SystemDrag::DragInfo const& info,
                                                              SystemDrag::DragUIOverride const& ui) {
-        co_return Call(Over, info, &ui);
+        POINT cursor{};
+        co_return GetCursorPos(&cursor) ? Call(Over, info, &ui, cursor) : Operation::None;
     }
     Windows::Foundation::IAsyncAction LeaveAsync(SystemDrag::DragInfo const& info) {
-        Call(Leave, info, nullptr);
+        Call(Leave, info, nullptr, {});
         co_return;
     }
     Windows::Foundation::IAsyncOperation<Operation> DropAsync(SystemDrag::DragInfo const& info) {
-        co_return Call(Drop, info, nullptr);
+        POINT cursor{};
+        if (!GetCursorPos(&cursor)) co_return Operation::None;
+        if (const auto operation = Call(Drop, info, nullptr, cursor); operation != Operation::None)
+            co_return operation;
+        if (Call(Over, info, nullptr, cursor) != Operation::Copy) co_return Operation::None;
+
+        // Only the bookmark row advertises Copy for a system web link.
+        // Retain the target and drag info across the asynchronous OLE read,
+        // but recheck the weak pane route and the original drop position.
+        auto self = get_strong();
+        auto retainedInfo = info;
+        try {
+            const auto uri = co_await retainedInfo.Data().GetWebLinkAsync();
+            if (uri.SchemeName() == L"http" || uri.SchemeName() == L"https")
+                co_return Call(Drop, retainedInfo, nullptr, cursor, uri.AbsoluteUri());
+        } catch (...) {}
+        co_return Operation::None;
     }
 };
 // How much of what update() and clip() are asked to do turns out to repeat
@@ -513,7 +530,17 @@ struct Pane {
         if (!parent) return;
         std::vector<RECT> chrome, cut;
         for (auto const* slot : {&source, &addressSource}) {
-            if (*slot) if (RECT r = slot->Bounds(); r.right > r.left && r.bottom > r.top) chrome.push_back(r);
+            if (*slot) if (RECT r = slot->Bounds(); r.right > r.left && r.bottom > r.top) {
+                if (slot == &addressSource && address && address->newTab.enabled) {
+                    // Exclude the page's material gutters as well as its controls.
+                    // Keep the original top: retained Firefox tabs above this row
+                    // must still paint and receive input. Reuse the address entry
+                    // within the process transport's two-rectangle bound.
+                    RECT client{}; GetClientRect(parent,&client);
+                    r.left=client.left; r.right=client.right; r.bottom=client.bottom;
+                }
+                chrome.push_back(r);
+            }
         }
         const RECT strip = source.Bounds();
         for (auto r : appliedExclusions) {
@@ -521,6 +548,18 @@ struct Pane {
             cut.push_back(r);
         }
         NativeWindowHost::SetPageRegion(parent, std::move(chrome), std::move(cut));
+    }
+    void RefreshAddressPresentation() {
+        if (!addressSource || !address || !addressBoundsApplied) return;
+        RECT rect = addressBounds;
+        if (address->newTab.enabled) {
+            RECT client{}; GetClientRect(parent,&client);
+            rect.bottom = (std::max)(rect.top, client.bottom - (std::max)(0L, rect.left));
+        }
+        addressSource.SiteBridge().MoveAndResize({rect.left,rect.top,rect.right-rect.left,rect.bottom-rect.top});
+        if (auto* host = NativeWindowHost::Get(parent); host && host->startupPageBackgroundScope)
+            host->startupPageBackgroundScope.Visibility(address->newTab.enabled ? Visibility::Collapsed : Visibility::Visible);
+        ApplyPageRegion();
     }
     void CloseAddressHost() {
         startupPresenter.reset();
@@ -534,6 +573,8 @@ struct Pane {
         windowDrag.windowCaption.SetToolbarSurface(nullptr);
         if (strip) strip->SetLeadingControl(nullptr);
         address.reset();
+        if (auto* host = NativeWindowHost::Get(parent); host && host->startupPageBackgroundScope)
+            host->startupPageBackgroundScope.Visibility(Visibility::Visible);
         shell.ResetAddress();
         shell.ResetAddressPublication();
         shell.ResetToolbarPublication();
@@ -545,6 +586,18 @@ struct Pane {
         ApplyPageRegion();
     }
     void WireAddress() {
+        address->bookmarksToolbar.BindWindow(parent);
+        address->presentationChanged = [this] { RefreshAddressPresentation(); };
+        address->newTab.activate = [this](hstring const& id) {
+            NativeAddress::JObject action;
+            action.SetNamedValue(L"version",NativeAddress::JValue::CreateNumberValue(1));
+            action.SetNamedValue(L"command",NativeAddress::JValue::CreateStringValue(L"newtab-shortcut"));
+            action.SetNamedValue(L"id",NativeAddress::JValue::CreateStringValue(id));
+            action.SetNamedValue(L"session",NativeAddress::JValue::CreateStringValue(address->session));
+            const int modifiers=((GetKeyState(VK_CONTROL)&0x8000)?1:0)|((GetKeyState(VK_MENU)&0x8000)?2:0)|((GetKeyState(VK_SHIFT)&0x8000)?4:0);
+            action.SetNamedValue(L"modifiers",NativeAddress::JValue::CreateNumberValue(modifiers));
+            Enqueue(NativeShellCore::NavigationAction,0,0,action.Stringify());
+        };
         address->navigation->ownerHwnd=parent;
         windowDrag.windowCaption.SetToolbarSurface(address->toolbarSurface);
         if (strip) {
@@ -604,21 +657,27 @@ struct Pane {
     void RejectExternalDrops() {
         if (externalDropRevoker || !strip || !strip->root.XamlRoot()) return;
         dropRoute = std::make_shared<ChromeDropTarget::Route>(
-            [this](ChromeDropTarget::Phase phase, SystemDrag::DragInfo const& info, SystemDrag::DragUIOverride const* ui) {
-                // Only while the editor's own drag is under way: no other drag can run meanwhile.
-                if (!address || !address->navigation || !address->navigation->customization.dragging || !strip) return false;
+            [this](ChromeDropTarget::Phase phase, SystemDrag::DragInfo const& info,
+                   SystemDrag::DragUIOverride const* ui, POINT cursor, hstring const& url) {
+                using Operation = ChromeDropTarget::Operation;
+                if (!address || !address->navigation || !strip) return Operation::None;
+                if (phase != ChromeDropTarget::Leave && !address->navigation->customization.dragging) {
+                    return address->bookmarksToolbar.RouteDrop(info, cursor, phase == ChromeDropTarget::Drop, url);
+                }
+                // Only while the editor's own drag is under way.
+                if (!address->navigation->customization.dragging) return Operation::None;
                 auto& navigation = *address->navigation;
                 auto root = strip->root.XamlRoot();
                 if (!root || !navigation.host || !navigation.host.XamlRoot() || !SameObject(root, navigation.host.XamlRoot()))
-                    return false;
-                if (phase == ChromeDropTarget::Leave) { navigation.LeaveRoot(); return false; }
+                    return Operation::None;
+                if (phase == ChromeDropTarget::Leave) { navigation.LeaveRoot(); return Operation::None; }
                 auto* host = NativeWindowHost::Get(parent);
-                POINT cursor{};
-                if (!host || !host->bridge || !GetCursorPos(&cursor) || !ScreenToClient(host->bridge, &cursor)) return false;
+                if (!host || !host->bridge || !ScreenToClient(host->bridge, &cursor)) return Operation::None;
                 const double scale = root.RasterizationScale() > 0 ? root.RasterizationScale() : 1.0;
                 const Windows::Foundation::Point at{float(cursor.x / scale), float(cursor.y / scale)};
-                return phase == ChromeDropTarget::Drop ? navigation.DropOnRoot(info.Data(), at, ui)
-                                                       : navigation.DragOverRoot(info.Data(), at, ui);
+                const bool accepted = phase == ChromeDropTarget::Drop ? navigation.DropOnRoot(info.Data(), at, ui)
+                                                                    : navigation.DragOverRoot(info.Data(), at, ui);
+                return accepted ? Operation::Move : Operation::None;
             });
         auto dropManager = SystemDrag::DragDropManager::GetForIsland(strip->root.XamlRoot().ContentIsland());
         externalDropRevoker = dropManager.TargetRequested(auto_revoke,
@@ -2009,6 +2068,7 @@ HRESULT WINAPI UpdateAddress(HWND hwnd, const RECT* rect, BOOL visible) noexcept
         }
         NativeWindowHost::KeepOrder(hwnd);
         site.Show();
+        pane.RefreshAddressPresentation();
         pane.ApplyPageRegion();
         pane.address->PlacePopup();
         return S_OK;

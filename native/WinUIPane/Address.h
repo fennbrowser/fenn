@@ -11,6 +11,7 @@
 #include "GlobalActions.h"
 #include "SuggestionList.h"
 #include "NavigationToolbar.h"
+#include "BookmarksToolbar.h"
 #include "AddressContextMenu.h"
 #include "PageActionsMenu.h"
 #include "BookmarkPanel.h"
@@ -20,6 +21,8 @@
 #include "TranslationsPanel.h"
 #include "SelectedTranslationsPanel.h"
 #include "PageContextMenu.h"
+#include "NewTabPage.h"
+#include "TabMotion.h"
 
 // Win32 owns keyboard-layout translation. Probe without consuming dead-key state.
 inline bool NativeAltGrTextKey(UINT key) {
@@ -42,6 +45,65 @@ struct NativeAddress {
     static constexpr NativeJson::ImageLimits kRowImageLimits{104, 65536};
     Microsoft::UI::Xaml::Controls::StackPanel root;
     Microsoft::UI::Xaml::Controls::Grid toolbarRoot{nullptr}, toolbarSurface{nullptr};
+    Microsoft::UI::Xaml::Controls::Grid toolbarRow{nullptr}, addressSlot{nullptr};
+    Microsoft::UI::Xaml::Controls::Canvas addressLayer{nullptr};
+    NativeNewTabPage newTab;
+    NativeBookmarksToolbar bookmarksToolbar;
+    Microsoft::UI::Xaml::Data::BindingBase toolbarCorners{nullptr}, newTabCorners{nullptr};
+    bool roundedNewTab{};
+    void SetNewTabCorners(bool enabled) {
+        if (roundedNewTab == enabled) return;
+        roundedNewTab = enabled;
+        toolbarSurface.SetBinding(Microsoft::UI::Xaml::Controls::Grid::CornerRadiusProperty(),
+                                  enabled ? newTabCorners : toolbarCorners);
+    }
+    double editorLayoutHeight{-1};
+    bool animateEditorPlacement{};
+    Microsoft::UI::Xaml::Media::TranslateTransform editorTranslation;
+    Microsoft::UI::Xaml::Media::Animation::Storyboard editorMotion{nullptr};
+    void StopEditorMotion() {
+        if (editorMotion) { editorMotion.Stop(); editorMotion=nullptr; }
+        editorTranslation.X(0); editorTranslation.Y(0);
+    }
+    std::function<void()> presentationChanged;
+    void ArrangeEditor() {
+        using namespace Microsoft::UI::Xaml::Controls;
+        if (!addressSlot || !addressLayer || !addressSlot.XamlRoot()) return;
+        auto point = addressSlot.TransformToVisual(addressLayer).TransformPoint({0,0});
+        double width = (std::max)(0.0, addressSlot.ActualWidth()-16);
+        double left = point.X+8, top = point.Y+4;
+        if (newTab.enabled) {
+            width = (std::min)(600.0, (std::max)(0.0, toolbarRoot.ActualWidth()-48));
+            left = (toolbarRoot.ActualWidth()-width)/2;
+            top = (std::max)(224.0, (toolbarRoot.ActualHeight()-40)*.38);
+        }
+        if (root.Width()==width && Canvas::GetLeft(root)==left && Canvas::GetTop(root)==top &&
+            editorLayoutHeight==toolbarRoot.ActualHeight()) return;
+        editorLayoutHeight=toolbarRoot.ActualHeight();
+        const double oldLeft=Canvas::GetLeft(root)+editorTranslation.X(),oldTop=Canvas::GetTop(root)+editorTranslation.Y();
+        StopEditorMotion();
+        if (newTab.enabled) newTab.Arrange(toolbarRoot.ActualWidth(),toolbarRoot.ActualHeight(),top,width);
+        if (root.Width()!=width) root.Width(width);
+        if (Canvas::GetLeft(root)!=left) Canvas::SetLeft(root,left);
+        if (Canvas::GetTop(root)!=top) Canvas::SetTop(root,top);
+        const bool animate=std::exchange(animateEditorPlacement,false);
+        if (animate && newTab.enabled && root.IsLoaded() && std::isfinite(oldLeft) && std::isfinite(oldTop) &&
+            !HasActiveComposition() && !popup.IsOpen() && Windows::UI::ViewManagement::UISettings().AnimationsEnabled()) {
+            using namespace Microsoft::UI::Xaml;
+            editorMotion=Media::Animation::Storyboard();
+            for(auto const& entry:{std::pair{L"X",oldLeft-left},std::pair{L"Y",oldTop-top}}) {
+                Media::Animation::DoubleAnimation animation;
+                animation.From(entry.second);animation.To(0.0);
+                animation.Duration(Duration{Windows::Foundation::TimeSpan{TabMotion::GroupDuration},DurationType::TimeSpan});
+                animation.EasingFunction(TabMotion::Ease());
+                Media::Animation::Storyboard::SetTarget(animation,editorTranslation);
+                Media::Animation::Storyboard::SetTargetProperty(animation,entry.first);
+                editorMotion.Children().Append(animation);
+            }
+            editorMotion.Begin();
+        }
+        PlacePopup();
+    }
     std::unique_ptr<NativeNavigationToolbar> navigation;
     std::function<void(winrt::hstring const&)> navigate;
     // An explicitly unbound presenter owns local text without creating a
@@ -201,7 +263,7 @@ struct NativeAddress {
         }
     }
     std::shared_ptr<int> lifetime = std::make_shared<int>(0);
-    ~NativeAddress() { lifetime.reset(); if (popup) popup.IsOpen(false); }
+    ~NativeAddress() { lifetime.reset(); StopEditorMotion(); if (popup) popup.IsOpen(false); }
 
     static void ValidateModeImage(JObject const& item, size_t& total) {
         NativeJson::ValidateImage(item, total, NativeJson::kIconImageLimits);
@@ -453,6 +515,7 @@ struct NativeAddress {
         Action(L"blur", direction);
     }
     explicit NativeAddress(NativeShellCore& core) : mode(core), shell(core), interaction(core) {
+        root.RenderTransform(editorTranslation);
         using namespace Microsoft::UI::Xaml;
         using namespace Microsoft::UI::Xaml::Controls;
         root.Visibility(Visibility::Collapsed);
@@ -584,6 +647,7 @@ struct NativeAddress {
         });
         field.PreviewKeyDown([this, alive = std::weak_ptr<int>(lifetime)](auto const&, auto const& e) {
             if (alive.expired()) return;
+            StopEditorMotion();
             if (!composing && e.Key() == winrt::Windows::System::VirtualKey::Enter)
                 ApplyInteraction(interaction.PrepareSubmit(EditorOwned()));
             else interaction.Interrupt(EditorOwned());
@@ -949,6 +1013,25 @@ struct NativeAddress {
             }
             navigate(action.Stringify());
         };
+        bookmarksToolbar.activate = [this](auto command, auto modifiers, auto const& element, auto bounds, auto const& url) {
+            if (syncing || session.empty() || !navigate || navigation->customization.editing || !element.XamlRoot())
+                return;
+            auto action = Message(L"navigation");
+            action.SetNamedValue(L"command", JValue::CreateStringValue(command));
+            action.SetNamedValue(L"modifiers", JValue::CreateNumberValue(modifiers));
+            auto local = element.TransformToVisual(nullptr).TransformBounds(bounds);
+            auto screen = element.XamlRoot().ContentIsland().CoordinateConverter().ConvertLocalToScreen(local);
+            action.SetNamedValue(L"x", JValue::CreateNumberValue(screen.X));
+            action.SetNamedValue(L"y", JValue::CreateNumberValue(screen.Y));
+            action.SetNamedValue(L"width", JValue::CreateNumberValue(screen.Width));
+            action.SetNamedValue(L"height", JValue::CreateNumberValue(screen.Height));
+            if (!url.empty()) action.SetNamedValue(L"url", JValue::CreateStringValue(url));
+            const std::wstring_view verb(command);
+            if (releaseMenuFocus && (verb.starts_with(L"bookmarks-toolbar:open:") ||
+                verb.starts_with(L"bookmarks-toolbar:middle:") || verb.starts_with(L"bookmarks-toolbar:context:")))
+                releaseMenuFocus();
+            navigate(action.Stringify());
+        };
         navigation->forgetPanel.core=shell.core;navigation->clearPrivatePanel.core=shell.core;
         navigation->forgetPanel.dispatch=[this](auto command,auto modifiers,auto const& button){navigation->activate(command,modifiers,button.template as<Controls::Button>());};
         navigation->clearPrivatePanel.dispatch=navigation->forgetPanel.dispatch;
@@ -1189,11 +1272,31 @@ struct NativeAddress {
         // The square bottom edge joins the page below without a seam.
         toolbarSurface = Markup::XamlReader::Load(
             LR"(<Grid xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" Background="{ThemeResource LayerOnMicaBaseAltFillColorDefaultBrush}" BorderBrush="{ThemeResource DividerStrokeColorDefaultBrush}" BorderThickness="0,0,0,1" CornerRadius="{Binding Source={ThemeResource OverlayCornerRadius}, Converter={StaticResource TopCornerRadiusFilterConverter}}"/>)").as<Grid>();
+        toolbarCorners = toolbarSurface.GetBindingExpression(Grid::CornerRadiusProperty()).ParentBinding();
+        // The full native radius adds the page's 8-DIP bottom corners. Keep both
+        // bindings live so the toolbar's tab-matching top corners remain themed.
+        auto pageCorners = Markup::XamlReader::Load(
+            LR"(<Grid xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" CornerRadius="{Binding Source={ThemeResource OverlayCornerRadius}}"/>)").as<Grid>();
+        newTabCorners = pageCorners.GetBindingExpression(Grid::CornerRadiusProperty()).ParentBinding();
         toolbarSurface.Visibility(Visibility::Collapsed);
 
+        // Stretch within the address host. Its normal 40-DIP allocation and
+        // WindowCaption's physical-pixel bottom margin keep the divider above
+        // Gecko; a fixed Height would push that stroke underneath the page.
         toolbarRoot.Children().Append(toolbarSurface);
-        toolbarRoot.Children().Append(root);
-        navigation->Attach(toolbarRoot,root,toolbarSurface);
+        toolbarRow = Grid(); toolbarRow.Height(40); toolbarRow.VerticalAlignment(VerticalAlignment::Top);
+        addressSlot = Grid(); addressSlot.MinHeight(40);
+        toolbarRow.Children().Append(addressSlot);
+        navigation->Attach(toolbarRow,addressSlot,toolbarSurface);
+        toolbarRoot.Children().Append(toolbarRow);
+        addressLayer = Canvas();
+        newTab.Create(addressLayer);
+        addressLayer.Children().InsertAt(1,root);
+        toolbarRoot.Children().Append(addressLayer);
+        toolbarRoot.Children().Append(bookmarksToolbar.root);
+        toolbarRoot.LayoutUpdated([this, alive = std::weak_ptr<int>(lifetime)](auto const&,auto const&) {
+            if (!alive.expired()) ArrangeEditor();
+        });
         root.VerticalAlignment(VerticalAlignment::Center);
         Automation::AutomationProperties::SetAutomationId(toolbarRoot, L"FennNavigationToolbar");
         field.ContextFlyout(nullptr);
@@ -1279,6 +1382,11 @@ struct NativeAddress {
         using namespace Microsoft::UI::Xaml::Controls;
         if (snapshot.GetNamedNumber(L"version") != 1) winrt::throw_hresult(E_INVALIDARG);
         if (!snapshot.GetNamedBoolean(L"enabled", false)) {
+            newTab.Apply(JObject());
+            bookmarksToolbar.Apply(JObject());
+            SetNewTabCorners(false);
+            toolbarSurface.BorderThickness(Thickness{0,0,0,1});
+            if (presentationChanged) presentationChanged();
             shell.ResetAddressPublication();
             shell.ResetToolbarPublication();
             if (navigation && !retainEditor) navigation->Apply({}, false);
@@ -1307,6 +1415,7 @@ struct NativeAddress {
         const auto checkedRtl = snapshot.GetNamedBoolean(L"rtl", false);
         const auto checkedTextEpoch = snapshot.HasKey(L"textEpoch") ? NativeJson::RequireRevision(snapshot, L"textEpoch") : 0;
         const auto navigationToolbar = snapshot.GetNamedBoolean(L"navigationToolbar", false);
+        const auto newTabState = NativeNewTabPage::Read(snapshot);
         auto customizationState = NativeToolbarCustomization::Read(snapshot);
         NativeStockToolbar::Validate(customizationState);
         const auto historyMenuState = NativeHistoryMenu::Read(snapshot);
@@ -1587,6 +1696,9 @@ struct NativeAddress {
             else if(toolbarDecision==SHELL_TOOLBAR_PUBLICATION_ACCEPTED)
                 shell.ToolbarPublication(customizationState.revision, customizationState.fingerprint, true);
             shareDocument=nextShareDocument;
+            bookmarksToolbar.Apply(navigationToolbar ?
+                snapshot.GetNamedObject(L"navigation", JObject()).GetNamedObject(L"bookmarksToolbar", JObject()) :
+                JObject(), checkedRtl);
             navigation->Apply(navigationState, navigationToolbar && snapshot.HasKey(L"navigation"));
             navigation->pinned.externalLayout = customizationState.revision != 0;
             navigation->pinned.Apply(pinnedState, navigationToolbar);
@@ -1624,7 +1736,7 @@ struct NativeAddress {
             auto connectionSource=omnibarLeft.rows.find(connectionPanelState.GetNamedString(L"source",L""));
             connectionPanel.Apply(connectionPanelState,navigationToolbar && !navigation->customization.editing,connectionSource!=omnibarLeft.rows.end()?connectionSource->second.button:pageActions.button,applyConnection);
             toolbarSurface.Visibility(navigationToolbar ? Visibility::Visible : Visibility::Collapsed);
-            root.Margin(navigationToolbar ? Thickness{8, 4, 8, 4} : Thickness{0, 0, 0, 0});
+            root.Margin(Thickness{0, 0, 0, 0});
             hideEmbeddedControls = navigationToolbar;
             UpdateEmbeddedControls();
         }
@@ -1648,6 +1760,15 @@ struct NativeAddress {
         if (clipboardId && clipboardEdit != shell.AddressState().edit_id) return L"";
         if (completionSerial && completionEdit != shell.AddressState().edit_id) return L"";
         shell.AddressPublication(nextSession, uint64_t(checkedSequence), uint64_t(checkedRevision), addressFingerprint, true);
+        animateEditorPlacement=!newTab.enabled && newTabState.GetNamedBoolean(L"enabled",false) &&
+            newTabState.GetNamedBoolean(L"animate",false);
+        newTab.Apply(newTabState);
+        SetNewTabCorners(newTab.enabled);
+        editorLayoutHeight=-1;
+        // One live theme surface joins the navigation row to the native page.
+        toolbarSurface.BorderThickness(newTab.enabled ? Thickness{} : Thickness{0,0,0,1});
+        if (presentationChanged) presentationChanged();
+        ArrangeEditor();
         syncing = true;
         try {
             auto placeholder = snapshot.GetNamedString(L"placeholder", L"Search or enter address");

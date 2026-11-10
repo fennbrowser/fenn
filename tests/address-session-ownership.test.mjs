@@ -34,7 +34,7 @@ function fixture(expectNative = true) {
     preparePublication(state){return state;}
   }
   const sandbox=vm.createContext({
-    Services:{prefs:{getBoolPref:()=>true}},
+    Services:{prefs:{getBoolPref:key=>key!=="fenn.winui.newtab.enabled"}},
     ChromeUtils:{importESModule:()=>({WinUIAddressSession:Session})},
     window:{fullScreen:false,windowUtils:{syncWinUIAddress:state=>publications.push(JSON.parse(state))}},
     document:{fullscreenElement:null,documentElement:{matches:()=>false}},
@@ -46,7 +46,7 @@ function fixture(expectNative = true) {
   vm.runInContext('this.methods = ({'+source.slice(start,end)+'});this.syncAddress=methods.syncAddress;',sandbox);
   const old={engine:'independent',onChanged(){throw Error('Obsolete session dirtied successor');},close(){this.onChanged?.();events.push('close-old');view.nativePresentation=null;}};
   const owner={attached:true,addressSession:old,addressTab:tab,addressDocument:1,
-    addressToolbar:{update:()=>true,activate(){events.push('activate');}},
+    addressToolbar:{update:()=>true,bookmarksToolbar:{present(){}},activate(){events.push('activate');}},
     publishAddress:sandbox.methods.publishAddress,
     nativeLabels:()=>({}),addressAvailable:()=>true,invalidateAddress(){}};
   view.nativePresentation=old;

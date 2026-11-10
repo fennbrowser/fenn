@@ -126,7 +126,7 @@ index 1fbef26996f..7c5875a33f0 100644
 +#endif
  
 diff --git a/browser/app/profile/firefox.js b/browser/app/profile/firefox.js
-index 0f4b2915ad2..3c815e7d5df 100644
+index 0f4b2915ad2..5c82ff3a4e9 100644
 --- a/browser/app/profile/firefox.js
 +++ b/browser/app/profile/firefox.js
 @@ -322,3 +322,4 @@ pref("browser.shell.displayKitImageBehindSetDefaultBrowserButton", "off");
@@ -179,7 +179,7 @@ index 0f4b2915ad2..3c815e7d5df 100644
 +// Keep its inspection shortcut out of page context menus unless requested.
 +pref("fenn.contextMenu.inspectAccessibility", false);
  
-@@ -3877,2 +3886,69 @@ pref("distribution.mozillaonline.ignore", true);
+@@ -3877,2 +3886,72 @@ pref("distribution.mozillaonline.ignore", true);
  
 +// The native tab strip is on by default in every lane (unpackaged launcher and
 +// MSIX alike); turn it off to fall back to Firefox's own UI. Firefox keeps its
@@ -214,6 +214,9 @@ index 0f4b2915ad2..3c815e7d5df 100644
 +pref("fenn.winui.address.actions.translation", true);
 +pref("fenn.winui.address.actions.share", true);
 +pref("fenn.winui.navigation.toolbar.enabled", true);
++pref("fenn.winui.bookmarks.toolbar.enabled", false);
++// Native presentation is eligible only with the live native navigation toolbar.
++pref("fenn.winui.newtab.enabled", true);
 +// Explicit development-build trial, shared by unpackaged and development MSIX.
 +#ifdef FENN_DEVELOPMENT_NATIVE_HOST
 +pref("fenn.winui.chrome.layout", true);
@@ -1231,11 +1234,34 @@ index bdf2c9c2928..3c00d8625fa 100644
        await this.#translationsLangPairPromise;
 +    if (!this.contentData || this.window.gContextMenu !== this) { return; }
  
+diff --git a/browser/base/content/test/browser-about/browser_aboutNewTab_bookmarksToolbarEmpty.js b/browser/base/content/test/browser-about/browser_aboutNewTab_bookmarksToolbarEmpty.js
+index c13eb6d47e5..b26d07fa90f 100644
+--- a/browser/base/content/test/browser-about/browser_aboutNewTab_bookmarksToolbarEmpty.js
++++ b/browser/base/content/test/browser-about/browser_aboutNewTab_bookmarksToolbarEmpty.js
+@@ -157,13 +157,8 @@ add_task(async function bookmarks_toolbar_not_shown_when_empty() {
+ 
+-  // 5: Remove all the bookmarks in the toolbar and confirm that the toolbar
+-  // is hidden on the New Tab now
++  // 5: Remove all bookmarks and confirm the toolbar releases its space.
+   await PlacesUtils.bookmarks.remove(bookmarks);
+-  await BrowserTestUtils.switchTab(gBrowser, exampleTab);
+-  await BrowserTestUtils.switchTab(gBrowser, newtab);
+-  await waitForBookmarksToolbarVisibility({
+-    visible: true,
+-    message:
+-      "Toolbar is visible when there are no items or nested bookmarks in the toolbar area",
+-  });
+-  await emptyToolbarMessageVisible(true);
++  await TestUtils.waitForCondition(
++    () => BookmarkingUI.toolbar.getBoundingClientRect().height === 0,
++    "An empty bookmarks toolbar should occupy no space"
++  );
+ 
 diff --git a/browser/base/jar.mn b/browser/base/jar.mn
-index b2b5db6040b..e414a97a611 100644
+index b2b5db6040b..356fe40bc82 100644
 --- a/browser/base/jar.mn
 +++ b/browser/base/jar.mn
-@@ -35,2 +35,47 @@ browser.jar:
+@@ -35,2 +35,55 @@ browser.jar:
          content/browser/browser.js                    (content/browser.js)
 +        content/browser/browser-winui-pane.js          (content/browser-winui-pane.js)
 +        content/browser/WinUITabMenuCommands.sys.mjs      (content/WinUITabMenuCommands.sys.mjs)
@@ -1277,13 +1303,21 @@ index b2b5db6040b..e414a97a611 100644
 +        content/browser/WinUIDownloadsPanel.sys.mjs  (content/WinUIDownloadsPanel.sys.mjs)
 +        content/browser/WinUIHistoryMenu.sys.mjs     (content/WinUIHistoryMenu.sys.mjs)
 +        content/browser/WinUIActionStamp.sys.mjs     (content/WinUIActionStamp.sys.mjs)
++        content/browser/WinUIBookmarksToolbar.sys.mjs   (content/WinUIBookmarksToolbar.sys.mjs)
 +        content/browser/WinUIAddressToolbar.sys.mjs     (content/WinUIAddressToolbar.sys.mjs)
++        content/browser/WinUINewTabPage.sys.mjs          (content/WinUINewTabPage.sys.mjs)
++# These are loaded directly by the sandboxed about process. Preprocess into
++# real dist files: flat-build source symlinks are outside its allowed paths.
++*       content/browser/WinUINewTabDocument.sys.mjs      (content/WinUINewTabDocument.sys.mjs)
++*       content/browser/WinUINewTabDocumentChild.sys.mjs (content/WinUINewTabDocumentChild.sys.mjs)
++        content/browser/WinUINewTabDocumentParent.sys.mjs (content/WinUINewTabDocumentParent.sys.mjs)
++*       content/browser/winui-newtab.html               (content/winui-newtab.html)
 +        content/browser/WinUIChromeLayout.sys.mjs       (content/WinUIChromeLayout.sys.mjs)
 +        content/browser/WinUIChromeLayout.css           (content/WinUIChromeLayout.css)
 +        content/browser/WinUINavigationState.sys.mjs    (content/WinUINavigationState.sys.mjs)
 +        content/browser/WinUIAddressToolbar.css         (content/WinUIAddressToolbar.css)
  *       content/browser/browser.xhtml                 (content/browser.xhtml)
-@@ -106 +151,17 @@ browser.jar:
+@@ -106 +159,17 @@ browser.jar:
  % override chrome://global/locale/appstrings.properties chrome://browser/locale/appstrings.properties
 +
 +        content/browser/urlbar/UrlbarResultActions.mjs (../components/urlbar/content/UrlbarResultActions.mjs)
@@ -1524,6 +1558,28 @@ index 311e0d736c7..a61d9457612 100644
      setTimeout(() => {
 +      if (nativeAnchor && nativeAnchor() !== anchor) return;
        PanelMultiView.openPopup(
+diff --git a/browser/components/newtab/AboutNewTabRedirector.sys.mjs b/browser/components/newtab/AboutNewTabRedirector.sys.mjs
+index 33ebe5111a1..571241da829 100644
+--- a/browser/components/newtab/AboutNewTabRedirector.sys.mjs
++++ b/browser/components/newtab/AboutNewTabRedirector.sys.mjs
+@@ -31,2 +31,3 @@ const lazy = {};
+ ChromeUtils.defineESModuleGetters(lazy, {
++  nativeNewTabChannel: "chrome://browser/content/WinUINewTabDocument.sys.mjs",
+   BasePromiseWorker: "resource://gre/modules/PromiseWorker.sys.mjs",
+@@ -540,2 +541,6 @@ export class AboutNewTabRedirectorParent extends BaseAboutNewTabRedirector {
+   newChannel(uri, loadInfo) {
++    if (Services.prefs.getBoolPref("fenn.winui.newtab.enabled",true)) {
++      const native = lazy.nativeNewTabChannel(uri,loadInfo);
++      if (native) return native;
++    }
+     let chromeURI = this.getChromeURI(uri);
+@@ -595,2 +600,6 @@ export class AboutNewTabRedirectorChild extends BaseAboutNewTabRedirector {
+ 
++    if (Services.prefs.getBoolPref("fenn.winui.newtab.enabled",true)) {
++      const native = lazy.nativeNewTabChannel(uri,loadInfo);
++      if (native) return native;
++    }
+     let pageURI;
 diff --git a/browser/components/places/PlacesUIUtils.sys.mjs b/browser/components/places/PlacesUIUtils.sys.mjs
 index 16b4b7bf0e1..6df6c842c59 100644
 --- a/browser/components/places/PlacesUIUtils.sys.mjs
@@ -1851,6 +1907,14 @@ index 920dbda4dfa..0816cddd68c 100644
 -        content/browser/icons/pixelated.ico                   (icons/pixelated.ico)
 -        content/browser/icons/momo.ico                        (icons/momo.ico)
 -        content/browser/icons/kit.ico                         (icons/kit.ico)
+diff --git a/browser/components/tabbrowser/NewTabPagePreloading.sys.mjs b/browser/components/tabbrowser/NewTabPagePreloading.sys.mjs
+index 09b8c8d57f9..668e4970ab4 100644
+--- a/browser/components/tabbrowser/NewTabPagePreloading.sys.mjs
++++ b/browser/components/tabbrowser/NewTabPagePreloading.sys.mjs
+@@ -101,2 +101,3 @@ export let NewTabPagePreloading = {
+       !this.enabled ||
++      window.gWinUIPane?.newTabPage?.authorized ||
+       window.gBrowser.preloadedBrowser ||
 diff --git a/browser/components/tabbrowser/Tabbrowser.sys.mjs b/browser/components/tabbrowser/Tabbrowser.sys.mjs
 index 430e1137a15..6dbf75a4542 100644
 --- a/browser/components/tabbrowser/Tabbrowser.sys.mjs
@@ -9510,10 +9574,10 @@ index 4962ed6d290..093ac1782d4 100644
 +extension-firefox-alpenglow-name=Alpenglow
  extension-firefox-alpenglow-description=Use a colorful appearance for buttons, menus, and windows.
 diff --git a/browser/locales/en-US/browser/tabbrowser.ftl b/browser/locales/en-US/browser/tabbrowser.ftl
-index 4f28e62c7b5..c15535e5339 100644
+index 4f28e62c7b5..2ad65b26755 100644
 --- a/browser/locales/en-US/browser/tabbrowser.ftl
 +++ b/browser/locales/en-US/browser/tabbrowser.ftl
-@@ -520 +520,163 @@ split-view-menuitem-close-both-tabs =
+@@ -520 +520,167 @@ split-view-menuitem-close-both-tabs =
  ##
 +
 +# Status descriptions for the opt-in native tab strip.
@@ -9677,6 +9741,10 @@ index 4f28e62c7b5..c15535e5339 100644
 +winui-engine-recovery-close = Close window
 +winui-engine-recovery-waiting = Retry will be available shortly. Recovery will not start automatically.
 +winui-engine-recovery-draft = Unsent address text
++
++# Native new-tab presentation; browser semantics remain in Firefox.
++winui-newtab-name = { -brand-short-name }
++winui-newtab-shortcuts = Shortcuts
 diff --git a/browser/locales/en-US/chrome/overrides/appstrings.properties b/browser/locales/en-US/chrome/overrides/appstrings.properties
 index 13464a72e83..7c92cbb1828 100644
 --- a/browser/locales/en-US/chrome/overrides/appstrings.properties
@@ -9798,6 +9866,28 @@ index 8979a2e4e8d..b28367c6c9d 100644
 +option("--enable-fenn-development-native-host", default=False,
 +       help="Enable the development independent native window default")
 +set_define("FENN_DEVELOPMENT_NATIVE_HOST", depends("--enable-fenn-development-native-host")(lambda value: bool(value)))
+diff --git a/browser/themes/shared/browser-shared.css b/browser/themes/shared/browser-shared.css
+index a717b8cc131..53e6e75dd8b 100644
+--- a/browser/themes/shared/browser-shared.css
++++ b/browser/themes/shared/browser-shared.css
+@@ -680,2 +680,17 @@ body {
+ 
++  /* Keep Places in layout so it can populate the first item while the
++     toolbar occupies no vertical space. The collapsed attribute still
++     belongs to Firefox's toolbar visibility setting. */
++  &:not([customizing]):has(> #personal-bookmarks) {
++    > #personal-toolbar-empty {
++      display: none;
++    }
++
++    &:not(:has(#PlacesToolbarItems > toolbarbutton, > :not(#personal-bookmarks, #import-button, [skipintoolbarset], [hidden]))) {
++      max-height: 0;
++      padding-block: 0;
++      visibility: hidden;
++    }
++  }
++
+   /* Bookmarks toolbar empty message */
 diff --git a/browser/themes/shared/urlbar.css b/browser/themes/shared/urlbar.css
 index bbd8b165659..09bbf1a0b9e 100644
 --- a/browser/themes/shared/urlbar.css
@@ -11235,6 +11325,764 @@ index 30846e96272..985c9f8934e 100644
 +    }
 +#endif
      /* the nativeWindow pointer is converted to and exposed as a string. This
+diff --git a/browser/base/content/WinUIBookmarksToolbar.sys.mjs b/browser/base/content/WinUIBookmarksToolbar.sys.mjs
+new file mode 100644
+index 00000000000..72cae4b1ea7
+--- /dev/null
++++ b/browser/base/content/WinUIBookmarksToolbar.sys.mjs
+@@ -0,0 +1,412 @@
++/* This Source Code Form is subject to the terms of the Mozilla Public
++ * License, v. 2.0. If a copy of the MPL was not distributed with this
++ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
++
++import { decodeWinUIToolbarIcon } from "./WinUIProductMenu.sys.mjs";
++
++const PREF = "fenn.winui.bookmarks.toolbar.enabled";
++const PRESENTED = "winui-native-bookmarks-toolbar";
++const windows = new Map();
++
++// Places keeps its result and its overflow calculation live in the original
++// reservation. Native code receives only visible controls and opaque IDs.
++export class WinUIBookmarksToolbar {
++  constructor(toolbar) {
++    this.toolbar = toolbar;
++    const { window, owner } = toolbar;
++    this.window = window;
++    this.windowId = String(window.docShell.outerWindowID);
++    this.dragPopups = [];
++    windows.set(this.windowId, this);
++    this.bar = window.document.getElementById("PersonalToolbar");
++    this.items = window.document.getElementById("PlacesToolbarItems");
++    this.ids = new WeakMap();
++    this.icons = new WeakMap();
++    this.nextId = 0;
++    this.targets = new Map();
++    this.changed = () => owner.invalidateAddress();
++    this.faviconsChanged = events => {
++      const urls = new Set(events.map(event => event.url));
++      let dirty = false;
++      for (const { node, identity } of this.targets.values()) {
++        if (urls.has(identity.uri)) {
++          this.icons.delete(node);
++          dirty = true;
++        }
++      }
++      if (dirty) this.changed();
++    };
++    this.mutations = new window.MutationObserver(this.changed);
++    this.resize = new window.ResizeObserver(this.changed);
++    this.prefChanged = () => {
++      this.observe();
++      this.changed();
++    };
++    Services.prefs.addObserver(PREF, this.prefChanged);
++    this.observe();
++  }
++
++  get requested() {
++    return Services.prefs.getBoolPref(PREF, false);
++  }
++
++  observe() {
++    this.mutations.disconnect();
++    this.resize.disconnect();
++    if (this.observingFavicons) {
++      this.window.PlacesUtils.observers.removeListener(["favicon-changed"], this.faviconsChanged);
++      this.observingFavicons = false;
++    }
++    if (!this.requested) {
++      this.icons = new WeakMap();
++      this.present(false);
++      return;
++    }
++    this.mutations.observe(this.bar, {
++      subtree: true, childList: true, attributes: true,
++      attributeFilter: ["collapsed", "hidden", "style", "label", "tooltiptext", "toolbarname", "initialized", "image"],
++    });
++    this.resize.observe(this.bar);
++    this.resize.observe(this.items);
++    this.window.PlacesUtils.observers.addListener(["favicon-changed"], this.faviconsChanged);
++    this.observingFavicons = true;
++  }
++
++  present(visible) {
++    this.window.document.documentElement.toggleAttribute(PRESENTED, visible);
++    if (!visible) this.clearDragHover();
++    if (!visible && this.popup) {
++      this.popup.hidePopup();
++      this.popup = null;
++    }
++  }
++
++  measure(rect) {
++    this.targets.clear();
++    this.state = null;
++    const result = this.project(rect);
++    if (!result) {
++      this.present(false);
++      return rect;
++    }
++    this.state = result;
++    return { x: rect.x, y: rect.y, width: rect.width,
++      height: result.top + result.height };
++  }
++
++  favicon(node, identity) {
++    let record = this.icons.get(node);
++    if (record?.identity === identity) return record.pixels;
++    record = { identity, pixels: null };
++    this.icons.set(node, record);
++    const { window, toolbar } = this;
++    void (async () => {
++      try {
++        const icon = await window.PlacesUtils.favicons.getFaviconForPage(
++          Services.io.newURI(identity.uri), 16);
++        return await decodeWinUIToolbarIcon(window, icon?.dataURI?.spec, 16,
++          data => toolbar.owner.encodePixels(data));
++      } catch {
++        return null;
++      }
++    })().then(pixels => {
++      if (pixels && this.icons.get(node) === record &&
++          this.targets.get(identity.id)?.node === node && this.requested) {
++        record.pixels = pixels;
++        this.changed();
++      } else if (this.icons.get(node) === record && !this.targets.has(identity.id)) {
++        this.icons.delete(node);
++      }
++    });
++    return null;
++  }
++
++  project(rect) {
++    const { window, bar, items } = this;
++    const document = window.document;
++    if (!this.requested || !this.toolbar.active ||
++        bar.hidden || bar.collapsed || !bar.hasAttribute("initialized") ||
++        this.toolbar.customization?.editorOpen || !items.childElementCount) {
++      return null;
++    }
++    const { CustomizableUI } = window;
++    const widgets = CustomizableUI.getWidgetIdsInArea(CustomizableUI.AREA_BOOKMARKS);
++    if (widgets.length !== 1 || widgets[0] !== "personal-bookmarks") {
++      return null;
++    }
++    const bounds = bar.getBoundingClientRect();
++    const top = bounds.y - rect.y;
++    if (Math.abs(top - rect.height) > 1 || bounds.height < 20 ||
++        bounds.height > 48 || bounds.width < rect.width || rect.width < 528) {
++      return null;
++    }
++    const label = bar.getAttribute("toolbarname");
++    if (!label) {
++      return null;
++    }
++
++    const entries = [];
++    const images = {};
++    let dragUrlUnits = 0;
++    const targets = new Map();
++    const nodes = [...items.children, document.getElementById("PlacesChevron"),
++      document.getElementById("OtherBookmarks")];
++    for (const node of nodes) {
++      if (!node || node.hidden || node.collapsed || node.style.visibility === "hidden") {
++        continue;
++      }
++      const box = node.getBoundingClientRect();
++      if (box.width <= 0 || box.height <= 0) {
++        continue;
++      }
++      if (entries.length === 128 || box.left < bounds.left - 1 ||
++          box.right > bounds.right + 1) {
++        return null;
++      }
++      const placesNode = node._placesNode;
++      const kind = node.localName === "toolbarseparator" ? "separator" :
++        node.id === "PlacesChevron" ? "overflow" :
++        node.getAttribute("container") === "true" ? "folder" :
++        placesNode && window.PlacesUtils.nodeIsURI(placesNode) ? "bookmark" : null;
++      if (!kind) {
++        return null;
++      }
++      const uri = kind === "bookmark" ? placesNode.uri : "";
++      const title = node.getAttribute("label") || node.getAttribute("tooltiptext") || uri;
++      if (kind !== "separator" && !title) {
++        return null;
++      }
++      let identity = this.ids.get(node);
++      if (!identity || identity.placesNode !== placesNode || identity.uri !== uri) {
++        identity = { id: String(++this.nextId), placesNode, uri };
++        this.ids.set(node, identity);
++      }
++      const scale = rect.width / bounds.width;
++      entries.push({ id: identity.id, kind, label: title.slice(0, 1024),
++        draggable: !!placesNode && node.parentNode === items,
++        left: Math.max(0, box.left - bounds.left) * scale, width: box.width * scale });
++      if (kind === "bookmark") {
++        const image = this.favicon(node, identity);
++        if (image) images[identity.id] = { image };
++        // Only ordinary web links are exported to other applications.
++        const url = URL.parse(uri);
++        if (uri.length <= 8192 && dragUrlUnits + uri.length <= 32768 &&
++            (url?.protocol === "https:" || url?.protocol === "http:")) {
++          entries.at(-1).dragUrl = uri;
++          dragUrlUnits += uri.length;
++        }
++      }
++      targets.set(identity.id, { node, kind, identity });
++    }
++    if (!entries.some(entry => entry.kind !== "separator")) {
++      return null;
++    }
++    this.targets = targets;
++    return { top, height: bounds.height, label, entries, images, windowId: this.windowId };
++  }
++
++  execute(action, event) {
++    if (!this.window.document.documentElement.hasAttribute(PRESENTED) ||
++        !this.requested || this.bar.collapsed || this.toolbar.customization?.editorOpen ||
++        this.window.gDialogBox?.isOpen) {
++      return 2;
++    }
++    if (action.command === "bookmarks-toolbar:drag-cancel") {
++      this.clearDragHover();
++      return 1;
++    }
++    const drag = /^bookmarks-toolbar:(drop|hover):(?:(\d+):)?(\d+)$/.exec(action.command);
++    if (drag) {
++      const [, verb, sourceWindow, id] = drag;
++      action.bookmarkSource = sourceWindow;
++      if (verb === "hover") return this.hover(id, action);
++      try {
++        return this.drop(id, action);
++      } finally {
++        this.clearDragHover();
++      }
++    }
++    const match = /^bookmarks-toolbar:(open|middle|context):([0-9]+)$/.exec(action.command);
++    if (!match) return 2;
++    const [, verb, id] = match;
++    const target = id === "0" && verb === "context" ?
++      { node: this.items, kind: "space", identity: { placesNode: this.items._placesNode } } :
++      this.targets.get(id);
++    if (!target) {
++      return 2;
++    }
++    const { node, kind, identity } = target;
++    if (!this.bar.contains(node) || node.hidden || node.collapsed ||
++        node.style.visibility === "hidden" || node._placesNode !== identity.placesNode ||
++        (kind === "bookmark" && node._placesNode.uri !== identity.uri)) {
++      return 2;
++    }
++    const { window } = this;
++    if (verb === "context") {
++      const anchor = this.toolbar.menuAnchor("bookmarks-toolbar", action);
++      if (!anchor) {
++        return 2;
++      }
++      const popup = window.document.getElementById("placesContext");
++      // Gecko's context controller resolves its selection from triggerNode.
++      node.dispatchEvent(event);
++      const bounds = anchor.getBoundingClientRect();
++      popup.openPopupAtScreen(window.mozInnerScreenX + bounds.left,
++        window.mozInnerScreenY + bounds.bottom, true, event);
++      this.popup = popup;
++      return 1;
++    }
++    // A private event supplies Places with the original DOM node and the
++    // physical modifiers without dispatching a second click or default action.
++    node.dispatchEvent(event);
++    if (kind === "bookmark") {
++      window.BookmarksEventHandler.onCommand(event);
++      return 1;
++    }
++    if (kind === "folder" && (verb === "middle" || event.ctrlKey || event.shiftKey)) {
++      window.BookmarksEventHandler.onClick(event,
++        window.document.getElementById("PlacesToolbar")._placesView);
++      return 1;
++    }
++    const popup = node.querySelector(":scope > menupopup");
++    const anchor = this.toolbar.menuAnchor("bookmarks-toolbar", action);
++    if (verb !== "open" || !popup || !anchor) {
++      return 2;
++    }
++    popup.openPopup(anchor, { position: "after_start", triggerEvent: event });
++    this.popup = popup;
++    return 1;
++  }
++
++  sourceFor(id, action) {
++    const bar = action.bookmarkSource ? windows.get(action.bookmarkSource) : this;
++    if (!bar?.requested || !bar.toolbar.active || bar.bar.collapsed ||
++        !bar.window.document.documentElement.hasAttribute(PRESENTED)) return null;
++    const source = bar.targets.get(id);
++    if (!source || source.node.parentNode !== bar.items ||
++        source.node._placesNode !== source.identity.placesNode ||
++        (source.kind === "bookmark" && source.node._placesNode.uri !== source.identity.uri)) return null;
++    return source;
++  }
++
++  dropPoint(action) {
++    const { window, items } = this;
++    const bounds = this.bar.getBoundingClientRect();
++    const row = this.toolbar.row.getBoundingClientRect();
++    const screenX = action.x / window.devicePixelRatio;
++    const screenY = action.y / window.devicePixelRatio;
++    if (!Number.isFinite(screenX) || !Number.isFinite(screenY)) return null;
++    const view = window.document.getElementById("PlacesToolbar")._placesView;
++    const contains = node => {
++      const { width, height } = node.getBoundingClientRect();
++      return screenX >= node.screenX && screenX < node.screenX + width &&
++        screenY >= node.screenY && screenY < node.screenY + height;
++    };
++    for (let i = this.dragPopups.length - 1; i >= 0; --i) {
++      const popup = this.dragPopups[i];
++      if (popup.state !== "open" || !contains(popup)) continue;
++      const target = [...popup.children].find(node => contains(node) &&
++        ["menu", "menuitem", "menuseparator"].includes(node.localName)) || popup;
++      const clientY = target.getBoundingClientRect().y + screenY - target.screenY;
++      return { point: popup._getDropPoint({ target, clientY }), target, view, depth: i + 1 };
++    }
++    const x = screenX - window.mozInnerScreenX;
++    const y = screenY - window.mozInnerScreenY;
++    if (x < row.left || x >= row.right || y < bounds.top || y >= bounds.bottom) return null;
++    // Undo the horizontal projection before asking Places for its insertion
++    // point. Firefox still owns ordering, folder thresholds and transactions.
++    const clientX = bounds.left + (x - row.left) * bounds.width / row.width;
++    const target = [...this.targets.values()].find(({ node }) => {
++      if (node.style.visibility === "hidden" || node.hidden || node.collapsed) return false;
++      const rect = node.getBoundingClientRect();
++      return clientX >= rect.left && clientX < rect.right;
++    })?.node || items;
++    return { point: view?._getDropPoint({ target, clientX }), target, view, depth: 0 };
++  }
++
++  clearDragHover(depth = 0) {
++    this.window.clearTimeout(this.hoverTimer);
++    this.hoverFolder = null;
++    for (const popup of this.dragPopups.splice(depth).reverse()) popup.hidePopup();
++  }
++
++  hover(id, action) {
++    const source = this.sourceFor(id, action);
++    const hit = source && this.dropPoint(action);
++    if (!hit) {
++      // Keep the open path across the small gap between a menu and submenu.
++      this.window.clearTimeout(this.hoverTimer);
++      this.hoverFolder = null;
++      return 2;
++    }
++    const { point, target, depth } = hit;
++    const folder = point?.folderElt;
++    const popup = folder?.querySelector(":scope > menupopup");
++    if (popup && this.dragPopups[depth] === popup && popup.state !== "closed") return 1;
++    if (folder && this.hoverFolder === folder) return 1;
++    this.clearDragHover(depth);
++    if (!popup || !this.withDropTarget(target, point.ip, this.transfer(source), () => {})) return 2;
++    this.hoverFolder = folder;
++    this.hoverTimer = this.window.setTimeout(() => {
++      if (this.hoverFolder !== folder || !folder.isConnected || !this.sourceFor(id, action)) return;
++      this.dragPopups[depth] = popup;
++      if (depth) folder.open = true;
++      else popup.openPopup(folder, { position: "after_start" });
++    }, 350);
++    return 1;
++  }
++
++  transfer(source, url = null, copy = false) {
++    const { PlacesUtils } = this.window;
++    const type = url ? PlacesUtils.TYPE_X_MOZ_URL : PlacesUtils.TYPE_X_MOZ_PLACE;
++    const data = url ? `${url.href}\n${url.href}` : PlacesUtils.wrapNode(source.node._placesNode, type);
++    return {
++      mozItemCount: 1,
++      mozTypesAt: () => [type],
++      mozGetDataAt: () => data,
++      dropEffect: url || copy ? "copy" : "move",
++    };
++  }
++
++  withDropTarget(target, point, transfer, accept) {
++    const helper = this.window.PlacesControllerDragHelper;
++    const previous = helper.currentDropTarget;
++    helper.currentDropTarget = target;
++    try {
++      if (!helper.canDrop(point, transfer)) return false;
++      accept(helper);
++      return true;
++    } finally {
++      helper.currentDropTarget = previous;
++    }
++  }
++
++  drop(id, action) {
++    const external = id === "0";
++    const url = external && typeof action.url === "string" && action.url.length <= 8192 ?
++      URL.parse(action.url) : null;
++    const source = external ? null : this.sourceFor(id, action);
++    if (external ? !["http:", "https:"].includes(url?.protocol) : !source) return 2;
++    const hit = this.dropPoint(action);
++    if (!hit?.point?.ip) return 2;
++    const { target, point, view } = hit;
++    const transfer = this.transfer(source, url, !!(action.modifiers & 1));
++    return this.withDropTarget(target, point.ip, transfer, helper => {
++      void helper.onDrop(point.ip, transfer, view).catch(console.error);
++    }) ? 1 : 2;
++  }
++
++  close() {
++    windows.delete(this.windowId);
++    this.present(false);
++    this.targets.clear();
++    this.resize.disconnect();
++    this.mutations.disconnect();
++    if (this.observingFavicons) {
++      this.window.PlacesUtils.observers.removeListener(["favicon-changed"], this.faviconsChanged);
++      this.observingFavicons = false;
++    }
++    this.icons = new WeakMap();
++    Services.prefs.removeObserver(PREF, this.prefChanged);
++  }
++}
+diff --git a/browser/base/content/WinUINewTabDocument.sys.mjs b/browser/base/content/WinUINewTabDocument.sys.mjs
+new file mode 100644
+index 00000000000..02cb93ed579
+--- /dev/null
++++ b/browser/base/content/WinUINewTabDocument.sys.mjs
+@@ -0,0 +1,44 @@
++#filter substitution
++// Staged as a real browser resource for sandboxed about-process loading.
++// Only explicitly authorized native windows get the minimal about:newtab
++// document. The URL, principal and session-history identity remain about:newtab.
++const KEY = "fenn/native-newtab-contexts";
++const windows = new Map();
++const stockOnce = new Set();
++let last = "";
++
++export function authorizeNewTabWindow(window, allowed) {
++  if (Services.appinfo.processType !== Services.appinfo.PROCESS_TYPE_DEFAULT) return;
++  if (allowed) windows.set(window,Array.from(window.gBrowser.browsers,b => b.browsingContext?.id).filter(Boolean));
++  else windows.delete(window);
++  const ids = [...new Set([...windows.values()].flat())].slice(0,4096).sort((a,b)=>a-b);
++  const signature = JSON.stringify(ids);
++  if (signature === last) return;
++  last = signature;
++  Services.ppmm.sharedData.set(KEY,ids);
++  Services.ppmm.sharedData.flush();
++}
++
++export function useStockNewTabOnce(contextId) {
++  stockOnce.add(contextId);
++}
++
++export function nativeNewTabChannel(uri, loadInfo) {
++  if (uri.spec !== "about:newtab" || loadInfo.originAttributes.privateBrowsingId ||
++      !Services.prefs.getBoolPref("fenn.winui.newtab.enabled",true) ||
++      !Services.prefs.getBoolPref("browser.newtabpage.enabled",true)) return null;
++  // The target is the new document's context; browsingContext can instead be
++  // the chrome window initiating a top-level browser load.
++  // A content-process about channel can be created before the target context
++  // is locally available. Its load-info identity is already authoritative.
++  const id = loadInfo.targetBrowsingContextID || loadInfo.browsingContextID;
++  if (!id) return null;
++  if (stockOnce.delete(id)) return null;
++  const parent = Services.appinfo.processType === Services.appinfo.PROCESS_TYPE_DEFAULT;
++  const ids = (parent ? Services.ppmm : Services.cpmm).sharedData.get(KEY);
++  if (!ids?.includes(id)) return null;
++  const channel = Services.io.newChannelFromURIWithLoadInfo(
++    Services.io.newURI("chrome://browser/content/winui-newtab.html"),loadInfo);
++  channel.originalURI = uri;
++  return channel;
++}
+diff --git a/browser/base/content/WinUINewTabDocumentChild.sys.mjs b/browser/base/content/WinUINewTabDocumentChild.sys.mjs
+new file mode 100644
+index 00000000000..cbf084dea5b
+--- /dev/null
++++ b/browser/base/content/WinUINewTabDocumentChild.sys.mjs
+@@ -0,0 +1,17 @@
++#filter substitution
++// Staged as a real browser resource for sandboxed about-process loading.
++import {useStockNewTabOnce} from "chrome://browser/content/WinUINewTabDocument.sys.mjs";
++
++export class WinUINewTabDocumentChild extends JSWindowActorChild {
++  receiveMessage({name}) {
++    const window=this.contentWindow;
++    const native=window.document.documentURI==="about:newtab" &&
++      window.document.documentElement.id==="fenn-native-newtab";
++    if(name==="IsNative")return native;
++    if(name==="RestoreStock" && native) {
++      useStockNewTabOnce(this.browsingContext.id);
++      window.location.reload();
++    }
++    return native;
++  }
++}
+diff --git a/browser/base/content/WinUINewTabDocumentParent.sys.mjs b/browser/base/content/WinUINewTabDocumentParent.sys.mjs
+new file mode 100644
+index 00000000000..0df5ddab189
+--- /dev/null
++++ b/browser/base/content/WinUINewTabDocumentParent.sys.mjs
+@@ -0,0 +1 @@
++export class WinUINewTabDocumentParent extends JSWindowActorParent {}
+diff --git a/browser/base/content/winui-newtab.html b/browser/base/content/winui-newtab.html
+new file mode 100644
+index 00000000000..1faf496e025
+--- /dev/null
++++ b/browser/base/content/winui-newtab.html
+@@ -0,0 +1,4 @@
++#filter substitution
++<!doctype html>
++<!-- Staged as a real browser resource for sandboxed about-process loading. -->
++<html id="fenn-native-newtab"><head><meta charset="utf-8"></head><body></body></html>
+diff --git a/browser/base/content/WinUINewTabPage.sys.mjs b/browser/base/content/WinUINewTabPage.sys.mjs
+new file mode 100644
+index 00000000000..273b10e8fbd
+--- /dev/null
++++ b/browser/base/content/WinUINewTabPage.sys.mjs
+@@ -0,0 +1,244 @@
++// Firefox owns new-tab eligibility and shortcut destinations. The native page
++// consumes the existing address publication (a ShellCore Session stream).
++import {authorizeNewTabWindow} from "chrome://browser/content/WinUINewTabDocument.sys.mjs";
++let actorRegistered = false;
++export class WinUINewTabPage {
++  constructor(window, owner) {
++    this.window = window;
++    this.owner = owner;
++    this.actions = new Map();
++    this.serial = 0;
++    this.images = new Map();
++    this.pendingImages = new Set();
++    this.stockRestores = new WeakSet();
++    this.stockReloads = new WeakMap();
++    if (!actorRegistered) {
++      ChromeUtils.registerWindowActor("WinUINewTabDocument", {
++        parent:{esModuleURI:"chrome://browser/content/WinUINewTabDocumentParent.sys.mjs"},
++        child:{esModuleURI:"chrome://browser/content/WinUINewTabDocumentChild.sys.mjs"},
++        matches:["about:newtab"],allFrames:false,
++      });
++      actorRegistered = true;
++    }
++    this.openedTabs = new WeakSet();
++    this.tabsChanged = event => {
++      if(event.type === "TabOpen")this.openedTabs.add(event.target);
++      this.authorize();
++    };
++    window.gBrowser.tabContainer.addEventListener("TabOpen",this.tabsChanged);
++    window.gBrowser.tabContainer.addEventListener("TabClose",this.tabsChanged);
++    this.authorize();
++    this.changed = event => {
++      if(event?.type==="TabSelect")this.entryMotion=this.openedTabs.delete(event.target);
++      this.restore(); owner.invalidateAddress();
++    };
++    this.layoutChanged = () => { this.authorize(); owner.invalidateAddress(); };
++    for (const type of ["SidebarShown","sidebar-show","sidebar-hide"])
++      window.addEventListener(type,this.layoutChanged,true);
++    this.layoutObserver = new window.MutationObserver(this.layoutChanged);
++    this.layoutObserver.observe(window.document.documentElement,
++      {subtree:true,attributes:true,attributeFilter:["devtools-host-type"]});
++    this.progress = {
++      onLocationChange: browser => {
++        if (browser === window.gBrowser.selectedBrowser) this.changed();
++      },
++      onStateChange: (browser, progress, request, flags) => {
++        this.preserveRestoreDraft(browser,progress,request,flags);
++        if (!progress.isTopLevel || browser !== window.gBrowser.selectedBrowser) return;
++        const {STATE_START, STATE_STOP, STATE_IS_NETWORK} = Ci.nsIWebProgressListener;
++        if (browser === this.browser && (flags & STATE_START)) this.changed();
++        if ((flags & STATE_STOP) && (flags & STATE_IS_NETWORK) &&
++            this.isDefaultPage(browser)) owner.invalidateAddress();
++      },
++    };
++    window.gBrowser.tabContainer.addEventListener("TabSelect", this.changed);
++    window.gBrowser.addTabsProgressListener(this.progress);
++    Services.obs.addObserver(this.changed, "newtab-top-sites-changed");
++    Services.obs.addObserver(this.changed, "newtab-url-changed");
++    Services.prefs.addObserver("fenn.winui.newtab.enabled", this.changed);
++    Services.prefs.addObserver("browser.newtabpage.enabled", this.changed);
++    Services.prefs.addObserver("browser.newtabpage.activity-stream.feeds.topsites", this.changed);
++  }
++  authorize() {
++    const w=this.window;
++    const {AboutNewTab}=ChromeUtils.importESModule("resource:///modules/AboutNewTab.sys.mjs");
++    const allowed=!this.closed && Services.prefs.getBoolPref("fenn.winui.newtab.enabled",true) &&
++      Services.prefs.getBoolPref("browser.newtabpage.enabled",true) &&
++      this.owner.addressToolbar?.active && !this.owner.addressFailed &&
++      !w.PrivateBrowsingUtils.isWindowPrivate(w) && !w.fullScreen && !w.document.fullscreenElement &&
++      !w.gDialogBox.isOpen && !this.owner.addressToolbar.customization?.editing &&
++      !w.gBrowser.selectedTab?.splitview && !w.SidebarController?.isOpen &&
++      !w.gBrowser.selectedBrowser.closest(".browserSidebarContainer")?.hasAttribute?.("devtools-host-type") &&
++      !AboutNewTab.newTabURLOverridden && AboutNewTab.newTabURL==="about:newtab";
++    authorizeNewTabWindow(w,allowed);
++    if(allowed && !this.authorized) {
++      const {NewTabPagePreloading}=ChromeUtils.importESModule("moz-src:///browser/components/tabbrowser/NewTabPagePreloading.sys.mjs");
++      NewTabPagePreloading.removePreloadedBrowser(w);
++    }
++    if(this.authorized && !allowed)this.restoreStock();
++    this.authorized=allowed;
++  }
++  restoreStock() {
++    authorizeNewTabWindow(this.window,false);
++    this.authorized=false;
++    for(const browser of this.window.gBrowser.browsers) {
++      if(browser.currentURI.spec!=="about:newtab")continue;
++      try {
++        const global=browser.browsingContext.currentWindowGlobal;
++        if(!global || this.stockRestores.has(global))continue;
++        this.stockRestores.add(global);
++        this.stockReloads.set(browser,global);
++        global.getActor("WinUINewTabDocument").sendQuery("RestoreStock")
++          .then(native => {
++            if (!native && this.stockReloads.get(browser) === global) this.stockReloads.delete(browser);
++          }).catch(() => {
++            this.stockRestores.delete(global);
++            if (this.stockReloads.get(browser) === global) this.stockReloads.delete(browser);
++          });
++      } catch { this.stockReloads.delete(browser); }
++    }
++  }
++  preserveRestoreDraft(browser, progress, request, flags) {
++    const listener=Ci.nsIWebProgressListener;
++    if (this.closed || !progress.isTopLevel || !(flags & listener.STATE_START) ||
++        !(flags & listener.STATE_IS_NETWORK)) return;
++    const global=this.stockReloads.get(browser);
++    if (!global) return;
++    this.stockReloads.delete(browser);
++    try {
++      if (browser.browsingContext.currentWindowGlobal !== global || browser.isNavigating ||
++          browser.currentURI.spec !== "about:newtab" ||
++          request.QueryInterface(Ci.nsIChannel).originalURI.spec !== "about:newtab") return;
++      // Tabbrowser has just marked this load as clearing typed input. This is
++      // an internal presentation replacement, not a destination change. Use
++      // Firefox's setter to retain the latest value, including newer edits;
++      // never restore an earlier captured string after asynchronous work.
++      if (browser.userTypedValue != null) browser.userTypedValue=browser.userTypedValue;
++    } catch {}
++  }
++  isDefaultPage(browser) {
++    const url = browser.currentURI.spec;
++    // Firefox opens its stock home page on ordinary startup with an existing profile.
++    return url === "about:newtab" || url === "about:home";
++  }
++  eligible() {
++    const w = this.window, browser = w.gBrowser.selectedBrowser;
++    const { AboutNewTab } = ChromeUtils.importESModule("resource:///modules/AboutNewTab.sys.mjs");
++    return this.authorized && !this.closed && Services.prefs.getBoolPref("fenn.winui.newtab.enabled", true) &&
++      Services.prefs.getBoolPref("browser.newtabpage.enabled", true) &&
++      this.owner.addressToolbar?.active && !this.owner.addressFailed &&
++      !w.PrivateBrowsingUtils.isWindowPrivate(w) && !w.fullScreen && !w.document.fullscreenElement &&
++      !w.gDialogBox.isOpen && !this.owner.addressToolbar.customization?.editing &&
++      !w.gBrowser.selectedTab?.splitview && !browser.webProgress.isLoadingDocument &&
++      !AboutNewTab.newTabURLOverridden && AboutNewTab.newTabURL === "about:newtab" &&
++      this.isDefaultPage(browser);
++  }
++  snapshot() {
++    this.authorize();
++    if (!this.eligible()) { this.restore(); return { enabled:false }; }
++    const w = this.window, browser = w.gBrowser.selectedBrowser;
++    const documentId = browser.browsingContext.currentWindowGlobal?.innerWindowId;
++    if (!documentId) return { enabled:false };
++    if (this.browser !== browser || this.documentId !== documentId) {
++      this.restore(); this.browser = browser; this.documentId = documentId;
++      this.stack = browser.closest(".browserStack");
++      if (!this.stack) { this.restore(); return { enabled:false }; }
++      this.stack.setAttribute("winui-native-newtab", "");
++      w.document.documentElement.setAttribute("winui-native-newtab", "");
++    }
++    const { AboutNewTab } = ChromeUtils.importESModule("resource:///modules/AboutNewTab.sys.mjs");
++    const sites = Services.prefs.getBoolPref("browser.newtabpage.activity-stream.feeds.topsites", true)
++      ? AboutNewTab.getTopSites().filter(site => site && !site.sponsored_position && !site.sponsored_tile_id &&
++          !site.searchTopSite && /^https?:\/\//i.test(site.url)).slice(0,8) : [];
++    const signature = JSON.stringify(sites.map(site => [site.url,site.label,site.title]));
++    if (signature !== this.signature) {
++      this.signature = signature; this.actions.clear();
++      this.rows = sites.map(site => {
++        const id = String(++this.serial);
++        this.actions.set(id, {url:site.url,browser,documentId});
++        return {id,label:String(site.label || site.title || site.hostname || site.url).slice(0,256),url:site.url};
++      });
++    }
++    // Reuse Firefox's curated/local artwork before consulting history. Image
++    // changes do not replace opaque actions or the native buttons holding focus.
++    const sources = sites.map(site => [site.tippyTopIcon,site.favicon,site.smallFavicon]
++      .find(source => typeof source === "string" && source.length <= 262144 &&
++        /^(chrome:|resource:|data:image\/)/i.test(source)) || "");
++    for (const [index,row] of (this.rows || []).entries()) this.loadImage(row.url,false,sources[index]);
++    this.loadImage("chrome://branding/content/icon128.png", true);
++    return {
++      enabled:true,
++      animate:!!this.entryMotion,
++      name:this.owner.localization().formatValueSync("winui-newtab-name"),
++      shortcutsLabel:this.owner.localization().formatValueSync("winui-newtab-shortcuts"),
++      image:this.images.get("chrome://branding/content/icon128.png") || null,
++      shortcuts:(this.rows || []).map(({id,label,url},index) => ({id,label,image:this.images.get(sources[index] || url) || null})),
++    };
++  }
++  async loadImage(url, branding = false, suppliedSource = "") {
++    const key = suppliedSource || url;
++    if (this.images.has(key) || this.pendingImages.has(key)) return;
++    this.pendingImages.add(key);
++    const w = this.window, image = new w.Image();
++    let timer;
++    try {
++      const timeout = new Promise((_,reject) => { timer = w.setTimeout(() => reject(new Error("Image timeout")),1500); });
++      let source = suppliedSource || url;
++      if (!branding && !suppliedSource) {
++        const { PlacesUtils } = ChromeUtils.importESModule("resource://gre/modules/PlacesUtils.sys.mjs");
++        const icon = await Promise.race([PlacesUtils.favicons.getFaviconForPage(Services.io.newURI(url),32),timeout]);
++        if (!icon?.dataURI) return;
++        source = icon.dataURI.spec;
++      }
++      image.src = source;
++      await Promise.race([image.decode(),timeout]);
++      if (this.closed) return;
++      const canvas = w.document.createElementNS("http://www.w3.org/1999/xhtml","canvas");
++      const size = branding ? 128 : 32;
++      canvas.width = canvas.height = size;
++      const context = canvas.getContext("2d"); context.drawImage(image,0,0,size,size);
++      this.images.set(key,this.owner.encodePixels(context.getImageData(0,0,size,size)));
++    } catch {} finally {
++      w.clearTimeout(timer); image.src = ""; this.pendingImages.delete(key);
++      if (!this.images.has(key)) this.images.set(key,null);
++      while (this.images.size > 32) this.images.delete(this.images.keys().next().value);
++      if (!this.closed) this.owner.invalidateAddress();
++    }
++  }
++  execute(action) {
++    const item = this.actions.get(action.id);
++    if (action.version !== 1 || action.command !== "newtab-shortcut" ||
++        action.session !== this.owner.addressSession?.sessionId || !this.eligible() || !item ||
++        item.browser !== this.window.gBrowser.selectedBrowser ||
++        item.documentId !== item.browser.browsingContext.currentWindowGlobal?.innerWindowId ||
++        !Number.isInteger(action.modifiers) || action.modifiers < 0 || action.modifiers > 15) return 2;
++    const event = {ctrlKey:!!(action.modifiers&1),altKey:!!(action.modifiers&2),shiftKey:!!(action.modifiers&4),metaKey:!!(action.modifiers&8),button:0};
++    const {BrowserUtils}=ChromeUtils.importESModule("resource://gre/modules/BrowserUtils.sys.mjs");
++    this.window.openTrustedLinkIn(item.url,BrowserUtils.whereToOpenLink(event,false,true),
++      {fromChrome:true,userContextId:item.browser.getAttribute("usercontextid") || 0});
++    return 1;
++  }
++  restore() {
++    this.stack?.removeAttribute("winui-native-newtab");
++    this.window.document.documentElement.removeAttribute("winui-native-newtab");
++    this.stack = this.browser = null; this.documentId = null;
++    this.signature = null; this.rows = []; this.actions.clear();
++  }
++  close() {
++    this.restoreStock();
++    this.closed = true; this.restore();
++    this.window.gBrowser.tabContainer.removeEventListener("TabOpen",this.tabsChanged);
++    this.window.gBrowser.tabContainer.removeEventListener("TabClose",this.tabsChanged);
++    this.window.gBrowser.tabContainer.removeEventListener("TabSelect",this.changed);
++    this.window.gBrowser.removeTabsProgressListener(this.progress);
++    for (const type of ["SidebarShown","sidebar-show","sidebar-hide"])
++      this.window.removeEventListener(type,this.layoutChanged,true);
++    this.layoutObserver.disconnect();
++    Services.obs.removeObserver(this.changed,"newtab-top-sites-changed");
++    Services.obs.removeObserver(this.changed,"newtab-url-changed");
++    Services.prefs.removeObserver("fenn.winui.newtab.enabled",this.changed);
++    Services.prefs.removeObserver("browser.newtabpage.enabled",this.changed);
++    Services.prefs.removeObserver("browser.newtabpage.activity-stream.feeds.topsites",this.changed);
++    this.images.clear();
++  }
++}
 diff --git a/browser/base/content/WinUIProcessRecovery.sys.mjs b/browser/base/content/WinUIProcessRecovery.sys.mjs
 new file mode 100644
 index 00000000000..bb72ba58e27
@@ -12732,10 +13580,10 @@ index 00000000000..4bb3d442b6a
 +#endif
 diff --git a/browser/base/content/WinUIChromeLayout.sys.mjs b/browser/base/content/WinUIChromeLayout.sys.mjs
 new file mode 100644
-index 00000000000..7eb6bb931fd
+index 00000000000..247be1df8a4
 --- /dev/null
 +++ b/browser/base/content/WinUIChromeLayout.sys.mjs
-@@ -0,0 +1,138 @@
+@@ -0,0 +1,140 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -12795,7 +13643,9 @@ index 00000000000..7eb6bb931fd
 +      if (["TabsToolbar", "nav-bar"].includes(bar.id)) return false;
 +      const style = window.getComputedStyle(bar);
 +      return !bar.hidden && !bar.collapsed && style.display !== "none" &&
-+        style.visibility === "visible" && bar.getBoundingClientRect().height > 0;
++        (style.visibility === "visible" ||
++         (bar.id === "PersonalToolbar" && root.hasAttribute("winui-native-bookmarks-toolbar"))) &&
++        bar.getBoundingClientRect().height > 0;
 +    });
 +  }
 +
@@ -12876,10 +13726,10 @@ index 00000000000..7eb6bb931fd
 +}
 diff --git a/browser/base/content/WinUIChromeLayout.css b/browser/base/content/WinUIChromeLayout.css
 new file mode 100644
-index 00000000000..8dc7fe66a43
+index 00000000000..51cd6ae773b
 --- /dev/null
 +++ b/browser/base/content/WinUIChromeLayout.css
-@@ -0,0 +1,51 @@
+@@ -0,0 +1,53 @@
 +/* Native allocations are the only dimensions for these three regions.
 +   The two retained row elements are focus/popup anchors, not reservations. */
 +:root[winui-native-layout] #winui-prototype-pane {
@@ -12924,12 +13774,14 @@ index 00000000000..8dc7fe66a43
 +  background: transparent !important;
 +}
 +
-+/* Both native Window hosts paint the toolbar divider. Nova's
-+   unsplit page border would add a second line below it. Remove that redundant
-+   inset so page content begins directly below the native divider.
++/* Both native Window hosts paint the toolbar divider and material surround.
++   Do not add Gecko's card edge (including its light outline/shadow) around
++   the ordinary page. Keep the existing rounded content clipping.
 +   Split-view focus borders and stock/fallback layouts remain Firefox-owned. */
 +:root[winui-native-layout] #tabbrowser-tabpanels > :not(.split-view-panel) .browserContainer {
-+  border-block-start: none !important;
++  border: none !important;
++  outline: none !important;
++  box-shadow: none !important;
 +}
 diff --git a/browser/base/content/WinUIBackForwardMenu.sys.mjs b/browser/base/content/WinUIBackForwardMenu.sys.mjs
 new file mode 100644
@@ -26005,10 +26857,10 @@ index 00000000000..995582041f0
 +}
 diff --git a/browser/base/content/WinUIProductMenu.sys.mjs b/browser/base/content/WinUIProductMenu.sys.mjs
 new file mode 100644
-index 00000000000..1dc7b4fee7a
+index 00000000000..b0409c72fe8
 --- /dev/null
 +++ b/browser/base/content/WinUIProductMenu.sys.mjs
-@@ -0,0 +1,604 @@
+@@ -0,0 +1,610 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -26040,6 +26892,29 @@ index 00000000000..1dc7b4fee7a
 +  label: 256,
 +  idPattern: /^[a-z0-9]+(?:-[a-z0-9]+)*$/,
 +});
++
++export async function decodeWinUIToolbarIcon(window, url, size, encodePixels) {
++  if (!url || !encodePixels) return null;
++  const image = new window.Image();
++  let timer;
++  try {
++    image.src = url;
++    await Promise.race([image.decode(), new Promise((_, reject) => {
++      timer = window.setTimeout(() => reject(new Error("Menu icon timeout")), 1500);
++    })]);
++    if (!image.naturalWidth || !image.naturalHeight) return null;
++    const canvas = window.document.createElementNS("http://www.w3.org/1999/xhtml", "canvas");
++    canvas.width = canvas.height = size;
++    const context = canvas.getContext("2d");
++    context.drawImage(image, 0, 0, size, size);
++    return encodePixels(context.getImageData(0, 0, size, size));
++  } catch {
++    return null;
++  } finally {
++    if (timer !== undefined) window.clearTimeout(timer);
++    image.src = "";
++  }
++}
 +
 +export class WinUIProductMenu {
 +  constructor(window, host) {
@@ -26164,26 +27039,9 @@ index 00000000000..1dc7b4fee7a
 +  // Gecko decodes bounded menu artwork; native code never fetches URLs.
 +  // A broken icon must not hold the open handshake indefinitely.
 +  async loadIcon(url) {
-+    if (!url || !this.host.encodePixels) return null;
-+    const image = new this.window.Image();
-+    let timer;
-+    try {
-+      image.src = url;
-+      await Promise.race([image.decode(), new Promise((_, reject) => {
-+        timer = this.window.setTimeout(() => reject(new Error("Menu icon timeout")), 1500);
-+      })]);
-+      if (this.closed || !this.enabled || !image.naturalWidth || !image.naturalHeight) return null;
-+      const canvas = this.window.document.createElementNS("http://www.w3.org/1999/xhtml", "canvas");
-+      canvas.width = canvas.height = 32;
-+      const context = canvas.getContext("2d");
-+      context.drawImage(image, 0, 0, 32, 32);
-+      return this.host.encodePixels(context.getImageData(0, 0, 32, 32));
-+    } catch {
-+      return null;
-+    } finally {
-+      if (timer !== undefined) this.window.clearTimeout(timer);
-+      image.src = "";
-+    }
++    if (!this.host.encodePixels) return null;
++    const pixels = await decodeWinUIToolbarIcon(this.window, url, 32, this.host.encodePixels);
++    return this.closed || !this.enabled ? null : pixels;
 +  }
 +
 +  async refresh(request) {
@@ -30194,10 +31052,10 @@ index 00000000000..39117cb2f96
 +}
 diff --git a/browser/base/content/WinUIAddressToolbar.sys.mjs b/browser/base/content/WinUIAddressToolbar.sys.mjs
 new file mode 100644
-index 00000000000..f725a9fd9f2
+index 00000000000..9aa643950bf
 --- /dev/null
 +++ b/browser/base/content/WinUIAddressToolbar.sys.mjs
-@@ -0,0 +1,622 @@
+@@ -0,0 +1,646 @@
 +export class WinUIAddressToolbar {
 +  constructor(window, owner) {
 +    this.window = window;
@@ -30258,6 +31116,9 @@ index 00000000000..f725a9fd9f2
 +    this.profilerPanel=new WinUIProfilerPanel(this);
 +    const {WinUIBookmarkPanel}=ChromeUtils.importESModule("chrome://browser/content/WinUIBookmarkPanel.sys.mjs");
 +    this.bookmarkPanel=new WinUIBookmarkPanel(this);
++    const {WinUIBookmarksToolbar} = ChromeUtils.importESModule(
++      "chrome://browser/content/WinUIBookmarksToolbar.sys.mjs");
++    this.bookmarksToolbar = new WinUIBookmarksToolbar(this);
 +    const {WinUISitePermissionsPanel}=ChromeUtils.importESModule("chrome://browser/content/WinUISitePermissionsPanel.sys.mjs");
 +    this.permissionsPanel=new WinUISitePermissionsPanel(this);
 +    const {WinUINotificationPanel}=ChromeUtils.importESModule("chrome://browser/content/WinUINotificationPanel.sys.mjs");
@@ -30364,6 +31225,9 @@ index 00000000000..f725a9fd9f2
 +    state.developerMenu=this.developerMenu.snapshot();
 +    state.profilerPanel=this.profilerPanel.snapshot();
 +    state.bookmarkPanel=this.bookmarkPanel.snapshot();
++    if (this.bookmarksToolbar.state) {
++      state.bookmarksToolbar = this.bookmarksToolbar.state;
++    }
 +    state.permissionsPanel=this.permissionsPanel.snapshot();
 +    state.notificationPanel=this.notificationPanel.snapshot();
 +    state.pageContextMenu=this.pageContextMenu.snapshot();
@@ -30431,7 +31295,10 @@ index 00000000000..f725a9fd9f2
 +  }
 +  executeNavigation(action) {
 +    const {window, owner} = this;
++    if (action?.command === "newtab-shortcut") return this.active ? owner.newTabPage?.execute(action) || 2 : 2;
 +    const indicator = ["indicator:private", "indicator:analysis"].includes(action?.command);
++    const nativeBookmarkBar = typeof action?.command === "string" &&
++      action.command.startsWith("bookmarks-toolbar:");
 +    const nativeBookmark=typeof action?.command === "string" && action.command.startsWith("bookmark-panel:");
 +    const nativeSelectedTranslation=typeof action?.command === "string" && action.command.startsWith("selected-translation-panel:");
 +    const nativeTranslation=typeof action?.command === "string" && action.command.startsWith("translation-panel:");
@@ -30456,17 +31323,25 @@ index 00000000000..f725a9fd9f2
 +    const widgetMenu = ["widget-menu:home","widget-menu:downloads"].includes(action?.command);
 +    const history = ["back-history", "forward-history"].includes(action?.command);
 +    const command = widgetMenu ? action.command.slice(12) : history ? action.command.replace("-history", "") : action?.command === "home-middle" ? "home" : action?.command;
-+    const item = nativeNotification ? {nativeNotification:true} : nativeBackForward ? {nativeBackForward:true} : nativePageContext ? {nativePageContext:true} : nativeSelectedTranslation ? {nativeSelectedTranslation:true} : nativeTranslation ? {nativeTranslation:true} : nativeConnection ? {nativeConnection:true} : nativePermissions ? {nativePermissions:true} : nativeBookmark ? {nativeBookmark:true} : nativeProfiler ? {nativeProfiler:true} : nativeTabGroups ? {nativeTabGroups:true} : nativePrivacy ? {nativePrivacy:true} : nativeDeveloper ? {nativeDeveloper:true} : nativeOverflow ? {nativeOverflow:true} : nativeProfile ? {nativeProfile:true} : nativeDownloads ? {nativeDownloads:true} : stock ? {stock:true} : indicator ? {indicator:true} : nativeHistory ? {nativeHistory:true} : customization ? {customization:true} : product ? {product:true} : omnibar ? {omnibar:true} : extension ? {extension:true} : this.navigationCommands.find(entry => entry.id === command);
++    const item = nativeBookmarkBar ? {nativeBookmarkBar:true} : nativeNotification ? {nativeNotification:true} : nativeBackForward ? {nativeBackForward:true} : nativePageContext ? {nativePageContext:true} : nativeSelectedTranslation ? {nativeSelectedTranslation:true} : nativeTranslation ? {nativeTranslation:true} : nativeConnection ? {nativeConnection:true} : nativePermissions ? {nativePermissions:true} : nativeBookmark ? {nativeBookmark:true} : nativeProfiler ? {nativeProfiler:true} : nativeTabGroups ? {nativeTabGroups:true} : nativePrivacy ? {nativePrivacy:true} : nativeDeveloper ? {nativeDeveloper:true} : nativeOverflow ? {nativeOverflow:true} : nativeProfile ? {nativeProfile:true} : nativeDownloads ? {nativeDownloads:true} : stock ? {stock:true} : indicator ? {indicator:true} : nativeHistory ? {nativeHistory:true} : customization ? {customization:true} : product ? {product:true} : omnibar ? {omnibar:true} : extension ? {extension:true} : this.navigationCommands.find(entry => entry.id === command);
 +    if (!this.active || !this.navigation || !this.supported() || !item ||
 +        action.version !== 1 || action.kind !== "navigation" ||
 +        !owner.addressSession || !action.session || action.session !== owner.addressSession.sessionId ||
 +        owner.addressTab !== window.gBrowser.selectedTab ||
 +        owner.addressDocument !== window.gBrowser.selectedBrowser.browsingContext.currentWindowGlobal?.innerWindowId ||
 +        !Number.isInteger(action.modifiers) || action.modifiers < 0 || action.modifiers > 15 ||
-+        (!nativeNotification && !nativeBackForward && !nativePageContext && !stock && !indicator && !nativeBookmark && !nativePermissions && !nativeSelectedTranslation && !nativeTranslation && !nativeConnection && !nativeProfiler && !nativeTabGroups && !nativePrivacy && !nativeDeveloper && !nativeOverflow && !nativeProfile && !nativeDownloads && !nativeHistory && !customization && !extension && !omnibar && !product && !this.navigationState()[item.id === "stop" ? "reload" : item.id].enabled) ||
++        (!nativeBookmarkBar && !nativeNotification && !nativeBackForward && !nativePageContext && !stock && !indicator && !nativeBookmark && !nativePermissions && !nativeSelectedTranslation && !nativeTranslation && !nativeConnection && !nativeProfiler && !nativeTabGroups && !nativePrivacy && !nativeDeveloper && !nativeOverflow && !nativeProfile && !nativeDownloads && !nativeHistory && !customization && !extension && !omnibar && !product && !this.navigationState()[item.id === "stop" ? "reload" : item.id].enabled) ||
 +        ((item.id === "stop" || item.id === "reload") &&
 +         (item.id === "stop") !== this.navigationState().reload.stopping)) return 2;
 +    if (nativePageContext) return this.pageContextMenu.execute(action);
++    if (nativeBookmarkBar) {
++      const event = new window.MouseEvent("winui-bookmark-activation", {
++        view: window, button: action.command.startsWith("bookmarks-toolbar:middle:") ? 1 : 0,
++        ctrlKey: !!(action.modifiers & 1), altKey: !!(action.modifiers & 2),
++        shiftKey: !!(action.modifiers & 4), metaKey: !!(action.modifiers & 8),
++      });
++      return this.bookmarksToolbar.execute(action, event);
++    }
 +    if (nativeBookmark) return this.bookmarkPanel.execute(action);
 +    if (nativePermissions) return this.permissionsPanel.execute(action);
 +    if (nativeNotification) return this.notificationPanel.execute(action);
@@ -30682,6 +31557,7 @@ index 00000000000..f725a9fd9f2
 +    this.active = true;
 +    this.window.document.documentElement.setAttribute("winui-address-active", "");
 +    this.owner.updateToolbarHidden?.();
++    if (this.bookmarksToolbar.requested) this.owner.invalidateAddress();
 +    this.input.setAttribute("aria-hidden", "true");
 +    this.switcher.setAttribute("aria-hidden", "true");
 +    this.switcher.inert = true;
@@ -30728,6 +31604,9 @@ index 00000000000..f725a9fd9f2
 +    this.owner.addressFallback("toolbar-focus-failed");
 +  }
 +  restore() {
++    this.bookmarksToolbar.present(false);
++    this.owner.newTabPage?.restoreStock();
++    this.owner.newTabPage?.restore();
 +    if(this.historyMenu?.session)this.historyMenu.dismiss();
 +    if(this.downloadsPanel?.session)this.downloadsPanel.dismiss();
 +    if(this.profileMenu?.session)this.profileMenu.dismiss();
@@ -30779,10 +31658,12 @@ index 00000000000..f725a9fd9f2
 +  }
 +  bounds() {
 +    this.owner.chromeLayout?.update();
-+    if (this.owner.chromeLayout?.plan) return this.owner.chromeLayout.plan.navigation;
-+    return this.row.getBoundingClientRect();
++    return this.bookmarksToolbar.measure(
++      this.owner.chromeLayout?.plan?.navigation || this.row.getBoundingClientRect());
 +  }
 +  close() {
++    this.owner.newTabPage?.close();
++    this.owner.newTabPage = null;
 +    this.restore();
 +    this.historyMenu.close();
 +    this.downloadsPanel.close();
@@ -30792,6 +31673,7 @@ index 00000000000..f725a9fd9f2
 +    this.backForwardMenu.close();
 +    this.profilerPanel.close();
 +    this.bookmarkPanel.close();
++    this.bookmarksToolbar.close();
 +    this.permissionsPanel.close();
 +    this.notificationPanel.close();
 +    this.pageContextMenu.close();
@@ -30912,11 +31794,15 @@ index 00000000000..9f282df768b
 +}
 diff --git a/browser/base/content/WinUIAddressToolbar.css b/browser/base/content/WinUIAddressToolbar.css
 new file mode 100644
-index 00000000000..102270633fe
+index 00000000000..1d40129db13
 --- /dev/null
 +++ b/browser/base/content/WinUIAddressToolbar.css
-@@ -0,0 +1,40 @@
+@@ -0,0 +1,53 @@
 +#winui-address-focus { display: none; }
++/* This is only a compositor hole, never the new-tab UI. Scope it to the
++   browser Firefox has explicitly selected for native presentation. */
++:root[winui-native-newtab] { --tabpanel-background-color: transparent !important; }
++.browserStack[winui-native-newtab] { visibility: hidden; }
 +#winui-navigation-toolbar:not([hidden]) {
 +  display: block;
 +  position: relative;
@@ -30956,12 +31842,21 @@ index 00000000000..102270633fe
 +  border-radius: 0 0 var(--winui-content-radius, 8px) var(--winui-content-radius, 8px);
 +  overflow: clip;
 +}
++
++/* Retain Places layout and overflow while the native surface owns the row.
++   Places popups still paint in their own Gecko popup widgets. */
++:root[winui-native-bookmarks-toolbar] #PersonalToolbar {
++  visibility: hidden;
++}
++:root[winui-native-bookmarks-toolbar] #PersonalToolbar menupopup {
++  visibility: visible;
++}
 diff --git a/browser/base/content/browser-winui-pane.js b/browser/base/content/browser-winui-pane.js
 new file mode 100644
-index 00000000000..567667b7311
+index 00000000000..3e72cd8f5ae
 --- /dev/null
 +++ b/browser/base/content/browser-winui-pane.js
-@@ -0,0 +1,2484 @@
+@@ -0,0 +1,2496 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -31782,6 +32677,7 @@ index 00000000000..567667b7311
 +      this.addressSession = null;
 +    }
 +    if (!enabled) {
++      this.addressToolbar?.bookmarksToolbar.present(false);
 +      this.publishAddress({ version: 1, enabled: false });
 +      return;
 +    }
@@ -31806,10 +32702,15 @@ index 00000000000..567667b7311
 +    }
 +    const session = this.addressSession;
 +    const snapshot = session.snapshot();
++    if (!this.newTabPage && Services.prefs.getBoolPref("fenn.winui.newtab.enabled", true)) {
++      const {WinUINewTabPage} = ChromeUtils.importESModule("chrome://browser/content/WinUINewTabPage.sys.mjs");
++      this.newTabPage = new WinUINewTabPage(window,this);
++    }
 +    const state = {
 +      version: 1,
 +      enabled: true,
 +      navigationToolbar: toolbar && this.addressToolbar.navigation,
++      newTab: this.newTabPage?.snapshot() || {enabled:false},
 +      rtl: document.documentElement.matches(":dir(rtl)"),
 +      ...(toolbar && this.addressToolbar.navigation ? {navigation:this.addressToolbar.navigationState()} : {}),
 +      open: !!session.nativeOpen,
@@ -31876,7 +32777,13 @@ index 00000000000..567667b7311
 +    // Publication only. Intents, and the visibility of the rows, arrive
 +    // through the request queue.
 +    // This privileged publication method returns void and throws on refusal.
-+    this.publishAddress(state, session);
++    try {
++      this.publishAddress(state, session);
++    } catch (error) {
++      this.addressToolbar.bookmarksToolbar.present(false);
++      throw error;
++    }
++    this.addressToolbar.bookmarksToolbar.present(!!state.navigation?.bookmarksToolbar?.entries?.length);
 +    if (toolbar) this.addressToolbar.activate();
 +  },
 +

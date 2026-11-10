@@ -1,4 +1,4 @@
-param([switch]$InProcessShell, [switch]$InteractiveNativeStartup, [switch]$IndependentNativeStartupHost, [switch]$NativeStartupHost, [switch]$NativeNavigationToolbar, [switch]$NativeChromeLayout, [switch]$NativeWindowHost, [switch]$NativeHistoryMenu, [switch]$NativeTabStrip, [switch]$ReplaceFirefoxTabStrip, [switch]$ContainerDots, [switch]$TabGlows, [switch]$GroupHalo, [switch]$GroupGlowAnimations, [switch]$GroupGlowFadeOut, [switch]$GroupHover, [switch]$HideFirefoxToolbar, [switch]$ProductMenu, [switch]$CaptureCrash, [string]$DiagnosticsLog,
+param([switch]$InProcessShell, [switch]$InteractiveNativeStartup, [switch]$IndependentNativeStartupHost, [switch]$NativeStartupHost, [switch]$NativeNavigationToolbar, [switch]$NativeBookmarksToolbar, [switch]$NativeChromeLayout, [switch]$NativeWindowHost, [switch]$NativeHistoryMenu, [switch]$NativeTabStrip, [switch]$ReplaceFirefoxTabStrip, [switch]$ContainerDots, [switch]$TabGlows, [switch]$GroupHalo, [switch]$GroupGlowAnimations, [switch]$GroupGlowFadeOut, [switch]$GroupHover, [switch]$HideFirefoxToolbar, [switch]$ProductMenu, [switch]$CaptureCrash, [string]$DiagnosticsLog,
       [ValidateSet(32, 40, 48)][int]$NativeTabStripHeight,
       [ValidateSet('Mica', 'MicaAlt', 'Acrylic')][string]$TabStripBackdrop,
       [ValidateSet('None', 'Small', 'Medium', 'Large')][string]$TabGroupReach,
@@ -59,6 +59,7 @@ $switchPrefs = [ordered]@{
     NativeChromeLayout = 'chrome.layout'
     NativeWindowHost = 'window.host'
     NativeHistoryMenu = 'navigation.history.menu.enabled'; NativeNavigationToolbar = 'navigation.toolbar.enabled'
+    NativeBookmarksToolbar = 'bookmarks.toolbar.enabled'
     HideFirefoxToolbar = 'navigation.hideFirefoxToolbar'; ProductMenu = 'productmenu.enabled'
 }
 # The native History menu lives on the native navigation toolbar.
