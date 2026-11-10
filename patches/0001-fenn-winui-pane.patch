@@ -9845,7 +9845,7 @@ index d90f63e373a..e4b40ba85d8 100644
 +    }
      this.registerOpeningWindow(win, isPrivate);
 diff --git a/browser/moz.configure b/browser/moz.configure
-index 8979a2e4e8d..b28367c6c9d 100644
+index 8979a2e4e8d..7b8d1df43a5 100644
 --- a/browser/moz.configure
 +++ b/browser/moz.configure
 @@ -13,3 +13,9 @@ imply_option("MOZ_PROFILE_MIGRATOR", True)
@@ -9865,7 +9865,7 @@ index 8979a2e4e8d..b28367c6c9d 100644
 +# Explicit development promotion; never inferred from the upstream channel.
 +option("--enable-fenn-development-native-host", default=False,
 +       help="Enable the development independent native window default")
-+set_define("FENN_DEVELOPMENT_NATIVE_HOST", depends("--enable-fenn-development-native-host")(lambda value: bool(value)))
++set_define("FENN_DEVELOPMENT_NATIVE_HOST", depends("--enable-fenn-development-native-host")(lambda value: True if value else None))
 diff --git a/browser/themes/shared/browser-shared.css b/browser/themes/shared/browser-shared.css
 index a717b8cc131..53e6e75dd8b 100644
 --- a/browser/themes/shared/browser-shared.css
