@@ -1,5 +1,8 @@
 //! Offline root ceremony and online signing. Never linked into the browser helper.
-use aws_lc_rs::signature::{Ed25519KeyPair, KeyPair, UnparsedPublicKey, ED25519};
+use aws_lc_rs::signature::{
+    Ed25519KeyPair, KeyPair, UnparsedPublicKey, ED25519, RSA_PSS_2048_8192_SHA256,
+};
+use serde::Serialize;
 use serde_json::{json, Value};
 use std::{collections::BTreeSet, fs, io::Write, path::Path};
 type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
@@ -64,14 +67,12 @@ impl Key {
         key
     }
 }
-// Constrain authored metadata to the subset where sorted serde JSON is TUF
-// canonical JSON. In particular do not author floating point or escaped text.
+// Use the same canonical formatter as tough. RSA PEM contains literal newlines
+// in canonical JSON, unlike ordinary serde JSON's escaped newlines.
 fn canonical(value: &Value) -> Result<Vec<u8>> {
     fn check(v: &Value) -> bool {
         match v {
-            Value::String(s) => s
-                .bytes()
-                .all(|b| (0x20..=0x7e).contains(&b) && b != b'"' && b != b'\\'),
+            Value::String(s) => s.bytes().all(|b| (0x20..=0x7e).contains(&b) || b == b'\n'),
             Value::Array(a) => a.iter().all(check),
             Value::Object(m) => m.iter().all(|(k, v)| check(&json!(k)) && check(v)),
             Value::Number(n) => n.is_u64(),
@@ -82,7 +83,51 @@ fn canonical(value: &Value) -> Result<Vec<u8>> {
     if !check(value) {
         return Err("unsupported canonical metadata value".into());
     }
-    Ok(serde_json::to_vec(value)?)
+    let mut bytes = Vec::new();
+    value.serialize(&mut serde_json::Serializer::with_formatter(
+        &mut bytes,
+        olpc_cjson::CanonicalFormatter::new(),
+    ))?;
+    Ok(bytes)
+}
+fn public_key(value: &Value) -> Result<tough::schema::key::Key> {
+    let encoded = field(&value["keyval"], "public")?;
+    let (kind, scheme) = match field(value, "keytype")? {
+        "ed25519" if unhex(encoded)?.len() == 32 => ("ed25519", "ed25519"),
+        "rsa" => ("rsa", "rsassa-pss-sha256"),
+        _ => return Err("unsupported public key".into()),
+    };
+    if *value != json!({"keytype":kind,"scheme":scheme,"keyval":{"public":encoded}}) {
+        return Err("invalid public key fields".into());
+    }
+    let key: tough::schema::key::Key = serde_json::from_value(value.clone())?;
+    if let tough::schema::key::Key::Rsa { keyval, .. } = &key {
+        let bits = aws_lc_rs::signature::RsaParameters::public_modulus_len(keyval.public.as_ref())
+            .map_err(|_| "invalid RSA public key")?;
+        if bits != 2048 {
+            return Err("PIV root keys must be RSA-2048".into());
+        }
+    }
+    // Reject alternate PEM/hex encodings that would change tough's key ID.
+    if serde_json::to_value(&key)? != *value {
+        return Err("public key must use normalized encoding".into());
+    }
+    Ok(key)
+}
+fn verify_signature(public: &Value, raw: &[u8], sig: &[u8]) -> Result<bool> {
+    Ok(match public_key(public)? {
+        tough::schema::key::Key::Ed25519 { keyval, .. } => {
+            UnparsedPublicKey::new(&ED25519, keyval.public.as_ref())
+                .verify(raw, sig)
+                .is_ok()
+        }
+        tough::schema::key::Key::Rsa { keyval, .. } => {
+            UnparsedPublicKey::new(&RSA_PSS_2048_8192_SHA256, keyval.public.as_ref())
+                .verify(raw, sig)
+                .is_ok()
+        }
+        _ => false,
+    })
 }
 fn sign(value: Value, keys: &[Key]) -> Result<Value> {
     let raw = canonical(&value)?;
@@ -111,22 +156,11 @@ fn validate_role(root: &Value, role: &str, signed: &Value) -> Result<()> {
             continue;
         }
         let public = &root["keys"][id];
-        if public["keytype"] != "ed25519"
-            || public["scheme"] != "ed25519"
-            || hash(&canonical(public)?) != id
-        {
+        if hash(&canonical(public)?) != id {
             return Err("invalid public identity".into());
         }
-        let key = unhex(
-            public["keyval"]["public"]
-                .as_str()
-                .ok_or("missing public key")?,
-        )?;
         let sig = unhex(signature["sig"].as_str().ok_or("missing signature")?)?;
-        if UnparsedPublicKey::new(&ED25519, key)
-            .verify(&raw, &sig)
-            .is_ok()
-        {
+        if verify_signature(public, &raw, &sig)? {
             valid.insert(id);
         }
     }
@@ -136,7 +170,13 @@ fn validate_role(root: &Value, role: &str, signed: &Value) -> Result<()> {
     Ok(())
 }
 fn production_root(root: &Value) -> Result<()> {
-    let payload = &root["signed"];
+    production_payload(&root["signed"])?;
+    validate_role(&root["signed"], "root", root)
+}
+fn production_payload(payload: &Value) -> Result<()> {
+    // Parse the runtime schema before requesting any hardware signature, including
+    // its expiry representation and public-key identity checks.
+    let _: tough::schema::Root = serde_json::from_value(payload.clone())?;
     if payload["_type"] != "root"
         || payload["spec_version"] != "1.0.0"
         || payload["consistent_snapshot"] != true
@@ -146,18 +186,12 @@ fn production_root(root: &Value) -> Result<()> {
     }
     let public_keys = payload["keys"].as_object().ok_or("missing public keys")?;
     let mut distinct_public = BTreeSet::new();
-    if public_keys.len() != 4 {
-        return Err("expected three offline keys and one online key".into());
-    }
     for (id, key) in public_keys {
         let encoded = key["keyval"]["public"]
             .as_str()
             .ok_or("missing public key")?;
-        if unhex(encoded)?.len() != 32
-            || *key != json!({"keytype":"ed25519","scheme":"ed25519","keyval":{"public":encoded}})
-            || hash(&canonical(key)?) != *id
-            || !distinct_public.insert(encoded.to_ascii_lowercase())
-        {
+        public_key(key)?;
+        if hash(&canonical(key)?) != *id || !distinct_public.insert(encoded.to_owned()) {
             return Err("invalid or duplicated production public key".into());
         }
     }
@@ -165,18 +199,65 @@ fn production_root(root: &Value) -> Result<()> {
         .as_array()
         .ok_or("missing root keys")?;
     let unique: BTreeSet<_> = offline.iter().filter_map(Value::as_str).collect();
-    if unique.len() != 3 || offline.len() != 3 || payload["roles"]["root"]["threshold"] != 2 {
-        return Err("production requires 2 of 3 offline root keys".into());
+    let legacy = offline.len() == 3 && payload["roles"]["root"]["threshold"] == 2;
+    let hardware = (1..=2).contains(&offline.len())
+        && payload["roles"]["root"]["threshold"] == 1
+        && offline.iter().all(|id| {
+            id.as_str()
+                .is_some_and(|id| payload["keys"][id]["keytype"] == "rsa")
+        });
+    if !(legacy || hardware)
+        || unique.len() != offline.len()
+        || public_keys.len() != offline.len() + 1
+        || unique.iter().any(|id| !public_keys.contains_key(*id))
+        || payload["roles"].as_object().map(|v| v.len()) != Some(4)
+    {
+        return Err("production requires 2 of 3 root keys or 1 of 1/2 RSA root keys".into());
     }
     for role in ["targets", "snapshot", "timestamp"] {
         let ids = payload["roles"][role]["keyids"]
             .as_array()
             .ok_or("missing online key")?;
-        if ids.len() != 1 || payload["roles"][role]["threshold"] != 1 || offline.contains(&ids[0]) {
+        if ids.len() != 1
+            || payload["roles"][role]["threshold"] != 1
+            || offline.contains(&ids[0])
+            || ids
+                != payload["roles"]["targets"]["keyids"]
+                    .as_array()
+                    .ok_or("missing targets key")?
+            || ids[0]
+                .as_str()
+                .is_none_or(|id| payload["keys"][id]["keytype"] != "ed25519")
+        {
             return Err("online and offline keys must be separate".into());
         }
     }
-    validate_role(payload, "root", root)
+    Ok(())
+}
+fn previous_root(request: &Value) -> Result<Option<Value>> {
+    production_payload(&request["signed"])?;
+    let version = request["signed"]["version"]
+        .as_u64()
+        .ok_or("missing version")?;
+    if version == 1 {
+        if request.get("previous_root").is_some() {
+            return Err("initial root cannot have a predecessor".into());
+        }
+        return Ok(None);
+    }
+    let old: Value = serde_json::from_slice(&read(
+        Path::new(field(request, "previous_root")?),
+        1024 * 1024,
+    )?)?;
+    production_root(&old)?;
+    if old["signed"]["version"]
+        .as_u64()
+        .and_then(|n| n.checked_add(1))
+        != Some(version)
+    {
+        return Err("root rotation must be sequential".into());
+    }
+    Ok(Some(old))
 }
 fn field<'a>(v: &'a Value, key: &str) -> Result<&'a str> {
     v[key]
@@ -256,6 +337,30 @@ fn publish(request: &Value) -> Result<Value> {
 }
 fn run(request: &Value) -> Result<Value> {
     match field(request, "op")? {
+        "verify-proof" => {
+            let nonce = field(request, "nonce")?;
+            if nonce.len() != 64 || unhex(nonce)?.len() != 32 {
+                return Err("invalid proof nonce".into());
+            }
+            let raw = format!("Fenn adblock hardware acceptance v1\n{nonce}");
+            let signature = unhex(field(request, "signature")?)?;
+            if !verify_signature(&request["key"], raw.as_bytes(), &signature)? {
+                return Err("hardware proof signature rejected".into());
+            }
+            Ok(json!({"verified":true,"keyid":hash(&canonical(&request["key"])?),"payload_sha256":hash(raw.as_bytes())}))
+        }
+        "public" => {
+            let key: tough::schema::key::Key = field(request, "public_pem")?.parse()?;
+            let public = serde_json::to_value(key)?;
+            public_key(&public)?;
+            Ok(json!({"keyid":hash(&canonical(&public)?),"key":public}))
+        }
+        "root-prepare" => {
+            previous_root(request)?;
+            let raw = canonical(&request["signed"])?;
+            write_new(Path::new(field(request, "output")?), &raw)?;
+            Ok(json!({"payload_sha256":hash(&raw),"version":request["signed"]["version"]}))
+        }
         "key" => {
             let path = Path::new(field(request, "output")?);
             let mut raw = Ed25519KeyPair::generate_pkcs8(&aws_lc_rs::rand::SystemRandom::new())
@@ -274,7 +379,11 @@ fn run(request: &Value) -> Result<Value> {
             Ok(public)
         }
         "root" => {
-            let paths = request["key_files"]
+            let previous = previous_root(request)?;
+            let empty = json!([]);
+            let paths = request
+                .get("key_files")
+                .unwrap_or(&empty)
                 .as_array()
                 .filter(|a| a.len() <= 6)
                 .ok_or("root signers required")?;
@@ -282,22 +391,20 @@ fn run(request: &Value) -> Result<Value> {
                 .iter()
                 .map(|p| Key::load(Path::new(p.as_str().ok_or("invalid signer path")?)))
                 .collect::<Result<Vec<_>>>()?;
-            let root = sign(request["signed"].clone(), &keys)?;
+            let mut root = sign(request["signed"].clone(), &keys)?;
+            if let Some(signatures) = request.get("signatures") {
+                let signatures = signatures
+                    .as_array()
+                    .filter(|a| a.len() <= 6)
+                    .ok_or("too many detached signatures")?;
+                root["signatures"]
+                    .as_array_mut()
+                    .unwrap()
+                    .extend(signatures.iter().cloned());
+            }
             production_root(&root)?;
             let version = root["signed"]["version"].as_u64().unwrap();
-            if version > 1 {
-                let old: Value = serde_json::from_slice(&read(
-                    Path::new(field(request, "previous_root")?),
-                    1024 * 1024,
-                )?)?;
-                production_root(&old)?;
-                if old["signed"]["version"]
-                    .as_u64()
-                    .and_then(|n| n.checked_add(1))
-                    != Some(version)
-                {
-                    return Err("root rotation must be sequential".into());
-                }
+            if let Some(old) = previous {
                 validate_role(&old["signed"], "root", &root)?;
             }
             let bytes = serde_json::to_vec(&root)?;

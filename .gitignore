@@ -1,6 +1,7 @@
 /.cache/
 .wrangler/
 /artifacts/
+/.private/adblock-production/
 /docs/perf-data/selection-windows-trace-20261027/evidence.zip
 /docs/evidence/m5d-startup-host/raw-traces.zip
 /docs/evidence/m5d-startup-overlap/raw-traces.zip
