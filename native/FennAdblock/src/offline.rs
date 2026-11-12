@@ -671,17 +671,18 @@ fn validate_trust_assets(assets: &Path, helper: &Path) -> Result<(), String> {
     }
     Ok(())
 }
+const BROKER_BUDGET_MS: u64 = 60_000;
 fn stage_authenticated(
     profile: &Path,
     source: &Path,
     expected: u64,
     assets: &Path,
     helper: &Path,
-    broker: bool,
+    broker: Option<u64>,
 ) -> Result<Candidate, String> {
     // Held through helper exit. Its independently opened handle protects the
     // directory if the browser is killed before reaping it.
-    let _fetch_lease = if broker {
+    let _fetch_lease = if broker.is_some() {
         Some(crate::fetch_jobs::begin(profile, source).map_err(|e| e.to_string())?)
     } else {
         None
@@ -699,8 +700,10 @@ fn stage_authenticated(
     let output = scratch.path.join("verified");
     let mut command = Command::new(helper);
     command.arg(assets.join("trusted-root.json"));
-    if broker {
-        command.arg("--broker");
+    // The verifier stops waiting for replies when the browser's fetcher stops
+    // answering, so an orphan left by a killed browser exits on the same budget.
+    if let Some(budget) = broker {
+        command.arg(format!("--broker={budget}"));
     }
     command.args([source.to_path_buf(), root.join("trust"), output.clone()]);
     command
@@ -722,7 +725,8 @@ fn stage_authenticated(
         let result = stdout.take(65537).read_to_end(&mut bytes);
         let _ = send.send((result, bytes));
     });
-    let deadline = Instant::now() + std::time::Duration::from_secs(if broker { 75 } else { 30 });
+    let deadline =
+        Instant::now() + std::time::Duration::from_millis(broker.map_or(30_000, |b| b + 15_000));
     let reply = loop {
         if CANCEL.load(std::sync::atomic::Ordering::Acquire) || Instant::now() >= deadline {
             break Err(std::sync::mpsc::RecvTimeoutError::Timeout);
@@ -839,7 +843,12 @@ pub fn dispatch(v: &Value) -> Result<(Option<Engine>, Value), String> {
             let generation = v["generation"].as_u64().ok_or("missing generation")?;
             let assets = v["assets"].as_str().map(PathBuf::from);
             CANCEL.store(false, std::sync::atomic::Ordering::Release);
-            let broker = v["broker"].as_bool().unwrap_or(false);
+            let broker = v["broker"].as_bool().unwrap_or(false).then(|| {
+                v["brokerBudgetMs"]
+                    .as_u64()
+                    .unwrap_or(BROKER_BUDGET_MS)
+                    .clamp(1000, BROKER_BUDGET_MS)
+            });
             let authenticated = field(v, "op")? == "offline-authenticated-stage";
             let helper = v["helper"].as_str().map(PathBuf::from);
             let delay = v["verifyDelayMs"].as_u64().unwrap_or(0).min(2000);
@@ -1134,8 +1143,12 @@ mod tests {
     #[test]
     fn full_quarantine_evicts_oldest_and_still_recovers() {
         let p = Profile::new();
-        let first = commit(stage(&p.0, &p.bundle(1, "||one.example^"), 0).unwrap(), "").unwrap().digest;
-        let second = commit(stage(&p.0, &p.bundle(2, "||two.example^"), 1).unwrap(), "").unwrap().digest;
+        let first = commit(stage(&p.0, &p.bundle(1, "||one.example^"), 0).unwrap(), "")
+            .unwrap()
+            .digest;
+        let second = commit(stage(&p.0, &p.bundle(2, "||two.example^"), 1).unwrap(), "")
+            .unwrap()
+            .digest;
         let r = root(&p.0).unwrap();
         let mut full = state(&r).unwrap();
         let old = full.clone();

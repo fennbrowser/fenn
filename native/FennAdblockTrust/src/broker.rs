@@ -98,6 +98,7 @@ pub async fn verify_broker(
     source: &Path,
     state: &Path,
     output: &Path,
+    budget: Duration,
 ) -> Result<serde_json::Value> {
     let _lease = crate::fetch_jobs::join(source)?;
     regular(source)?;
@@ -108,7 +109,7 @@ pub async fn verify_broker(
         base: base.clone(),
         serial: Arc::new(tokio::sync::Mutex::new(0)),
         bytes: Arc::new(Mutex::new(0)),
-        deadline: Instant::now() + Duration::from_secs(60),
+        deadline: Instant::now() + budget.min(Duration::from_secs(60)),
     };
     super::verify_transport(
         anchor,

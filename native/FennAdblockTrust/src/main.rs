@@ -295,10 +295,19 @@ fn main() {
         return;
     }
     let http = args.len() == 5 && args[1] == "--test-http";
-    let broker = args.len() == 5 && args[1] == "--broker";
-    if args.len() != 4 && !http && !broker {
+    let broker = (args.len() == 5)
+        .then(|| args[1].to_str())
+        .flatten()
+        .and_then(|a| match a {
+            "--broker" => Some(60_000),
+            _ => a
+                .strip_prefix("--broker=")
+                .and_then(|ms| ms.parse::<u64>().ok())
+                .filter(|ms| (1000..=60_000).contains(ms)),
+        });
+    if args.len() != 4 && !http && broker.is_none() {
         eprintln!(
-            "usage: fenn-adblock-trust TRUSTED_ROOT [--test-http] REPOSITORY STATE NEW_OUTPUT"
+            "usage: fenn-adblock-trust TRUSTED_ROOT [--test-http|--broker[=MS]] REPOSITORY STATE NEW_OUTPUT"
         );
         std::process::exit(2);
     }
@@ -313,12 +322,13 @@ fn main() {
             Path::new(&args[3]),
             Path::new(&args[4]),
         ))
-    } else if broker {
+    } else if let Some(budget) = broker {
         runtime.block_on(broker::verify_broker(
             Path::new(&args[0]),
             Path::new(&args[2]),
             Path::new(&args[3]),
             Path::new(&args[4]),
+            std::time::Duration::from_millis(budget),
         ))
     } else {
         runtime.block_on(verify(

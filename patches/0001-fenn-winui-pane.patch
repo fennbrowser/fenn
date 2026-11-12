@@ -11663,10 +11663,10 @@ index 00000000000..85c03ebaf82
 +}
 diff --git a/browser/components/fennadblock/FennAdblockService.sys.mjs b/browser/components/fennadblock/FennAdblockService.sys.mjs
 new file mode 100644
-index 00000000000..c8f559d31fe
+index 00000000000..a9e3df14da8
 --- /dev/null
 +++ b/browser/components/fennadblock/FennAdblockService.sys.mjs
-@@ -0,0 +1,851 @@
+@@ -0,0 +1,852 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -11993,7 +11993,8 @@ index 00000000000..c8f559d31fe
 +        const helper = Services.dirsvc.get("GreD", Ci.nsIFile);
 +        helper.append("fenn-adblock-trust.exe");
 +        this.call({op:authenticated ? "offline-authenticated-stage" : "offline-stage",profile:this.storeProfile(),
-+          broker, helper:authenticated ? helper.path : null, verifyDelayMs:Math.min(2000,Math.max(0,verifyDelayMs)),
++          broker, brokerBudgetMs:fetcher ? Math.max(0, Math.ceil(fetcher.deadline - ChromeUtils.now())) : undefined,
++          helper:authenticated ? helper.path : null, verifyDelayMs:Math.min(2000,Math.max(0,verifyDelayMs)),
 +          assets:this.packagedAssets(),source,generation:this.stats.offlineGeneration || 0});
 +        const staged = await poll();
 +        if (!staged.staged || !current()) { return {accepted:false}; }
