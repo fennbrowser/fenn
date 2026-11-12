@@ -30,6 +30,66 @@ function fixture() {
   const action=id=>({version:1,command:"newtab-shortcut",id,session:"session-1",modifiers:0});
   return {model,window,browser,about,owner,prefs,attributes,opened,action,loadFlags};
 }
+
+function openPending(f) {
+  f.browser.currentURI.spec="about:blank";
+  f.browser.browsingContext.currentWindowGlobal=null;
+  f.window.gBrowser.selectedTab.linkedBrowser=f.browser;
+  f.model.tabsChanged({type:"TabOpen",target:f.window.gBrowser.selectedTab,detail:{nativeNewTab:true}});
+  f.model.changed({type:"TabSelect",target:f.window.gBrowser.selectedTab});
+}
+
+test("new-tab intent presents before any document exists and throughout backing-document loading",()=>{
+  const f=fixture();openPending(f);
+  const first=f.model.snapshot();
+  assert.equal(first.enabled,true);assert.equal(first.animate,true);
+  assert.equal(first.shortcuts.length,1);
+  assert.equal(f.model.execute(f.action(first.shortcuts[0].id)),2);
+  f.browser.webProgress.isLoadingDocument=true;
+  const request={QueryInterface:()=>({originalURI:{spec:"about:newtab"}})};
+  f.model.progress.onStateChange(f.browser,{isTopLevel:true},request,3);
+  assert.equal(f.model.snapshot().enabled,true);
+  f.browser.currentURI.spec="about:newtab";
+  f.browser.browsingContext.currentWindowGlobal={innerWindowId:2};
+  f.model.progress.onLocationChange(f.browser);
+  const loading=f.model.snapshot();
+  assert.equal(loading.enabled,true);
+  assert.equal(f.model.execute(f.action(loading.shortcuts[0].id)),2);
+  f.browser.webProgress.isLoadingDocument=false;
+  f.model.progress.onStateChange(f.browser,{isTopLevel:true},request,6);
+  const ready=f.model.snapshot();
+  assert.equal(ready.enabled,true);
+  assert.equal(f.model.execute(f.action(loading.shortcuts[0].id)),2);
+  assert.equal(f.model.execute(f.action(ready.shortcuts[0].id)),1);
+});
+
+test("early presentation cancels on other navigation, failed load or tab closure",()=>{
+  for(const cancel of [
+    f=>f.model.progress.onStateChange(f.browser,{isTopLevel:true},{QueryInterface:()=>({originalURI:{spec:"https://example.com/"}})},3),
+    f=>{f.browser.currentURI.spec="https://example.com/";f.model.progress.onLocationChange(f.browser);},
+    f=>f.model.progress.onStateChange(f.browser,{isTopLevel:true},null,6),
+    f=>f.model.tabsChanged({type:"TabClose",target:f.window.gBrowser.selectedTab}),
+  ]) {
+    const f=fixture();openPending(f);assert.equal(f.model.snapshot().enabled,true);
+    cancel(f);assert.equal(f.model.snapshot().enabled,false);
+    assert.equal(f.attributes.size,0);
+  }
+});
+
+test("early presentation retains private, override, layout and selection boundaries",()=>{
+  for(const change of [f=>f.window.PrivateBrowsingUtils.isWindowPrivate=()=>true,
+    f=>f.about.newTabURLOverridden=true,f=>f.window.fullScreen=true,
+    f=>f.window.SidebarController={isOpen:true},f=>f.owner.addressToolbar.active=false,
+    f=>f.window.gBrowser.selectedTab.splitview=true,
+    f=>f.window.gBrowser.selectedBrowser={...f.browser},
+    f=>f.prefs.set("fenn.winui.newtab.enabled",false)]) {
+    const f=fixture();openPending(f);change(f);
+    assert.equal(f.model.snapshot().enabled,false);
+  }
+  const f=fixture();f.browser.currentURI.spec="about:blank";
+  f.model.tabsChanged({type:"TabOpen",target:{linkedBrowser:f.browser},detail:{}});
+  assert.equal(f.model.snapshot().enabled,false);
+});
 test("Firefox's ordinary home and new-tab pages respect private/custom/fullscreen/loading fallback",()=>{
   for(const url of ["about:home","about:newtab"]) {
     for(const change of [f=>f.prefs.set("fenn.winui.newtab.enabled",false),f=>f.prefs.set("browser.newtabpage.enabled",false),
