@@ -11663,10 +11663,10 @@ index 00000000000..85c03ebaf82
 +}
 diff --git a/browser/components/fennadblock/FennAdblockService.sys.mjs b/browser/components/fennadblock/FennAdblockService.sys.mjs
 new file mode 100644
-index 00000000000..a9e3df14da8
+index 00000000000..fb954bc7948
 --- /dev/null
 +++ b/browser/components/fennadblock/FennAdblockService.sys.mjs
-@@ -0,0 +1,852 @@
+@@ -0,0 +1,858 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -11677,6 +11677,8 @@ index 00000000000..a9e3df14da8
 +const BASE = "moz-src:///browser/components/fennadblock/";
 +import {setTimeout, clearTimeout} from "resource://gre/modules/Timer.sys.mjs";
 +const TYPE = Ci.nsIContentPolicy;
++// Native jobs are polled from 2 ms, doubling to 16 ms while nothing changes.
++const pollDelay = attempt => new Promise(resolve => setTimeout(resolve, 2 << Math.min(attempt, 3)));
 +const RESPONSE_TOPICS = ["http-on-examine-response", "http-on-examine-cached-response", "http-on-examine-merged-response"];
 +const CSP_FETCH_DIRECTIVES = new Set(["default-src", "script-src", "script-src-elem", "script-src-attr",
 +  "style-src", "style-src-elem", "style-src-attr", "img-src", "font-src", "media-src", "object-src",
@@ -11855,9 +11857,9 @@ index 00000000000..a9e3df14da8
 +          offlineStore:!testing || Services.prefs.getBoolPref("fenn.adblock.prototype.offlineStore", false),
 +          bypassCache:testing && Services.prefs.getBoolPref("fenn.adblock.prototype.bypassCache", false),
 +          delayMs:testing ? Math.min(2000, Math.max(0, Services.prefs.getIntPref("fenn.adblock.prototype.prepareDelayMs", 0))) : 0});
-+        let result;
++        let result, attempt = 0;
 +        do {
-+          await new Promise(resolve => setTimeout(resolve, 2));
++          await pollDelay(attempt++);
 +          if (this.shuttingDown) { return; }
 +          result = this.call({op:"poll", accept:revision === this.revision});
 +        } while (!result.done);
@@ -11897,9 +11899,11 @@ index 00000000000..a9e3df14da8
 +        }
 +      }
 +    };
-+    const ready = this.work ? this.work.then(run) : run();
++    // A rejected install must not stall this update or leave the chain occupied.
++    const ready = this.work ? this.work.then(run, run) : run();
 +    this.work = this.ready = ready;
-+    ready.then(() => { if (this.work === ready) { this.work = null; } });
++    const clear = () => { if (this.work === ready) { this.work = null; } };
++    ready.then(clear, clear);
 +    return this.ready;
 +  },
 +
@@ -11970,11 +11974,13 @@ index 00000000000..a9e3df14da8
 +    const current = () => revision === this.revision && this.active && !this.shuttingDown && Services.prefs.getBoolPref(PREF, false);
 +    let fetcher;
 +    const poll = async () => {
-+      let result;
++      let result, attempt = 0;
 +      do {
-+        await new Promise(resolve => setTimeout(resolve, 2));
++        await pollDelay(attempt++);
 +        if (this.shuttingDown) { return {done:true,accepted:false}; }
++        const request = fetcher?.id;
 +        if (fetcher && current()) { await fetcher.pump(); }
++        if (fetcher && fetcher.id !== request) { attempt = 0; }
 +        if (this.shuttingDown) { return {done:true,accepted:false}; }
 +        result = this.call({op:"offline-poll",accept:current()});
 +      } while (!result.done);
@@ -12017,9 +12023,9 @@ index 00000000000..a9e3df14da8
 +      } finally {
 +        if (broker && this.library && !this.shuttingDown) {
 +          this.call({op:"offline-cancel"});
-+          let done = false;
++          let done = false, attempt = 0;
 +          while (!done && !this.shuttingDown) {
-+            await new Promise(resolve => setTimeout(resolve, 2));
++            await pollDelay(attempt++);
 +            if (this.shuttingDown) { break; }
 +            try { done = this.call({op:"offline-poll",accept:false}).done; } catch (_) { done = true; }
 +          }
