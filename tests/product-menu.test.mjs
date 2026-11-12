@@ -64,6 +64,7 @@ test("Gecko decodes preferred extension icons and releases broken or timed-out i
 });
 
 const LABELS = {
+  ...Object.fromEntries(["title","enable","site","reload-note","status-off","status-active","update-paused","update-current","update-checking","update-stale","update-failed","update-unavailable","update-never","update-date","update-no-date","update-now"].map(k=>[`winui-adblock-${k}`,k])),
   ...Object.fromEntries(["recently-visited", "recently-closed", "show-history", "recent-bookmarks",
     "add-extension", "manage-extensions", "show-sidebar", "autohide-tabs", "reset-zoom", "developer-tools",
     "inspect-element", "browser-console", "set-default", "bookmarks-toolbar", "bookmarks-menu", "other-bookmarks",
@@ -96,7 +97,7 @@ const LABELS = {
 function fixture(overrides = {}) {
   const prefs = new Map([[PRODUCT_MENU_PREF, true], ["browser.toolbars.bookmarks.visibility", "newtab"]]);
   const observers = new Map(), calls = [];
-  globalThis.Services = {prefs: {
+  globalThis.Services = {obs:{addObserver(){},removeObserver(){}},prefs: {
     getBoolPref: (name, fallback) => prefs.get(name) ?? fallback,
     getCharPref: (name, fallback) => prefs.get(name) ?? fallback,
     setCharPref: (name, value) => { calls.push(["pref", name, value]); prefs.set(name, value); },
@@ -112,7 +113,7 @@ function fixture(overrides = {}) {
     OpenBrowserWindow: record("window"),
     PlacesCommandHook: {showPlacesOrganizer: record("organizer"), bookmarkTabs: record("bookmark")},
     CustomizableUI: {setToolbarVisibility: record("visibility")},
-    gBrowser: {selectedTabs: ["tab"]},
+    gBrowser: {selectedTabs: ["tab"],selectedBrowser:{contentPrincipal:{},browsingContext:{currentWindowGlobal:{innerWindowId:1}},reload:record("reload")}},
     openPreferences: record("settings"), goQuitApplication: record("quit"),
     ShortcutUtils: {prettifyShortcut: key => key.shortcut},
     document: {getElementById: id => id === "key_newNavigatorTab" ? {shortcut: "Ctrl+T"} : null},
@@ -128,7 +129,11 @@ function fixture(overrides = {}) {
     },
   };
   const host = {invalidate: record("invalidate"), openMenu: (...args) => { calls.push(["menu", ...args]); return 1; }};
-  return {menu: new WinUIProductMenu(window, host), prefs, observers, calls, window};
+  const menu = new WinUIProductMenu(window, host);
+  const blocker = {updateControls:()=>({status:"paused",lastSuccess:0,canCheck:false}), checkForUpdates:()=>false, active:true, controls:()=>({enabled:true,site:true,excepted:false,canEnable:true,status:"active"}),
+    excepted:()=>false, setSiteException:()=>{calls.push(["site-exception"]);return true;},setEnabled:()=>true};
+  Object.defineProperty(menu,"adblock",{value:blocker});
+  return {menu, blocker, prefs, observers, calls, window};
 }
 
 test("a disabled preference publishes nothing and refuses every command", () => {
@@ -146,7 +151,7 @@ test("the model is a bounded cascading menu with History and Bookmarks as submen
   const top = model.items.filter(item => item.kind !== "separator").map(item => [item.id, item.kind]);
   assert.deepEqual(top, [["new-tab", "item"], ["new-window", "item"], ["new-private-window", "item"],
     ["history", "submenu"], ["downloads", "item"], ["bookmarks", "submenu"], ["extensions", "submenu"],
-    ["view", "submenu"], ["print", "item"], ["help", "submenu"], ["set-default", "item"], ["settings", "item"],
+    ["adblock", "submenu"], ["view", "submenu"], ["print", "item"], ["help", "submenu"], ["set-default", "item"], ["settings", "item"],
     ["customize-toolbar", "item"], ["check-updates", "item"], ["quit", "item"]]);
   const bookmarks = model.items.find(item => item.id === "bookmarks");
   assert.ok(!bookmarks.items.some(item => item.id === "bookmarks-toolbar"));
@@ -593,4 +598,24 @@ test("late history and bookmark favicons cannot attach to a replaced request or 
     assert.ok(!f.menu.lists?.history.some(item=>item.image));
     assert.ok(!f.menu.lists?.recent.some(item=>item.image));
   }
+});
+
+test("adblock site actions reject stale document identity before changing permissions",()=>{
+ const f=fixture();const old=f.menu.model().items.find(i=>i.id==="adblock").items.find(i=>i.id.startsWith("adblock-site-"));
+ f.window.gBrowser.selectedBrowser.browsingContext.currentWindowGlobal.innerWindowId=2;
+ assert.equal(f.menu.execute(old.id,{},{}),2);assert.deepEqual(f.calls,[]);
+ assert.equal(f.menu.execute("adblock-site-2",{},{}),1);assert.deepEqual(f.calls,[["site-exception"],["reload"]]);
+});
+
+test("filter update command reflects availability and revalidates at execution",()=>{
+ const f=fixture();const rows=()=>f.menu.model().items.find(i=>i.id==="adblock").items;
+ assert.equal(rows().find(i=>i.id==="adblock-update-now").enabled,false);
+ assert.equal(f.menu.execute("adblock-update-now",{},{}),2);
+ f.blocker.updateControls=()=>({status:"current",lastSuccess:12345,canCheck:true});
+ assert.equal(rows().find(i=>i.id==="adblock-update-now").enabled,true);
+ assert.equal(rows().find(i=>i.id==="adblock-update-date").label,"update-date");
+ f.blocker.checkForUpdates=()=>true;
+ assert.equal(f.menu.execute("adblock-update-now",{},{}),1);
+ f.blocker.checkForUpdates=()=>false;
+ assert.equal(f.menu.execute("adblock-update-now",{},{}),2);
 });

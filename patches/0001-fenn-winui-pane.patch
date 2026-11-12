@@ -126,7 +126,7 @@ index 1fbef26996f..7c5875a33f0 100644
 +#endif
  
 diff --git a/browser/app/profile/firefox.js b/browser/app/profile/firefox.js
-index 0f4b2915ad2..ebdaa60ce7c 100644
+index 0f4b2915ad2..87d44f0ff97 100644
 --- a/browser/app/profile/firefox.js
 +++ b/browser/app/profile/firefox.js
 @@ -322,3 +322,4 @@ pref("browser.shell.displayKitImageBehindSetDefaultBrowserButton", "off");
@@ -179,7 +179,7 @@ index 0f4b2915ad2..ebdaa60ce7c 100644
 +// Keep its inspection shortcut out of page context menus unless requested.
 +pref("fenn.contextMenu.inspectAccessibility", false);
  
-@@ -3877,2 +3886,66 @@ pref("distribution.mozillaonline.ignore", true);
+@@ -3877,2 +3886,71 @@ pref("distribution.mozillaonline.ignore", true);
  
 +// The native tab strip is on by default in every lane (unpackaged launcher and
 +// MSIX alike); turn it off to fall back to Firefox's own UI. Firefox keeps its
@@ -235,6 +235,11 @@ index 0f4b2915ad2..ebdaa60ce7c 100644
 +// Show the native address in private windows. False: private windows use
 +// Firefox's own URL bar.
 +pref("fenn.winui.address.private", true);
++// Executable adblock-rust experiment. Never enabled by launcher or packaging.
++pref("fenn.adblock.prototype.enabled", false);
++pref("fenn.adblock.testNotice.dismissed", false);
++pref("fenn.adblock.updates.enabled", true);
++pref("fenn.adblock.prototype.testing", false);
 +
 +// Fenn (firefox-winui): no sponsored content or stories. Sponsored suggestions,
 +// shortcuts and stories come from Mozilla's advertising partners, and New Tab
@@ -1352,10 +1357,16 @@ index f4a0e1e566c..706e13eec45 100644
 +    }
      var prefb = Services.prefs;
 diff --git a/browser/components/BrowserGlue.sys.mjs b/browser/components/BrowserGlue.sys.mjs
-index 4a292baaec9..887db8c14b1 100644
+index 4a292baaec9..99da9a978eb 100644
 --- a/browser/components/BrowserGlue.sys.mjs
 +++ b/browser/components/BrowserGlue.sys.mjs
-@@ -549,2 +549,15 @@ BrowserGlue.prototype = {
+@@ -393,2 +393,5 @@ BrowserGlue.prototype = {
+   _beforeUIStartup: function BG__beforeUIStartup() {
++    ChromeUtils.importESModule(
++      "moz-src:///browser/components/fennadblock/FennAdblockService.sys.mjs"
++    ).FennAdblockService.init();
+     lazy.SessionStartup.init();
+@@ -549,2 +552,15 @@ BrowserGlue.prototype = {
    _earlyBlankFirstPaint(cmdLine) {
 +    if (AppConstants.platform == "win") {
 +      ChromeUtils.importESModule("chrome://browser/content/WinUIAutomaticStartup.sys.mjs").registerStartupChromeGate();
@@ -1552,6 +1563,14 @@ index 311e0d736c7..a61d9457612 100644
      setTimeout(() => {
 +      if (nativeAnchor && nativeAnchor() !== anchor) return;
        PanelMultiView.openPopup(
+diff --git a/browser/components/moz.build b/browser/components/moz.build
+index 9a955225780..439ac43fde2 100644
+--- a/browser/components/moz.build
++++ b/browser/components/moz.build
+@@ -24,2 +24,3 @@ with Files("controlcenter/**"):
+ DIRS += [
++    "fennadblock",
+     "about",
 diff --git a/browser/components/newtab/AboutNewTabRedirector.sys.mjs b/browser/components/newtab/AboutNewTabRedirector.sys.mjs
 index 33ebe5111a1..571241da829 100644
 --- a/browser/components/newtab/AboutNewTabRedirector.sys.mjs
@@ -1910,15 +1929,19 @@ index 09b8c8d57f9..668e4970ab4 100644
 +      window.gWinUIPane?.newTabPage?.authorized ||
        window.gBrowser.preloadedBrowser ||
 diff --git a/browser/components/tabbrowser/Tabbrowser.sys.mjs b/browser/components/tabbrowser/Tabbrowser.sys.mjs
-index 430e1137a15..6dbf75a4542 100644
+index 430e1137a15..9671ae27134 100644
 --- a/browser/components/tabbrowser/Tabbrowser.sys.mjs
 +++ b/browser/components/tabbrowser/Tabbrowser.sys.mjs
-@@ -4267,3 +4267,3 @@ export class Tabbrowser {
+@@ -4036,2 +4036,3 @@ export class Tabbrowser {
+         fromExternal,
++        nativeNewTab: uriString === "about:newtab" && !skipLoad && !createLazyBrowser,
+       };
+@@ -4267,3 +4268,3 @@ export class Tabbrowser {
      menu.setAttribute("data-trigger-source", isFromFooter ? "footer" : "icon");
 -    menu.openPopup(anchorElement, "after_start");
 +    menu.openPopup(this.document.defaultView.gWinUIPane?.addressToolbar?.omnibar?.anchorFor(anchorElement) || anchorElement, "after_start");
    }
-@@ -6644,2 +6644,8 @@ export class Tabbrowser {
+@@ -6644,2 +6645,8 @@ export class Tabbrowser {
  
 +  // Native controls must observe Firefox's pending confirmation state without
 +  // maintaining a second copy or bypassing the original unload controller.
@@ -9568,10 +9591,10 @@ index 4962ed6d290..093ac1782d4 100644
 +extension-firefox-alpenglow-name=Alpenglow
  extension-firefox-alpenglow-description=Use a colorful appearance for buttons, menus, and windows.
 diff --git a/browser/locales/en-US/browser/tabbrowser.ftl b/browser/locales/en-US/browser/tabbrowser.ftl
-index 4f28e62c7b5..2ad65b26755 100644
+index 4f28e62c7b5..08a96203ff4 100644
 --- a/browser/locales/en-US/browser/tabbrowser.ftl
 +++ b/browser/locales/en-US/browser/tabbrowser.ftl
-@@ -520 +520,167 @@ split-view-menuitem-close-both-tabs =
+@@ -520 +520,198 @@ split-view-menuitem-close-both-tabs =
  ##
 +
 +# Status descriptions for the opt-in native tab strip.
@@ -9739,6 +9762,37 @@ index 4f28e62c7b5..2ad65b26755 100644
 +# Native new-tab presentation; browser semantics remain in Firefox.
 +winui-newtab-name = { -brand-short-name }
 +winui-newtab-shortcuts = Shortcuts
++
++# Native product-menu ad blocking controls. Site changes reload the selected tab.
++winui-adblock-title = Ad blocking
++winui-adblock-enable = Enable ad blocking
++winui-adblock-site = Block ads on this site
++winui-adblock-status-off = Ad blocking is off
++winui-adblock-status-preparing = Preparing ad blocking…
++winui-adblock-status-active = Ad blocking is active
++winui-adblock-status-paused = Ad blocking is paused on this site
++winui-adblock-status-failed = Ad blocking could not start
++winui-adblock-reload-note = Site changes reload this tab. Reload other open pages to apply changes.
++
++winui-adblock-update-paused = Filter updates are paused
++winui-adblock-update-checking = Checking filter updates…
++winui-adblock-update-unavailable = Updates need an available, unmetered connection
++winui-adblock-update-failed = Filter update failed; automatic retry scheduled
++winui-adblock-update-stale = Filters have not been verified in over two days
++winui-adblock-update-current = Filters are up to date
++winui-adblock-update-never = Filters have not been verified yet
++# $date (Number) is the time of the last successful signed filter feed check.
++winui-adblock-update-date = Last verified: { DATETIME($date, dateStyle: "medium", timeStyle: "short") }
++winui-adblock-update-no-date = No successful filter check yet
++winui-adblock-update-now = Update now
++
++winui-adblock-test-notice-title = Ad-blocking scores don’t tell the whole story
++winui-adblock-test-notice-body = These tests check a limited set of requests and page elements. They may count harmless replacements as failures or miss rules that work only on particular websites.
++    A score alone doesn’t establish how well { -brand-short-name } blocks ads or preserves website functionality. Individual failures can still be useful to investigate.
++winui-adblock-test-notice-dismiss = Dismiss
++winui-adblock-test-notice-dismiss-key = D
++winui-adblock-test-notice-learn = Learn why — Brave ↗
++winui-adblock-test-notice-learn-key = L
 diff --git a/browser/locales/en-US/chrome/overrides/appstrings.properties b/browser/locales/en-US/chrome/overrides/appstrings.properties
 index 13464a72e83..7c92cbb1828 100644
 --- a/browser/locales/en-US/chrome/overrides/appstrings.properties
@@ -9916,6 +9970,16 @@ index b5ed380f179..84de0e70ef0 100644
 +$(PGO_SKIPPED_PROGRAMS):
 +	@touch $@
  endif
+diff --git a/dom/base/ChromeUtils.h b/dom/base/ChromeUtils.h
+index 6e926af9087..bc721b03f04 100644
+--- a/dom/base/ChromeUtils.h
++++ b/dom/base/ChromeUtils.h
+@@ -162,2 +162,5 @@ class ChromeUtils {
+ 
++  static already_AddRefed<PrecompiledScript> CompileFennScript(
++      GlobalObject& aGlobal, const nsAString& aSource, ErrorResult& aRv);
++
+   static UniquePtr<MozQueryInterface> GenerateQI(
 diff --git a/dom/base/nsDOMWindowUtils.cpp b/dom/base/nsDOMWindowUtils.cpp
 index b39212b1c97..fb9220ed391 100644
 --- a/dom/base/nsDOMWindowUtils.cpp
@@ -10132,6 +10196,19 @@ index b39212b1c97..fb9220ed391 100644
 +}
 +
  static LazyLogModule sApzZoomToFocusedInputLog("apz.zoomtofocusedinput");
+diff --git a/dom/chrome-webidl/ChromeUtils.webidl b/dom/chrome-webidl/ChromeUtils.webidl
+index 9253a4a0af1..54831306f2e 100644
+--- a/dom/chrome-webidl/ChromeUtils.webidl
++++ b/dom/chrome-webidl/ChromeUtils.webidl
+@@ -685,2 +685,8 @@ partial namespace ChromeUtils {
+ 
++  /** Fenn-owned bounded compilation for authenticated document-start scriptlets.
++   * No URL loading or evaluation. Execution retains PrecompiledScript semantics.
++   */
++  [Throws, NewObject]
++  PrecompiledScript compileFennScript(DOMString source);
++
+   /**
 diff --git a/dom/interfaces/base/nsIDOMWindowUtils.idl b/dom/interfaces/base/nsIDOMWindowUtils.idl
 index 400fb84ffc6..24dcd8ce6dd 100644
 --- a/dom/interfaces/base/nsIDOMWindowUtils.idl
@@ -10220,6 +10297,14 @@ index 58c9e15a4b6..90fbe5375eb 100644
      "DocShellMessageUtils.cpp",
 +    "FennPageGeometry.cpp",
      "FilePickerParent.cpp",
+diff --git a/js/xpconnect/loader/moz.build b/js/xpconnect/loader/moz.build
+index 4eeba1da447..66d7b0994e7 100644
+--- a/js/xpconnect/loader/moz.build
++++ b/js/xpconnect/loader/moz.build
+@@ -7,2 +7,3 @@ UNIFIED_SOURCES += [
+     "ChromeScriptLoader.cpp",
++    "FennScriptCompiler.cpp",
+     "mozJSLoaderUtils.cpp",
 diff --git a/mozglue/misc/PreXULSkeletonUI.cpp b/mozglue/misc/PreXULSkeletonUI.cpp
 index b359494c6fb..b2f6ecd0a0c 100644
 --- a/mozglue/misc/PreXULSkeletonUI.cpp
@@ -10251,6 +10336,69 @@ index ef72e9060ea..f838f1385fd 100644
      EXPORTS.mozilla += [
 +        "FennStartupWindow.h",
          "GetKnownFolderPath.h",
+diff --git a/netwerk/protocol/http/HttpChannelChild.cpp b/netwerk/protocol/http/HttpChannelChild.cpp
+index d9d73de1b18..99faf3f0536 100644
+--- a/netwerk/protocol/http/HttpChannelChild.cpp
++++ b/netwerk/protocol/http/HttpChannelChild.cpp
+@@ -398,2 +398,7 @@ void HttpChannelChild::OnStartRequest(
+   mComputedCrossOriginOpenerPolicy = aArgs.openerPolicy();
++  if (!aArgs.fennAdblockResources().IsEmpty() &&
++      aArgs.fennAdblockResources().Length() <= 2 * 1024 * 1024) {
++    (void)SetPropertyAsAString(u"fenn.adblock.resources"_ns,
++                              aArgs.fennAdblockResources());
++  }
+ 
+diff --git a/netwerk/protocol/http/HttpChannelParams.ipdlh b/netwerk/protocol/http/HttpChannelParams.ipdlh
+index 4e37661ad96..1d1ade57cb9 100644
+--- a/netwerk/protocol/http/HttpChannelParams.ipdlh
++++ b/netwerk/protocol/http/HttpChannelParams.ipdlh
+@@ -26,2 +26,3 @@ struct HttpChannelOnStartRequestArgs
+ {
++  nsString fennAdblockResources;
+   nullable nsITransportSecurityInfo securityInfo;
+diff --git a/netwerk/protocol/http/HttpChannelParent.cpp b/netwerk/protocol/http/HttpChannelParent.cpp
+index 79fa33f044f..a93f5f178bf 100644
+--- a/netwerk/protocol/http/HttpChannelParent.cpp
++++ b/netwerk/protocol/http/HttpChannelParent.cpp
+@@ -1199,2 +1199,10 @@ HttpChannelParent::OnStartRequest(nsIRequest* aRequest) {
+ 
++  // Fenn-owned, chrome-only metadata travels with this document's channel,
++  // never as an HTTP header or a process-wide browsing-data publication.
++  if (NS_FAILED(chan->GetPropertyAsAString(u"fenn.adblock.resources"_ns,
++                                         args.fennAdblockResources())) ||
++      args.fennAdblockResources().Length() > 2 * 1024 * 1024) {
++    args.fennAdblockResources().Truncate();
++  }
++
+   // Send down any cookies which are relevant to this URL if we are performing a
+diff --git a/netwerk/protocol/http/nsHttpChannel.cpp b/netwerk/protocol/http/nsHttpChannel.cpp
+index d17a57fd8b9..14c32beb6b0 100644
+--- a/netwerk/protocol/http/nsHttpChannel.cpp
++++ b/netwerk/protocol/http/nsHttpChannel.cpp
+@@ -6477,3 +6477,22 @@ nsresult nsHttpChannel::UpdateCacheEntryHeaders(nsICacheEntry* entry,
+   nsAutoCString head;
+-  mResponseHead->Flatten(head, true);
++  nsAutoCString fennOriginalCsp;
++  if (NS_SUCCEEDED(GetPropertyAsACString(u"fenn.csp.original"_ns,
++                                        fennOriginalCsp))) {
++    // Fenn's optional filter policy is per navigation, not origin metadata.
++    // Keep the delivered head intact while excluding that addition from cache.
++    // Other observers may change CSP after Fenn: in that case decline caching
++    // rather than guessing which policies to remove or persisting stale state.
++    nsAutoCString delivered, current;
++    if (NS_FAILED(GetPropertyAsACString(u"fenn.csp.delivered"_ns, delivered)) ||
++        NS_FAILED(mResponseHead->GetHeader(nsHttp::Content_Security_Policy, current)) ||
++        current != delivered) {
++      return NS_ERROR_NOT_AVAILABLE;
++    }
++    nsHttpResponseHead cacheHead(*mResponseHead);
++    rv = cacheHead.SetHeader("Content-Security-Policy"_ns, fennOriginalCsp, false);
++    if (NS_FAILED(rv)) return rv;
++    cacheHead.Flatten(head, true);
++  } else {
++    mResponseHead->Flatten(head, true);
++  }
+   rv = entry->SetMetaDataElement("response-head", head.get());
 diff --git a/python/mozbuild/mozbuild/repackaging/msix.py b/python/mozbuild/mozbuild/repackaging/msix.py
 index 47a067c4c15..b88749f7d58 100644
 --- a/python/mozbuild/mozbuild/repackaging/msix.py
@@ -10269,6 +10417,18 @@ index 42b6f2d3872..b99ae7c1a16 100644
  firefox-appdir = "browser"
 +fenn-appdir = "browser"
  prefs = [
+diff --git a/toolkit/components/nimbus/lib/RemoteSettingsExperimentLoader.sys.mjs b/toolkit/components/nimbus/lib/RemoteSettingsExperimentLoader.sys.mjs
+index ed86123fc05..8bbbe4be21a 100644
+--- a/toolkit/components/nimbus/lib/RemoteSettingsExperimentLoader.sys.mjs
++++ b/toolkit/components/nimbus/lib/RemoteSettingsExperimentLoader.sys.mjs
+@@ -497,3 +497,6 @@ export class RemoteSettingsExperimentLoader {
+     if (lazy.TARGETING_CONTEXT_TELEMETRY_ENABLED) {
+-      await lazy.recordTargetingContext();
++      // Targeting getters can outlive shutdown (for example Windows shell
++      // queries). Like recipe reads, telemetry collection must not hold the
++      // update lock and the shutdown blocker after cancellation.
++      await this.#raceShutdown(() => lazy.recordTargetingContext());
+     }
 diff --git a/toolkit/components/search/ConfigSearchEngine.sys.mjs b/toolkit/components/search/ConfigSearchEngine.sys.mjs
 index 2186215520c..dc5f1740a7c 100644
 --- a/toolkit/components/search/ConfigSearchEngine.sys.mjs
@@ -11319,6 +11479,2454 @@ index 30846e96272..985c9f8934e 100644
 +    }
 +#endif
      /* the nativeWindow pointer is converted to and exposed as a string. This
+diff --git a/js/xpconnect/loader/FennScriptCompiler.cpp b/js/xpconnect/loader/FennScriptCompiler.cpp
+new file mode 100644
+index 00000000000..88fdec71299
+--- /dev/null
++++ b/js/xpconnect/loader/FennScriptCompiler.cpp
+@@ -0,0 +1,47 @@
++/* This Source Code Form is subject to the terms of the Mozilla Public
++ * License, v. 2.0. If a copy of the MPL was not distributed with this
++ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
++
++#include "mozilla/dom/ChromeUtils.h"
++#include "mozilla/dom/PrecompiledScript.h"
++#include "js/CompileOptions.h"
++#include "js/SourceText.h"
++#include "js/experimental/CompileScript.h"
++#include "nsIGlobalObject.h"
++
++namespace mozilla::dom {
++
++already_AddRefed<PrecompiledScript> ChromeUtils::CompileFennScript(
++    GlobalObject& aGlobal, const nsAString& aSource, ErrorResult& aRv) {
++  // Bound main-thread work independently of JS callers. Larger payloads retain
++  // the existing async compiler. This does not bypass the caller's deadline.
++  if (aSource.Length() > 128 * 1024) {
++    aRv.ThrowRangeError("Fenn scriptlet source exceeds inline compile bound");
++    return nullptr;
++  }
++  JSContext* cx = aGlobal.Context();
++  JS::CompileOptions options(cx);
++  // Stack traces must not expose a Fenn-specific filename to page code.
++  options.setFileAndLine("scriptlet", 1);
++  options.setNoScriptRval(true);
++  options.setForceFullParse();
++  JS::SourceText<char16_t> source;
++  if (!source.init(cx, aSource.BeginReading(), aSource.Length(),
++                   JS::SourceOwnership::Borrowed)) {
++    aRv.NoteJSContextException(cx);
++    return nullptr;
++  }
++  RefPtr<JS::Stencil> stencil =
++      JS::CompileGlobalScriptToStencil(cx, options, source);
++  if (!stencil) {
++    aRv.NoteJSContextException(cx);
++    return nullptr;
++  }
++  // PrecompiledScript instantiates in the target realm at executeInGlobal;
++  // neither the compiled stencil nor this helper retains a content window.
++  RefPtr<PrecompiledScript> script =
++      new PrecompiledScript(aGlobal.GetAsSupports(), stencil, options);
++  return script.forget();
++}
++
++}  // namespace mozilla::dom
+diff --git a/browser/components/fennadblock/moz.build b/browser/components/fennadblock/moz.build
+new file mode 100644
+index 00000000000..59ff931be42
+--- /dev/null
++++ b/browser/components/fennadblock/moz.build
+@@ -0,0 +1,16 @@
++# This Source Code Form is subject to the terms of the Mozilla Public
++# License, v. 2.0. If a copy of the MPL was not distributed with this
++# file, You can obtain one at http://mozilla.org/MPL/2.0/.
++MOZ_SRC_FILES += [
++    "FennAdblockChild.sys.mjs",
++    "FennAdblockDiagnostics.sys.mjs",
++    "FennAdblockDom.sys.mjs",
++    "FennAdblockFetcher.sys.mjs",
++    "FennAdblockParent.sys.mjs",
++    "FennAdblockProcedural.sys.mjs",
++    "FennAdblockSelectors.sys.mjs",
++    "FennAdblockService.sys.mjs",
++    "FennAdblockStyles.sys.mjs",
++    "FennAdblockTestNotice.sys.mjs",
++    "FennAdblockUpdates.sys.mjs",
++]
+diff --git a/browser/components/fennadblock/FennAdblockFetcher.sys.mjs b/browser/components/fennadblock/FennAdblockFetcher.sys.mjs
+new file mode 100644
+index 00000000000..85c03ebaf82
+--- /dev/null
++++ b/browser/components/fennadblock/FennAdblockFetcher.sys.mjs
+@@ -0,0 +1,101 @@
++/* This Source Code Form is subject to the terms of the Mozilla Public
++ * License, v. 2.0. If a copy of the MPL was not distributed with this
++ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
++import {setTimeout, clearTimeout} from "resource://gre/modules/Timer.sys.mjs";
++
++// Firefox owns bounded transport; the helper owns signature and rollback checks.
++import {PRODUCTION_UPDATE_URL} from "moz-src:///browser/components/fennadblock/FennAdblockUpdates.sys.mjs";
++export class FennAdblockFetcher {
++  constructor(source, current, {allowLoopback = false} = {}) {
++    this.base = new URL(source);
++    const production = source === PRODUCTION_UPDATE_URL;
++    if (!production && (!allowLoopback || this.base.protocol !== "http:" || !["127.0.0.1", "[::1]"].includes(this.base.hostname) ||
++        !this.base.port || this.base.username || this.base.password || this.base.search || this.base.hash ||
++        !this.base.pathname.endsWith("/"))) { throw new Error("Unapproved filter update endpoint"); }
++    this.production = production;
++    this.current = current;
++    this.id = 1; this.bytes = 0; this.attempts = 0;
++    this.requestTimeout = production ? 15000 : 2000;
++    this.deadline = ChromeUtils.now() + (production ? 60000 : 20000);
++    this.cancelled = false;
++  }
++  async init(profile) {
++    const root = PathUtils.join(profile, "fenn-adblock-fetch");
++    await IOUtils.makeDirectory(root, {permissions:0o700});
++    // Native preparation recovers lease-proven dead jobs off the main thread.
++    // A broad preflight bound also limits unknown/legacy directory enumeration.
++    if ((await IOUtils.getChildren(root)).length >= 64) { throw new Error("Fetch scratch scan bound exceeded"); }
++    this.path = PathUtils.join(root, Services.uuid.generateUUID().toString());
++    await IOUtils.makeDirectory(this.path, {permissions:0o700});
++  }
++  valid() { return !this.cancelled && this.current() && ChromeUtils.now() < this.deadline; }
++  abort() { this.cancelled = true; this.controller?.abort(); }
++  async close() {
++    this.abort();
++    if (this.path) { await IOUtils.remove(this.path, {recursive:true, ignoreAbsent:true}); }
++  }
++  async pump() {
++    if (!this.valid()) { this.abort(); return; }
++    const request = PathUtils.join(this.path, `request-${this.id}.json`);
++    if (!await IOUtils.exists(request)) { return; }
++    const raw = await IOUtils.read(request, {maxBytes:4097});
++    if (raw.length > 4096) { throw new Error("Oversized broker request"); }
++    const value = JSON.parse(new TextDecoder().decode(raw));
++    const match = /^(metadata|targets)\/([a-zA-Z0-9._-]{1,200})$/.exec(value.path);
++    const name = match?.[2];
++    const fixed = name?.replace(/^[a-fA-F0-9]{64}\./, "");
++    const limit = match?.[1] === "metadata" && name.endsWith(".json") ?
++      (name === "timestamp.json" ? 65536 : 1048576) :
++      ({"descriptor.json":65536, "rules.txt":10485760, "provenance.json":1048576})[fixed];
++    if (value.id !== this.id || !limit || value.limit !== limit) { throw new Error("Invalid broker request"); }
++    let status = "error";
++    for (let attempt = 0; attempt < 2 && this.valid(); attempt++) {
++      if (attempt) { await new Promise(resolve => setTimeout(resolve, 100)); }
++      if (!this.valid()) { return; }
++      if (++this.attempts > 64) { break; }
++      this.controller = new AbortController();
++      const timer = setTimeout(() => this.controller?.abort(), Math.min(this.requestTimeout, this.deadline - ChromeUtils.now()));
++      try {
++        const response = await fetch(new URL(value.path, this.base).href, {
++          signal:this.controller.signal, credentials:"omit", cache:"no-store", redirect:"error",
++          referrerPolicy:"no-referrer",
++        });
++        if (response.status === 404) { status = "not-found"; break; }
++        if ([408,429,500,502,503,504].includes(response.status)) {
++          await response.body?.cancel();
++          const retry = response.headers.get("retry-after");
++          if (this.production && retry) {
++            const ms = /^\d+$/.test(retry) ? Number(retry) * 1000 : Date.parse(retry) - Date.now();
++            if (Number.isFinite(ms) && ms > 0) {
++              const error = new Error("Filter endpoint requested backoff"); error.retryAfterMs = Math.min(86400000, ms); throw error;
++            }
++          }
++          continue;
++        }
++        if (response.status !== 200 || (response.headers.get("content-encoding") || "identity") !== "identity" ||
++            Number(response.headers.get("content-length") || 0) > limit) { await response.body?.cancel(); break; }
++        const reader = response.body.getReader();
++        const chunks = []; let length = 0;
++        for (;;) {
++          const {done, value:chunk} = await reader.read();
++          if (done) { break; }
++          length += chunk.length; this.bytes += chunk.length;
++          if (!this.valid() || length > limit || this.bytes > 33554432) { await reader.cancel(); throw new Error("Fetch bound exceeded"); }
++          chunks.push(chunk);
++        }
++        if (!this.valid()) { return; }
++        const body = new Uint8Array(length); let offset = 0;
++        for (const chunk of chunks) { body.set(chunk, offset); offset += chunk.length; }
++        await IOUtils.write(PathUtils.join(this.path, `body-${this.id}`), body);
++        status = "ok"; break;
++      } catch (error) {
++        if (error.retryAfterMs) { throw error; }
++        if (this.bytes > 33554432) { break; }
++      } finally { clearTimeout(timer); }
++    }
++    if (!this.valid()) { return; }
++    const reply = PathUtils.join(this.path, `reply-${this.id}.json`);
++    await IOUtils.writeJSON(reply, {id:this.id, status}, {tmpPath:reply + ".next"});
++    this.id++;
++  }
++}
+diff --git a/browser/components/fennadblock/FennAdblockService.sys.mjs b/browser/components/fennadblock/FennAdblockService.sys.mjs
+new file mode 100644
+index 00000000000..c8f559d31fe
+--- /dev/null
++++ b/browser/components/fennadblock/FennAdblockService.sys.mjs
+@@ -0,0 +1,851 @@
++/* This Source Code Form is subject to the terms of the Mozilla Public
++ * License, v. 2.0. If a copy of the MPL was not distributed with this
++ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
++
++// Executable experiment, not a production network-policy implementation.
++// This module is cheap while disabled: no DLL, actor, request observer or I/O.
++const PREF = "fenn.adblock.prototype.enabled";
++const BASE = "moz-src:///browser/components/fennadblock/";
++import {setTimeout, clearTimeout} from "resource://gre/modules/Timer.sys.mjs";
++const TYPE = Ci.nsIContentPolicy;
++const RESPONSE_TOPICS = ["http-on-examine-response", "http-on-examine-cached-response", "http-on-examine-merged-response"];
++const CSP_FETCH_DIRECTIVES = new Set(["default-src", "script-src", "script-src-elem", "script-src-attr",
++  "style-src", "style-src-elem", "style-src-attr", "img-src", "font-src", "media-src", "object-src",
++  "connect-src", "frame-src", "child-src", "worker-src", "manifest-src"]);
++const DATA_REPLACEMENT_TYPES = new Set([TYPE.TYPE_INTERNAL_XMLHTTPREQUEST_ASYNC, TYPE.TYPE_FETCH]);
++const TYPES = new Map([
++  [TYPE.TYPE_SCRIPT, "script"], [TYPE.TYPE_IMAGE, "image"],
++  [TYPE.TYPE_IMAGESET, "image"], [TYPE.TYPE_STYLESHEET, "stylesheet"],
++  [TYPE.TYPE_SUBDOCUMENT, "subdocument"], [TYPE.TYPE_FONT, "font"],
++  [TYPE.TYPE_MEDIA, "media"], [TYPE.TYPE_XMLHTTPREQUEST, "xmlhttprequest"],
++  [TYPE.TYPE_FETCH, "xmlhttprequest"], [TYPE.TYPE_PING, "ping"],
++  [TYPE.TYPE_WEBSOCKET, "websocket"], [TYPE.TYPE_OBJECT, "object"],
++]);
++
++export const FennAdblockService = {
++  QueryInterface: ChromeUtils.generateQI(["nsIObserver"]),
++  initialized: false,
++  active: false,
++  observing: false,
++  preparing: false,
++  revision: 0,
++  ready: Promise.resolve(),
++  work: null,
++  pending: new Set(),
++  generation: 0,
++  resourceRevision: 0,
++  library: null,
++  actorRegistered: false,
++  stats: {loads:0, checks:0, blocked:0, redirected:0, rewritten:0, cspApplied:0, unsupported:0, errors:0, matchMs:0, initMs:0, loadMs:0, buildMs:0, prepareMs:0, prepareControlMs:0, readyMs:0, cacheHit:false, cacheError:null, startupWaits:0, startupBypasses:0, actors:[]},
++  error: "",
++  diagnosticCapture: null,
++
++  startDiagnostics(context, seconds = 60) {
++    this.stopDiagnostics();
++    const global = context?.currentWindowGlobal;
++    const principal = global?.documentPrincipal;
++    if (!this.active || context !== context?.top || !principal?.isContentPrincipal ||
++        principal.originAttributes.privateBrowsingId ||
++        !(principal.URI.schemeIs("http") || principal.URI.schemeIs("https"))) { return false; }
++    const {FennAdblockDiagnosticCapture} = ChromeUtils.importESModule(BASE + "FennAdblockDiagnostics.sys.mjs");
++    const capture = new FennAdblockDiagnosticCapture();
++    capture.contextId = String(context.id); capture.innerId = String(global.innerWindowId);
++    capture.generation = this.generation;
++    this.diagnosticCapture = capture;
++    this.diagnosticObserver = {observe:subject => {
++      if (String(subject.innerWindowId) === capture.innerId) { this.stopDiagnostics(); }
++    }};
++    Services.obs.addObserver(this.diagnosticObserver, "window-global-destroyed");
++    const duration = Number.isFinite(seconds) ? Math.max(1, Math.min(60, seconds)) : 60;
++    capture.expiresAt = ChromeUtils.now() + duration * 1000;
++    this.diagnosticTimer = setTimeout(() => this.stopDiagnostics(), duration * 1000);
++    return true;
++  },
++
++  stopDiagnostics() {
++    clearTimeout(this.diagnosticTimer); this.diagnosticTimer = null;
++    if (this.diagnosticObserver) { Services.obs.removeObserver(this.diagnosticObserver, "window-global-destroyed"); }
++    this.diagnosticObserver = null;
++    this.cancelDiagnosticExport?.(); this.cancelDiagnosticExport = null;
++    this.diagnosticCapture?.clear(); this.diagnosticCapture = null;
++  },
++
++  diagnosticMatches(context) {
++    const capture = this.diagnosticCapture;
++    if (!capture || !context || String(context.top.id) !== capture.contextId) { return false; }
++    if (ChromeUtils.now() >= capture.expiresAt || capture.generation !== this.generation ||
++        String(context.top.currentWindowGlobal?.innerWindowId) !== capture.innerId) {
++      this.stopDiagnostics(); return false;
++    }
++    return true;
++  },
++
++  async exportDiagnostics(context) {
++    if (!this.diagnosticMatches(context) || this.cancelDiagnosticExport) { return null; }
++    const capture = this.diagnosticCapture;
++    let timer;
++    try {
++      const pending = new Promise(resolve => {
++        this.cancelDiagnosticExport = () => resolve({status:"unavailable"});
++        timer = setTimeout(() => resolve({status:"timeout"}), 250);
++      });
++      const query = context.top.currentWindowGlobal.getActor("FennAdblock").sendQuery("Troubleshooting")
++        .then(value => ({status:"available", value}), () => ({status:"unavailable"}));
++      const reply = await Promise.race([query, pending]);
++      if (capture !== this.diagnosticCapture || !this.diagnosticMatches(context)) { return null; }
++      return capture.report(reply.value, reply.status);
++    } catch (_) { return capture === this.diagnosticCapture ? capture.report(null, "unavailable") : null; }
++    finally { clearTimeout(timer); if (capture === this.diagnosticCapture) { this.cancelDiagnosticExport = null; } }
++  },
++
++  recordDiagnostic(channel, outcome, result = null, thirdParty = null) {
++    // Called only behind the null capture guard: no extra channel inspection,
++    // allocations, IPC, imports or timers while capture is off.
++    try {
++      const info = channel.loadInfo;
++      if (info.originAttributes.privateBrowsingId ||
++          !this.diagnosticMatches(info.associatedBrowsingContext || info.browsingContext)) { return; }
++      this.diagnosticCapture.record(TYPES.get(info.externalContentPolicyType) ||
++        (info.externalContentPolicyType === TYPE.TYPE_DOCUMENT ? "document" : "other"), outcome, result?.exception, thirdParty);
++    } catch (_) {} // Troubleshooting must never affect a network decision.
++  },
++
++  init() {
++    if (this.initialized) { return; }
++    const start = ChromeUtils.now();
++    this.initialized = true;
++    Services.prefs.addObserver(PREF, this);
++    Services.prefs.addObserver("fenn.adblock.updates.enabled", this);
++    Services.obs.addObserver(this, "quit-application-granted");
++    this.update();
++    this.stats.initMs = ChromeUtils.now() - start;
++  },
++
++  openEngine() {
++    if (this.library) { return; }
++    const start = ChromeUtils.now();
++    const {ctypes} = ChromeUtils.importESModule("resource://gre/modules/ctypes.sys.mjs");
++    const file = Services.dirsvc.get("GreD", Ci.nsIFile);
++    file.append("FennAdblock.dll");
++    const lib = ctypes.open(file.path);
++    try {
++      const abi = lib.declare("fenn_adblock_abi", ctypes.default_abi, ctypes.uint32_t);
++      if (abi() !== 2) { throw new Error("Fenn adblock ABI mismatch"); }
++      this.invoke = lib.declare("fenn_adblock_call", ctypes.default_abi,
++        ctypes.char.ptr, ctypes.char.ptr, ctypes.size_t);
++      this.free = lib.declare("fenn_adblock_free", ctypes.default_abi, ctypes.void_t, ctypes.char.ptr);
++      this.ctypes = ctypes;
++      this.library = lib;
++      this.stats.loads++;
++      this.stats.loadMs = ChromeUtils.now() - start;
++    } catch (error) { lib.close(); throw error; }
++  },
++
++  call(value) {
++    const start = ChromeUtils.now();
++    const text = JSON.stringify(value);
++    const bytes = new TextEncoder().encode(text);
++    if (bytes.length > 16 * 1024 * 1024) { throw new Error("Engine input exceeds bound"); }
++    const buffer = this.ctypes.char.array()(text);
++    const result = this.invoke(buffer, bytes.length);
++    if (result.isNull()) { throw new Error("Engine rejected input"); }
++    try {
++      const reply = JSON.parse(result.readString());
++      if (!reply.ok) { throw new Error(reply.error); }
++      return reply.value;
++    } finally {
++      this.free(result);
++      if (value.op === "begin" || value.op === "poll") { this.stats.prepareControlMs += ChromeUtils.now() - start; }
++    }
++  },
++
++  update() {
++    if (!Services.prefs.getBoolPref(PREF, false) || Services.appinfo.inSafeMode) {
++      this.disable(); return this.ready;
++    }
++    const revision = ++this.revision;
++    const start = ChromeUtils.now();
++    this.preparing = true;
++    this.notifyState();
++    // Register before yielding: even a first navigation must see the readiness
++    // barrier. Existing engines remain usable during replacement preparation.
++    if (!this.observing) {
++      Services.obs.addObserver(this, "http-on-modify-request");
++      Services.obs.addObserver(this, "window-global-created");
++      Services.obs.addObserver(this, "perm-changed");
++      for (const topic of RESPONSE_TOPICS) { Services.obs.addObserver(this, topic); }
++      this.observing = true;
++    }
++    const run = async () => {
++      if (revision !== this.revision || this.shuttingDown) { return; }
++      try {
++        this.openEngine();
++        const testing = Services.prefs.getBoolPref("fenn.adblock.prototype.testing", false);
++        this.call({op:"begin", profile:this.storeProfile(),
++          assets:this.packagedAssets(),
++          offlineStore:!testing || Services.prefs.getBoolPref("fenn.adblock.prototype.offlineStore", false),
++          bypassCache:testing && Services.prefs.getBoolPref("fenn.adblock.prototype.bypassCache", false),
++          delayMs:testing ? Math.min(2000, Math.max(0, Services.prefs.getIntPref("fenn.adblock.prototype.prepareDelayMs", 0))) : 0});
++        let result;
++        do {
++          await new Promise(resolve => setTimeout(resolve, 2));
++          if (this.shuttingDown) { return; }
++          result = this.call({op:"poll", accept:revision === this.revision});
++        } while (!result.done);
++        if (!result.accepted || revision !== this.revision) { return; }
++        Object.assign(this.stats, result.stats);
++        this.generation++;
++        this.invalidatePreparedResources();
++        this.error = "";
++        if (!this.actorRegistered) {
++          ChromeUtils.registerWindowActor("FennAdblock", {
++            parent:{esModuleURI:BASE + "FennAdblockParent.sys.mjs"},
++            child:{esModuleURI:BASE + "FennAdblockChild.sys.mjs", events:{DOMDocElementInserted:{}, pagehide:{}, pageshow:{}}},
++            allFrames:true, messageManagerGroups:["browsers"],
++            safeForUntrustedWebProcess:true,
++            matches:["http://*/*", "https://*/*"],
++          });
++          this.actorRegistered = true;
++        }
++        this.active = true;
++        if (!this.testNotice) {
++          const {FennAdblockTestNotice} = ChromeUtils.importESModule(BASE + "FennAdblockTestNotice.sys.mjs");
++          this.testNotice = new FennAdblockTestNotice(this);
++          this.testNotice.start();
++        }
++        this.startUpdates();
++      } catch (error) {
++        if (revision === this.revision && !this.shuttingDown) {
++          this.error = String(error);
++          this.stats.errors++;
++          console.error("Fenn adblock prototype:", error);
++        }
++      } finally {
++        if (revision === this.revision) {
++          this.preparing = false;
++          this.stats.readyMs = ChromeUtils.now() - start;
++          this.notifyState();
++        }
++      }
++    };
++    const ready = this.work ? this.work.then(run) : run();
++    this.work = this.ready = ready;
++    ready.then(() => { if (this.work === ready) { this.work = null; } });
++    return this.ready;
++  },
++
++  packagedAssets() {
++    if (Services.prefs.getBoolPref("fenn.adblock.prototype.testing", false) &&
++        !Services.prefs.getBoolPref("fenn.adblock.prototype.packagedAssets", false)) { return null; }
++    const dir = Services.dirsvc.get("GreD", Ci.nsIFile);
++    dir.append("fenn-adblock-assets");
++    return dir.path;
++  },
++
++  authenticatedStore() {
++    if (!Services.prefs.getBoolPref("fenn.adblock.prototype.testing", false)) { return true; }
++    return Services.prefs.getBoolPref("fenn.adblock.prototype.testing", false) &&
++      Services.prefs.getBoolPref("fenn.adblock.prototype.authenticatedStore", false);
++  },
++
++  storeProfile() {
++    const dir = Services.dirsvc.get("ProfD", Ci.nsIFile);
++    if (!Services.prefs.getBoolPref("fenn.adblock.prototype.testing", false)) {
++      dir.append("fenn-adblock-production-v1");
++      if (!dir.exists()) { dir.create(Ci.nsIFile.DIRECTORY_TYPE, 0o700); }
++      return dir.path;
++    }
++    if (this.authenticatedStore()) {
++      if (!this.packagedAssets() || !Services.prefs.getBoolPref("fenn.adblock.prototype.offlineStore", false)) {
++        throw new Error("Authenticated store requires packaged test assets and offline store");
++      }
++      // Never adopt selections made by the unsigned fixture importer.
++      dir.append("fenn-adblock-authenticated");
++      if (!dir.exists()) { dir.create(Ci.nsIFile.DIRECTORY_TYPE, 0o700); }
++    }
++    return dir.path;
++  },
++
++  installFromURL(source) {
++    const testing = Services.prefs.getBoolPref("fenn.adblock.prototype.testing", false);
++    const {PRODUCTION_UPDATE_URL} = ChromeUtils.importESModule(BASE + "FennAdblockUpdates.sys.mjs");
++    if (testing ? (!this.authenticatedStore() || !Services.prefs.getBoolPref("fenn.adblock.prototype.networkTesting", false)) : source !== PRODUCTION_UPDATE_URL) {
++      throw new Error("Unapproved filter update source");
++    }
++    return this.installOffline(source, {authenticated:true, broker:true});
++  },
++
++  cancelUpdate() {
++    this.revision++;
++    this.fetcher?.abort();
++    if (this.library) { this.call({op:"offline-cancel"}); }
++  },
++
++  installAuthenticated(source, options = {}) {
++    if (!this.authenticatedStore()) { throw new Error("Authenticated import requires its explicit test mode"); }
++    return this.installOffline(source, {...options, authenticated:true});
++  },
++
++  installOffline(source, {failpoint = "", delayMs = 0, authenticated = false, verifyDelayMs = 0, broker = false} = {}) {
++    const testing = Services.prefs.getBoolPref("fenn.adblock.prototype.testing", false);
++    const {PRODUCTION_UPDATE_URL} = ChromeUtils.importESModule(BASE + "FennAdblockUpdates.sys.mjs");
++    const production = !testing && authenticated && broker && source === PRODUCTION_UPDATE_URL;
++    if ((!production && (!testing || !Services.prefs.getBoolPref("fenn.adblock.prototype.offlineStore", false))) ||
++        !this.active || this.shuttingDown) { throw new Error("Update requires an active approved store"); }
++    if (production && (failpoint || delayMs || verifyDelayMs)) { throw new Error("Test controls are unavailable for production updates"); }
++    if (broker && !production && (!authenticated || !Services.prefs.getBoolPref("fenn.adblock.prototype.networkTesting", false))) { throw new Error("Network test mode required"); }
++    if (authenticated !== this.authenticatedStore()) { throw new Error("Unsigned and authenticated stores are separate"); }
++    if (this.work) { throw new Error("Adblock operation already running"); }
++    if (!["", "before-watermark", "after-watermark", "after-previous", "after-state"].includes(failpoint)) { throw new Error("Unknown commit failpoint"); }
++    const revision = ++this.revision;
++    const current = () => revision === this.revision && this.active && !this.shuttingDown && Services.prefs.getBoolPref(PREF, false);
++    let fetcher;
++    const poll = async () => {
++      let result;
++      do {
++        await new Promise(resolve => setTimeout(resolve, 2));
++        if (this.shuttingDown) { return {done:true,accepted:false}; }
++        if (fetcher && current()) { await fetcher.pump(); }
++        if (this.shuttingDown) { return {done:true,accepted:false}; }
++        result = this.call({op:"offline-poll",accept:current()});
++      } while (!result.done);
++      return result;
++    };
++    const run = async () => {
++      try {
++        this.stats.offlinePhase = "preparing";
++        if (broker) {
++          const {FennAdblockFetcher} = ChromeUtils.importESModule(BASE + "FennAdblockFetcher.sys.mjs");
++          fetcher = this.fetcher = new FennAdblockFetcher(source, current, {allowLoopback:testing});
++          await fetcher.init(this.storeProfile());
++          if (!current()) { return {accepted:false}; }
++          source = fetcher.path;
++        }
++        const helper = Services.dirsvc.get("GreD", Ci.nsIFile);
++        helper.append("fenn-adblock-trust.exe");
++        this.call({op:authenticated ? "offline-authenticated-stage" : "offline-stage",profile:this.storeProfile(),
++          broker, helper:authenticated ? helper.path : null, verifyDelayMs:Math.min(2000,Math.max(0,verifyDelayMs)),
++          assets:this.packagedAssets(),source,generation:this.stats.offlineGeneration || 0});
++        const staged = await poll();
++        if (!staged.staged || !current()) { return {accepted:false}; }
++        if (production && staged.stats?.offlineDigest && staged.stats.offlineDigest === this.stats.offlineDigest) {
++          return {accepted:true,committed:false,unchanged:true};
++        }
++        this.stats.offlinePhase = "committing";
++        this.call({op:"offline-commit",handle:staged.handle,failpoint,delayMs:Math.min(2000,Math.max(0,delayMs))});
++        const result = await poll();
++        if (result.accepted && current()) {
++          Object.assign(this.stats, result.stats);
++          this.generation++;
++          this.invalidatePreparedResources();
++          this.error = "";
++        }
++        return {accepted:!!result.accepted,committed:!!result.committed};
++      } catch (error) {
++        if (!current()) { return {accepted:false}; }
++        this.stats.errors++; this.error = String(error); throw error;
++      } finally {
++        if (broker && this.library && !this.shuttingDown) {
++          this.call({op:"offline-cancel"});
++          let done = false;
++          while (!done && !this.shuttingDown) {
++            await new Promise(resolve => setTimeout(resolve, 2));
++            if (this.shuttingDown) { break; }
++            try { done = this.call({op:"offline-poll",accept:false}).done; } catch (_) { done = true; }
++          }
++        }
++        if (fetcher) { await fetcher.close(); if (this.fetcher === fetcher) { this.fetcher = null; } }
++        this.stats.offlinePhase = "idle";
++      }
++    };
++    const work = this.work = this.ready = run();
++    const clear = () => { if (this.work === work) { this.work = null; } };
++    work.then(clear, clear);
++    return work;
++  },
++
++  holdUntilReady(channel) {
++    // Bound both count and time. On failure/timeout the prototype fails open
++    // and records the bypass, rather than indefinitely freezing navigation.
++    if (this.pending.size >= 256) { this.stats.startupBypasses++; return; }
++    channel.suspend();
++    this.stats.startupWaits++;
++    let finished = false;
++    let timer;
++    const finish = timedOut => {
++      if (finished) { return; }
++      finished = true;
++      clearTimeout(timer);
++      this.pending.delete(finish);
++      try {
++        if (timedOut || !this.active) { this.stats.startupBypasses++; }
++        if (this.active) { this.observe(channel, "ready-channel"); }
++      } finally {
++        try { channel.resume(); } catch (_) {}
++      }
++    };
++    this.pending.add(finish);
++    timer = setTimeout(() => finish(true), 5000);
++    const wait = async () => {
++      do {
++        const ready = this.ready;
++        await ready;
++        if (ready === this.ready || !this.preparing) { break; }
++      } while (!finished);
++      finish(false);
++    };
++    wait().catch(() => finish(false));
++  },
++
++  startUpdates() {
++    if (!this.active || this.shuttingDown || this.updateScheduler ||
++        Services.prefs.getBoolPref("fenn.adblock.prototype.testing", false) ||
++        !Services.prefs.getBoolPref("fenn.adblock.updates.enabled", true)) { return; }
++    const {FennAdblockUpdateSchedule, PRODUCTION_UPDATE_URL} = ChromeUtils.importESModule(BASE + "FennAdblockUpdates.sys.mjs");
++    this.updateScheduler = new FennAdblockUpdateSchedule({
++      now:() => Date.now(), random:Math.random, setTimer:setTimeout, clearTimer:clearTimeout,
++      read:() => { const raw=Services.prefs.getStringPref("fenn.adblock.updates.production.state", ""); return raw.length <= 2048 ? JSON.parse(raw || "null") : null; },
++      write:value => { Services.prefs.setStringPref("fenn.adblock.updates.production.state",JSON.stringify(value)); Services.prefs.savePrefFile(null); },
++      changed:() => this.notifyState(),
++      eligible:() => this.updateNetworkAllowed(), check:() => this.installFromURL(PRODUCTION_UPDATE_URL),
++      abort:() => { this.costProcess?.kill(); if (this.fetcher) { this.cancelUpdate(); } },
++    });
++    this.updateScheduler.start().catch(() => {});
++  },
++
++  updateControls() {
++    const scheduler = this.updateScheduler;
++    let state = scheduler?.state;
++    if (!state) {
++      try {
++        const raw = Services.prefs.getStringPref("fenn.adblock.updates.production.state", "");
++        if (raw.length <= 2048) { state = JSON.parse(raw || "null"); }
++      } catch (_) {}
++    }
++    const now = Date.now();
++    const lastSuccess = state?.schema === 1 && Number.isSafeInteger(state.lastSuccess) &&
++      state.lastSuccess > 0 && state.lastSuccess <= now ? state.lastSuccess : 0;
++    const available = this.active && !this.preparing && !!scheduler && !scheduler.stopped;
++    return {lastSuccess, canCheck:available && !this.work && scheduler.canCheckNow(),
++      status:!available ? "paused" : scheduler.running ? "checking" :
++        scheduler.unavailable ? "unavailable" : state?.outcome === "failed" ? "failed" :
++        lastSuccess && now - lastSuccess > 2 * 86400000 ? "stale" : lastSuccess ? "current" : "never"};
++  },
++
++  checkForUpdates() {
++    if (!this.updateControls().canCheck) { return false; }
++    this.updateScheduler.checkNow().catch(() => {}).finally(() => this.notifyState());
++    return true;
++  },
++
++  async updateNetworkAllowed() {
++    if (!this.active || this.shuttingDown || this.work || Services.io.offline ||
++        !Services.prefs.getBoolPref("fenn.adblock.updates.enabled", true)) { return false; }
++    const {Subprocess} = ChromeUtils.importESModule("resource://gre/modules/Subprocess.sys.mjs");
++    const helper = Services.dirsvc.get("GreD", Ci.nsIFile); helper.append("fenn-adblock-trust.exe");
++    let process, timer;
++    try {
++      process = this.costProcess = await Subprocess.call({command:helper.path, arguments:["--network-cost"], stderr:"pipe"});
++      timer = setTimeout(() => process.kill(), 5000);
++      const [text, result] = await Promise.all([process.stdout.readString(), process.wait()]);
++      return result.exitCode === 0 && text.length < 1024 && JSON.parse(text).allowed === true && !Services.io.offline;
++    } catch (_) { return false; }
++    finally { clearTimeout(timer); if (this.costProcess === process) { this.costProcess = null; } }
++  },
++
++  invalidatePreparedResources() {
++    this.stopDiagnostics();
++    this.resourceRevision++;
++    this.resourceToken = `${this.generation}:${this.resourceRevision}`;
++    Services.ppmm.sharedData.set("FennAdblock:ResourceToken", this.resourceToken);
++    Services.ppmm.sharedData.flush();
++  },
++
++  disable() {
++    this.testNotice?.stop(); this.testNotice = null;
++    this.stopDiagnostics();
++    this.updateScheduler?.stop(); this.updateScheduler = null;
++    this.fetcher?.abort();
++    this.generation++;
++    if (this.observing || this.actorRegistered) { this.invalidatePreparedResources(); }
++    this.revision++;
++    this.preparing = false;
++    if (this.observing) {
++      Services.obs.removeObserver(this, "http-on-modify-request");
++      Services.obs.removeObserver(this, "window-global-created");
++      Services.obs.removeObserver(this, "perm-changed");
++      for (const topic of RESPONSE_TOPICS) { Services.obs.removeObserver(this, topic); }
++    }
++    this.observing = false;
++    this.active = false;
++    for (const finish of [...this.pending]) { finish(false); }
++    if (this.actorRegistered) {
++      const stop = bc => {
++        try { bc.currentWindowGlobal?.getActor("FennAdblock").sendAsyncMessage("Stop"); } catch (_) {}
++        for (const child of bc.children) { stop(child); }
++      };
++      for (const window of Services.wm.getEnumerator("navigator:browser")) {
++        for (const browser of window.gBrowser.browsers) { stop(browser.browsingContext); }
++      }
++      ChromeUtils.unregisterWindowActor("FennAdblock");
++      this.actorRegistered = false;
++    }
++    if (this.library) { this.call({op:"clear"}); }
++    this.notifyState();
++  },
++
++  notifyState() { Services.obs.notifyObservers(null, "fenn-adblock-state-changed"); },
++
++  controls(principal) {
++    const enabled = Services.prefs.getBoolPref(PREF, false);
++    const site = !!principal?.isContentPrincipal &&
++      (principal.URI.schemeIs("http") || principal.URI.schemeIs("https"));
++    return {enabled, site, excepted:site && this.excepted(principal),
++      canEnable:!Services.appinfo.inSafeMode && !Services.prefs.prefIsLocked(PREF),
++      status:!enabled ? "off" : this.preparing ? "preparing" :
++        !this.active || this.error ? "failed" : site && this.excepted(principal) ? "paused" : "active"};
++  },
++
++  setEnabled(enabled) {
++    if (Services.appinfo.inSafeMode || Services.prefs.prefIsLocked(PREF)) { return false; }
++    Services.prefs.setBoolPref(PREF, !!enabled);
++    Services.prefs.savePrefFile(null);
++    return true;
++  },
++
++  sitePermission(principal) { return "fenn-adblock-site" + principal.originSuffix; },
++
++  setSiteException(principal, allow) {
++    if (!this.controls(principal).site) { return false; }
++    const permission = this.sitePermission(principal);
++    if (allow) {
++      Services.perms.addFromPrincipal(principal, permission, Ci.nsIPermissionManager.ALLOW_ACTION,
++        principal.originAttributes.privateBrowsingId ? Ci.nsIPermissionManager.EXPIRE_SESSION : Ci.nsIPermissionManager.EXPIRE_NEVER);
++    } else { Services.perms.removeFromPrincipal(principal, permission); }
++    this.notifyState();
++    return true;
++  },
++
++  // Sandboxed and data: documents have null principals. Filtering and site
++  // exceptions follow the creating origin; this never grants any access.
++  filterPrincipal(principal) {
++    return principal?.isNullPrincipal ? principal.precursorPrincipal : principal;
++  },
++
++  excepted(principal, permission = "fenn-adblock-prototype") {
++    principal = this.filterPrincipal(principal);
++    if (!principal?.isContentPrincipal) { return true; }
++    if (permission === "fenn-adblock-prototype") {
++      if (Services.perms.testExactPermissionFromPrincipal(principal, this.sitePermission(principal)) === Ci.nsIPermissionManager.ALLOW_ACTION) { return true; }
++      if (!Services.prefs.getBoolPref("fenn.adblock.prototype.testing", false)) { return false; }
++    }
++    return Services.perms.testExactPermissionFromPrincipal(principal, permission) === Ci.nsIPermissionManager.ALLOW_ACTION;
++  },
++
++  workerPermission(principal) {
++    // PermissionManager intentionally shares some permission types across
++    // containers. Bind this separate permission type to the complete origin
++    // suffix so container/private/partition identities cannot inherit a grant.
++    return "fenn-adblock-prototype-worker" + principal.originSuffix;
++  },
++
++  setWorkerException(principal, allow) {
++    if (!principal?.isContentPrincipal ||
++        !(principal.URI?.schemeIs("http") || principal.URI?.schemeIs("https"))) {
++      throw new Error("Worker exception requires an HTTP content principal");
++    }
++    const type = this.workerPermission(principal);
++    if (allow) {
++      Services.perms.addFromPrincipal(principal, type, Ci.nsIPermissionManager.ALLOW_ACTION,
++        principal.originAttributes.privateBrowsingId ? Ci.nsIPermissionManager.EXPIRE_SESSION : Ci.nsIPermissionManager.EXPIRE_NEVER);
++    } else {
++      Services.perms.removeFromPrincipal(principal, type);
++    }
++  },
++
++  observe(subject, topic, data) {
++    if (topic === "perm-changed") {
++      // Direct permission edits and test overrides must invalidate too.
++      if (!subject || subject.QueryInterface(Ci.nsIPermission).type.startsWith("fenn-adblock")) {
++        this.invalidatePreparedResources();
++      }
++      return;
++    }
++    if (topic === "window-global-created") {
++      if (this.diagnosticCapture && subject.browsingContext?.parent === null &&
++          String(subject.browsingContext.id) === this.diagnosticCapture.contextId &&
++          String(subject.innerWindowId) !== this.diagnosticCapture.innerId) { this.stopDiagnostics(); }
++      if (!this.active || !this.actorRegistered || !this.filterPrincipal(subject.documentPrincipal)?.isContentPrincipal) { return; }
++      try { subject.getActor("FennAdblock").pushResources(); } catch (_) {}
++      return;
++    }
++    if (topic === "nsPref:changed") {
++      if (data === "fenn.adblock.updates.enabled") {
++        if (Services.prefs.getBoolPref(data, true)) { this.startUpdates(); }
++        else { this.updateScheduler?.stop(); this.updateScheduler = null; }
++        this.notifyState();
++      } else { this.update(); }
++      return;
++    }
++    if (topic === "quit-application-granted") {
++      this.shuttingDown = true;
++      this.disable();
++      if (this.library) { this.call({op:"shutdown"}); }
++      Services.prefs.removeObserver(PREF, this);
++      Services.prefs.removeObserver("fenn.adblock.updates.enabled", this);
++      Services.obs.removeObserver(this, topic);
++      this.library?.close(); this.library = null;
++      return;
++    }
++    if (!this.active) {
++      if (this.preparing && topic === "http-on-modify-request") {
++        try {
++          const channel = subject.QueryInterface(Ci.nsIHttpChannel);
++          if ((channel.loadInfo.associatedBrowsingContext || channel.loadInfo.browsingContext) && Components.isSuccessCode(channel.status)) {
++            this.holdUntilReady(channel);
++          }
++        } catch (error) { this.stats.startupBypasses++; this.error = String(error); }
++      }
++      return;
++    }
++    const start = ChromeUtils.now();
++    try {
++      const channel = subject.QueryInterface(Ci.nsIHttpChannel);
++      if (RESPONSE_TOPICS.includes(topic)) {
++        this.applyCsp(channel);
++        this.prepareChannelResources(channel);
++        return;
++      }
++      const info = channel.loadInfo;
++      if (info.externalContentPolicyType === TYPE.TYPE_DOCUMENT || !Components.isSuccessCode(channel.status)) { return; }
++      const principal = this.filterPrincipal(info.loadingPrincipal || info.triggeringPrincipal);
++      // Dedicated-worker fetch/importScripts carry the owner in the associated
++      // context, as used by Gecko's ChannelWrapper. Do not infer it from URLs.
++      const context = info.associatedBrowsingContext || info.browsingContext;
++      const top = context?.top?.currentWindowGlobal?.documentPrincipal || principal;
++      // Contextless workers can serve multiple clients or outlive all tabs.
++      // A tab's site exception must not exempt their traffic for other clients.
++      // Worker-origin exceptions are explicit and preserve origin attributes.
++      if (!context && principal?.isContentPrincipal && Services.prefs.getBoolPref("fenn.adblock.prototype.testing", false)) {
++        this.lastWorkerPrincipal = principal; // Test-only, one principal; never published in snapshots.
++      }
++      const permission = context || !principal?.isContentPrincipal ? "fenn-adblock-prototype" : this.workerPermission(principal);
++      if (this.excepted(top, permission) || !principal?.isContentPrincipal) {
++        if (this.diagnosticCapture && principal?.isContentPrincipal) { this.recordDiagnostic(channel, "site-exception"); }
++        return;
++      }
++      const uri = channel.URI;
++      const source = principal.URI;
++      if (!source || !(source.schemeIs("http") || source.schemeIs("https")) || uri.spec.length > 65536) { return; }
++      const thirdParty = Cc["@mozilla.org/thirdpartyutil;1"].getService(Ci.mozIThirdPartyUtil).isThirdPartyURI(uri, source);
++      this.stats.checks++;
++      // Gecko exposes the WebSocket handshake as an HTTP(S) channel. Match
++      // the original WS(S) scheme so anchored websocket filters retain meaning.
++      const requestUrl = info.externalContentPolicyType === TYPE.TYPE_WEBSOCKET
++        ? uri.spec.replace(/^http(s?):/, "ws$1:") : uri.spec;
++      const result = this.call({op:"check",url:requestUrl,host:uri.asciiHost,source:source.asciiHost,
++        kind:TYPES.get(info.externalContentPolicyType) || "other",method:channel.requestMethod,thirdParty});
++      const outcome = this.applyNetworkResult(channel, result);
++      if (this.diagnosticCapture) { this.recordDiagnostic(channel, outcome, result, thirdParty); }
++    } catch (error) { this.stats.errors++; this.error = String(error); }
++    finally { this.stats.matchMs += ChromeUtils.now() - start; }
++  },
++
++  prepareChannelResources(channel) {
++    const info = channel.loadInfo;
++    const kind = info.externalContentPolicyType;
++    if (![TYPE.TYPE_DOCUMENT, TYPE.TYPE_SUBDOCUMENT].includes(kind) ||
++        !Components.isSuccessCode(channel.status) || channel.URI.spec.length > 65536) { return; }
++    // Keep the delayed actor path available for its explicit invalidation tests.
++    if (Services.prefs.getBoolPref("fenn.adblock.prototype.testing", false) &&
++        Services.prefs.getIntPref("fenn.adblock.prototype.testDelayMs", 0)) { return; }
++    const context = info.browsingContext || info.associatedBrowsingContext;
++    if (!context) { return; }
++    const principal = Services.scriptSecurityManager.getChannelResultPrincipal(channel);
++    const top = kind === TYPE.TYPE_DOCUMENT ? null : context.top.currentWindowGlobal;
++    if (kind === TYPE.TYPE_SUBDOCUMENT && !top) { return; }
++    const resources = this.resources(principal, top?.documentPrincipal || principal);
++    if (!resources) { return; }
++    const value = {resources, token:this.resourceToken, generation:this.generation,
++      origin:principal.origin, uri:channel.URI.spec, contextId:String(context.id),
++      topInnerWindowId:top ? String(top.innerWindowId) : null};
++    const json = JSON.stringify(value);
++    if (json.length <= 2 * 1024 * 1024) {
++      channel.QueryInterface(Ci.nsIWritablePropertyBag2).setPropertyAsAString("fenn.adblock.resources", json);
++    }
++  },
++
++  validCsp(policy) {
++    return typeof policy === "string" && policy.length > 0 && policy.length <= 16384 &&
++      !/[^\x20-\x7e]/.test(policy) && policy.split(",").every(part =>
++        part.trim() && part.split(";").filter(d => d.trim()).every(d =>
++          CSP_FETCH_DIRECTIVES.has(d.trim().split(/\s+/)[0].toLowerCase())));
++  },
++
++  applyCsp(channel) {
++    const info = channel.loadInfo;
++    const kind = info.externalContentPolicyType;
++    if (![TYPE.TYPE_DOCUMENT, TYPE.TYPE_SUBDOCUMENT].includes(kind) || !Components.isSuccessCode(channel.status) ||
++        channel.responseStatus !== 200 || channel.URI.spec.length > 65536) { return; }
++    const context = info.browsingContext || info.associatedBrowsingContext;
++    if (!context) { return; }
++    const properties = channel.QueryInterface(Ci.nsIWritablePropertyBag2);
++    // Never treat a previous addition on this channel as origin metadata.
++    if (properties.hasKey("fenn.csp.original")) { return; }
++    // Top-level navigation policy belongs to the destination, not the old tab.
++    const destination = Services.scriptSecurityManager.createContentPrincipal(channel.URI, info.originAttributes);
++    const top = kind === TYPE.TYPE_DOCUMENT ? destination : context.top.currentWindowGlobal?.documentPrincipal;
++    if (!top || this.excepted(top)) { return; }
++    const principal = this.filterPrincipal(info.loadingPrincipal || info.triggeringPrincipal);
++    const source = kind === TYPE.TYPE_DOCUMENT || !principal?.isContentPrincipal ? channel.URI : principal.URI;
++    const {policy} = this.call({op:"csp",url:channel.URI.spec,source:source.spec,
++      kind:kind === TYPE.TYPE_DOCUMENT ? "document" : "subdocument",method:channel.requestMethod});
++    if (!policy) { return; }
++    // Fetch restrictions only: never introduce reporting endpoints or change
++    // document origins/sandbox/navigation semantics through a downloaded list.
++    if (!this.validCsp(policy)) {
++      this.stats.unsupported++;
++      if (this.diagnosticCapture) { this.recordDiagnostic(channel, "unsupported-csp"); }
++      return;
++    }
++    let original = "";
++    try { original = channel.getResponseHeader("Content-Security-Policy"); } catch (_) {}
++    properties.setPropertyAsACString("fenn.csp.original", original);
++    channel.setResponseHeader("Content-Security-Policy", policy, true);
++    properties.setPropertyAsACString("fenn.csp.delivered", channel.getResponseHeader("Content-Security-Policy"));
++    this.stats.cspApplied++;
++    if (this.diagnosticCapture) { this.recordDiagnostic(channel, "csp-applied"); }
++  },
++
++  redirectResourceAllowed(channel, target) {
++    if (channel.requestMethod !== "GET" || typeof target !== "string" || target.length > 1024 * 1024) { return false; }
++    const kind = channel.loadInfo.internalContentPolicyType;
++    let mimes;
++    if ([TYPE.TYPE_INTERNAL_SCRIPT, TYPE.TYPE_INTERNAL_SCRIPT_PRELOAD].includes(kind)) {
++      mimes = ["application/javascript", "text/javascript", "text/plain"];
++    } else if ([TYPE.TYPE_INTERNAL_IMAGE, TYPE.TYPE_INTERNAL_IMAGE_PRELOAD, TYPE.TYPE_IMAGESET].includes(kind)) {
++      mimes = ["image/png", "image/gif", "image/jpeg", "image/webp"];
++    } else if ([TYPE.TYPE_INTERNAL_STYLESHEET, TYPE.TYPE_INTERNAL_STYLESHEET_PRELOAD].includes(kind)) {
++      mimes = ["text/css"];
++    } else { return false; }
++    const match = /^data:([^;,]+);base64,([A-Za-z0-9+/]*={0,2})$/.exec(target);
++    return !!match && mimes.includes(match[1]);
++  },
++
++  replaceDataResponse(channel, target) {
++    // Only real parent HTTP network channels implement this API. Intercepted
++    // channels and child channels silently no-op; never treat them as success.
++    if (Services.appinfo.processType !== Ci.nsIXULRuntime.PROCESS_TYPE_DEFAULT ||
++        channel instanceof Ci.nsIInterceptedChannel || channel.requestMethod !== "GET" ||
++        !DATA_REPLACEMENT_TYPES.has(channel.loadInfo.internalContentPolicyType) ||
++        typeof target !== "string" || target.length > 1024 * 1024 ||
++        !(channel.URI.schemeIs("http") || channel.URI.schemeIs("https"))) { return false; }
++    const principal = channel.loadInfo.loadingPrincipal || channel.loadInfo.triggeringPrincipal;
++    if (!principal?.isContentPrincipal || !principal.URI ||
++        !(principal.URI.schemeIs("http") || principal.URI.schemeIs("https"))) { return false; }
++    const match = /^data:(text\/plain|application\/json);base64,([A-Za-z0-9+/]*={0,2})$/.exec(target);
++    if (!match) { return false; }
++    const body = atob(match[2]);
++    // Reject noncanonical base64, rather than silently repairing malformed data.
++    if (btoa(body) !== match[2]) { return false; }
++    const response = Cc["@mozilla.org/network/replaced-http-response;1"].createInstance(Ci.nsIReplacedHttpResponse);
++    response.responseStatus = 200;
++    response.responseStatusText = "OK";
++    response.responseBody = body;
++    response.setResponseHeader("Content-Type", match[1], false);
++    response.setResponseHeader("Cache-Control", "no-store", false);
++    // CORS authorizes these pinned inert bytes only, never a server response.
++    // Gecko skips preflight for overrides but retains response CORS and CSP.
++    let origin = "";
++    try { origin = channel.getRequestHeader("Origin"); } catch (_) {}
++    if (origin) {
++      if (origin !== principal.originNoSuffix || origin === "null") { return false; }
++      response.setResponseHeader("Access-Control-Allow-Origin", origin, false);
++      response.setResponseHeader("Access-Control-Allow-Credentials", "true", false);
++    }
++    channel.QueryInterface(Ci.nsIHttpChannelInternal).setResponseOverride(response);
++    return true;
++  },
++
++  rewriteAllowed(channel, target) {
++    if (!["GET", "HEAD"].includes(channel.requestMethod) || typeof target !== "string" || target.length > 65536) { return false; }
++    const kind = channel.loadInfo.externalContentPolicyType;
++    if (![TYPE.TYPE_SCRIPT, TYPE.TYPE_IMAGE, TYPE.TYPE_IMAGESET, TYPE.TYPE_STYLESHEET,
++      TYPE.TYPE_FONT, TYPE.TYPE_MEDIA, TYPE.TYPE_XMLHTTPREQUEST, TYPE.TYPE_FETCH].includes(kind)) { return false; }
++    // Worker scripts have special redirect rules in Gecko. Do not broaden them.
++    if (kind === TYPE.TYPE_SCRIPT && ![TYPE.TYPE_INTERNAL_SCRIPT, TYPE.TYPE_INTERNAL_SCRIPT_PRELOAD].includes(channel.loadInfo.internalContentPolicyType)) { return false; }
++    const original = channel.URI.spec;
++    if (target.length >= original.length) { return false; }
++    const split = value => /^([^?#]+)(?:\?([^#]*))?(#.*)?$/.exec(value);
++    const before = split(original), after = split(target);
++    if (!before || !after || before[1] !== after[1] || before[3] !== after[3] || before[2] === undefined) { return false; }
++    // Only delete existing raw query fields, preserving order and encoding.
++    // No destination, credentials, path or fragment changes; strict shrinking
++    // also makes repeated observer invocations converge without redirect loops.
++    const fields = before[2].split("&");
++    let index = 0;
++    for (const field of after[2] === undefined ? [] : after[2].split("&")) {
++      while (index < fields.length && fields[index] !== field) { index++; }
++      if (index === fields.length) { return false; }
++      index++;
++    }
++    return true;
++  },
++
++  applyNetworkResult(channel, result) {
++    if (result.blocked) {
++      // redirect-rule alone is not a blocking decision. Only substitute when
++      // the engine also blocks; ordinary exceptions remain authoritative.
++      if (result.redirect && DATA_REPLACEMENT_TYPES.has(channel.loadInfo.internalContentPolicyType)) {
++        try {
++          if (this.replaceDataResponse(channel, result.redirect)) { this.stats.redirected++; return "replaced"; }
++        } catch (error) { this.stats.errors++; this.error = String(error); }
++      }
++      if (result.redirect && this.redirectResourceAllowed(channel, result.redirect)) {
++        try {
++          channel.redirectTo(Services.io.newURI(result.redirect));
++          // Gecko's WebRequest implementation sets this after redirectTo, which
++          // clears it. Restrict it to validated bundled data resources above.
++          channel.loadInfo.allowInsecureRedirectToDataURI = true;
++          this.stats.redirected++;
++          return "replaced";
++        } catch (error) { this.stats.errors++; this.error = String(error); }
++      }
++      if (result.redirect) { this.stats.unsupported++; }
++      // Unsupported/missing replacement resources must not turn a block into allow.
++      channel.cancel(Cr.NS_ERROR_BLOCKED_BY_POLICY); this.stats.blocked++;
++      return result.redirect ? "blocked-unsupported-replacement" : "blocked";
++    }
++    if (result.rewrittenUrl) {
++      if (!this.rewriteAllowed(channel, result.rewrittenUrl)) { this.stats.unsupported++; return "unsupported-rewrite"; }
++      channel.redirectTo(Services.io.newURI(result.rewrittenUrl));
++      this.stats.rewritten++;
++      return "rewritten";
++    }
++    return "allowed";
++  },
++
++  resources(principal, topPrincipal) {
++    principal = this.filterPrincipal(principal);
++    if (!this.active || this.excepted(topPrincipal) || !principal?.isContentPrincipal) { return null; }
++    const uri = principal.URI;
++    if (!uri || !(uri.schemeIs("http") || uri.schemeIs("https"))) { return null; }
++    return {generation:this.generation, ...this.call({op:"cosmetic",url:uri.spec})};
++  },
++
++  generic(principal, topPrincipal, data) {
++    principal = this.filterPrincipal(principal);
++    if (!this.active || data?.generation !== this.generation || this.excepted(topPrincipal) || !principal?.isContentPrincipal) { return null; }
++    const uri = principal.URI;
++    if (!uri || !(uri.schemeIs("http") || uri.schemeIs("https"))) { return null; }
++    for (const tokens of [data.classes, data.ids]) {
++      if (!Array.isArray(tokens) || tokens.length > 256 || tokens.some(t => typeof t !== "string" || !t.length || t.length > 256)) { return null; }
++    }
++    return {generation:this.generation, ...this.call({op:"generic",url:uri.spec,classes:data.classes,ids:data.ids})};
++  },
++
++  snapshot() {
++    return {active:this.active, preparing:this.preparing, pending:this.pending.size, generation:this.generation, libraryLoaded:!!this.library,
++      actorRegistered:this.actorRegistered, error:this.error, updates:this.updateScheduler?.state || null, ...structuredClone(this.stats)};
++  },
++};
+diff --git a/browser/components/fennadblock/FennAdblockUpdates.sys.mjs b/browser/components/fennadblock/FennAdblockUpdates.sys.mjs
+new file mode 100644
+index 00000000000..fb00ab4cfcc
+--- /dev/null
++++ b/browser/components/fennadblock/FennAdblockUpdates.sys.mjs
+@@ -0,0 +1,87 @@
++/* This Source Code Form is subject to the terms of the Mozilla Public
++ * License, v. 2.0. If a copy of the MPL was not distributed with this
++ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
++export const PRODUCTION_UPDATE_URL = "https://updates.fennbrowser.com/adblock/stable-v1/";
++const MINUTE = 60000;
++const DAY = 24 * 60 * MINUTE;
++const RETRY = [30 * MINUTE, 2 * 60 * MINUTE, 8 * 60 * MINUTE, DAY];
++
++// Clock/storage/network are injected so restart, disable and retry behavior can
++// be checked without sleeping or changing the browser's production cadence.
++export class FennAdblockUpdateSchedule {
++  constructor({now, random, setTimer, clearTimer, read, write, eligible, check, abort, changed = () => {}}) {
++    Object.assign(this, {now, random, setTimer, clearTimer, read, write, eligible, check, abort, changed});
++    this.stopped = true;
++    this.running = false;
++  }
++  async start() {
++    if (!this.stopped) { return; }
++    this.stopped = false;
++    let value;
++    try { value = await this.read(); } catch (_) {}
++    if (this.stopped) { return; }
++    const now = this.now();
++    this.state = value?.schema === 1 && Number.isSafeInteger(value.next) && value.next >= 0 && value.next <= now + 2 * DAY &&
++      Number.isInteger(value.failures) && value.failures >= 0 && value.failures <= 4 ? value :
++      {schema:1, next:0, failures:0, lastCheck:0, lastSuccess:0, outcome:"never"};
++    for (const key of ["lastCheck", "lastSuccess"]) {
++      if (!Number.isSafeInteger(this.state[key]) || this.state[key] < 0 || this.state[key] > now) { this.state[key] = 0; }
++    }
++    if (!["never", "current", "failed", "checking"].includes(this.state.outcome)) { this.state.outcome = "never"; }
++    this.changed();
++    // Every browser start defers traffic beyond the first-window critical path.
++    this.arm(Math.max(2 * MINUTE, this.state.next - now));
++  }
++  arm(delay) {
++    if (this.stopped) { return; }
++    this.clearTimer(this.timer);
++    this.timer = this.setTimer(() => { this.tick().catch(() => this.arm(60 * MINUTE)); }, Math.max(MINUTE, delay));
++  }
++  stop() {
++    this.stopped = true;
++    this.clearTimer(this.timer);
++    this.abort();
++  }
++  canCheckNow() {
++    if (this.stopped || this.running || !this.state) { return false; }
++    // Preserve failure/server backoff, interrupted-attempt deferral, and a
++    // one-minute minimum between successful manual checks.
++    return this.now() >= ((this.state.failures || this.state.outcome === "checking") ?
++      this.state.next : this.state.lastCheck + MINUTE);
++  }
++  async checkNow() {
++    if (!this.canCheckNow()) { return false; }
++    return this.tick();
++  }
++  async tick() {
++    if (this.stopped || this.running) { return false; }
++    this.running = true;
++    this.unavailable = false;
++    this.changed();
++    try {
++      if (!await this.eligible() || this.stopped) {
++        this.unavailable = !this.stopped;
++        this.arm(60 * MINUTE);
++        return false;
++      }
++      const now = this.now();
++      // Persist before transport: crashes/restarts cannot cause a request storm.
++      this.state = {...this.state, lastCheck:now, next:now + 30 * MINUTE, outcome:"checking"};
++      await this.write(this.state);
++      if (this.stopped) { return false; }
++      let accepted = false, retryAfter = 0;
++      try { accepted = !!(await this.check())?.accepted; }
++      catch (error) { retryAfter = Math.min(DAY, Math.max(0, Number(error.retryAfterMs) || 0)); }
++      if (this.stopped) { return false; }
++      const failures = accepted ? 0 : Math.min(4, this.state.failures + 1);
++      const jitter = Math.max(0, Math.min(1, this.random()));
++      const delay = accepted ? DAY + (jitter * 4 - 2) * 60 * MINUTE :
++        Math.max(RETRY[failures - 1] * (1 + jitter * .2), retryAfter);
++      this.state = {...this.state, next:this.now() + Math.round(delay), failures,
++        lastSuccess:accepted ? this.now() : this.state.lastSuccess, outcome:accepted ? "current" : "failed"};
++      await this.write(this.state);
++      this.arm(this.state.next - this.now());
++      return accepted;
++    } finally { this.running = false; this.changed(); }
++  }
++}
+diff --git a/browser/components/fennadblock/FennAdblockParent.sys.mjs b/browser/components/fennadblock/FennAdblockParent.sys.mjs
+new file mode 100644
+index 00000000000..8041e8a9625
+--- /dev/null
++++ b/browser/components/fennadblock/FennAdblockParent.sys.mjs
+@@ -0,0 +1,80 @@
++/* This Source Code Form is subject to the terms of the Mozilla Public
++ * License, v. 2.0. If a copy of the MPL was not distributed with this
++ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
++import {FennAdblockService as service} from "moz-src:///browser/components/fennadblock/FennAdblockService.sys.mjs";
++import {setTimeout} from "resource://gre/modules/Timer.sys.mjs";
++
++export class FennAdblockParent extends JSWindowActorParent {
++  prepareResources() {
++    if (this.preparation) { return this.preparation; }
++    const global = this.manager;
++    const top = this.browsingContext.top.currentWindowGlobal;
++    const token = service.resourceToken;
++    const generation = service.generation;
++    this.preparation = (async () => {
++      if (Services.prefs.getBoolPref("fenn.adblock.prototype.testing", false)) {
++        const delay = Math.min(500, Math.max(0,
++          Services.prefs.getIntPref("fenn.adblock.prototype.testDelayMs", 0),
++          Services.prefs.getIntPref("fenn.adblock.prototype.testActorDelayMs", 0)));
++        if (delay) { await new Promise(resolve => setTimeout(resolve, delay)); }
++      }
++      if (!service.active || token !== service.resourceToken || generation !== service.generation ||
++          global !== this.browsingContext.currentWindowGlobal || top !== this.browsingContext.top.currentWindowGlobal) { return null; }
++      const start = ChromeUtils.now();
++      const resources = service.resources(global.documentPrincipal, top?.documentPrincipal || global.documentPrincipal);
++      this.resourceTiming = {computeMs:ChromeUtils.now() - start};
++      if (!resources || JSON.stringify(resources).length > 2 * 1024 * 1024) { return null; }
++      return {resources, token, generation, innerWindowId:String(global.innerWindowId),
++        topInnerWindowId:String(top?.innerWindowId || global.innerWindowId), origin:global.documentPrincipal.origin};
++    })();
++    return this.preparation;
++  }
++
++  pushResources() {
++    this.prepareResources().then(value => {
++      if (value && value.token !== service.resourceToken) { value = null; }
++      this.sendAsyncMessage("Prepared", value);
++    }).catch(() => { try { this.sendAsyncMessage("Prepared", null); } catch (_) {} });
++  }
++
++  async receiveMessage({name, data}) {
++    const testing = Services.prefs.getBoolPref("fenn.adblock.prototype.testing", false);
++    if (name === "Timing" && testing) {
++      // No URLs/content in diagnostics; hard bound on retained records.
++      if (service.stats.actors.length < 128 && data && Number.isFinite(data.elapsedMs)) {
++        service.stats.actors.push({elapsedMs:data.elapsedMs, parserHoldMs:Number.isFinite(data.parserHoldMs) ? data.parserHoldMs : null, timedOut:!!data.timedOut,
++          injected:!!data.injected, stale:!!data.stale});
++      }
++      return null;
++    }
++    if (name !== "Resources" && name !== "Refresh" && name !== "Generic") { throw new Error("Unknown adblock actor request"); }
++    if (name === "Resources") {
++      if (this.requested) { return null; }
++      this.requested = true;
++      const value = await this.prepareResources();
++      return value?.token === service.resourceToken ? value : null;
++    }
++    if (name === "Generic" && this.pending) { return null; }
++    if (name === "Generic") { this.pending = true; }
++    try {
++      // Identity is derived from the actor, never an untrusted message URL.
++      const global = this.manager;
++      const generation = service.generation;
++      if (testing) {
++        const delay = Math.min(500, Math.max(0, Services.prefs.getIntPref("fenn.adblock.prototype.testDelayMs", 0)));
++        if (delay) { await new Promise(resolve => setTimeout(resolve, delay)); }
++      }
++      if (generation !== service.generation || global !== this.browsingContext.currentWindowGlobal) { return null; }
++      if (name === "Generic") {
++        return service.generic(global.documentPrincipal,
++          this.browsingContext.top.currentWindowGlobal?.documentPrincipal || global.documentPrincipal, data);
++      }
++      const resourceStart = ChromeUtils.now();
++      const resources = service.resources(global.documentPrincipal,
++        this.browsingContext.top.currentWindowGlobal?.documentPrincipal || global.documentPrincipal);
++      if (name === "Resources") { this.resourceTiming = {computeMs:ChromeUtils.now() - resourceStart}; }
++      return name === "Refresh" ? {token:service.resourceToken,
++        resources:resources ? {...resources,injected_script:""} : null} : resources;
++    } finally { if (name === "Generic") { this.pending = false; } }
++  }
++}
+diff --git a/browser/components/fennadblock/FennAdblockChild.sys.mjs b/browser/components/fennadblock/FennAdblockChild.sys.mjs
+new file mode 100644
+index 00000000000..8797e5c6dc8
+--- /dev/null
++++ b/browser/components/fennadblock/FennAdblockChild.sys.mjs
+@@ -0,0 +1,395 @@
++/* This Source Code Form is subject to the terms of the Mozilla Public
++ * License, v. 2.0. If a copy of the MPL was not distributed with this
++ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
++
++import {isSupportedSelectorList} from "./FennAdblockSelectors.sys.mjs";
++import {setTimeout, clearTimeout} from "resource://gre/modules/Timer.sys.mjs";
++
++import {compileStyleActions} from "moz-src:///browser/components/fennadblock/FennAdblockStyles.sys.mjs";
++
++import {compileDomActions, FennAdblockDomRunner} from "moz-src:///browser/components/fennadblock/FennAdblockDom.sys.mjs";
++
++// Sandboxed documents have null principals; filter them by their creator.
++function filterable(doc) {
++  const principal = doc?.nodePrincipal;
++  return !!(principal?.isNullPrincipal ? principal.precursorPrincipal : principal)?.isContentPrincipal &&
++    doc.contentType === "text/html";
++}
++
++function scriptsAllowed(doc) {
++  const flags = doc?.sandboxFlagsAsString;
++  return flags == null || flags.split(" ").includes("allow-scripts");
++}
++
++export class FennAdblockChild extends JSWindowActorChild {
++  channelPreparation() {
++    try {
++      if (!this.manager.isCurrentGlobal) { return null; }
++      const channel = this.docShell.currentDocumentChannel;
++      const raw = channel?.QueryInterface(Ci.nsIPropertyBag2).getPropertyAsAString("fenn.adblock.resources");
++      if (!raw || raw.length > 2 * 1024 * 1024) { return null; }
++      const value = JSON.parse(raw);
++      if (value.contextId !== String(this.browsingContext.id) || value.uri !== channel.URI.spec ||
++          !channel.URI.equalsExceptRef(Services.io.newURI(this.document.documentURI)) ||
++          value.origin !== this.document.nodePrincipal.origin) { return null; }
++      const topId = String(this.manager.windowContext.topWindowContext.innerWindowId);
++      if (value.topInnerWindowId === null) {
++        if (this.browsingContext !== this.browsingContext.top) { return null; }
++      } else if (value.topInnerWindowId !== topId) { return null; }
++      // Bind channel-owned authorization to the now-created WindowGlobal.
++      return {...value, innerWindowId:String(this.manager.innerWindowId), topInnerWindowId:topId};
++    } catch (_) { return null; }
++  }
++
++  ensurePreparation() {
++    if (!this.preparation) {
++      const {promise, resolve} = Promise.withResolvers();
++      this.preparation = promise;
++      this.resolvePreparation = resolve;
++    }
++    return this.preparation;
++  }
++
++  preparedIsCurrent(value) {
++    return value && !this.stopped && Services.prefs.getBoolPref("fenn.adblock.prototype.enabled", false) &&
++      value.token === Services.cpmm.sharedData.get("FennAdblock:ResourceToken") &&
++      value.generation === value.resources?.generation &&
++      value.innerWindowId === String(this.manager.innerWindowId) &&
++      value.topInnerWindowId === String(this.manager.windowContext.topWindowContext.innerWindowId) &&
++      value.origin === this.document?.nodePrincipal.origin;
++  }
++
++  acceptPrepared(value, source) {
++    this.ensurePreparation();
++    if (this.preparedReceived) { return; }
++    this.preparedReceived = true;
++    this.preparedSource = source;
++    this.resourcesArrived = ChromeUtils.now();
++    this.preparationPhase = "compile";
++    const prepare = async () => {
++      if (!this.preparedIsCurrent(value)) { return null; }
++      let script = null;
++      const start = ChromeUtils.now();
++      if (value.resources.injected_script && scriptsAllowed(this.document)) {
++        const source = "(() => { const scriptletGlobals = new Map();\n" + value.resources.injected_script + "\n})();";
++        this.compileMode = source.length <= 128 * 1024 ? "inline" : "async";
++        script = this.compileMode === "inline" ? ChromeUtils.compileFennScript(source) :
++          await ChromeUtils.compileScript("data:text/javascript," + encodeURIComponent(source));
++      }
++      const compileMs = ChromeUtils.now() - start;
++      if (!this.preparedIsCurrent(value)) { return null; }
++      this.preparationPhase = "ready";
++      return {value, script, compileMs};
++    };
++    prepare().then(this.resolvePreparation, error => {
++      this.preparationError = String(error);
++      this.resolvePreparation(null);
++    });
++  }
++
++  handleEvent(event) {
++    if (event.type === "pagehide") { this.stop(event.persisted); return; }
++    if (event.type === "pageshow") {
++      if (event.persisted && filterable(this.document)) {
++        this.started = true;
++        this.stopped = false;
++        this.refreshCosmetics().catch(error => console.error("Adblock restore:", error));
++      }
++      return;
++    }
++    if (this.started || !Services.prefs.getBoolPref("fenn.adblock.prototype.enabled", false)) { return; }
++    const doc = this.document;
++    if (!filterable(doc)) { return; }
++    this.started = true;
++    this.stopped = false;
++    this.run(doc).catch(error => console.error("Adblock actor:", error));
++  }
++
++  async run(doc) {
++    const start = ChromeUtils.now();
++    const win = this.contentWindow;
++    const lifecycle = this.lifecycle || 0;
++    let timedOut = false;
++    let injected = false;
++    let stale = false;
++    let parserHoldMs = null;
++    let resourcesMs = null;
++    let preparationWaitMs = null;
++    let compileMs = null;
++    let executeMs = null;
++    let phase = "resources";
++    let releasePhase = null;
++    let release;
++    const block = new Promise(resolve => {
++      release = () => {
++        if (parserHoldMs === null) { parserHoldMs = ChromeUtils.now() - start; releasePhase = phase === "resources" ? this.preparationPhase || phase : phase; }
++        resolve();
++      };
++    });
++    this.release = release;
++    const budget = Math.min(100, Math.max(1, Services.prefs.getIntPref("fenn.adblock.prototype.parserBudgetMs", 100)));
++    this.timer = setTimeout(() => { timedOut = true; release(); }, budget);
++    try {
++      doc.blockParsing(block, {blockScriptCreated:false});
++      const preparation = this.ensurePreparation();
++      if (!this.preparedReceived) {
++        const value = this.channelPreparation();
++        if (this.preparedIsCurrent(value)) { this.acceptPrepared(value, "channel"); }
++      }
++      if (!this.preparedReceived) {
++        // Missed creation notification or a push still in flight: share the
++        // parent's one preparation. The first valid delivery starts compilation.
++        this.sendQuery("Resources").then(value => this.acceptPrepared(value, "query"),
++          () => this.acceptPrepared(null, "query"));
++      }
++      const prepared = await preparation;
++      preparationWaitMs = ChromeUtils.now() - start;
++      resourcesMs = this.resourcesArrived == null ? null : Math.max(0, this.resourcesArrived - start);
++      // Synchronous compilation can finish after a timer's deadline but before
++      // its callback gets a turn. Release/yield in that case before late work;
++      // do not turn an overdue compile into a falsely "early" injection.
++      if (!timedOut && ChromeUtils.now() - start >= budget) {
++        timedOut = true;
++        release();
++        await new Promise(resolve => setTimeout(resolve, 0));
++      }
++      const current = () => !this.stopped && (this.lifecycle || 0) === lifecycle && this.document === doc && this.contentWindow === win &&
++        this.preparedIsCurrent(prepared?.value);
++      if (!current()) { stale = true; return; }
++      const resources = prepared.value.resources;
++      compileMs = prepared.compileMs;
++      if (prepared.script) {
++        phase = "execute";
++        const executeStart = ChromeUtils.now();
++        prepared.script.executeInGlobal(win, {reportExceptions:true});
++        executeMs = ChromeUtils.now() - executeStart;
++        injected = true;
++      }
++      phase = "cosmetics";
++      clearTimeout(this.timer); this.timer = null;
++      release();
++      await new Promise(resolve => setTimeout(resolve, 0));
++      if (current()) { this.configureCosmetics(resources); }
++    } finally {
++      clearTimeout(this.timer); this.timer = null;
++      release(); this.release = null;
++      this.timing = {elapsedMs:ChromeUtils.now()-start,parserHoldMs,timedOut,injected,stale,
++        resourcesMs,compileMs,executeMs,compileMode:this.compileMode,releasePhase,budgetMs:budget,preparedSource:this.preparedSource,
++        preparationWaitMs,
++        resourceLeadMs:this.resourcesArrived == null ? null : start-this.resourcesArrived};
++      if (Services.prefs.getBoolPref("fenn.adblock.prototype.testing", false)) {
++        try { this.sendAsyncMessage("Timing", this.timing); } catch (_) {}
++      }
++    }
++  }
++
++  receiveMessage({name, data}) {
++    if (name === "Prepared") { this.acceptPrepared(data, "push"); return null; }
++    if (name === "Stop") { this.stop(); return null; }
++    // Parent-only, on-demand query. No page data or raw failure strings.
++    if (name === "Troubleshooting") {
++      return {styleCounts:this.styleCounts || null, domCounts:this.domRunner?.counts || null};
++    }
++    if (name === "Diagnostic" && Services.prefs.getBoolPref("fenn.adblock.prototype.testing", false)) {
++      return {started:!!this.started,stopped:!!this.stopped,timing:this.timing || null,styleCounts:this.styleCounts || null,domCounts:this.domRunner?.counts || null,domRetained:!!(this.domRunner?.win || this.domRunner?.walker || this.domRunner?.node),domObserving:!!this.domRunner?.observer,preparationError:this.preparationError || null,
++        enabled:Services.prefs.getBoolPref("fenn.adblock.prototype.enabled",false),
++        contentType:this.document?.contentType, contentPrincipal:this.document?.nodePrincipal.isContentPrincipal};
++    }
++    throw new Error("Unknown adblock actor message");
++  }
++
++  async refreshCosmetics(expectedGeneration = null) {
++    const lifecycle = this.lifecycle || 0;
++    const doc = this.document;
++    // Coalesce permission notifications while a parent authorization is in flight.
++    if (this.refreshLifecycle === lifecycle && this.refreshPending) { return; }
++    this.refreshLifecycle = lifecycle;
++    this.refreshPending = true;
++    try {
++      while (!this.stopped && (this.lifecycle || 0) === lifecycle && this.document === doc) {
++        if (!Services.prefs.getBoolPref("fenn.adblock.prototype.enabled", false)) { this.stop(); return; }
++        const token = Services.cpmm.sharedData.get("FennAdblock:ResourceToken");
++        if (expectedGeneration !== null && token?.split(":")[0] !== expectedGeneration) { return; }
++        const value = await this.sendQuery("Refresh");
++        if (this.stopped || (this.lifecycle || 0) !== lifecycle || this.document !== doc) { return; }
++        if (token !== Services.cpmm.sharedData.get("FennAdblock:ResourceToken")) { continue; }
++        if (!value || value.token !== token) { return; }
++        // Existing documents never replay scriptlets or add a parser barrier.
++        this.configureCosmetics(value.resources);
++        return;
++      }
++    } finally {
++      if (this.refreshLifecycle === lifecycle) { this.refreshPending = false; }
++    }
++  }
++
++  configureCosmetics(resources) {
++    this.stopGeneric();
++    this.stopDom();
++    const win = this.contentWindow;
++    const doc = this.document;
++    const lifecycle = this.lifecycle || 0;
++    const token = Services.cpmm.sharedData.get("FennAdblock:ResourceToken");
++    // Engine-resolved domain exceptions already apply to hide_selectors. Only
++    // nested text candidates are routed to the bounded runner; no raw list parse.
++    const nested = (resources?.hide_selectors || []).filter(s => s.includes(":has-text(") && !win.CSS.supports("selector(" + s + ")"));
++    const nestedSet = new Set(nested);
++    const actions = [...(resources?.procedural_actions || []), ...nested.map(arg => JSON.stringify({selector:[{type:"css-selector",arg}]}))];
++    const compiled = compileDomActions(actions, resources?.style_policy, win);
++    this.domRunner = new FennAdblockDomRunner(win, compiled, resources?.style_policy, {
++      setTimer:setTimeout, clearTimer:clearTimeout, now:() => ChromeUtils.now(),
++      current:() => !this.stopped && (this.lifecycle || 0) === lifecycle && this.document === doc &&
++        Services.prefs.getBoolPref("fenn.adblock.prototype.enabled", false) &&
++        token === Services.cpmm.sharedData.get("FennAdblock:ResourceToken"),
++    });
++    this.domRunner.start();
++    // Listen even when there are no DOM actions: permission changes must also
++    // reconcile ordinary CSS and allow a paused document to resume.
++    this.domToken = token;
++    this.domInvalidation = () => {
++      const next = Services.cpmm.sharedData.get("FennAdblock:ResourceToken");
++      if (this.domToken === next) { return; }
++      const generation = this.domToken?.split(":")[0];
++      this.stopDom();
++      this.stopGeneric();
++      this.styleCss = "";
++      this.applySelectors([]);
++      if (generation && next?.split(":")[0] === generation) {
++        this.refreshCosmetics(generation).catch(error => console.error("Adblock permissions:", error));
++      }
++    };
++    Services.cpmm.sharedData.addEventListener("change", this.domInvalidation);
++    const styles = compileStyleActions(resources?.procedural_actions, resources?.style_policy, this.contentWindow);
++    this.styleCss = styles.css;
++    this.styleCounts = styles.counts;
++    this.selectors = new Set((resources?.hide_selectors || []).filter(s => !nestedSet.has(s)));
++    this.applySelectors([...this.selectors]);
++    if (!resources || resources.generichide) { return; }
++    this.cosmeticGeneration = resources.generation;
++    this.seenClasses = new Set(); this.seenIds = new Set();
++    this.scanDirty = true;
++    // Mutation callbacks only schedule work. Scan in bounded slices after the
++    // parser barrier; never hold parsing for generic cosmetics or IPC.
++    this.observer = new this.contentWindow.MutationObserver(() => {
++      this.scanDirty = true; this.scheduleGeneric();
++    });
++    this.observer.observe(this.document, {subtree:true,childList:true,attributes:true,attributeFilter:["id","class"]});
++    this.scheduleGeneric();
++  }
++
++  scheduleGeneric() {
++    if (this.genericTimer || this.genericPending || !this.observer || this.stopped) { return; }
++    this.genericTimer = setTimeout(() => {
++      this.genericTimer = null;
++      const epoch = this.genericEpoch;
++      this.scanGeneric().catch(error => {
++        if (epoch === this.genericEpoch) { this.stopGeneric(); }
++        console.error("Adblock cosmetics:", error);
++      });
++    }, 25);
++  }
++
++  async scanGeneric() {
++    if (!this.observer || this.stopped) { return; }
++    if (!this.walker) {
++      if (!this.scanDirty) { return; }
++      this.scanDirty = false;
++      this.walker = this.document.createTreeWalker(this.document, 1);
++      this.scannedNodes = 0;
++    }
++    const classes = [], ids = [];
++    const add = (token, seen, batch) => {
++      if (token && token.length <= 256 && seen.size < 10000 && !seen.has(token) && batch.length < 256) {
++        seen.add(token); batch.push(token);
++      }
++    };
++    for (let count = 0; count < 256 && classes.length < 192 && ids.length < 256; count++) {
++      const node = this.walker.nextNode();
++      if (!node || ++this.scannedNodes > 20000) { this.walker = null; break; }
++      add(node.id, this.seenIds, ids);
++      // Bound pathological attributes before splitting them.
++      const value = node.getAttribute("class") || "";
++      if (value.length <= 4096) {
++        for (const token of value.split(/\s+/).slice(0,64)) { add(token, this.seenClasses, classes); }
++      }
++    }
++    if (classes.length || ids.length) {
++      const epoch = this.genericEpoch;
++      const doc = this.document;
++      this.genericPending = true;
++      try {
++        const result = await this.sendQuery("Generic", {generation:this.cosmeticGeneration,classes,ids});
++        if (epoch !== this.genericEpoch || doc !== this.document || this.stopped) { return; }
++        if (!result || result.generation !== this.cosmeticGeneration) { this.stopGeneric(); return; }
++        const previousSize = this.selectors.size;
++        for (const selector of result.selectors || []) {
++          if (this.selectors.size >= 10000) { break; }
++          this.selectors.add(selector);
++        }
++        if (this.selectors.size !== previousSize) { this.applySelectors([...this.selectors]); }
++      } finally {
++        if (epoch === this.genericEpoch) { this.genericPending = false; }
++      }
++    }
++    if (this.walker || this.scanDirty) { this.scheduleGeneric(); }
++  }
++
++  stopDom() {
++    this.domRunner?.stop();
++    if (this.domInvalidation) { Services.cpmm.sharedData.removeEventListener("change", this.domInvalidation); }
++    this.domInvalidation = null; this.domToken = null;
++  }
++
++  stopGeneric() {
++    this.genericEpoch = (this.genericEpoch || 0) + 1;
++    this.observer?.disconnect(); this.observer = null;
++    if (this.genericTimer) { clearTimeout(this.genericTimer); this.genericTimer = null; }
++    this.walker = null; this.genericPending = false;
++    this.seenClasses = null; this.seenIds = null; this.selectors = null;
++  }
++
++  applySelectors(selectors) {
++    const win = this.contentWindow;
++    // Separate valid selectors so one unsupported procedural expression cannot
++    // invalidate every ordinary rule. Do not interpret filter text as CSS rules.
++    let css = this.styleCss || "";
++    for (const selector of selectors.slice(0,10000)) {
++      if (typeof selector !== "string" || selector.length > 4096 || !isSupportedSelectorList(selector, win)) { continue; }
++      const rule = selector + "{display:none!important}\n";
++      if (css.length + rule.length > 1024 * 1024) { break; }
++      css += rule;
++    }
++    const sheet = css ? "data:text/css," + encodeURIComponent(css) : null;
++    if (sheet === this.sheet) { return; }
++    if (this.sheet) {
++      this.sheetWindowUtils.removeSheetUsingURIString(this.sheet, this.sheetWindowUtils.USER_SHEET);
++      this.sheet = null;
++      this.sheetWindowUtils = null;
++    }
++    if (sheet) {
++      win.windowUtils.loadSheetUsingURIString(sheet, win.windowUtils.USER_SHEET);
++      this.sheet = sheet;
++      // Actor unregistration may disconnect contentWindow before didDestroy.
++      // Retain the sheet owner so cached documents can still be cleaned up.
++      this.sheetWindowUtils = win.windowUtils;
++    }
++  }
++
++  stop(preserveSheet = false) {
++    this.stopDom();
++    this.stopGeneric();
++    this.styleCss = "";
++    this.stopped = true;
++    this.preparedReceived = true;
++    this.resolvePreparation?.(null);
++    this.lifecycle = (this.lifecycle || 0) + 1;
++    this.release?.(); this.release = null;
++    if (this.timer) { clearTimeout(this.timer); this.timer = null; }
++    if (this.sheet && !preserveSheet) {
++      try { this.sheetWindowUtils.removeSheetUsingURIString(this.sheet, this.sheetWindowUtils.USER_SHEET); } catch (_) {}
++      this.sheet = null;
++      this.sheetWindowUtils = null;
++    }
++  }
++  didDestroy() { this.stop(); }
++}
+diff --git a/browser/components/fennadblock/FennAdblockDom.sys.mjs b/browser/components/fennadblock/FennAdblockDom.sys.mjs
+new file mode 100644
+index 00000000000..804897db866
+--- /dev/null
++++ b/browser/components/fennadblock/FennAdblockDom.sys.mjs
+@@ -0,0 +1,258 @@
++/* This Source Code Form is subject to the terms of the Mozilla Public
++ * License, v. 2.0. If a copy of the MPL was not distributed with this
++ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
++
++import {compileProceduralSelector, proceduralTarget} from "./FennAdblockProcedural.sys.mjs";
++
++export function compileDomActions(actions, policy, win) {
++  const counts = {accepted:0, rejected:0, unsupported:0, truncated:0};
++  const rules = [];
++  if (!Array.isArray(actions) || policy?.dom_version !== 1) { return {rules, counts}; }
++  counts.truncated = Math.max(0, actions.length - policy.dom_max_actions);
++  for (const encoded of actions.slice(0, policy.dom_max_actions)) {
++    try {
++      if (typeof encoded !== "string" || encoded.length > 16384) { throw new Error(); }
++      const value = JSON.parse(encoded);
++      const type = value.action?.type || "hide";
++      if (type === "style") { continue; }
++      if (!["remove", "remove-attr", "remove-class", "hide"].includes(type)) { counts.unsupported++; continue; }
++      const compiled = compileProceduralSelector(value.selector, policy, win);
++      if (!compiled || (type === "hide" && !compiled.operators.length)) { throw new Error(); }
++      const arg = value.action?.arg;
++      if (!["remove", "hide"].includes(type) && (typeof arg !== "string" || !arg.length || arg.length > 256 ||
++          (type === "remove-attr" ? !/^[A-Za-z_][A-Za-z0-9_.-]*$/.test(arg) : /[\s\0/"']/.test(arg)))) { throw new Error(); }
++      rules.push({...compiled, type, arg}); counts.accepted++;
++    } catch (_) { counts.rejected++; }
++  }
++  return {rules, counts};
++}
++
++export class FennAdblockDomRunner {
++  constructor(win, compiled, policy, {setTimer, clearTimer, current, now}) {
++    Object.assign(this, {win, rules:compiled.rules, policy, setTimer, clearTimer, current, now});
++    this.counts = {...compiled.counts, checks:0, mutations:0, protected:0, passes:0, cachedPasses:0, fullPasses:0, cachedCandidates:0, work:0, hidden:0, throttles:0, throttleUntil:0, exhausted:false, stopped:false};
++    this.hidden = new Map(); this.found = new Set();
++    this.targetWrites = new WeakMap(); this.previousWrites = null;
++    this.rate = null; this.scan = null;
++    this.hasComputedStyle = this.rules.some(rule => rule.operators?.some(op => op.type === "matches-css"));
++    this.hasPath = this.rules.some(rule => rule.operators?.some(op => op.type === "matches-path"));
++    this.lastPath = null;
++    // Only simple type/id/class selectors have membership determined entirely
++    // by observed DOM mutations. Dynamic pseudo-classes and complex selectors
++    // retain full scans. Hide-only rules avoid cached traversal during removal.
++    this.cacheEligible = this.rules.every(rule => rule.type === "hide" &&
++      /^(?:[A-Za-z][A-Za-z0-9_-]*|\*)?(?:[.#][A-Za-z_][A-Za-z0-9_-]*)*$/.test(rule.selector.trim()));
++    this.candidates = null; this.buildingCandidates = null;
++    this.pollPending = false;
++    this.dirty = true;
++  }
++  start() {
++    if (!this.rules.length || !this.current()) { this.stop(); return; }
++    this.observer = new this.win.MutationObserver(() => { this.dirty = true; this.schedule(); });
++    this.observer.observe(this.win.document, {subtree:true, childList:true, attributes:true, characterData:true});
++    this.schedule();
++    this.pollStyles();
++  }
++  pollStyles() {
++    if ((!this.hasComputedStyle && !this.hasPath) || this.counts.stopped || this.styleTimer != null) { return; }
++    this.styleTimer = this.setTimer(() => {
++      this.styleTimer = null;
++      if (!this.current()) { this.stop(); return; }
++      let path = this.hasPath ? this.win.location.pathname + this.win.location.search : null;
++      // Retain a bounded comparison key, not an arbitrarily long page URL.
++      if (path !== null && path.length > this.policy.procedural_path_max_chars) { path = ""; }
++      // Route changes must reconcile owned hides even in background documents.
++      // Computed-style-only polling remains restricted to visible documents.
++      if ((this.hasComputedStyle && !this.win.document.hidden) || path !== this.lastPath) {
++        this.pollPending = true; this.schedule();
++      }
++      this.lastPath = path;
++      this.pollStyles();
++    }, this.policy.procedural_css_poll_ms);
++  }
++  schedule(delay = 25) {
++    if (this.timer != null || this.counts.stopped) { return; }
++    this.timer = this.setTimer(() => {
++      this.timer = null;
++      try { this.drain(); } catch (_) { this.counts.rejected++; this.stop(); }
++    }, delay);
++  }
++  stop() {
++    this.counts.stopped = true;
++    if (this.timer != null) { this.clearTimer(this.timer); }
++    this.timer = null;
++    if (this.styleTimer != null) { this.clearTimer(this.styleTimer); }
++    this.styleTimer = null;
++    this.observer?.disconnect(); this.observer = null;
++    this.restoreHidden();
++    this.found.clear();
++    this.targetWrites = null; this.previousWrites = null; this.rate = null; this.scan = null;
++    this.counts.throttleUntil = 0;
++    this.walker = null; this.node = null; this.rules = [];
++    this.lastPath = null;
++    this.candidates = null; this.buildingCandidates = null; this.pollPending = false;
++    this.counts.cachedCandidates = 0;
++    this.win = null; this.current = null; this.now = null;
++  }
++  restoreHidden(found = new Set()) {
++    for (const [node, old] of this.hidden) {
++      if (found.has(node)) { continue; }
++      if (node.style.getPropertyValue("display") === "none" && node.style.getPropertyPriority("display") === "important") {
++        if (old.value) { node.style.setProperty("display", old.value, old.priority); }
++        else { node.style.removeProperty("display"); }
++      }
++      this.hidden.delete(node);
++    }
++    this.counts.hidden = this.hidden.size;
++  }
++  exhaust(reason = "target-limit") {
++    this.counts.exhaustionReason = reason;
++    this.counts.lastScan = this.scan ? {...this.scan} : null;
++    this.counts.lastRate = this.rate ? {...this.rate} : null;
++    this.counts.exhausted = true; this.counts.truncated++;
++    this.stop();
++  }
++  refreshRate() {
++    const time = this.now();
++    if (!this.rate || time - this.rate.start >= this.policy.dom_rate_window_ms) {
++      // At most two windows of write records: <= 2 * dom_max_mutations
++      // entries, with weak keys. Preserve still-recent records across a boundary.
++      this.previousWrites = this.rate && time - this.rate.start < 2 * this.policy.dom_rate_window_ms ? this.targetWrites : null;
++      this.targetWrites = new WeakMap();
++      this.rate = {start:time, checks:0, work:0, passes:0, mutations:0};
++      this.counts.throttleUntil = 0;
++    }
++  }
++  throttle() {
++    this.counts.throttles++;
++    this.counts.throttleUntil = this.rate.start + this.policy.dom_rate_window_ms;
++    // Keep partial scan and owned hides. Mutations only mark dirty and cannot
++    // accelerate this timer. Authorization is checked again before resuming.
++    this.schedule(Math.max(25, this.counts.throttleUntil - this.now()));
++  }
++  allowWrite(target) {
++    const time = this.now();
++    let record = this.targetWrites.get(target) || this.previousWrites?.get(target);
++    if (!record || time - record.start >= this.policy.dom_rate_window_ms) {
++      record = {start:time, writes:0};
++    }
++    if (record.writes >= this.policy.dom_max_target_writes) { this.exhaust("target-write-loop"); return false; }
++    this.targetWrites.set(target, record);
++    record.writes++;
++    this.scan.mutations++; this.rate.mutations++;
++    return true;
++  }
++  drain() {
++    if (this.counts.stopped) { return; }
++    if (!this.current()) { this.stop(); return; }
++    this.refreshRate();
++    if (!this.walker) {
++      if (!this.dirty && !this.pollPending) { return; }
++      if (this.rate.passes >= this.policy.dom_max_passes) { this.throttle(); return; }
++      this.rate.passes++; this.scan = {checks:0,work:0,mutations:0};
++      const cached = !this.dirty && this.pollPending && this.candidates !== null;
++      this.dirty = false; this.pollPending = false; this.counts.passes++; this.found.clear();
++      if (cached) {
++        this.counts.cachedPasses++;
++        const nodes = this.candidates; let index = 0;
++        this.walker = {nextNode:() => nodes[index++] || null};
++        this.buildingCandidates = null;
++      } else {
++        this.counts.fullPasses++;
++        this.candidates = null; this.counts.cachedCandidates = 0;
++        this.buildingCandidates = this.cacheEligible ? [] : null;
++        this.walker = this.win.document.createTreeWalker(this.win.document, 1);
++      }
++      this.node = this.walker.nextNode(); this.ruleIndex = 0;
++    }
++    const start = this.now();
++    let steps = 0;
++    while (this.node && steps++ < this.policy.dom_slice_checks && this.now() - start < this.policy.dom_slice_ms) {
++      if (!this.current()) { this.stop(); return; }
++      if (this.scan.checks >= this.policy.dom_max_checks || this.scan.mutations >= this.policy.dom_max_mutations) { this.exhaust(this.scan.checks >= this.policy.dom_max_checks ? "scan-checks" : "scan-mutations"); return; }
++      if (this.rate.checks >= this.policy.dom_max_checks || this.rate.work >= this.policy.procedural_max_work || this.rate.mutations >= this.policy.dom_max_mutations) { this.throttle(); return; }
++      const node = this.node;
++      if (!node.isConnected || node.ownerDocument !== this.win.document) {
++        this.walker = null; this.node = null; this.dirty = true; break;
++      }
++      const rule = this.rules[this.ruleIndex++];
++      this.counts.checks++; this.scan.checks++; this.rate.checks++;
++      if (node.matches(rule.selector)) {
++        if (this.buildingCandidates && this.buildingCandidates.at(-1) !== node) {
++          if (this.buildingCandidates.length < this.policy.procedural_max_targets) { this.buildingCandidates.push(node); }
++          else { this.buildingCandidates = null; }
++        }
++        const scanLeft = this.policy.procedural_max_work - this.scan.work;
++        const rateLeft = this.policy.procedural_max_work - this.rate.work;
++        const allowance = Math.min(scanLeft, rateLeft);
++        const result = proceduralTarget(node, rule.operators, this.policy, allowance);
++        // The evaluator charges before work; an over-budget attempted operation
++        // is not executed. Charge at most the allowance for partial evaluation.
++        const charged = Math.min(result.work, allowance);
++        this.counts.work += charged; this.scan.work += charged; this.rate.work += charged;
++        if (result.truncated) { this.counts.truncated++; }
++        if (result.exhausted) {
++          if (rateLeft < scanLeft) { this.ruleIndex--; this.throttle(); }
++          else { this.exhaust("scan-work"); }
++          return;
++        }
++        const target = result.target;
++        if (!target) {
++          if (this.ruleIndex >= this.rules.length) { this.node = this.walker.nextNode(); this.ruleIndex = 0; }
++          continue;
++        }
++        const structural = target === this.win.document.documentElement || target === this.win.document.head || target === this.win.document.body;
++        if (rule.type === "hide") {
++          if (structural) { this.counts.protected++; }
++          else {
++            if (!this.found.has(target) && this.found.size >= this.policy.procedural_max_targets) { this.exhaust(); return; }
++            this.found.add(target);
++            const value = target.style.getPropertyValue("display"), priority = target.style.getPropertyPriority("display");
++            if (value !== "none" || priority !== "important") {
++              if (value.length > 4096) { this.counts.truncated++; }
++              else {
++                if (!this.hidden.has(target) && this.hidden.size >= this.policy.procedural_max_targets) { this.exhaust(); return; }
++                if (!this.allowWrite(target)) { return; }
++                this.hidden.set(target, {value, priority});
++                target.style.setProperty("display", "none", "important"); this.counts.mutations++;
++              }
++            }
++            this.counts.hidden = this.hidden.size;
++          }
++        }
++        if (rule.type === "remove" && structural) { this.counts.protected++; }
++        if (rule.type === "remove" && !structural) {
++          // Advance outside the removed subtree without retaining detached nodes.
++          this.walker.currentNode = target;
++          let next = this.walker.nextSibling();
++          for (let depth = 0; !next && depth < 256 && this.walker.parentNode(); depth++) { next = this.walker.nextSibling(); }
++          if (!this.allowWrite(target)) { return; }
++          target.remove(); this.counts.mutations++;
++          this.node = next; this.ruleIndex = 0;
++          continue;
++        }
++        if (rule.type === "remove-attr" && target.hasAttribute(rule.arg)) {
++          if (!this.allowWrite(target)) { return; }
++          target.removeAttribute(rule.arg); this.counts.mutations++;
++        } else if (rule.type === "remove-class" && target.classList.contains(rule.arg)) {
++          if (!this.allowWrite(target)) { return; }
++          target.classList.remove(rule.arg); this.counts.mutations++;
++        }
++      }
++      if (this.ruleIndex >= this.rules.length) {
++        this.node = this.walker.nextNode(); this.ruleIndex = 0;
++      }
++    }
++    if (!this.node) {
++      this.walker = null;
++      // Never publish a partially built membership set across a DOM mutation.
++      if (this.buildingCandidates && !this.dirty) {
++        this.candidates = this.buildingCandidates;
++        this.counts.cachedCandidates = this.candidates.length;
++      }
++      this.buildingCandidates = null;
++      this.restoreHidden(this.found);
++    }
++    if (this.walker || this.dirty || this.pollPending) { this.schedule(); }
++  }
++}
+diff --git a/browser/components/fennadblock/FennAdblockTestNotice.sys.mjs b/browser/components/fennadblock/FennAdblockTestNotice.sys.mjs
+new file mode 100644
+index 00000000000..30ae18ffa58
+--- /dev/null
++++ b/browser/components/fennadblock/FennAdblockTestNotice.sys.mjs
+@@ -0,0 +1,128 @@
++/* This Source Code Form is subject to the terms of the Mozilla Public
++ * License, v. 2.0. If a copy of the MPL was not distributed with this
++ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
++
++export const TEST_NOTICE_PREF = "fenn.adblock.testNotice.dismissed";
++export const TEST_NOTICE_ID = "fenn-adblock-test-notice";
++export const TEST_NOTICE_HELP = "https://brave.com/blog/adblocker-testing-websites-harm-users/";
++let seenThisSession = false;
++
++export function isAdblockTestPage(uri) {
++  try {
++    // Explicitly reviewed address only. No URL keywords, suffix matching,
++    // redirects to similarly named hosts, or web-content inspection.
++    return uri.schemeIs("https") && uri.asciiHost === "adblock.turtlecute.org" &&
++      (uri.port === -1 || uri.port === 443) && !uri.userPass &&
++      uri.QueryInterface(Ci.nsIURL).filePath === "/";
++  } catch (_) { return false; }
++}
++
++export class FennAdblockTestNotice {
++  constructor(service) { this.service = service; this.windows = new Map(); this.pending = null; }
++  start() {
++    Services.obs.addObserver(this, "browser-delayed-startup-finished");
++    Services.obs.addObserver(this, "fenn-adblock-state-changed");
++    Services.prefs.addObserver(TEST_NOTICE_PREF, this);
++    for (const win of Services.wm.getEnumerator("navigator:browser")) {
++      if (win.gBrowserInit?.delayedStartupFinished) { this.attach(win); }
++    }
++  }
++  observe(subject, topic) {
++    if (topic === "browser-delayed-startup-finished") { this.attach(subject); return; }
++    for (const win of this.windows.keys()) { this.refresh(win); }
++  }
++  attach(win) {
++    if (this.windows.has(win) || win.closed || !win.gBrowser) { return; }
++    // Let Firefox finish its navigation/selection notification work before
++    // publishing our prompt. Never wait for unrelated page resources to finish.
++    const refresh = () => {
++      const entry = this.windows.get(win);
++      if (!entry || entry.timer != null) { return; }
++      entry.timer = win.setTimeout(() => {
++        entry.timer = null;
++        if (this.windows.has(win)) { this.refresh(win); }
++      }, 0);
++    };
++    const unload = () => this.detach(win);
++    const progress = {
++      onLocationChange:refresh,
++      onStateChange:(_progress, _request, flags) => {
++        if (flags & Ci.nsIWebProgressListener.STATE_STOP) { refresh(); }
++      },
++      QueryInterface:ChromeUtils.generateQI(["nsIWebProgressListener", "nsISupportsWeakReference"]),
++    };
++    this.windows.set(win, {refresh, unload, progress, timer:null});
++    win.gBrowser.addProgressListener(progress);
++    win.gBrowser.tabContainer.addEventListener("TabSelect", refresh);
++    win.addEventListener("unload", unload, {once:true});
++    this.refresh(win);
++  }
++  detach(win) {
++    const entry = this.windows.get(win); if (!entry) { return; }
++    if (this.pending?.win === win) { this.remove(); }
++    if (entry.timer != null) { win.clearTimeout(entry.timer); }
++    win.gBrowser?.removeProgressListener(entry.progress);
++    win.gBrowser?.tabContainer.removeEventListener("TabSelect", entry.refresh);
++    win.removeEventListener("unload", entry.unload);
++    this.windows.delete(win);
++  }
++  eligible(win, browser = win.gBrowser.selectedBrowser) {
++    return this.service.active && !this.service.preparing && !win.closed &&
++      browser === win.gBrowser.selectedBrowser &&
++      !Services.prefs.getBoolPref(TEST_NOTICE_PREF, false) &&
++      browser.contentPrincipal?.isContentPrincipal &&
++      !this.service.excepted(browser.contentPrincipal) && this.isTestPage(browser.currentURI) &&
++      this.isTestPage(browser.browsingContext.currentWindowGlobal?.documentURI);
++  }
++  isTestPage(uri) { return isAdblockTestPage(uri); }
++  live(p) {
++    return this.pending === p && this.eligible(p.win, p.browser) &&
++      p.inner === p.browser.browsingContext.currentWindowGlobal?.innerWindowId;
++  }
++  remove() {
++    const p = this.pending; this.pending = null;
++    if (p?.notification) { p.win.PopupNotifications.remove(p.notification); }
++  }
++  dismiss(p) {
++    if (this.pending !== p) { return; }
++    // Private visits may consume this session's notice, never write a profile pref.
++    if (!p.browser.contentPrincipal.originAttributes.privateBrowsingId) {
++      Services.prefs.setBoolPref(TEST_NOTICE_PREF, true);
++    }
++    this.remove();
++  }
++  refresh(win) {
++    if (this.pending && !this.live(this.pending)) { this.remove(); }
++    if (seenThisSession || this.pending || !this.eligible(win)) { return; }
++    const browser = win.gBrowser.selectedBrowser, manager = win.PopupNotifications;
++    if (manager.isPanelOpen || manager.getNotificationsForBrowser(browser).some(n => !n.dismissed)) { return; }
++    const l10n = new win.Localization(["branding/brand.ftl", "browser/tabbrowser.ftl"], true);
++    const label = id => l10n.formatValueSync("winui-adblock-test-notice-" + id);
++    const p = {win, browser, inner:browser.browsingContext.currentWindowGlobal?.innerWindowId};
++    this.pending = p;
++    p.notification = manager.show(browser, TEST_NOTICE_ID, label("title"), "default-notification-icon",
++      {label:label("dismiss"), accessKey:label("dismiss-key"), disableSecurityDelay:true,
++        callback:() => this.dismiss(p)},
++      [{label:label("learn"), accessKey:label("learn-key"), disableSecurityDelay:true,
++        callback:() => {
++          if (!this.live(p)) { return; }
++          this.dismiss(p);
++          win.openTrustedLinkIn(TEST_NOTICE_HELP, "tab");
++        }}],
++      {autofocus:false, persistent:false, hideClose:true, hintText:label("body"),
++        eventCallback:topic => {
++          if (this.pending !== p) { return; }
++          if (topic === "shown") { seenThisSession = true; }
++          else if (topic === "dismissed") { this.dismiss(p); }
++          else if (topic === "removed") { this.pending = null; }
++        }});
++  }
++  stop() {
++    this.remove();
++    for (const win of [...this.windows.keys()]) { this.detach(win); }
++    Services.obs.removeObserver(this, "browser-delayed-startup-finished");
++    Services.obs.removeObserver(this, "fenn-adblock-state-changed");
++    Services.prefs.removeObserver(TEST_NOTICE_PREF, this);
++    this.service = null;
++  }
++}
+diff --git a/browser/components/fennadblock/FennAdblockDiagnostics.sys.mjs b/browser/components/fennadblock/FennAdblockDiagnostics.sys.mjs
+new file mode 100644
+index 00000000000..9f2c9ed0cf2
+--- /dev/null
++++ b/browser/components/fennadblock/FennAdblockDiagnostics.sys.mjs
+@@ -0,0 +1,45 @@
++/* This Source Code Form is subject to the terms of the Mozilla Public
++ * License, v. 2.0. If a copy of the MPL was not distributed with this
++ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
++
++// No URL, origin, selector, rule text, error string or page content is accepted.
++const OUTCOMES = new Set(["allowed", "blocked", "replaced", "rewritten",
++  "blocked-unsupported-replacement", "unsupported-rewrite", "site-exception",
++  "csp-applied", "unsupported-csp"]);
++const KINDS = new Set(["script", "image", "stylesheet", "subdocument", "font",
++  "media", "xmlhttprequest", "ping", "websocket", "object", "other", "document"]);
++const NUMBERS = ["accepted", "rejected", "unsupported", "truncated", "applied",
++  "checks", "mutations", "protected", "passes", "cachedPasses", "fullPasses",
++  "cachedCandidates", "work", "hidden", "throttles"];
++const REASONS = new Set(["target-limit", "target-write-loop", "scan-checks", "scan-mutations", "scan-work"]);
++
++export class FennAdblockDiagnosticCapture {
++  constructor() { this.events = []; this.dropped = 0; this.closed = false; }
++  record(kind, outcome, exception = null, thirdParty = null) {
++    if (this.closed || !OUTCOMES.has(outcome)) { return; }
++    // Stop retaining at the cap; do not churn arrays on busy pages.
++    if (this.events.length === 256) { this.dropped = Math.min(1e9, this.dropped + 1); return; }
++    this.events.push({sequence:this.events.length + 1, kind:KINDS.has(kind) ? kind : "other",
++      outcome, exception:typeof exception === "boolean" ? exception : null,
++      thirdParty:typeof thirdParty === "boolean" ? thirdParty : null});
++  }
++  report(cosmetics, status = "available") {
++    if (this.closed) { return null; }
++    const counts = value => {
++      const result = {};
++      for (const key of NUMBERS) {
++        if (Number.isSafeInteger(value?.[key]) && value[key] >= 0) { result[key] = Math.min(1e9, value[key]); }
++      }
++      for (const key of ["exhausted", "stopped"]) {
++        if (typeof value?.[key] === "boolean") { result[key] = value[key]; }
++      }
++      if (REASONS.has(value?.exhaustionReason)) { result.exhaustionReason = value.exhaustionReason; }
++      return result;
++    };
++    return {version:1, scope:"selected-document", redaction:"no-addresses-content-or-rule-text",
++      limit:256, dropped:this.dropped, events:this.events.map(event => ({...event})),
++      cosmetics:{status:["available", "unavailable", "timeout"].includes(status) ? status : "unavailable",
++        style:counts(cosmetics?.styleCounts), dom:counts(cosmetics?.domCounts)}};
++  }
++  clear() { this.closed = true; this.events.length = 0; this.dropped = 0; }
++}
+diff --git a/browser/components/fennadblock/FennAdblockProcedural.sys.mjs b/browser/components/fennadblock/FennAdblockProcedural.sys.mjs
+new file mode 100644
+index 00000000000..5d500478866
+--- /dev/null
++++ b/browser/components/fennadblock/FennAdblockProcedural.sys.mjs
+@@ -0,0 +1,275 @@
++/* This Source Code Form is subject to the terms of the Mozilla Public
++ * License, v. 2.0. If a copy of the MPL was not distributed with this
++ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
++
++import {isSupportedSelectorList} from "./FennAdblockSelectors.sys.mjs";
++
++// Only a fixed-width literal-alternative grammar reaches RegExp. There are no
++// repetition operators or nested groups, so evaluation has no combinatorial
++// backtracking. Charge a conservative text-length * pattern-size work bound.
++export function compileTextRegex(arg, policy) {
++  if (policy?.procedural_regex_version !== 1 || arg.length > policy.procedural_regex_max_chars) { return null; }
++  const end = arg.lastIndexOf("/");
++  if (!arg.startsWith("/") || end < 1 || !["", "i"].includes(arg.slice(end + 1))) { return null; }
++  const split = value => {
++    const result = []; let start = 0;
++    for (let i = 0; i < value.length; i++) {
++      if (value[i] === "\\") { i++; }
++      else if (value[i] === "|") { result.push(value.slice(start, i)); start = i + 1; }
++    }
++    result.push(value.slice(start)); return result;
++  };
++  let source = arg.slice(1, end);
++  // Permit one whole-expression group, including ^(?:a|b)$, but no nesting.
++  const prefix = source.startsWith("^") ? "^" : "";
++  const suffix = source.endsWith("$") ? "$" : "";
++  const inner = source.slice(prefix.length, source.length - suffix.length);
++  if (inner.startsWith("(") && inner.endsWith(")")) {
++    const body = inner.slice(inner.startsWith("(?:") ? 3 : 1, -1);
++    source = split(body).map(branch => prefix + branch + suffix).join("|");
++  }
++  const branches = split(source);
++  if (branches.length > policy.procedural_regex_max_alternatives) { return null; }
++  for (const branch of branches) {
++    for (let i = 0; i < branch.length; i++) {
++      const c = branch[i];
++      if (c === "\\") {
++        const escaped = branch[++i];
++        if (!escaped || !"^$.*+?()[]{}|/\\".includes(escaped)) { return null; }
++      } else if (c === "^") { if (i !== 0) { return null; } }
++      else if (c === "$") { if (i !== branch.length - 1) { return null; } }
++      else if (".*+?()[]{}|/".includes(c) || c.charCodeAt(0) < 32 || c === "\u2028" || c === "\u2029") { return null; }
++    }
++  }
++  try { return {regex:new RegExp(source, arg.slice(end + 1)), width:source.length + branches.length}; }
++  catch (_) { return null; }
++}
++
++// Locate only top-level syntax, never text inside attributes, quotes or escapes.
++function topLevelSyntax(value) {
++  const found = []; let quote = "", square = 0, round = 0;
++  for (let i = 0; i < value.length; i++) {
++    const c = value[i];
++    if (c === "\\") { i++; continue; }
++    if (quote) { if (c === quote) { quote = ""; } continue; }
++    if (c === '"' || c === "'") { quote = c; continue; }
++    if (c === "[") { square++; continue; }
++    if (c === "]") { if (--square < 0) { return null; } continue; }
++    if (square) { continue; }
++    if (!round) { found.push([i, c]); }
++    if (c === "(") { round++; }
++    if (c === ")" && --round < 0) { return null; }
++  }
++  return quote || square || round ? null : found;
++}
++
++export function compileNestedText(selector, policy, win) {
++  if (policy?.procedural_nested_version !== 1 || typeof selector !== "string" || selector.length > policy.dom_max_selector_chars || !selector.endsWith("))")) { return null; }
++  // The terminal text argument can contain regex parentheses. Split at the
++  // top-level :has, then validate each independent CSS fragment with Gecko.
++  const markers = topLevelSyntax(selector);
++  if (!markers || markers.some(([, c]) => c === ",")) { return null; }
++  const starts = markers.filter(([i]) => selector.startsWith(":has(", i));
++  if (starts.length !== 1) { return null; }
++  const index = starts[0][0], base = selector.slice(0, index) || "*";
++  if (!isSupportedSelectorList(base, win, policy.dom_max_selector_chars)) { return null; }
++  const body = selector.slice(index + 5, -1);
++  const innerMarkers = topLevelSyntax(body);
++  if (!innerMarkers) { return null; }
++  const textStarts = innerMarkers.filter(([i]) => body.startsWith(":has-text(", i));
++  if (textStarts.length !== 1 || !body.endsWith(")")) { return null; }
++  const textIndex = textStarts[0][0];
++  let inner = body.slice(0, textIndex).trim(), child = false;
++  if (inner.startsWith(">")) { child = true; inner = inner.slice(1).trim(); }
++  const syntax = topLevelSyntax(inner);
++  if (!inner || !syntax || syntax.some(([, c]) => /[\s,>+~()]/.test(c)) || inner.includes(":scope") || !isSupportedSelectorList(inner, win, policy.dom_max_selector_chars)) { return null; }
++  const arg = body.slice(textIndex + 10, -1);
++  if (!arg.startsWith("/") && /[()]/.test(arg)) { return null; }
++  const text = compileProceduralSelector([{type:"has-text",arg}], policy, win);
++  if (!text) { return null; }
++  return {selector:base, operators:[{type:"has-descendant-text", selector:inner, child, text:text.operators}]};
++}
++
++export function compileAttributeMatch(arg, policy) {
++  if (typeof arg !== "string" || arg.length > 1024) { return null; }
++  // Split only outside a quoted or regex atom; '=' may occur in either.
++  let quote = "", regex = false, split = -1;
++  for (let i = 0; i < arg.length; i++) {
++    const c = arg[i];
++    if (c === "\\") { i++; continue; }
++    if (quote) { if (c === quote) { quote = ""; } continue; }
++    if (regex) { if (c === "/") { regex = false; } continue; }
++    if (c === '"' || c === "'") { quote = c; continue; }
++    if (c === "/" && !arg.slice(0, i).trim()) { regex = true; continue; }
++    if (c === "=") { split = i; break; }
++  }
++  if (quote || regex) { return null; }
++  const atom = (value, name) => {
++    value = value.trim();
++    if (value.startsWith('"') || value.startsWith("'")) {
++      if (value.length < 2 || value.at(-1) !== value[0]) { return null; }
++      const q = value[0]; value = value.slice(1, -1);
++      if (value.includes(q)) { return null; }
++    }
++    if (!value || /[\0\r\n]/.test(value)) { return null; }
++    if (value.startsWith("/")) { return compileTextRegex(value, policy); }
++    if (name ? !/^[A-Za-z_][A-Za-z0-9_.:-]*$/.test(value) : /[\\"']/.test(value)) { return null; }
++    return {text:value};
++  };
++  const name = atom(split < 0 ? arg : arg.slice(0, split), true);
++  const value = split < 0 ? null : atom(arg.slice(split + 1), false);
++  // Owned hiding changes inline style (including an empty style attribute on
++  // restoration). Do not let that create self-matching attribute rules.
++  if (name?.text?.toLowerCase() === "style" || name?.regex?.test("style")) { return null; }
++  return name && (split < 0 || value) ? {name, value} : null;
++}
++
++export function compileProceduralSelector(selector, policy, win) {
++  if (!Array.isArray(selector) || !selector.length || selector.length > policy.procedural_max_operators) { return null; }
++  const parts = [...selector];
++  const leadingPath = [];
++  while (parts[0]?.type === "matches-path") { leadingPath.push(parts.shift()); }
++  let base = "*";
++  if (parts[0]?.type === "css-selector") {
++    if (leadingPath.length && (typeof parts[0].arg !== "string" || !/^\s+[^>+~\s]/.test(parts[0].arg))) { return null; }
++    base = parts.shift().arg;
++  }
++  if (typeof base === "string" && base.includes(":has-text(") && !isSupportedSelectorList(base, win, policy.dom_max_selector_chars)) {
++    // First slice deliberately does not compose nested selectors with later
++    // procedural stages; those remain rejected rather than partially applied.
++    return parts.length || leadingPath.length ? null : compileNestedText(base, policy, win);
++  }
++  if (typeof base !== "string" || base.length > policy.dom_max_selector_chars || !isSupportedSelectorList(base, win, policy.dom_max_selector_chars)) { return null; }
++  const operators = [];
++  for (const part of [...leadingPath, ...parts]) {
++    if (typeof part.arg !== "string" || !part.arg.length) { return null; }
++    if (part.type === "has-text") {
++      if (part.arg.startsWith("/")) {
++        const compiled = compileTextRegex(part.arg, policy);
++        if (!compiled) { return null; }
++        operators.push({type:"has-text", ...compiled});
++        continue;
++      }
++      if (part.arg.length > policy.procedural_max_needle_chars || /^[\/"']/.test(part.arg) || /[\\\0]/.test(part.arg)) { return null; }
++      operators.push({type:"has-text", text:part.arg});
++    } else if (["matches-css", "matches-css-before", "matches-css-after"].includes(part.type)) {
++      if (policy.procedural_css_version !== 1 || part.arg.length > policy.procedural_css_max_value_chars) { return null; }
++      const colon = part.arg.indexOf(":");
++      if (colon < 1) { return null; }
++      const property = part.arg.slice(0, colon).trim();
++      const value = part.arg.slice(colon + 1).trim();
++      if (!policy.procedural_css_properties.includes(property) || !value || /[\0\r\n]/.test(value)) { return null; }
++      const compiled = value.startsWith("/") ? compileTextRegex(value, policy) : null;
++      if (value.startsWith("/") && !compiled) { return null; }
++      operators.push({type:"matches-css", property, pseudo:part.type === "matches-css" ? null : part.type === "matches-css-before" ? "::before" : "::after",
++        ...(compiled || {value})});
++    } else if (part.type === "matches-attr") {
++      if (policy.procedural_attr_path_version !== 1) { return null; }
++      const compiled = compileAttributeMatch(part.arg, policy);
++      if (!compiled) { return null; }
++      operators.push({type:"matches-attr", ...compiled});
++    } else if (part.type === "matches-path") {
++      if (policy.procedural_attr_path_version !== 1 || part.arg.length > policy.procedural_max_needle_chars || /[\0\r\n]/.test(part.arg) || /^[~"']/.test(part.arg)) { return null; }
++      const arg = part.arg.replace(/[^\x00-\x7f]/gu, c => encodeURIComponent(c));
++      const isRegex = /^\/.+\/[imu]*$/.test(arg);
++      const compiled = isRegex ? compileTextRegex(arg, policy) : {text:arg};
++      if (!compiled) { return null; }
++      operators.push({type:"matches-path", ...compiled});
++    } else if (part.type === "upward") {
++      if (/^\d+$/.test(part.arg)) {
++        const count = Number(part.arg);
++        if (count < 1 || count > policy.procedural_max_ancestors) { return null; }
++        operators.push({type:"upward", count});
++      } else {
++        if (part.arg.length > policy.dom_max_selector_chars || !isSupportedSelectorList(part.arg, win, policy.dom_max_selector_chars)) { return null; }
++        operators.push({type:"upward", selector:part.arg});
++      }
++    } else { return null; }
++  }
++  return {selector:base, operators};
++}
++
++export function proceduralTarget(node, operators, policy, remaining) {
++  let work = 0, truncated = false;
++  const spend = n => { work += n; return work <= remaining; };
++  for (const operator of operators || []) {
++    if (operator.type === "matches-path") {
++      const location = node.ownerDocument.defaultView.location;
++      const value = location.pathname + location.search;
++      if (value.length > policy.procedural_path_max_chars) { return {target:null,work,truncated:true}; }
++      if (!spend((value.length + 1) * (operator.width || 1))) { return {target:null,work,exhausted:true}; }
++      if (operator.regex ? !operator.regex.test(value) : !value.includes(operator.text)) { return {target:null,work,truncated}; }
++    } else if (operator.type === "matches-attr") {
++      if (!spend(1)) { return {target:null,work,exhausted:true}; }
++      const attributes = node.attributes;
++      if (attributes.length > policy.procedural_attr_max_count) { return {target:null,work,truncated:true}; }
++      let matched = false;
++      for (let i = 0; i < attributes.length; i++) {
++        if (!spend(1)) { return {target:null,work,exhausted:true}; }
++        const attribute = attributes.item(i), name = attribute.name;
++        if (name.length > 256) { truncated = true; continue; }
++        if (!spend((name.length + 1) * (operator.name.width || 1))) { return {target:null,work,exhausted:true}; }
++        if (operator.name.regex ? !operator.name.regex.test(name) : name !== operator.name.text) { continue; }
++        if (operator.value) {
++          const value = attribute.value;
++          if (value.length > policy.procedural_attr_max_value_chars) { truncated = true; continue; }
++          if (!spend((value.length + 1) * (operator.value.width || 1))) { return {target:null,work,exhausted:true}; }
++          if (operator.value.regex ? !operator.value.regex.test(value) : value !== operator.value.text) { continue; }
++        }
++        matched = true; break;
++      }
++      if (!matched) { return {target:null,work,truncated}; }
++    } else if (operator.type === "matches-css") {
++      // Charge before the potentially style-flushing native call. The existing
++      // scan/window work caps bound read count, not the latency of one flush.
++      if (!spend(policy.procedural_css_read_cost)) { return {target:null,work,exhausted:true}; }
++      const value = node.ownerDocument.defaultView.getComputedStyle(node, operator.pseudo).getPropertyValue(operator.property);
++      if (value.length > policy.procedural_css_max_value_chars) { return {target:null,work,truncated:true}; }
++      if (operator.regex) {
++        if (!spend((value.length + 1) * operator.width)) { return {target:null,work,exhausted:true}; }
++        if (!operator.regex.test(value)) { return {target:null,work,truncated}; }
++      } else if (value !== operator.value) { return {target:null,work,truncated}; }
++    } else if (operator.type === "has-descendant-text") {
++      const walker = node.ownerDocument.createTreeWalker(node, 1);
++      let candidate, visited = 0, matched = false;
++      while ((candidate = walker.nextNode())) {
++        if (++visited > policy.procedural_nested_max_descendants) { truncated = true; break; }
++        if (!spend(1)) { return {target:null,work,exhausted:true}; }
++        if ((operator.child && candidate.parentElement !== node) || !candidate.matches(operator.selector)) { continue; }
++        const result = proceduralTarget(candidate, operator.text, policy, remaining - work);
++        work += result.work; truncated ||= result.truncated;
++        if (result.exhausted) { return {target:null,work,exhausted:true}; }
++        if (result.target) { matched = true; break; }
++      }
++      if (!matched) { return {target:null,work,truncated}; }
++    } else if (operator.type === "has-text") {
++      const walker = node.ownerDocument.createTreeWalker(node, 4);
++      let text = "", item, visited = 0;
++      while ((item = walker.nextNode())) {
++        if (++visited > policy.procedural_max_text_nodes || text.length >= policy.procedural_max_text_chars) { truncated = true; break; }
++        const length = Math.min(item.length, policy.procedural_max_text_chars - text.length);
++        if (!spend(length + 1)) { return {target:null, work, exhausted:true}; }
++        text += item.substringData(0, length);
++        if (!operator.regex && text.includes(operator.text)) { break; }
++        if (length < item.length) { truncated = true; break; }
++      }
++      if (operator.regex) {
++        // Never treat the clipped prefix as a complete string for anchors.
++        if (truncated) { return {target:null, work, truncated}; }
++        if (!spend((text.length + 1) * operator.width)) { return {target:null, work, exhausted:true}; }
++        if (!operator.regex.test(text)) { return {target:null, work, truncated}; }
++      } else if (!text.includes(operator.text)) { return {target:null, work, truncated}; }
++    } else {
++      let found = null;
++      for (let depth = 1; depth <= policy.procedural_max_ancestors; depth++) {
++        if (!spend(1)) { return {target:null, work, exhausted:true}; }
++        node = node.parentElement;
++        if (!node) { break; }
++        if (operator.count ? depth === operator.count : node.matches(operator.selector)) { found = node; break; }
++      }
++      if (!found) { return {target:null, work, truncated:true}; }
++      node = found;
++    }
++  }
++  return {target:node, work, truncated};
++}
+diff --git a/browser/components/fennadblock/FennAdblockSelectors.sys.mjs b/browser/components/fennadblock/FennAdblockSelectors.sys.mjs
+new file mode 100644
+index 00000000000..f927800d2e1
+--- /dev/null
++++ b/browser/components/fennadblock/FennAdblockSelectors.sys.mjs
+@@ -0,0 +1,34 @@
++/* This Source Code Form is subject to the terms of the Mozilla Public
++ * License, v. 2.0. If a copy of the MPL was not distributed with this
++ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
++
++// CSS.supports(selector(...)) accepts one complex selector, not a selector list.
++// Identify top-level members without interpreting their grammar; Gecko remains
++// authoritative for every member. Reject the entire list on any invalid member.
++export function isSupportedSelectorList(selector, win, maxLength = 4096) {
++  if (typeof selector !== "string" || !selector.length || selector.length > maxLength) { return false; }
++  const members = [];
++  const stack = [];
++  let start = 0, quote = "";
++  for (let i = 0; i < selector.length; i++) {
++    const c = selector[i];
++    if (c === "\\") { i++; continue; }
++    if (quote) { if (c === quote) { quote = ""; } continue; }
++    if (c === '"' || c === "'") { quote = c; continue; }
++    if (c === "/" && selector[i + 1] === "*") {
++      const end = selector.indexOf("*/", i + 2);
++      if (end < 0) { return false; }
++      i = end + 1; continue;
++    }
++    if (c === "(" || c === "[") { stack.push(c); }
++    else if (c === ")" || c === "]") {
++      if (stack.pop() !== (c === ")" ? "(" : "[")) { return false; }
++    } else if (c === "," && !stack.length) {
++      members.push(selector.slice(start, i).trim()); start = i + 1;
++      if (members.length >= 128) { return false; }
++    }
++  }
++  if (quote || stack.length) { return false; }
++  members.push(selector.slice(start).trim());
++  return members.every(member => member.length && win.CSS.supports("selector(" + member + ")"));
++}
+diff --git a/browser/components/fennadblock/FennAdblockStyles.sys.mjs b/browser/components/fennadblock/FennAdblockStyles.sys.mjs
+new file mode 100644
+index 00000000000..97baffe1ae8
+--- /dev/null
++++ b/browser/components/fennadblock/FennAdblockStyles.sys.mjs
+@@ -0,0 +1,53 @@
++/* This Source Code Form is subject to the terms of the Mozilla Public
++ * License, v. 2.0. If a copy of the MPL was not distributed with this
++ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
++
++import {isSupportedSelectorList} from "./FennAdblockSelectors.sys.mjs";
++
++export function compileStyleActions(actions, policy, win) {
++  const counts = {applied:0, rejected:0, unsupported:0, truncated:0};
++  if (!Array.isArray(actions) || policy?.id !== "fenn-browser-capabilities-v1") {
++    return {css:"", counts};
++  }
++  const allowed = new Set(policy.style_properties);
++  let css = "";
++  counts.truncated = Math.max(0, actions.length - policy.style_max_actions);
++  for (const encoded of actions.slice(0, policy.style_max_actions)) {
++    try {
++      if (typeof encoded !== "string" || encoded.length > 16384) { throw new Error(); }
++      const value = JSON.parse(encoded);
++      if (!value.action && value.selector?.some(part => ["has-text", "upward"].includes(part.type))) { continue; }
++      if (["remove", "remove-attr", "remove-class"].includes(value.action?.type)) { continue; }
++      if (value.action?.type !== "style" || value.selector?.length !== 1 ||
++          value.selector[0].type !== "css-selector") { counts.unsupported++; continue; }
++      const selector = value.selector[0].arg;
++      const style = value.action.arg;
++      if (typeof selector !== "string" || !selector.length || selector.length > 4096 ||
++          !isSupportedSelectorList(selector, win) || typeof style !== "string" ||
++          !style.length || style.length > policy.style_max_length || /[{}@\\/"']/.test(style)) { throw new Error(); }
++      const declarations = style.trim().replace(/;\s*$/, "").split(";");
++      if (declarations.length > policy.style_max_declarations) { throw new Error(); }
++      const parsed = win.document.createElement("span").style;
++      let validated = "";
++      for (const declaration of declarations) {
++        const colon = declaration.indexOf(":");
++        if (colon < 1) { throw new Error(); }
++        const property = declaration.slice(0, colon).trim().toLowerCase();
++        let argument = declaration.slice(colon + 1).trim();
++        const important = /\s*!important\s*$/i.test(argument);
++        argument = argument.replace(/\s*!important\s*$/i, "").trim();
++        // Only non-fetching properties and a small set of value functions.
++        const functions = [...argument.matchAll(/([\w-]+)\s*\(/g)].map(m => m[1].toLowerCase());
++        if (!allowed.has(property) || functions.some(f => !policy.style_functions.includes(f)) ||
++            !win.CSS.supports(property, argument)) { throw new Error(); }
++        validated += property + ":" + argument + (important ? "!important" : "") + ";";
++      }
++      parsed.cssText = validated;
++      if (!parsed.length) { throw new Error(); }
++      const rule = selector + "{" + parsed.cssText + "}\n";
++      if (css.length + rule.length > policy.style_max_sheet_chars) { counts.truncated++; continue; }
++      css += rule; counts.applied++;
++    } catch (_) { counts.rejected++; }
++  }
++  return {css, counts};
++}
 diff --git a/browser/base/content/WinUIBookmarksToolbar.sys.mjs b/browser/base/content/WinUIBookmarksToolbar.sys.mjs
 new file mode 100644
 index 00000000000..72cae4b1ea7
@@ -11829,10 +14437,10 @@ index 00000000000..1faf496e025
 +<html id="fenn-native-newtab"><head><meta charset="utf-8"></head><body></body></html>
 diff --git a/browser/base/content/WinUINewTabPage.sys.mjs b/browser/base/content/WinUINewTabPage.sys.mjs
 new file mode 100644
-index 00000000000..273b10e8fbd
+index 00000000000..01a9e00a04b
 --- /dev/null
 +++ b/browser/base/content/WinUINewTabPage.sys.mjs
-@@ -0,0 +1,244 @@
+@@ -0,0 +1,261 @@
 +// Firefox owns new-tab eligibility and shortcut destinations. The native page
 +// consumes the existing address publication (a ShellCore Session stream).
 +import {authorizeNewTabWindow} from "chrome://browser/content/WinUINewTabDocument.sys.mjs";
@@ -11856,8 +14464,12 @@ index 00000000000..273b10e8fbd
 +      actorRegistered = true;
 +    }
 +    this.openedTabs = new WeakSet();
++    this.pendingNewTabs = new WeakSet();
 +    this.tabsChanged = event => {
-+      if(event.type === "TabOpen")this.openedTabs.add(event.target);
++      if(event.type === "TabOpen") {
++        this.openedTabs.add(event.target);
++        if(event.detail?.nativeNewTab)this.pendingNewTabs.add(event.target.linkedBrowser);
++      } else this.pendingNewTabs.delete(event.target.linkedBrowser);
 +      this.authorize();
 +    };
 +    window.gBrowser.tabContainer.addEventListener("TabOpen",this.tabsChanged);
@@ -11875,15 +14487,24 @@ index 00000000000..273b10e8fbd
 +      {subtree:true,attributes:true,attributeFilter:["devtools-host-type"]});
 +    this.progress = {
 +      onLocationChange: browser => {
++        if (!this.isDefaultPage(browser) && browser.currentURI.spec !== "about:blank")
++          this.pendingNewTabs.delete(browser);
 +        if (browser === window.gBrowser.selectedBrowser) this.changed();
 +      },
 +      onStateChange: (browser, progress, request, flags) => {
 +        this.preserveRestoreDraft(browser,progress,request,flags);
-+        if (!progress.isTopLevel || browser !== window.gBrowser.selectedBrowser) return;
++        if (!progress.isTopLevel) return;
 +        const {STATE_START, STATE_STOP, STATE_IS_NETWORK} = Ci.nsIWebProgressListener;
++        if (flags & STATE_START) {
++          let target;
++          try { target=request.QueryInterface(Ci.nsIChannel).originalURI.spec; } catch {}
++          if (target !== "about:newtab") this.pendingNewTabs.delete(browser);
++        }
++        if ((flags & STATE_STOP) && (flags & STATE_IS_NETWORK)) this.pendingNewTabs.delete(browser);
++        if (browser !== window.gBrowser.selectedBrowser) return;
 +        if (browser === this.browser && (flags & STATE_START)) this.changed();
 +        if ((flags & STATE_STOP) && (flags & STATE_IS_NETWORK) &&
-+            this.isDefaultPage(browser)) owner.invalidateAddress();
++            (this.isDefaultPage(browser) || browser === this.browser)) owner.invalidateAddress();
 +      },
 +    };
 +    window.gBrowser.tabContainer.addEventListener("TabSelect", this.changed);
@@ -11956,24 +14577,28 @@ index 00000000000..273b10e8fbd
 +    // Firefox opens its stock home page on ordinary startup with an existing profile.
 +    return url === "about:newtab" || url === "about:home";
 +  }
-+  eligible() {
++  eligible(presentation = false) {
 +    const w = this.window, browser = w.gBrowser.selectedBrowser;
++    const pending = presentation && this.pendingNewTabs.has(browser) &&
++      ["about:blank","about:newtab"].includes(browser.currentURI.spec);
 +    const { AboutNewTab } = ChromeUtils.importESModule("resource:///modules/AboutNewTab.sys.mjs");
 +    return this.authorized && !this.closed && Services.prefs.getBoolPref("fenn.winui.newtab.enabled", true) &&
 +      Services.prefs.getBoolPref("browser.newtabpage.enabled", true) &&
 +      this.owner.addressToolbar?.active && !this.owner.addressFailed &&
 +      !w.PrivateBrowsingUtils.isWindowPrivate(w) && !w.fullScreen && !w.document.fullscreenElement &&
 +      !w.gDialogBox.isOpen && !this.owner.addressToolbar.customization?.editing &&
-+      !w.gBrowser.selectedTab?.splitview && !browser.webProgress.isLoadingDocument &&
++      !w.gBrowser.selectedTab?.splitview &&
++      (pending || (!this.pendingNewTabs.has(browser) && !browser.webProgress.isLoadingDocument)) &&
 +      !AboutNewTab.newTabURLOverridden && AboutNewTab.newTabURL === "about:newtab" &&
-+      this.isDefaultPage(browser);
++      (pending || this.isDefaultPage(browser));
 +  }
 +  snapshot() {
 +    this.authorize();
-+    if (!this.eligible()) { this.restore(); return { enabled:false }; }
++    if (!this.eligible(true)) { this.restore(); return { enabled:false }; }
 +    const w = this.window, browser = w.gBrowser.selectedBrowser;
-+    const documentId = browser.browsingContext.currentWindowGlobal?.innerWindowId;
-+    if (!documentId) return { enabled:false };
++    const pending = this.pendingNewTabs.has(browser);
++    const documentId = pending ? null : browser.browsingContext.currentWindowGlobal?.innerWindowId;
++    if (!pending && !documentId) { this.restore(); return { enabled:false }; }
 +    if (this.browser !== browser || this.documentId !== documentId) {
 +      this.restore(); this.browser = browser; this.documentId = documentId;
 +      this.stack = browser.closest(".browserStack");
@@ -26851,10 +29476,10 @@ index 00000000000..995582041f0
 +}
 diff --git a/browser/base/content/WinUIProductMenu.sys.mjs b/browser/base/content/WinUIProductMenu.sys.mjs
 new file mode 100644
-index 00000000000..b0409c72fe8
+index 00000000000..498aeed9b86
 --- /dev/null
 +++ b/browser/base/content/WinUIProductMenu.sys.mjs
-@@ -0,0 +1,610 @@
+@@ -0,0 +1,644 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -26915,6 +29540,8 @@ index 00000000000..b0409c72fe8
 +    this.window = window;
 +    this.host = host;
 +    this.actions = new Map();
++    Services.obs.addObserver(this, "fenn-adblock-state-changed");
++    Services.obs.addObserver(this, "perm-changed");
 +    this.serial = 0;
 +    this.pages = new Map();
 +    this.folders = new Map();
@@ -26935,6 +29562,8 @@ index 00000000000..b0409c72fe8
 +
 +  close() {
 +    this.closed = true;
++    Services.obs.removeObserver(this, "fenn-adblock-state-changed");
++    Services.obs.removeObserver(this, "perm-changed");
 +    this.pending = null;
 +    this.releaseLists();
 +    if (this.updateInstall?.status === "ready") {
@@ -26948,6 +29577,12 @@ index 00000000000..b0409c72fe8
 +      Services.prefs.removeObserver(pref, this.observer);
 +    }
 +    this.l10n = null;
++  }
++
++  observe() { if (!this.closed) { this.host.invalidate(); } }
++
++  get adblock() {
++    return ChromeUtils.importESModule("moz-src:///browser/components/fennadblock/FennAdblockService.sys.mjs").FennAdblockService;
 +  }
 +
 +  get enabled() {
@@ -27239,6 +29874,10 @@ index 00000000000..b0409c72fe8
 +      return label && kept.length ? { id, kind: "submenu", label, enabled: !dialog, items: kept } : null;
 +    };
 +    const lists = this.lists || {};
++    const browser = window.gBrowser.selectedBrowser;
++    const blocker = this.adblock.controls(browser.contentPrincipal);
++    const filterUpdate = this.adblock.updateControls();
++    const documentId = browser.browsingContext?.currentWindowGlobal?.innerWindowId || 0;
 +    const items = [
 +      command("new-tab", "appmenuitem-new-tab", { shortcut: this.shortcut("key_newNavigatorTab") }),
 +      command("new-window", "appmenuitem-new-window", { shortcut: this.shortcut("key_newNavigator") }),
@@ -27270,6 +29909,17 @@ index 00000000000..b0409c72fe8
 +        command("extensions-manage", "winui-menu-manage-extensions"),
 +        separator(),
 +        ...(lists.extensions || []),
++      ]),
++      submenu("adblock", "winui-adblock-title", [
++        command("adblock-status", `winui-adblock-status-${blocker.status}`, {enabled:false}),
++        command("adblock-global", "winui-adblock-enable", {checked:blocker.enabled, enabled:!dialog && blocker.canEnable}),
++        command(`adblock-site-${documentId}`, "winui-adblock-site", {checked:blocker.site && !blocker.excepted,
++          enabled:!dialog && blocker.site && blocker.enabled && this.adblock.active && !this.adblock.preparing}),
++        command("adblock-update-status", `winui-adblock-update-${filterUpdate.status}`, {enabled:false}),
++        command("adblock-update-date", filterUpdate.lastSuccess ? "winui-adblock-update-date" : "winui-adblock-update-no-date",
++          {enabled:false, args:filterUpdate.lastSuccess ? {date:filterUpdate.lastSuccess} : undefined}),
++        command("adblock-update-now", "winui-adblock-update-now", {enabled:!dialog && filterUpdate.canCheck}),
++        command("adblock-reload-note", "winui-adblock-reload-note", {enabled:false}),
 +      ]),
 +      submenu("view", "menu-view", [
 +        command("view-sidebar", "winui-menu-show-sidebar", {enabled:false}),
@@ -27361,6 +30011,13 @@ index 00000000000..b0409c72fe8
 +    const item = this.find(id);
 +    if (!item || item.kind === "submenu" || !item.enabled) return 2;
 +    const { window } = this;
++    if (id.startsWith("adblock-site-")) {
++      const browser = window.gBrowser.selectedBrowser;
++      const principal = browser.contentPrincipal;
++      if (!this.adblock.setSiteException(principal, !this.adblock.excepted(principal))) { return 2; }
++      browser.reload();
++      return 1;
++    }
 +    const dynamic = this.actions.get(id);
 +    if (dynamic) return dynamic(action, event);
 +    const source = {
@@ -27372,6 +30029,8 @@ index 00000000000..b0409c72fe8
 +    }[id];
 +    if (source) { window.document.getElementById(source).doCommand(); return 1; }
 +    switch (id) {
++      case "adblock-update-now": return this.adblock.checkForUpdates() ? 1 : 2;
++      case "adblock-global": return this.adblock.setEnabled(!this.adblock.controls(null).enabled) ? 1 : 2;
 +      case "new-tab": window.BrowserCommands.openTab(); break;
 +      case "new-window": window.OpenBrowserWindow(); break;
 +      case "new-private-window": window.OpenBrowserWindow({ private: true }); break;

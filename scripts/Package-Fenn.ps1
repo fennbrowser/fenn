@@ -1,4 +1,6 @@
 param(
+    [string]$AdblockAssets,
+    [string]$AdblockTrustedRoot,
     # Default: one build step past the installed and newest built versions.
     [ValidatePattern('^\d+\.\d+\.\d+\.0$')]
     [string]$Version,
@@ -28,6 +30,10 @@ param(
     [string]$SdkBin = 'C:/Program Files (x86)/Windows Kits/10/bin/10.0.26100.0/x64'
 )
 $ErrorActionPreference = 'Stop'
+if ($AdblockTrustedRoot -and -not $AdblockAssets) { throw '-AdblockTrustedRoot requires -AdblockAssets.' }
+if ($AdblockAssets -and ($Store -or $ReleaseBuild)) { throw 'Adblock test assets are development-only.' }
+if ($AdblockAssets) { $AdblockAssets = (Resolve-Path -LiteralPath $AdblockAssets).Path }
+if ($AdblockTrustedRoot) { $AdblockTrustedRoot = (Resolve-Path -LiteralPath $AdblockTrustedRoot).Path }
 if ($ReusePayload -and $RefreshPayload) { throw 'Use -ReusePayload or -RefreshPayload, not both.' }
 if ($Store -and ($RegisterInPlace -or $Unsigned -or $Publish -or $Install -or $Smoke)) {
     throw '-Store builds an upload package only; it cannot be combined with -RegisterInPlace, -Unsigned, -Publish, -Install or -Smoke.'
@@ -39,6 +45,12 @@ $packager = Join-Path $PSScriptRoot 'Package-FennDev.py'
 $started = Get-Date
 # Development builds iterate; only the release build is optimized for shipping.
 $release = $Store -or $ReleaseBuild
+# The normal development lane gets a verified feed baseline without asset flags.
+# Explicit asset/root overrides retain their existing test-only path.
+if (-not $release -and -not $AdblockAssets) {
+    & powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot 'Stage-FennAdblock.ps1')
+    if ($LASTEXITCODE) { throw "Adblock preparation failed: $LASTEXITCODE" }
+}
 $buildArgs = @()
 if ($Store) { $buildArgs += '--store' }
 elseif ($ReleaseBuild) { $buildArgs += '--release-build' }
@@ -58,6 +70,8 @@ if ($repackage) {
     if ($LASTEXITCODE) { throw "Firefox packaging failed: $LASTEXITCODE" }
 }
 $packageArgs = @($packager, '--sdk-bin', $SdkBin) + $buildArgs
+if ($AdblockAssets) { $packageArgs += '--adblock-assets', $AdblockAssets }
+if ($AdblockTrustedRoot) { $packageArgs += '--adblock-trusted-root', $AdblockTrustedRoot }
 if ($Version) { $packageArgs += '--version', $Version }
 if ($KeepIntermediates) { $packageArgs += '--keep-intermediates' }
 if ($RegisterInPlace) { $packageArgs += '--loose' }

@@ -22,4 +22,9 @@ python="/c/mozilla-build/python3/python3.exe"
 # Both mozconfigs build with the project-owned Fenn branding; mirror it first.
 "$python" "$project_root/scripts/Stage-FennBranding.py"
 cd -- "$project_root/upstream/firefox"
-exec "$python" mach "$@"
+"$python" mach "$@"
+# A successful normal development build includes the default-off blocker.
+# Release/Store admission is a separate gate; no staging on configure/test/package.
+if [[ "${1:-}" == "build" && "${FENN_MOZCONFIG:-mozconfig}" == "mozconfig" ]]; then
+    powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$(cygpath -w "$project_root/scripts/Stage-FennAdblock.ps1")"
+fi

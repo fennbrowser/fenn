@@ -22,7 +22,7 @@
   <h1>Privacy</h1>
 
   <h2>What Fenn collects</h2>
-  <p>Fenn does not operate servers that receive data from the browser. It has no telemetry upload, no crash reporter, no update service and no studies or remote experiments, so it sends none of that to Fenn or to Mozilla. Your history, bookmarks, passwords and settings stay in your profile on your device unless you choose to sync them.</p>
+  <p>Fenn has no telemetry upload or crash reporter, and does not send browsing history to Fenn. Optional filter-list downloads contact a Fenn-operated host as described below. Your history, bookmarks, passwords and settings stay in your profile on your device unless you choose to sync them.</p>
 
   <h2>What is turned off</h2>
   <ul>
@@ -37,6 +37,7 @@
   <p>Fenn is a browser, so it sends requests that you or Firefox's own features cause:</p>
   <ul>
     <li><strong>Websites you visit</strong> and the search engine you choose receive what any browser sends them. Fenn presents Firefox's user agent to web content.</li>
+    <li><strong>Ad-blocking filters.</strong> Ad blocking is off by default. In the development trial, enabling it also enables signed filter-list checks, approximately daily after startup, from updates-test.fennbrowser.com, hosted by Cloudflare. These requests omit cookies and referrers and contain no browsing URLs, account credentials or added user identifier. Like other HTTPS requests, the host receives your IP address and ordinary request headers. Disabling ad blocking stops these checks. Already accepted lists continue to work offline.</li>
     <li><strong>Media components.</strong> At startup Fenn checks Mozilla's servers for the OpenH264 codec and downloads Widevine DRM from Google. These requests include the browser version, build ID and operating system.</li>
     <li><strong>Add-ons</strong> are installed from, and checked against, addons.mozilla.org.</li>
     <li><strong>Mozilla accounts and Sync</strong>, if you use them, are operated by Mozilla under Mozilla's own terms.</li>

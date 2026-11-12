@@ -23,6 +23,28 @@ ADDED = ["browser/base/content/WinUIBookmarksToolbar.sys.mjs", "browser/base/con
 
 
 
+TRACKED += ["browser/components/moz.build"]
+ADDED = [
+    "browser/components/fennadblock/moz.build",
+    "browser/components/fennadblock/FennAdblockFetcher.sys.mjs",
+    "browser/components/fennadblock/FennAdblockService.sys.mjs",
+    "browser/components/fennadblock/FennAdblockUpdates.sys.mjs",
+    "browser/components/fennadblock/FennAdblockParent.sys.mjs",
+    "browser/components/fennadblock/FennAdblockChild.sys.mjs",
+    "browser/components/fennadblock/FennAdblockDom.sys.mjs",
+    "browser/components/fennadblock/FennAdblockTestNotice.sys.mjs",
+    "browser/components/fennadblock/FennAdblockDiagnostics.sys.mjs",
+    "browser/components/fennadblock/FennAdblockProcedural.sys.mjs",
+    "browser/components/fennadblock/FennAdblockSelectors.sys.mjs",
+    "browser/components/fennadblock/FennAdblockStyles.sys.mjs",
+] + ADDED
+
+TRACKED += ["netwerk/protocol/http/nsHttpChannel.cpp"]
+TRACKED += ["toolkit/components/nimbus/lib/RemoteSettingsExperimentLoader.sys.mjs"]
+TRACKED += ["dom/chrome-webidl/ChromeUtils.webidl", "dom/base/ChromeUtils.h", "js/xpconnect/loader/moz.build"]
+ADDED = ["js/xpconnect/loader/FennScriptCompiler.cpp"] + ADDED
+TRACKED += ["netwerk/protocol/http/HttpChannelParams.ipdlh", "netwerk/protocol/http/HttpChannelParent.cpp", "netwerk/protocol/http/HttpChannelChild.cpp"]
+
 CONTEXT_LINES = 1
 
 

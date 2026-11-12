@@ -51,7 +51,7 @@ function fixture() {
     MutationObserver:class {observe() {} disconnect() {}},
     MouseEvent:class {constructor(type, args) {this.type=type;Object.assign(this,args);}}};
   root.hasAttribute = k => root.attributes.has(k);
-  const context = vm.createContext({Services:{prefs:{getBoolPref:(k,fallback)=>prefs.get(k) ?? fallback,getCharPref:(k,fallback)=>prefs.get(k) ?? fallback,addObserver(){},removeObserver(){}}},console});
+  const context = vm.createContext({Services:{obs:{addObserver(){},removeObserver(){}},prefs:{getBoolPref:(k,fallback)=>prefs.get(k) ?? fallback,getCharPref:(k,fallback)=>prefs.get(k) ?? fallback,addObserver(){},removeObserver(){}}},console});
   Object.assign(context,{readActionStamp,actionStampMatches});
   vm.runInContext(readFileSync(new URL("../upstream/firefox/browser/base/content/WinUIHistoryMenu.sys.mjs",import.meta.url),"utf8").replace(/^import .*;$/m,"").replace("export class WinUIHistoryMenu","this.WinUIHistoryMenu=class WinUIHistoryMenu"),context);
   vm.runInContext(readFileSync(new URL("../upstream/firefox/browser/base/content/WinUINavigationState.sys.mjs",import.meta.url),"utf8").replace(/^export /gm,"")+";this.WinUINavigationState=WinUINavigationState;this.NAVIGATION_COMMANDS=NAVIGATION_COMMANDS;",context);
@@ -61,6 +61,7 @@ function fixture() {
     .replace("export class WinUIBookmarksToolbar", "this.WinUIBookmarksToolbar = class WinUIBookmarksToolbar");
   vm.runInContext(bookmarksSource, context);
   context.ChromeUtils={importESModule:()=>({WinUIBackForwardMenu:class {snapshot(){return {enabled:false};}dismiss(){}close(){}},WinUIPageContextMenu:class {snapshot(){return {enabled:false};}dismiss(){}close(){}},WinUISelectedTranslationsPanel:class {snapshot(){return {enabled:false};}dismiss(){}close(){}},WinUITranslationsPanel:class {snapshot(){return {enabled:false};}dismiss(){}close(){}},WinUIConnectionPanel:class {snapshot(){return {enabled:false};}dismiss(){}close(){}},WinUINotificationPanel:class {snapshot(){return {enabled:false};}dismiss(){}close(){}},WinUISitePermissionsPanel:class {snapshot(){return {enabled:false};}dismiss(){}close(){}},WinUIBookmarkPanel:class {snapshot(){return {enabled:false};}dismiss(){}retire(){}close(){}},WinUIProfilerPanel:class {snapshot(){return {enabled:false};}dismiss(){}close(){}},WinUIPrivacyPanels:class {snapshot(){return {forgetPanel:{enabled:false},clearPrivatePanel:{enabled:false}};}dismissAll(){}close(){}},WinUITabGroupsMenu:class {snapshot(){return {enabled:false};}close(){}},WinUIDeveloperMenu:class {snapshot(){return {enabled:false};}close(){}},WinUIOverflowMenu:class {snapshot(){return {enabled:true};}close(){}},WinUIProfileMenu:class {snapshot(){return {enabled:true};}close(){}},WinUIDownloadsPanel:class {snapshot(){return {enabled:true};}close(){}},WinUIHistoryMenu:context.WinUIHistoryMenu,WinUIProductMenu:context.WinUIProductMenu,
+    FennAdblockService:{active:false,preparing:false,controls:()=>({enabled:false,site:false,excepted:false,canEnable:true,status:"off"}),updateControls:()=>({lastSuccess:0,canCheck:false,status:"paused"})},
     WinUIBookmarksToolbar:context.WinUIBookmarksToolbar,
     WinUINavigationState:context.WinUINavigationState,NAVIGATION_COMMANDS:context.NAVIGATION_COMMANDS})};
   vm.runInContext(source, context);

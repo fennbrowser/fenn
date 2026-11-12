@@ -20,3 +20,7 @@
 *.p12
 /native/ShellCore/target/
 /docs/evidence/**/*.NGENPDB/
+
+# Persistent DPAPI-protected trial feed signing state; never public history.
+/.private/adblock-trial/
+/.private/adblock-production/

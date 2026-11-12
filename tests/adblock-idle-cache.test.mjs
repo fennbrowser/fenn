@@ -1,0 +1,16 @@
+import test from 'node:test';import assert from 'node:assert/strict';import {readFileSync} from 'node:fs';import {FennAdblockDomRunner} from '../upstream/firefox/browser/components/fennadblock/FennAdblockDom.sys.mjs';
+const policy=JSON.parse(readFileSync(new URL('../configs/adblock/capabilities.json',import.meta.url)));
+function setup(count=20,selector='.ad',cap=256,reject=false){
+ const doc={documentElement:{},head:{},body:{}};let trees=0;
+ const nodes=Array.from({length:count},(_,i)=>{let value='',priority='';return {isConnected:true,ownerDocument:doc,member:i%10===0,matches(){return this.member},style:{getPropertyValue:()=>value,getPropertyPriority:()=>priority,setProperty:(k,v,p)=>{value=v;priority=p},removeProperty:()=>{value='';priority=''}}};});
+ doc.createTreeWalker=(root,kind)=>{if(kind===4)return {nextNode:()=>null};trees++;let index=0;return {nextNode:()=>nodes[index++]||null}};
+ const runner=new FennAdblockDomRunner({document:doc},{rules:[{type:'hide',selector,operators:reject?[{type:'has-text',text:'absent'}]:[]}],counts:{}},{...policy,procedural_max_targets:cap},{current:()=>true,now:()=>0,setTimer:()=>1,clearTimer:()=>{}});
+ function drain(){runner.drain();while(runner.walker)runner.drain();runner.timer=null;}
+ drain();return {runner,nodes,drain,trees:()=>trees};
+}
+test('idle poll reuses candidates but reevaluates all rule conditions',()=>{const f=setup();assert.equal(f.runner.counts.cachedCandidates,2);let before=f.runner.counts.checks;f.runner.pollPending=true;f.drain();assert.equal(f.runner.counts.cachedPasses,1);assert.equal(f.runner.counts.checks-before,2);assert.equal(f.trees(),1);f.runner.stop();});
+test('DOM invalidation finds new candidates and restores old hides',()=>{const f=setup();f.nodes[0].member=false;f.nodes[1].member=true;f.runner.dirty=true;f.runner.pollPending=true;f.drain();assert.equal(f.trees(),2);assert.equal(f.nodes[0].style.getPropertyValue('display'),'');assert.equal(f.nodes[1].style.getPropertyValue('display'),'none');f.runner.stop();});
+test('dynamic selector and action forms retain full scans',()=>{for(const selector of ['.ad:hover','.ad, .promo','div > .ad','[data-ad]']){const f=setup(20,selector);f.runner.pollPending=true;f.drain();assert.equal(f.runner.counts.cachedPasses,0,selector);assert.equal(f.trees(),2);f.runner.stop();}});
+test('overflow falls back instead of retaining a partial candidate set',()=>{const f=setup(30,'.ad',2,true);assert.equal(f.runner.candidates,null);assert.equal(f.runner.counts.stopped,false);f.runner.pollPending=true;f.drain();assert.equal(f.trees(),2);assert.equal(f.runner.counts.cachedPasses,0);f.runner.stop();});
+test('mutation during scan never publishes incomplete membership',()=>{const f=setup();f.runner.dirty=true;const original=f.nodes[0].matches;f.nodes[0].matches=function(){f.runner.dirty=true;return original.call(this)};f.drain();assert.equal(f.runner.candidates,null);f.runner.stop();});
+test('cleanup clears candidate storage and diagnostics',()=>{const f=setup();assert.ok(f.runner.candidates.length);f.runner.stop();assert.equal(f.runner.candidates,null);assert.equal(f.runner.buildingCandidates,null);assert.equal(f.runner.counts.cachedCandidates,0);assert.equal(f.runner.pollPending,false);});

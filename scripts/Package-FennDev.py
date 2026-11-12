@@ -587,6 +587,24 @@ def write_latest(lane, entry):
         encoding="utf-8")
 
 
+def stage_adblock(payload, objdir, assets=None, trusted_root=None):
+    if trusted_root and not assets:
+        raise ValueError("An adblock trust override requires explicit assets")
+    if objdir == RELEASE_OBJDIR:
+        if assets:
+            raise ValueError("Development adblock assets cannot enter release/Store")
+        return
+    if assets:
+        publisher = load_script("Publish-FennAdblockBundle")
+        stage = publisher.stage_assets if trusted_root else publisher.stage_production_assets
+        trust_options = {"trusted_root": trusted_root} if trusted_root else {}
+        stage(assets, payload, ROOT / "build/fenn-adblock/release/fenn_adblock.dll",
+              verifier=ROOT / "build/fenn-adblock-trust/release/fenn-adblock-trust.exe", **trust_options)
+    else:
+        # Firefox's upstream ZIP manifest does not carry project-owned extras.
+        load_script("Stage-FennAdblock").stage(payload)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--payload-status", action="store_true",
@@ -594,6 +612,8 @@ def main():
     parser.add_argument("--version", type=version_string,
                         help="default: one build step past the installed and newest built versions")
     parser.add_argument("--sdk-bin", type=Path)
+    parser.add_argument("--adblock-assets", type=Path, help="explicit offline development catalog directory")
+    parser.add_argument("--adblock-trusted-root", type=Path, help="explicit test TUF trust anchor override (defaults to pinned production root)")
     lanes = parser.add_mutually_exclusive_group()
     lanes.add_argument("--loose", action="store_true",
                        help=f"register the layout as {LOOSE.identity} under Developer Mode instead of packing")
@@ -608,9 +628,13 @@ def main():
     parser.add_argument("--keep-intermediates", action="store_true",
                         help="keep payload/ (and, when packing, layout/) after a successful build")
     args = parser.parse_args()
+    if args.adblock_trusted_root and not args.adblock_assets:
+        parser.error("--adblock-trusted-root requires --adblock-assets")
     lane = LOOSE if args.loose else UNSIGNED if args.unsigned else STORE if args.store else DEV
     objdir = firefox_objdir(lane, args.release_build)
     build_kind = "release" if objdir == RELEASE_OBJDIR else "development"
+    if args.adblock_assets and (lane.store or args.release_build):
+        parser.error("development adblock assets cannot enter release/Store packages")
     if args.payload_status:
         current, reason = payload_status(objdir / "dist", staged_pane_names(load_script("Stage-WinUIPane")))
         print(f"Firefox {build_kind} payload {'current' if current else 'stale'}: {reason}")
@@ -666,6 +690,7 @@ def main():
         json.dumps({"minVersion": min_version, **record}, indent=2) + "\n", encoding="utf-8")
     payload = run / "payload"
     shutil.copytree(clean, payload)
+    stage_adblock(payload, objdir, args.adblock_assets, args.adblock_trusted_root)
     # This pinned Firefox ZIP manifest omits the MSIX-only background COM server.
     shutil.copyfile(msix_server, payload / msix_server.name)
     for source in native_sources:
