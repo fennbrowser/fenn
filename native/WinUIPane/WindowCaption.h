@@ -16,9 +16,12 @@ struct NativeWindowCaption {
     Controls::ColumnDefinition leftInset{nullptr}, rightInset{nullptr};
     Controls::Border leftBottomLine{nullptr}, rightBottomLine{nullptr};
     Controls::Grid toolbarSurface{nullptr};
+    Controls::Grid toolbarEdgeHost{nullptr};
+    Controls::Grid toolbarLeftEdge{nullptr}, toolbarRightEdge{nullptr};
     FrameworkElement borderTemplate{nullptr};
     std::vector<Controls::Border> bottomLines;
     int64_t toolbarRadiusToken{}, toolbarVisibilityToken{};
+    event_token toolbarSizeToken{}, toolbarLoadedToken{};
     void UpdateBottomLines() {
 #ifdef FENN_SHELL_PROCESS
         // The WinUI Window can inset its content bridge by a physical top
@@ -33,6 +36,19 @@ struct NativeWindowCaption {
             }
         }
 #endif
+        if (toolbarSurface && toolbarLeftEdge && toolbarRightEdge) {
+            // TabView's strokes are translucent and sit outside their fill,
+            // over the strip backdrop (the top divider and each tab's sides).
+            // Inside the toolbar's lighter fill the same brush nearly
+            // vanishes, so the outline surrounds the surface by one DIP.
+            const auto margin = toolbarSurface.Margin();
+            const auto radius = toolbarSurface.CornerRadius();
+            const double below = (radius.BottomLeft > 0 || radius.BottomRight > 0) ? 1.0 : 0.0;
+            for (auto const& edge : {toolbarLeftEdge, toolbarRightEdge}) {
+                edge.Visibility(toolbarSurface.Visibility());
+                edge.Margin({margin.Left-1, margin.Top-1, margin.Right-1, margin.Bottom-below});
+            }
+        }
         if (!root || !root.IsLoaded()) return;
         auto tabs = root.Children().GetAt(0).as<Controls::TabView>();
         if (!Media::VisualTreeHelper::GetChildrenCount(tabs)) return;
@@ -62,6 +78,22 @@ struct NativeWindowCaption {
             auto start = transform.TransformPoint({0,0});
             auto end = transform.TransformPoint({float(toolbarSurface.ActualWidth()),0});
             auto radius = toolbarSurface.CornerRadius();
+            // Use the same full-size Grid stroke as TabView's TabContainer,
+            // one DIP outside the surface with concentric corners. Clip only
+            // its side bands, which end where the trimmed top divider begins.
+            const bool below = radius.BottomLeft > 0 || radius.BottomRight > 0;
+            const auto grow = [](double r) { return r > 0 ? r+1 : 0.0; };
+            const auto width = toolbarSurface.ActualWidth()+2;
+            const auto height = toolbarSurface.ActualHeight()+(below ? 2 : 1);
+            const auto leftWidth = (std::max)({1.0, grow(radius.TopLeft), grow(radius.BottomLeft)});
+            const auto rightWidth = (std::max)({1.0, grow(radius.TopRight), grow(radius.BottomRight)});
+            for (auto const& edge : {toolbarLeftEdge, toolbarRightEdge}) {
+                edge.CornerRadius({grow(radius.TopLeft), grow(radius.TopRight),
+                                   grow(radius.BottomRight), grow(radius.BottomLeft)});
+                edge.BorderThickness({1,1,1,below ? 1.0 : 0.0});
+            }
+            toolbarLeftEdge.Clip().Rect({0,0,float(leftWidth),float(height)});
+            toolbarRightEdge.Clip().Rect({float(width-rightWidth),0,float(rightWidth),float(height)});
             left = start.X + radius.TopLeft;
             right = end.X - radius.TopRight;
         }
@@ -77,16 +109,41 @@ struct NativeWindowCaption {
             if (old.X != bounds.X || old.Width != bounds.Width || old.Height != bounds.Height) clip.Rect(bounds);
         }
     }
-    void SetToolbarSurface(Controls::Grid const& surface) {
+    void SetToolbarSurface(Controls::Grid const& surface, Controls::Grid const& edgeHost = nullptr) {
         if (toolbarSurface == surface) return;
         if (toolbarSurface) {
+            for (auto const& edge : {toolbarLeftEdge, toolbarRightEdge}) {
+                uint32_t index{};
+                if (edge && toolbarEdgeHost && toolbarEdgeHost.Children().IndexOf(edge, index))
+                    toolbarEdgeHost.Children().RemoveAt(index);
+            }
+            toolbarSurface.SizeChanged(toolbarSizeToken);
+            toolbarSurface.Loaded(toolbarLoadedToken);
             toolbarSurface.UnregisterPropertyChangedCallback(Controls::Grid::CornerRadiusProperty(), toolbarRadiusToken);
             toolbarSurface.UnregisterPropertyChangedCallback(UIElement::VisibilityProperty(), toolbarVisibilityToken);
         }
         toolbarSurface = surface;
+        toolbarEdgeHost = edgeHost;
+        toolbarLeftEdge = nullptr;
+        toolbarRightEdge = nullptr;
         if (surface) {
+            auto makeEdge = [&] {
+                auto edge = Markup::XamlReader::Load(
+                    LR"(<Grid xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" BorderBrush="{ThemeResource TabViewBorderBrush}" BorderThickness="1,1,1,0" Margin="0,-1,0,0" IsHitTestVisible="False" AutomationProperties.AccessibilityView="Raw"/>)").as<Controls::Grid>();
+                edge.Clip(Media::RectangleGeometry());
+                // Siblings can reach the strip's last DIP above this surface
+                // without being clipped by its rounded background.
+                // Parent() is null before the toolbar enters the live XAML
+                // tree during launcher startup. Use its explicit owning Grid.
+                toolbarEdgeHost.Children().Append(edge);
+                return edge;
+            };
+            toolbarLeftEdge = makeEdge();
+            toolbarRightEdge = makeEdge();
             auto weak = std::weak_ptr<int>(lifetime);
             auto update = [this,weak](auto const&,auto const&) { if (!weak.expired()) UpdateBottomLines(); };
+            toolbarSizeToken = surface.SizeChanged(update);
+            toolbarLoadedToken = surface.Loaded(update);
             toolbarRadiusToken = surface.RegisterPropertyChangedCallback(Controls::Grid::CornerRadiusProperty(), update);
             toolbarVisibilityToken = surface.RegisterPropertyChangedCallback(UIElement::VisibilityProperty(), update);
         }

@@ -58,9 +58,13 @@ struct XamlSlot {
         s.slot = Controls::Border();
         s.slot.Visibility(Visibility::Collapsed);
         host->root.Children().Append(s.slot);
-        // Tab past the region's last control (or before its first) leaves it. XAML's
-        // own Tab navigation would move on into the window's other region or wrap; it is cancelled at
-        // LosingFocus. Moves into popups (another tree root) and programmatic focus are untouched.
+        // Keep Tab candidate selection in XAML so the region's LosingFocus
+        // handler can hand the outer boundary to Gecko. Window-level HWND
+        // traversal otherwise departs and re-enters XAML without a candidate.
+        host->root.TabFocusNavigation(Microsoft::UI::Xaml::Input::KeyboardNavigationMode::Cycle);
+        // Let Tab traverse adjacent native regions in top-to-bottom order. Only wrapping
+        // past the window's native chrome hands focus back to Firefox. Moves
+        // into popups and programmatic focus remain with WinUI.
         std::weak_ptr<State> weak = state;
         s.focusToken = s.slot.LosingFocus([weak](auto const&, Microsoft::UI::Xaml::Input::LosingFocusEventArgs const& args) noexcept { try {
             auto self = weak.lock();
@@ -77,7 +81,27 @@ struct XamlSlot {
                 for (DependencyObject node = next; node && host; node = Media::VisualTreeHelper::GetParent(node))
                     if (SameObject(node, host->root)) { inWindow = true; break; }
                 if (!inWindow) return;
-                if (!Within(*self, next)) leaving = true;
+                if (!Within(*self, next)) {
+                    // The strip and navigation row share this Window. Treat a
+                    // move to another slot in traversal order as ordinary XAML
+                    // focus, not a request to return to the hidden Gecko proxy.
+                    uint32_t nextIndex{};
+                    UIElement nextRegion{nullptr};
+                    for (DependencyObject node = next; node; node = Media::VisualTreeHelper::GetParent(node)) {
+                        if (auto element = node.try_as<UIElement>(); element && host->root.Children().IndexOf(element, nextIndex)) {
+                            nextRegion = element;
+                            break;
+                        }
+                    }
+                    // Startup may create the address region before the strip, so
+                    // collection insertion order is not their displayed order.
+                    const double currentTop = Controls::Canvas::GetTop(self->slot);
+                    const double nextTop = nextRegion ? Controls::Canvas::GetTop(nextRegion) : currentTop;
+                    if (nextRegion &&
+                        ((direction == Direction::Next && nextTop > currentTop) ||
+                         (direction == Direction::Previous && nextTop < currentTop))) return;
+                    leaving = true;
+                }
                 else {
                     auto edge = direction == Direction::Next ? Microsoft::UI::Xaml::Input::FocusManager::FindFirstFocusableElement(self->slot)
                                                              : Microsoft::UI::Xaml::Input::FocusManager::FindLastFocusableElement(self->slot);
@@ -89,6 +113,7 @@ struct XamlSlot {
             auto take = self->takeFocus;
             if (auto queue = Microsoft::UI::Dispatching::DispatcherQueue::GetForCurrentThread()) queue.TryEnqueue([take] { take(); });
         } catch (...) { NativeWindowHost::FocusTrace("slot-tab-failed", static_cast<uintptr_t>(static_cast<uint32_t>(winrt::to_hresult()))); } });
+
     }
     // In the window's tree, a popup's content hangs off the popup root rather than the region that
     // opened it: follow an open popup back to its parent, or to its placement target when it has none.

@@ -509,6 +509,14 @@ inline HRESULT BindEndpoint(HWND hwnd, uint64_t generation, uintptr_t identity, 
         FocusTrace("page-child-failed",static_cast<uintptr_t>(static_cast<uint32_t>(created)));
     // A shell shown before Firefox attached already has its taskbar button.
     if (IsWindowVisible(hwnd)) PostMessageW(endpoint,TaskbarButtonCreatedMessage(),0,0);
+    // The shell can also have received its initial activation before there was
+    // an endpoint to notify. Gecko requires the activation/focus pair, even
+    // when XAML or the page child already owns OS focus. Synchronize only the
+    // actual foreground shell; never activate a background browser or move focus.
+    if (GetForegroundWindow()==hwnd) {
+        PostMessageW(endpoint,WM_ACTIVATE,WA_ACTIVE,0);
+        PostMessageW(endpoint,WM_SETFOCUS,0,0);
+    }
     return S_OK;
 }
 inline HRESULT BindBrowserEndpoint(HWND hwnd, uintptr_t identity, HWND endpoint) noexcept {

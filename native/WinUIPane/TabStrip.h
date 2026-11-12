@@ -21,6 +21,7 @@
 #include "TabHoverCard.h"
 #include "TabContentScale.h"
 #include "TabMotion.h"
+#include "ShellMotion.h"
 
 // Strip-only experiment: TabView owns presentation, Firefox owns all mutations.
 // Inline grouping has a localized TabListView template dependency. CanDragTabs/CanReorderTabs
@@ -42,6 +43,7 @@
 // TickDragSession for the process-wide, capture-independent tracking this
 // depends on.
 struct NativeTabStrip {
+    using GeometryBefore = std::map<std::pair<uint32_t, uint32_t>, std::pair<float, float>>;
     Controls::Grid root{nullptr};
     Controls::TabView view{nullptr};
     Controls::ToolTip addToolTip{nullptr}, allTabsToolTip{nullptr};
@@ -531,7 +533,16 @@ struct NativeTabStrip {
         // Sample the clock once per rendered frame. Layout-triggered refreshes
         // in between see the same geometry, so the outline borders this pass
         // sizes cannot keep layout from ever settling (a layout cycle).
-        if (joinFrame != ambient.frames) { joinFrame = ambient.frames; joinClock = SteadyMs(); }
+        const bool motionFrame = joinFrame != ambient.frames;
+        if (motionFrame) { joinFrame = ambient.frames; joinClock = SteadyMs(); }
+        UpdateCloseSequence();
+        // Updating text width during every LayoutUpdated can feed its measured
+        // size back into TabView's width/scrollbar decision indefinitely.
+        if (motionFrame) for (auto& held : settling) if (held.content) {
+            ShellSettleSample sample{};
+            if (shell_core_settle_sample(core, held.kind, held.id, joinClock, &sample) == SHELL_STATUS_OK)
+                held.content->Update(held.element.ActualWidth() * sample.sx);
+        }
         if (!settling.empty()) {
             bool curve = false;
             if (!core || shell_core_settle_advance(core, joinClock, false, &curve) != SHELL_STATUS_OK) curve = false;
@@ -547,9 +558,12 @@ struct NativeTabStrip {
                 }
                 return true;
             }), settling.end());
-            if (joinClock >= settlingUntil) settling.clear();
+            // Interrupted holds must release their compositor state as well as
+            // their bookkeeping, or a tab can remain visually compressed.
+            if (joinClock >= settlingUntil) ClearSettling();
         }
-        const bool settlingMotion = !settling.empty();
+        if (!syncing && !closeSequence && settling.empty() && closeStoryboards.empty()) ReleaseCloseViewport();
+        const bool settlingMotion = closeSequence || !settling.empty() || !closeStoryboards.empty();
         auto boundsOf = [&](FrameworkElement const& item) {
             for (auto& held : settling) {
                 if (held.element != item) continue;
@@ -1659,6 +1673,7 @@ struct NativeTabStrip {
     struct RowAnimation {
         Media::Animation::Storyboard storyboard{nullptr};
         double target{};
+        bool entering{};
     };
     // One in-flight sibling-shift Storyboard per row id, so a row re-targeted
     // (gap opens, closes, reopens) before its current slide finishes gets
@@ -1675,6 +1690,9 @@ struct NativeTabStrip {
     std::map<uint32_t, RowAnimation> rowAnimations;
     Media::Animation::Storyboard addSlide{nullptr};
     uint64_t closeGeneration{};
+    bool entryLayoutReady{true};
+    uint64_t nextEntryOrder{};
+    std::map<uint32_t, uint64_t> entryOrder;
     // The tab most recently opened beside existing ones, and until when
     // TabView bringing it into view counts as part of its entry motion.
     uint32_t enteringTab{};
@@ -1812,8 +1830,15 @@ struct NativeTabStrip {
         };
         auto alive = std::weak_ptr<int>(lifetime);
         root.ActualThemeChanged([this, alive](auto&&, auto&&) { if (!alive.expired()) InvalidateGeometry(); });
-        root.SizeChanged([this, alive](auto&&, auto&&) { if (!alive.expired()) groupSlide.Cancel(); });
-        root.Unloaded([this, alive](auto&&, auto&&) { if (!alive.expired()) { groupHeader.Close(); ambient.Motion(false); ClearSettling(); groupSlide.Cancel(); inlineGroups.hover.Hide(); } });
+        root.SizeChanged([this, alive](auto&&, auto&&) {
+            if (alive.expired()) return;
+            groupSlide.Cancel();
+            // A window resize invalidates the old strip-space destinations.
+            // Retain pending faces, but never hold New Tab in the caption area.
+            ++closeGeneration;
+            CancelCloseSequence();
+        });
+        root.Unloaded([this, alive](auto&&, auto&&) { if (!alive.expired()) { groupHeader.Close(); ambient.Motion(false); CancelCloseSequence(); groupSlide.Cancel(); inlineGroups.hover.Hide(); } });
         root.PreviewKeyDown([this, alive](auto&&, auto const& args) {
             if (alive.expired() || GroupDrag().phase) return;
             const auto key=args.Key();
@@ -2142,6 +2167,7 @@ struct NativeTabStrip {
         it->second.storyboard.Stop();
         RowTransform(row).X(current);
         row.Clip(nullptr);
+        if (it->second.entering) { RowTransform(row).Y(0); row.Opacity(1); }
         rowAnimations.erase(it);
     }
 
@@ -2179,19 +2205,20 @@ struct NativeTabStrip {
         pending->rendering = Media::CompositionTarget::Rendering([run, pending](auto&&, auto&&) { run(true); });
     }
 
-    // A tab created after the strip was already populated is revealed with a
-    // wipe from the edge it shares with the tab before it; the tab itself stays
-    // in its slot. Skipped for the first tab and under reduced motion.
+    // New tabs rise gently into their slot and fade in, with natural-size text.
+    // Skipped for the first tab and under reduced motion.
     // The closed tab's row is gone by the time layout runs, so its geometry and
     // face are captured beforehand and shown by a visual-only stand-in that
-    // wipes closed toward the tab before it while the others close the gap.
+    // drops and fades before the others close the gap.
     struct ClosingTab {
         bool valid{};
+        uint32_t id{};
         Windows::Foundation::Rect bounds{};
         Controls::TabViewItem source{nullptr};
         Windows::Foundation::IInspectable header{nullptr};
         bool selected{};
         bool closable{};
+        double opacity{1};
         Windows::UI::Text::FontWeight weight{};
     };
     // Bound on waiting for TabView to arrange a close before repairing widths
@@ -2199,9 +2226,166 @@ struct NativeTabStrip {
     static constexpr double CloseArrangeMs = 250;
     Controls::Canvas closeOverlay{nullptr};
     std::vector<Media::Animation::Storyboard> closeStoryboards;
+    struct CloseCheckpoint {
+        GeometryBefore layout;
+        unsigned pending{};
+        bool ready{};
+        double deadline{};
+    };
+    struct CloseFace {
+        Controls::TabViewItem row{nullptr};
+        uint32_t id{};
+        Windows::Foundation::Rect bounds{};
+        std::shared_ptr<TabContentScale> content;
+    };
+    std::vector<CloseFace> closeFaces;
+    std::vector<std::shared_ptr<CloseCheckpoint>> closeCheckpoints;
+    GeometryBefore closeFrom, closeTarget;
+    bool closeSequence{}, updatingClose{}, preparingClose{};
 
-    void AddCloseGhost(ClosingTab const& closing) {
-        if (!closing.valid) return;
+    Windows::Foundation::Rect ArrangedBounds(FrameworkElement const& row) {
+        auto parent = Media::VisualTreeHelper::GetParent(row).try_as<UIElement>();
+        if (!parent) return {};
+        const auto offset = row.ActualOffset();
+        const auto origin = parent.TransformToVisual(root).TransformPoint({offset.x, offset.y});
+        return {origin.X, origin.Y, float(row.ActualWidth()), float(row.ActualHeight())};
+    }
+    GeometryBefore CloseLayout(bool displayed) {
+        GeometryBefore result;
+        auto append = [&](uint32_t kind, uint32_t id, FrameworkElement const& row) {
+            if (!row || row.ActualWidth() <= 0 || result.size() >= 128) return;
+            const auto bounds = displayed ? MotionBounds(row, kind, id) : ArrangedBounds(row);
+            const auto width = root.ActualWidth();
+            if (bounds.X + bounds.Width < -width || bounds.X > 2 * width) return;
+            result[{kind, id}] = {bounds.X, bounds.Width};
+        };
+        for (auto const& [id, row] : rows) append(SHELL_SETTLE_TAB, id, row);
+        for (auto const& [id, run] : inlineGroups.runs) if (run.button) append(SHELL_SETTLE_HEADER, uint32_t(id), run.button);
+        if (auto add = FindAddButton(view)) {
+            const auto bounds = displayed ? add.TransformToVisual(root).TransformBounds(
+                {0, 0, float(add.ActualWidth()), float(add.ActualHeight())}) : ArrangedBounds(add);
+            result[{SHELL_SETTLE_CLOCK, 1}] = {bounds.X, bounds.Width};
+        }
+        return result;
+    }
+    GeometryBefore ClosePositions() {
+        ShellSettleSample clock{};
+        shell_core_settle_sample(core, SHELL_SETTLE_CLOCK, 0, SteadyMs(), &clock);
+        const float progress = 1 - clock.dx;
+        auto result = closeTarget;
+        for (auto& [key, at] : result) {
+            auto from = closeFrom.find(key);
+            if (from == closeFrom.end()) continue;
+            at.first = from->second.first + (at.first - from->second.first) * progress;
+            at.second = from->second.second + (at.second - from->second.second) * progress;
+        }
+        return result;
+    }
+    void AdvanceCloseSequence() {
+        if (!closeSequence || closeCheckpoints.empty() || !closeCheckpoints.front()->ready) return;
+        closeFrom = ClosePositions();
+        while (!closeCheckpoints.empty() && closeCheckpoints.front()->ready) {
+            closeTarget = std::move(closeCheckpoints.front()->layout);
+            closeCheckpoints.erase(closeCheckpoints.begin());
+        }
+        shell_core_settle_hold(core, SHELL_SETTLE_CLOCK, 0, 1, 1, SteadyMs());
+        ambient.Motion(true);
+    }
+    void CancelCloseSequence() {
+        closeSequence = false;
+        preparingClose = false;
+        for (auto const& storyboard : closeStoryboards) storyboard.Stop();
+        closeStoryboards.clear(); closeFaces.clear(); closeCheckpoints.clear();
+        if (closeOverlay) closeOverlay.Children().Clear();
+        closeFrom.clear(); closeTarget.clear();
+        StartAddSlide(0);
+        ClearSettling();
+    }
+    void UpdateCloseSequence() {
+        if (!closeSequence || updatingClose || preparingClose || syncing) return;
+        updatingClose = true;
+        struct Updating { bool& flag; ~Updating() { flag = false; } } guard{updatingClose};
+        if (IsDragging() || !ShellMotion::Enabled()) { CancelCloseSequence(); return; }
+        // A blocked/unloaded compositor still gets bounded recovery.
+        if (!closeCheckpoints.empty() && SteadyMs() > closeCheckpoints.front()->deadline) {
+            for (auto const& storyboard : closeStoryboards) storyboard.Stop();
+            closeStoryboards.clear(); closeFaces.clear();
+            if (closeOverlay) closeOverlay.Children().Clear();
+            for (auto const& checkpoint : closeCheckpoints) checkpoint->ready = true;
+            AdvanceCloseSequence();
+        }
+        auto positions = ClosePositions();
+        auto place = [&](uint32_t kind, uint32_t id, FrameworkElement const& row) {
+            auto at = positions.find({kind, id});
+            if (at == positions.end() || row.ActualWidth() <= 0) return;
+            const auto base = ArrangedBounds(row);
+            const float dx = at->second.first - base.X;
+            const float sx = at->second.second / float(row.ActualWidth());
+            auto visual = Hosting::ElementCompositionPreview::GetElementVisual(row);
+            Hosting::ElementCompositionPreview::SetIsTranslationEnabled(row, true);
+            visual.StopAnimation(L"Scale.X");
+            visual.Properties().StopAnimation(L"Translation.X");
+            visual.CenterPoint({0, 0, 0}); visual.Scale({sx, 1, 1});
+            visual.Properties().InsertVector3(L"Translation", {dx, 0, 0});
+            Track(kind, id, row, dx, sx, SteadyMs() + 1000);
+        };
+        for (auto const& [id, row] : rows) place(SHELL_SETTLE_TAB, id, row);
+        for (auto const& [id, run] : inlineGroups.runs) if (run.button) place(SHELL_SETTLE_HEADER, uint32_t(id), run.button);
+        for (auto& face : closeFaces) {
+            auto at = positions.find({SHELL_SETTLE_TAB, face.id});
+            if (at == positions.end()) continue;
+            auto visual = Hosting::ElementCompositionPreview::GetElementVisual(face.row);
+            Hosting::ElementCompositionPreview::SetIsTranslationEnabled(face.row, true);
+            visual.CenterPoint({0, 0, 0});
+            visual.Scale({at->second.second / face.bounds.Width, 1, 1});
+            visual.Properties().InsertVector3(L"Translation", {at->second.first - face.bounds.X, 0, 0});
+            if (!face.content) face.content = std::make_shared<TabContentScale>(face.row);
+            face.content->Update(at->second.second);
+        }
+        if (auto add = FindAddButton(view)) {
+            auto at = positions.find({SHELL_SETTLE_CLOCK, 1});
+            if (at != positions.end()) {
+                if (!addHeld) { addPrevious = add.RenderTransform(); addHeld = true; add.RenderTransform(Media::TranslateTransform()); }
+                add.RenderTransform().as<Media::TranslateTransform>().X(at->second.first - ArrangedBounds(add).X);
+                if (captionGeometryChanged) captionGeometryChanged();
+            }
+        }
+        ShellSettleSample clock{};
+        shell_core_settle_sample(core, SHELL_SETTLE_CLOCK, 0, SteadyMs(), &clock);
+        if (closeCheckpoints.empty() && !clock.active) CancelCloseSequence();
+    }
+
+    // A shrinking ScrollViewer otherwise clips the held rightmost tab before
+    // it can slide into the gap. Keep its pre-close viewport as the clip while
+    // allowing content outside the newly arranged bounds; layout stays final.
+    Controls::ScrollViewer closeViewport{nullptr};
+    Media::RectangleGeometry closeViewportClip{nullptr};
+    bool closeViewportOutside{};
+    void ReleaseCloseViewport() noexcept {
+        if (!closeViewport) return;
+        try {
+            closeViewport.CanContentRenderOutsideBounds(closeViewportOutside);
+            closeViewport.Clip(closeViewportClip);
+        } catch (...) {}
+        closeViewport = nullptr;
+        closeViewportClip = nullptr;
+    }
+    void HoldCloseViewport() {
+        if (closeViewport) return;
+        auto scroller = GroupScroller(view);
+        // Overflow has a fixed viewport and must retain its normal clipping.
+        if (!scroller || scroller.ScrollableWidth() > .5) return;
+        closeViewport = scroller;
+        closeViewportOutside = scroller.CanContentRenderOutsideBounds();
+        closeViewportClip = scroller.Clip();
+        Media::RectangleGeometry clip;
+        clip.Rect({0, 0, float(scroller.ActualWidth()), float(scroller.ActualHeight())});
+        scroller.Clip(clip);
+        scroller.CanContentRenderOutsideBounds(true);
+    }
+
+    void AddCloseGhost(ClosingTab const& closing, std::shared_ptr<CloseCheckpoint> const& checkpoint) {
+        if (!closing.valid || closing.opacity <= 0) return;
         if (!closeOverlay) {
             closeOverlay = Controls::Canvas();
             closeOverlay.IsHitTestVisible(false);
@@ -2228,32 +2412,32 @@ struct NativeTabStrip {
         ghost.HorizontalContentAlignment(HorizontalAlignment::Stretch);
         ghost.Width(closing.bounds.Width);
         ghost.Height(closing.bounds.Height);
-        Media::ScaleTransform scale;
-        Media::RectangleGeometry clip;
-        clip.Rect({0, 0, closing.bounds.Width, closing.bounds.Height});
-        clip.Transform(scale);
-        ghost.Clip(clip);
+        // Base values are the invisible terminal state. Unloading/stopping a
+        // storyboard must never restore an opaque tab for a final frame.
+        ghost.Opacity(0);
+        Media::TranslateTransform shift;
+        shift.Y(SHELL_MOTION_TRAVEL_DIP);
+        ghost.RenderTransform(shift);
         Controls::Canvas::SetLeft(ghost, closing.bounds.X);
         Controls::Canvas::SetTop(ghost, closing.bounds.Y);
         closeOverlay.Children().Append(ghost);
         ghost.UpdateLayout();
         GroupSlide::MakeVisualOnly(ghost);
-        Media::Animation::DoubleAnimation animation;
-        animation.From(1.0);
-        animation.To(0.0);
-        animation.Duration(
-            Duration{Windows::Foundation::TimeSpan{TabMotion::Duration}, DurationType::TimeSpan});
-        auto ease = TabMotion::Ease();
-        animation.EasingFunction(ease);
-        Media::Animation::Storyboard::SetTarget(animation, scale);
-        Media::Animation::Storyboard::SetTargetProperty(animation, L"ScaleX");
+        closeFaces.push_back({ghost, closing.id, closing.bounds, {}});
+        ++checkpoint->pending;
         Media::Animation::Storyboard storyboard;
-        storyboard.Children().Append(animation);
-        storyboard.Completed([this, alive = std::weak_ptr<int>(lifetime), ghost](auto const& sender, auto const&) {
+        ShellMotion::Append(storyboard, shift, L"Y", 0, SHELL_MOTION_TRAVEL_DIP, ShellMotion::Kind::Exit);
+        ShellMotion::Append(storyboard, ghost, L"Opacity", closing.opacity, 0, ShellMotion::Kind::Exit);
+        storyboard.Completed([this, alive = std::weak_ptr<int>(lifetime), ghost, checkpoint](auto const& sender, auto const&) {
             if (alive.expired()) return;
             uint32_t index;
             if (closeOverlay && closeOverlay.Children().IndexOf(ghost, index)) closeOverlay.Children().RemoveAt(index);
+            std::erase_if(closeFaces, [&](auto const& face) { return face.row == ghost; });
             std::erase_if(closeStoryboards, [&](auto const& item) { return item == sender; });
+            if (checkpoint->pending) --checkpoint->pending;
+            checkpoint->ready = checkpoint->pending == 0;
+            AdvanceCloseSequence();
+            ambient.Update();
         });
         closeStoryboards.push_back(storyboard);
         storyboard.Begin();
@@ -2269,7 +2453,6 @@ struct NativeTabStrip {
     struct Neighbor { FrameworkElement element{nullptr}; float dx{}, sx{}; uint32_t kind{}, id{}; };
     // Old left edge and width of every tab row (SHELL_SETTLE_TAB) and group
     // header (SHELL_SETTLE_HEADER), captured before a publication moves them.
-    using GeometryBefore = std::map<std::pair<uint32_t, uint32_t>, std::pair<float, float>>;
     // Elements easing to rest after HoldNeighbors. Their composition offset
     // reaches XAML bounds a frame or two late, so RefreshAmbient samples
     // ShellCore's settle curve for them and the lighting moves with the tabs
@@ -2286,6 +2469,7 @@ struct NativeTabStrip {
     double settlingUntil = 0;
 
     void ClearSettling() noexcept {
+        ReleaseCloseViewport();
         for (auto& held : settling) {
             try {
                 auto visual = winrt::Microsoft::UI::Xaml::Hosting::ElementCompositionPreview::GetElementVisual(held.element);
@@ -2310,6 +2494,33 @@ struct NativeTabStrip {
 
     // Rows (other than `newId`) and group headers whose arranged geometry
     // differs from `before`, with the offset and scale that draw them there.
+    Windows::Foundation::Rect MotionBounds(FrameworkElement const& row, uint32_t kind, uint32_t id) {
+        if (closeSequence) {
+            const auto positions = ClosePositions();
+            auto at = positions.find({kind, id});
+            if (at != positions.end()) {
+                auto bounds = ArrangedBounds(row);
+                bounds.X = at->second.first; bounds.Width = at->second.second;
+                return bounds;
+            }
+        }
+        // Composition getters/TransformToVisual can still report the original
+        // hold while the animation runs. Retarget from the sampled on-screen
+        // position, as ambient lighting does, so bursts cannot restart there.
+        const auto held = std::find_if(settling.begin(), settling.end(),
+            [&](auto const& item) { return item.element == row; });
+        auto parent = Media::VisualTreeHelper::GetParent(row).try_as<UIElement>();
+        ShellSettleSample sample{};
+        if (held != settling.end() && parent && core &&
+            shell_core_settle_sample(core, kind, id, SteadyMs(), &sample) == SHELL_STATUS_OK) {
+            const auto offset = row.ActualOffset();
+            auto origin = parent.TransformToVisual(root).TransformPoint({offset.x, offset.y});
+            if (auto shift = row.RenderTransform().try_as<Media::TranslateTransform>()) origin.X += float(shift.X());
+            return {origin.X + sample.dx, origin.Y, float(row.ActualWidth()) * sample.sx, float(row.ActualHeight())};
+        }
+        return row.TransformToVisual(root).TransformBounds({0, 0, float(row.ActualWidth()), float(row.ActualHeight())});
+    }
+
     std::vector<Neighbor> NeighborOffsets(GeometryBefore const& before, uint32_t newId) {
         std::vector<Neighbor> moved;
         std::vector<std::tuple<uint32_t, uint32_t, FrameworkElement>> candidates;
@@ -2323,13 +2534,23 @@ struct NativeTabStrip {
             auto old = before.find({kind, id});
             // Grouped-source rows can be arranged while IsLoaded stays false.
             if (old == before.end() || (!row.IsLoaded() && row.ActualWidth() <= 0)) continue;
-            const auto now = row.TransformToVisual(root).TransformBounds(
-                {0, 0, float(row.ActualWidth()), float(row.ActualHeight())});
-            // Rows outside the strip before and after cannot be seen moving; a
-            // recycled container's bounds there are not meaningful either.
+            // Read the arranged slot, not the composition-held visual. XAML
+            // reports compositor translations a frame late, even immediately
+            // after clearing them. During the exit hold that feedback can
+            // erase the displacement and make the later reposition snap.
+            auto parent = Media::VisualTreeHelper::GetParent(row).try_as<UIElement>();
+            if (!parent) continue;
+            const auto offset = row.ActualOffset();
+            auto origin = parent.TransformToVisual(root).TransformPoint({offset.x, offset.y});
+            if (auto shift = row.RenderTransform().try_as<Media::TranslateTransform>()) origin.X += float(shift.X());
+            const Windows::Foundation::Rect now{origin.X, origin.Y, float(row.ActualWidth()), float(row.ActualHeight())};
+            // Only animate neighbors visible in both layouts. Scrolling owns
+            // entry/exit at the viewport; newly realized containers can carry
+            // stale offscreen bounds (thousands of DIP away). Replaying those
+            // bounds as structural motion pulls a visible tab across the strip.
             const auto stripWidth = float(root.ActualWidth());
             auto outside = [stripWidth](float x, float width) { return x + width <= 0 || x >= stripWidth; };
-            if (outside(now.X, now.Width) && outside(old->second.first, old->second.second)) continue;
+            if (outside(now.X, now.Width) || outside(old->second.first, old->second.second)) continue;
             const float dx = old->second.first - now.X, sx = now.Width > 0 ? old->second.second / now.Width : 1.f;
             if (std::abs(dx) < .5f && std::abs(sx - 1.f) < .002f) continue;
             moved.push_back({row, dx, sx, kind, id});
@@ -2343,6 +2564,8 @@ struct NativeTabStrip {
         for (auto const& [row, dx, sx, kind, id] : held) {
             auto visual = winrt::Microsoft::UI::Xaml::Hosting::ElementCompositionPreview::GetElementVisual(row);
             winrt::Microsoft::UI::Xaml::Hosting::ElementCompositionPreview::SetIsTranslationEnabled(row, true);
+            visual.StopAnimation(L"Scale.X");
+            visual.Properties().StopAnimation(L"Translation.X");
             visual.Properties().InsertVector3(L"Translation", {dx, 0, 0});
             visual.CenterPoint({0, 0, 0});
             visual.Scale({sx, 1, 1});
@@ -2356,7 +2579,7 @@ struct NativeTabStrip {
 
     void Track(uint32_t kind, uint32_t id, FrameworkElement const& element, float dx, float sx, double start) {
         if (!core || shell_core_settle_hold(core, kind, id, dx, sx, start) != SHELL_STATUS_OK) return;
-        settlingUntil = start + TAB_MOTION_MS + SettleLagMs;
+        settlingUntil = start + SHELL_MOTION_REPOSITION_MS + SettleLagMs;
         auto found = std::find_if(settling.begin(), settling.end(), [&](auto const& item) { return item.element == element; });
         auto content = found != settling.end() ? found->content : std::shared_ptr<TabContentScale>{};
         if (!content && kind == SHELL_SETTLE_TAB && std::abs(sx - 1.f) >= .002f)
@@ -2373,20 +2596,28 @@ struct NativeTabStrip {
             try {
                 auto visual = winrt::Microsoft::UI::Xaml::Hosting::ElementCompositionPreview::GetElementVisual(item.element);
                 Track(item.kind, item.id, item.element, animate ? item.dx : 0.f, animate ? item.sx : 1.f, start);
+                visual.StopAnimation(L"Scale.X");
+                visual.Properties().StopAnimation(L"Translation.X");
+                // Replace both channels together so an older animation cannot
+                // override the new hold during a rapid close burst.
+                visual.Scale({animate ? item.sx : 1.f, 1, 1});
+                visual.Properties().InsertVector3(L"Translation", {animate ? item.dx : 0.f, 0, 0});
                 if (!animate) {
-                    visual.Properties().InsertVector3(L"Translation", {0, 0, 0});
-                    visual.Scale({1, 1, 1});
-                    for (auto& held : settling) if (held.element == item.element) held.content.reset();
+                    // A temporary measurement release must retain title layout;
+                    // recreating it on each layout pass would cause reflow loops.
+                    if (refresh) for (auto& held : settling) if (held.element == item.element) held.content.reset();
                     continue;
                 }
                 auto compositor = visual.Compositor();
-                auto ease = TabMotion::CompositionEase(compositor);
-                const Windows::Foundation::TimeSpan duration{TabMotion::Duration};
+                auto ease = ShellMotion::Ease(compositor);
+                const Windows::Foundation::TimeSpan duration{ShellMotion::Duration(ShellMotion::Kind::Reposition)};
                 auto scale = compositor.CreateScalarKeyFrameAnimation();
+                scale.InsertKeyFrame(0.f, item.sx);
                 scale.InsertKeyFrame(1.f, 1.f, ease);
                 scale.Duration(duration);
                 visual.StartAnimation(L"Scale.X", scale);
                 auto shift = compositor.CreateScalarKeyFrameAnimation();
+                shift.InsertKeyFrame(0.f, item.dx);
                 shift.InsertKeyFrame(1.f, 0.f, ease);
                 shift.Duration(duration);
                 visual.Properties().StartAnimation(L"Translation.X", shift);
@@ -2397,28 +2628,82 @@ struct NativeTabStrip {
 
     // `addBefore` is the New Tab button's X (in root space) before this
     // publication, or NaN. The button eases from there to its new position with
-    // the reveal, so it keeps pace with the tab opening beside it.
+    // the gap opening. Each face appears when its own space is clear.
+    bool EntrySpaceReady(Controls::TabViewItem const& row, uint32_t id) {
+        if (!entryLayoutReady || closeSequence || !row.IsLoaded() || row.ActualWidth() < 1) return false;
+        const auto bounds = MotionBounds(row, SHELL_SETTLE_TAB, id);
+        auto overlaps = [&](Windows::Foundation::Rect const& other) {
+            return std::min(bounds.X + bounds.Width, other.X + other.Width) -
+                std::max(bounds.X, other.X) > 1.5f;
+        };
+        // Test this face's space, not the newest animation's completion. Older
+        // entrances can reveal while later additions keep the strip moving.
+        for (auto const& [otherId, other] : rows) {
+            if (otherId == id || !other.IsLoaded() || other.ActualWidth() < 1) continue;
+            // A later, still-hidden face must not block an earlier entrance.
+            // Count scheduled reveals even at their initial zero opacity so
+            // two callbacks cannot claim overlapping space in the same frame.
+            if (other.Opacity() <= 0 && !rowAnimations.count(otherId)) {
+                const auto ownOrder = entryOrder.find(id), otherOrder = entryOrder.find(otherId);
+                if (ownOrder == entryOrder.end() || otherOrder == entryOrder.end() ||
+                    otherOrder->second > ownOrder->second) continue;
+            }
+            if (overlaps(MotionBounds(other, SHELL_SETTLE_TAB, otherId))) return false;
+        }
+        for (auto const& [group, run] : inlineGroups.runs)
+            if (run.button && overlaps(MotionBounds(run.button, SHELL_SETTLE_HEADER, uint32_t(group)))) return false;
+        if (auto add = FindAddButton(view); addSlide && add && add.IsLoaded())
+            if (overlaps(add.TransformToVisual(root).TransformBounds(
+                {0, 0, float(add.ActualWidth()), float(add.ActualHeight())}))) return false;
+        return true;
+    }
+
+    void AwaitReveal(Controls::TabViewItem const& row, uint32_t id) {
+        OnLayoutSteps([this, alive = std::weak_ptr<int>(lifetime), row, id](LayoutStep step) {
+            if (alive.expired()) return true;
+            if (step == LayoutStep::Pass) return false;
+            auto found = rows.find(id);
+            if (found == rows.end() || found->second != row) return true;
+            if (IsDragging() || groupSlide.storyboard || !ShellMotion::Enabled()) { row.Opacity(1); return true; }
+            if (!EntrySpaceReady(row, id)) {
+                if (step == LayoutStep::Expired) { AwaitReveal(row, id); return true; }
+                return false;
+            }
+            try { StartReveal(row, id); } catch (...) { row.Opacity(1); throw; }
+            row.Opacity(1);
+            return true;
+        }, 1000);
+    }
+
     void RevealNewRow(Controls::TabViewItem const& row, uint32_t id, double addBefore,
                       GeometryBefore const& before = {}) {
         EntryLog("WinUIPane entry reveal id=%u enabled=%d dragging=%d slide=%d width=%.1f loaded=%d before=%zu\n",
             id, int(groupSlide.Enabled()), int(IsDragging()), int(bool(groupSlide.storyboard)), row.ActualWidth(), int(row.IsLoaded()), before.size());
-        if (!groupSlide.Enabled() || IsDragging() || groupSlide.storyboard) return;
+        if (!groupSlide.Enabled() || IsDragging() || groupSlide.storyboard) { row.Opacity(1); return; }
+        row.Opacity(0);
         if (row.ActualWidth() < 1) {
             // Once the strip overflows, the new container is arranged a layout
             // pass after the first frame. Reveal it from its first real size,
             // which is raised after that layout and before it is drawn.
-            auto token = std::make_shared<winrt::event_token>();
-            *token = row.SizeChanged([this, alive = std::weak_ptr<int>(lifetime), generation = closeGeneration,
-                                      token, id, addBefore, before](auto const& sender, auto&&) {
-                auto sized = sender.template as<Controls::TabViewItem>();
-                EntryLog("WinUIPane entry sized id=%u width=%.1f\n", id, sized.ActualWidth());
-                if (sized.ActualWidth() < 1) return;
-                sized.SizeChanged(*token);
-                if (alive.expired() || generation != closeGeneration) return;
+            OnLayoutSteps([this, alive = std::weak_ptr<int>(lifetime), generation = closeGeneration,
+                           row, id, addBefore, before](LayoutStep step) {
+                if (alive.expired()) return true;
                 auto found = rows.find(id);
-                if (found == rows.end() || found->second != sized) return;
-                try { RevealNewRow(sized, id, addBefore, before); } catch (...) {}
-            });
+                if (generation != closeGeneration && found != rows.end() && found->second == row) {
+                    AwaitReveal(row, id);
+                    return true;
+                }
+                if (found == rows.end() || found->second != row ||
+                    step == LayoutStep::Expired || IsDragging() || !ShellMotion::Enabled()) {
+                    row.Opacity(1);
+                    return true;
+                }
+                if (row.ActualWidth() < 1) return false;
+                EntryLog("WinUIPane entry sized id=%u width=%.1f\n", id, row.ActualWidth());
+                try { RevealNewRow(row, id, addBefore, before); }
+                catch (...) { row.Opacity(1); }
+                return true;
+            }, 250);
             return;
         }
         const double addDelta = HoldAddButton(addBefore);
@@ -2433,47 +2718,12 @@ struct NativeTabStrip {
             EntryLog("WinUIPane entry held id=%u x=%.1f neighbors=%zu addDelta=%.1f scroll=%.1f first=%.1f/%.3f\n", id, at.X, neighbors->size(), addDelta,
                 offset, neighbors->empty() ? 0.f : neighbors->front().dx, neighbors->empty() ? 1.f : neighbors->front().sx);
         }
-        if (row.IsLoaded()) { StartReveal(row, id); StartAddSlide(addDelta); SettleNeighbors(*neighbors, true); return; }
-        // Loaded fires after layout returns, and a storyboard cannot run on an
-        // unloaded row. Hold the row invisible until then.
-        row.Opacity(0);
-        auto token = std::make_shared<winrt::event_token>();
-        auto settled = std::make_shared<bool>(false);
-        *token = row.Loaded([this, alive = std::weak_ptr<int>(lifetime), id, token, settled, addDelta, neighbors](auto const& sender, auto&&) {
-            auto loaded = sender.template as<Controls::TabViewItem>();
-            loaded.Loaded(*token);
-            if (alive.expired() || *settled) return;
-            *settled = true;
-            EntryLog("WinUIPane entry loaded id=%u\n", id);
-            loaded.Opacity(1);
-            auto found = rows.find(id);
-            if (found == rows.end() || found->second != loaded || IsDragging() || !groupSlide.Enabled()) {
-                StartAddSlide(0);
-                SettleNeighbors(*neighbors, false);
-                return;
-            }
-            StartReveal(loaded, id);
-            StartAddSlide(addDelta);
-            SettleNeighbors(*neighbors, true);
-        });
-        // Grouped-source rows can be arranged without ever raising Loaded.
-        // Never leave such a tab hidden: show it in place without the reveal.
-        auto timer = root.DispatcherQueue().CreateTimer();
-        timer.IsRepeating(false);
-        timer.Interval(std::chrono::milliseconds(250));
-        // The handler keeps the timer alive until it fires.
-        auto keep = std::make_shared<winrt::Microsoft::UI::Dispatching::DispatcherQueueTimer>(timer);
-        timer.Tick([this, alive = std::weak_ptr<int>(lifetime), weakRow = make_weak(row), token, settled, neighbors, keep](auto const& sender, auto&&) {
-            sender.Stop();
-            *keep = nullptr;
-            if (alive.expired() || *settled) return;
-            *settled = true;
-            EntryLog("WinUIPane entry never loaded\n");
-            if (auto row = weakRow.get()) { row.Loaded(*token); row.Opacity(1); }
-            StartAddSlide(0);
-            SettleNeighbors(*neighbors, false);
-        });
-        timer.Start();
+        // Publish readiness after the current layout has received its holds.
+        // Reveal scheduling then follows each face's available space.
+        StartAddSlide(addDelta);
+        SettleNeighbors(*neighbors, true);
+        entryLayoutReady = true;
+        AwaitReveal(row, id);
     }
 
     // Places the button at its old position at once (its layout slot has
@@ -2483,9 +2733,9 @@ struct NativeTabStrip {
         if (std::isnan(before) || !add || !add.IsLoaded()) return 0;
         // A RenderTransform follows bounds space in both flow directions
         // (confirmed by eye); only composition offsets are unmirrored.
+        StartAddSlide(0);
         const auto delta = before - add.TransformToVisual(root).TransformPoint({0, 0}).X;
         if (std::abs(delta) < .5) return 0;
-        StartAddSlide(0);
         addPrevious = add.RenderTransform();
         addHeld = true;
         Media::TranslateTransform transform;
@@ -2507,17 +2757,8 @@ struct NativeTabStrip {
         }
         if (!add || !add.RenderTransform().try_as<Media::TranslateTransform>()) return;
         auto transform = add.RenderTransform().as<Media::TranslateTransform>();
-        Media::Animation::DoubleAnimation animation;
-        animation.From(delta);
-        animation.To(0.0);
-        animation.Duration(
-            Duration{Windows::Foundation::TimeSpan{TabMotion::Duration}, DurationType::TimeSpan});
-        auto ease = TabMotion::Ease();
-        animation.EasingFunction(ease);
-        Media::Animation::Storyboard::SetTarget(animation, transform);
-        Media::Animation::Storyboard::SetTargetProperty(animation, L"X");
         Media::Animation::Storyboard storyboard;
-        storyboard.Children().Append(animation);
+        ShellMotion::Append(storyboard, transform, L"X", delta, 0, ShellMotion::Kind::Reposition);
         storyboard.Completed([this, alive = std::weak_ptr<int>(lifetime)](auto const& sender, auto const&) {
             if (alive.expired() || addSlide != sender) return;
             addSlide = nullptr;
@@ -2532,36 +2773,22 @@ struct NativeTabStrip {
 
     void StartReveal(Controls::TabViewItem const& row, uint32_t id) {
         if (rowAnimations.count(id)) return;
-        const auto width = row.ActualWidth();
-        // Local geometry is unmirrored: x = 0 is the edge shared with the
-        // previous tab in both flow directions.
-        Media::ScaleTransform scale;
-        scale.CenterX(0);
-        scale.ScaleX(1);
-        Media::RectangleGeometry clip;
-        clip.Rect({0, 0, float(width), float(row.ActualHeight())});
-        clip.Transform(scale);
-        row.Clip(clip);
-        Media::Animation::DoubleAnimation animation;
-        animation.From(0.0);
-        animation.To(1.0);
-        animation.Duration(
-            Duration{Windows::Foundation::TimeSpan{TabMotion::Duration}, DurationType::TimeSpan});
-        auto ease = TabMotion::Ease();
-        animation.EasingFunction(ease);
-        Media::Animation::Storyboard::SetTarget(animation, scale);
-        Media::Animation::Storyboard::SetTargetProperty(animation, L"ScaleX");
+        if (!ShellMotion::Enabled()) return;
         Media::Animation::Storyboard storyboard;
-        storyboard.Children().Append(animation);
+        ShellMotion::Append(storyboard, RowTransform(row), L"Y", SHELL_MOTION_TRAVEL_DIP, 0, ShellMotion::Kind::Enter);
+        ShellMotion::Append(storyboard, row, L"Opacity", 0, 1, ShellMotion::Kind::Fade);
         storyboard.Completed([this, alive = std::weak_ptr<int>(lifetime), id, weakRow = make_weak(row)](auto const& sender, auto const&) {
             if (alive.expired()) return;
             auto current = rowAnimations.find(id);
             if (current == rowAnimations.end() || current->second.storyboard != sender) return;
-            if (auto row = weakRow.get()) row.Clip(nullptr);
+            // Release HoldEnd before later drag code writes opacity/translation.
+            current->second.storyboard.Stop();
+            if (auto row = weakRow.get()) { RowTransform(row).Y(0); row.Opacity(1); }
             rowAnimations.erase(current);
         });
-        rowAnimations[id] = RowAnimation{storyboard, 0};
+        rowAnimations[id] = RowAnimation{storyboard, 0, true};
         storyboard.Begin();
+        entryOrder.erase(id);
     }
 
     // Slides a row's TranslateTransform.X to `target` over a short ease-out,
@@ -2623,11 +2850,12 @@ struct NativeTabStrip {
     void ResetRowOffset(Controls::TabViewItem const& row, uint32_t id) {
         if (auto it = rowAnimations.find(id); it != rowAnimations.end()) {
             it->second.storyboard.Stop();
+            if (it->second.entering) { RowTransform(row).Y(0); row.Opacity(1); }
             rowAnimations.erase(it);
         }
         row.Clip(nullptr);
         RowTransform(row).X(0);
-        // Y only ever moves for a tear-off gesture (UpdateDragVisual below);
+        // Y moves for entry and tear-off gestures (UpdateDragVisual below);
         // resetting it unconditionally is a no-op for every other row.
         RowTransform(row).Y(0);
     }
@@ -3833,6 +4061,7 @@ struct NativeTabStrip {
             }
         }
         ClosingTab closing;
+        std::vector<ClosingTab> closingRows;
         double addBefore = std::numeric_limits<double>::quiet_NaN();
         GeometryBefore rowsBefore;
         if (!groupSlide.pending) groupSlide.Cancel();
@@ -3876,33 +4105,44 @@ struct NativeTabStrip {
                 if (auto add = FindAddButton(view); add && add.IsLoaded())
                     addBefore = add.TransformToVisual(root).TransformPoint({0, 0}).X;
             }
-            if (populated && count + 1 == rows.size()) {
+            if (populated && count < rows.size() && groupSlide.Enabled() && !IsDragging() && !groupSlide.pending)
+                HoldCloseViewport();
+            if (populated && count < rows.size()) {
                 std::set<uint32_t> incoming;
                 for (uint32_t i = 0; i < count; ++i) incoming.insert(tabs[i].id);
                 for (auto const& [rowId, row] : rows) {
                     if (incoming.count(rowId) || !row.IsLoaded()) continue;
                     closing.valid = true;
-                    closing.bounds = row.TransformToVisual(root).TransformBounds(
-                        {0, 0, float(row.ActualWidth()), float(row.ActualHeight())});
+                    closing.id = rowId;
+                    closing.bounds = MotionBounds(row, SHELL_SETTLE_TAB, rowId);
                     closing.selected = row.IsSelected();
                     closing.closable = row.IsClosable();
+                    closing.opacity = row.Opacity();
                     closing.weight = row.FontWeight();
                     closing.source = row;
                     closing.header = row.Header();
+                    closingRows.push_back(closing);
+                }
+            }
+            if (populated && count < rows.size() && groupSlide.Enabled() && !IsDragging() && !groupSlide.pending) {
+                preparingClose = true;
+                if (!closeSequence) {
+                    auto before = CloseLayout(true);
+                    ClearSettling(); StartAddSlide(0);
+                    closeFrom = before; closeTarget = std::move(before); closeSequence = true;
+                    HoldCloseViewport();
                 }
             }
             if (populated && count != rows.size()) {
                 for (auto const& [rowId, row] : rows) {
                     if ((!row.IsLoaded() && row.ActualWidth() <= 0) || rowsBefore.size() >= 128) continue;
-                    const auto bounds = row.TransformToVisual(root).TransformBounds(
-                        {0, 0, float(row.ActualWidth()), float(row.ActualHeight())});
+                    const auto bounds = MotionBounds(row, SHELL_SETTLE_TAB, rowId);
                     rowsBefore.emplace(std::make_pair(uint32_t(SHELL_SETTLE_TAB), rowId), std::make_pair(bounds.X, bounds.Width));
                 }
                 for (auto const& [group, run] : inlineGroups.runs) {
                     auto button = run.button;
                     if (!button || (!button.IsLoaded() && button.ActualWidth() <= 0)) continue;
-                    const auto bounds = button.TransformToVisual(root).TransformBounds(
-                        {0, 0, float(button.ActualWidth()), float(button.ActualHeight())});
+                    const auto bounds = MotionBounds(button, SHELL_SETTLE_HEADER, group);
                     rowsBefore.emplace(std::make_pair(uint32_t(SHELL_SETTLE_HEADER), group), std::make_pair(bounds.X, bounds.Width));
                 }
             }
@@ -3910,9 +4150,12 @@ struct NativeTabStrip {
                 const auto id = tabs[i].id;
                 current.insert(id);
                 if (!rows.count(id)) {
-                    // A lone new tab after the first slot: not startup, a
-                    // restored batch, or a tab adopted from another window.
-                    if (populated && i > 0) createdRows.push_back(id);
+                    // Live additions share one movement even if Firefox
+                    // coalesces several rapid opens into a single publication.
+                    if (populated && i > 0) {
+                        createdRows.push_back(id);
+                        entryOrder[id] = ++nextEntryOrder;
+                    }
                     Controls::TabViewItem row;
                     row.Loaded([this, alive = std::weak_ptr<int>(lifetime)](auto const& sender, auto&&) {
                         // Grouped-source moves can load rows after the final
@@ -4167,6 +4410,7 @@ struct NativeTabStrip {
             }
             for (auto it = rows.begin(); it != rows.end();) {
                 if (!current.count(it->first)) {
+                    entryOrder.erase(it->first);
                     shell_core_departure_removed(core, it->first);
                     outlinedTabs.erase(it->first); outlines.erase(it->first); hoverCard.Forget(it->first);
                     it = rows.erase(it);
@@ -4184,7 +4428,8 @@ struct NativeTabStrip {
                 view.TabWidthMode(Controls::TabViewWidthMode::Equal);
             }
         } catch (...) {
-            syncing = false;
+            syncing = false; preparingClose = false;
+            if (closeSequence) CancelCloseSequence();
             throw;
         }
         syncing = false;
@@ -4202,85 +4447,58 @@ struct NativeTabStrip {
         if (!createdRows.empty())
             EntryLog("WinUIPane entry sync created=%zu first=%u prior=%zu rows=%zu before=%zu addBefore=%.1f inline=%d\n", createdRows.size(),
                 createdRows[0], priorRowCount, rows.size(), rowsBefore.size(), addBefore, int(inlineGroups.active));
-        if (createdRows.size() == 1 && rows.count(createdRows[0])) {
-            enteringTab = createdRows[0];
+        if (!createdRows.empty()) {
+            if (closeSequence) CancelCloseSequence();
+            preparingClose = false;
+            if (groupSlide.Enabled() && !IsDragging())
+                for (auto id : createdRows) rows.at(id).Opacity(0);
+            enteringTab = createdRows.back();
             enteringUntil = GetTickCount64() + 1000;
             // Read geometry after the natural layout, not from a forced one
             // (see the close path below).
             const auto generation = ++closeGeneration;
+            entryLayoutReady = false;
             auto token = std::make_shared<winrt::event_token>();
             *token = Media::CompositionTarget::Rendering([this, alive = std::weak_ptr<int>(lifetime), generation, token,
-                                                          created = createdRows[0], addBefore, rowsBefore](auto&&, auto&&) {
+                                                          created = createdRows, addBefore, rowsBefore](auto&&, auto&&) {
                 Media::CompositionTarget::Rendering(*token);
-                EntryLog("WinUIPane entry frame id=%u current=%d\n", created, int(!alive.expired() && generation == closeGeneration && rows.count(created)));
-                if (alive.expired() || generation != closeGeneration || !rows.count(created)) return;
-                try { RevealNewRow(rows.at(created), created, addBefore, rowsBefore); } catch (...) {}
+                if (alive.expired()) return;
+                bool started = false;
+                for (auto id : created) {
+                    if (!rows.count(id)) continue;
+                    if (generation != closeGeneration || started) { AwaitReveal(rows.at(id), id); continue; }
+                    started = true;
+                    try { RevealNewRow(rows.at(id), id, addBefore, rowsBefore); }
+                    catch (...) { rows.at(id).Opacity(1); }
+                }
             });
         }
         else if (!startupPresentation && createdRows.empty() && rows.size() < priorRowCount) {
-            // The toggle above can leave TabView's next layout with every Width
-            // NaN (tabs sized to their content, the group's last tab narrow until
-            // the pointer moves). Repair it once TabView has arranged the close,
-            // and start the motion from the layout the repaired widths produce.
-            // Every layout pass that moves something holds the neighbors and
-            // New Tab at their old places again, before that frame is drawn;
-            // the next frame, when TabView has finished arranging, eases them.
-            // Holding them only from that frame drew the one before it at their
-            // new places (the group outline with them) before they eased from
-            // the old ones.
-            const auto generation = ++closeGeneration;
-            const bool animate = !std::isnan(addBefore) && groupSlide.Enabled() && !IsDragging() && !groupSlide.storyboard;
-            struct CloseMotion { bool moved{}, repaired{}, holding{}; double addDelta{}; std::vector<Neighbor> held; };
-            OnLayoutSteps([this, alive = std::weak_ptr<int>(lifetime), generation, animate, addBefore, rowsBefore, closing,
-                           motion = CloseMotion{}](LayoutStep step) mutable {
-                if (alive.expired()) return true;
-                auto release = [&] {
-                    if (!motion.holding) return;
-                    motion.holding = false;
-                    StartAddSlide(0);
-                    SettleNeighbors(motion.held, false);
-                };
-                if (generation != closeGeneration || (motion.holding && (IsDragging() || groupSlide.storyboard))) { release(); return true; }
-                auto repair = [&] {
-                    bool unsized = false;
-                    for (auto const& [id, row] : rows) unsized |= std::isnan(row.Width());
-                    if (!unsized || motion.repaired) return false;
-                    motion.repaired = true;
+            ++closeGeneration;
+            if (closeSequence && !groupSlide.storyboard && closeCheckpoints.size() < 128) {
+                // Capture each acknowledged layout before the next publication
+                // can replace it. Its slot changes become eligible only after
+                // every exit belonging to this checkpoint has completed.
+                root.UpdateLayout();
+                bool unsized = false;
+                for (auto const& [id, row] : rows) unsized |= std::isnan(row.Width());
+                if (unsized) {
                     view.TabWidthMode(Controls::TabViewWidthMode::SizeToContent);
                     view.TabWidthMode(Controls::TabViewWidthMode::Equal);
-                    return true;
-                };
-                auto hold = [&] {
-                    if (!animate || IsDragging() || groupSlide.storyboard) return;
-                    // Measure from the layout with nothing held. The lighting is
-                    // refreshed once, with the new holds in place.
-                    const bool released = motion.holding && !motion.held.empty();
-                    StartAddSlide(0);
-                    if (motion.holding) SettleNeighbors(motion.held, false, false);
-                    motion.addDelta = HoldAddButton(addBefore);
-                    motion.held = HoldNeighbors(rowsBefore, 0);
-                    // The stand-in replaces the closed tab in the same frame.
-                    if (!motion.holding) AddCloseGhost(closing);
-                    motion.holding = true;
-                    if (released && motion.held.empty()) ambient.Update();
-                };
-                if (step == LayoutStep::Pass) {
-                    auto add = FindAddButton(view);
-                    const bool addMoved = add && !std::isnan(addBefore) &&
-                        std::abs(add.TransformToVisual(root).TransformPoint({0, 0}).X - addBefore) >= .5;
-                    if (!motion.holding && !addMoved && NeighborOffsets(rowsBefore, 0).empty()) return false;
-                    motion.moved = true;
-                    repair();
-                    hold();
-                    return false;
+                    root.UpdateLayout();
                 }
-                if (step == LayoutStep::Frame && (!motion.moved || repair())) return false;
-                if (step == LayoutStep::Expired) { repair(); if (!motion.holding) hold(); }
-                if (!motion.holding) return true;
-                StartAddSlide(motion.addDelta);
-                SettleNeighbors(motion.held, true);
-                return true;
-            }, CloseArrangeMs);
+                if (closeSequence) {
+                    auto checkpoint = std::make_shared<CloseCheckpoint>();
+                    checkpoint->layout = CloseLayout(false);
+                    checkpoint->deadline = SteadyMs() + 1000;
+                    closeCheckpoints.push_back(checkpoint);
+                    for (auto const& removed : closingRows) AddCloseGhost(removed, checkpoint);
+                    checkpoint->ready = checkpoint->pending == 0;
+                    preparingClose = false;
+                    AdvanceCloseSequence();
+                    UpdateCloseSequence();
+                } else preparingClose = false;
+            } else { preparingClose = false; if (closeSequence) CancelCloseSequence(); }
         }
         // A stationary cursor may produce no further input after this layout
         // change. Refresh a live hover now using the session's cursor sampler.

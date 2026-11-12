@@ -40,6 +40,7 @@
 #include "../../native/WinUIPane/SuggestionList.h"
 #include "../../native/WinUIPane/AddressValue.h"
 #include "../../native/WinUIPane/TabContentScale.h"
+#include "../../native/WinUIPane/ToolbarMotion.h"
 #include "../../native/WinUIPane/StartupLabels.h"
 #include <winrt/Microsoft.UI.Xaml.Automation.Provider.h>
 #include <wrl/client.h>
@@ -2251,15 +2252,22 @@ static void CheckTabStrip(HMODULE module, WinUIPaneApi& api, HWND host, bool sel
                 uint32_t ignored[10]{};
                 Require(SUCCEEDED(entry(host, rtlContent ? 2 : 1, ignored)), "set content-scale flow direction");
                 {
+                    auto title=first.Header().as<Controls::Grid>().Children().GetAt(2).as<FrameworkElement>();
+                    auto text=title.as<Controls::StackPanel>().Children().GetAt(0).as<Controls::TextBlock>();
+                    const auto oldText=text.Text();
+                    text.Text(L"A long tab title that must retain its native ellipsis throughout every intermediate resize width, including repeated opens and closes");
                     TabContentScale preserve(first);
                     for (float scale : {.65f, 1.35f, .8f, 1.f}) {
                         visual.Scale({scale, 1, 1});
+                        preserve.Update(first.ActualWidth()*scale);
                         const auto shown = marker();
+                        Require(text.IsTextTrimmed(),"native ellipsis remains active at intermediate displayed widths");
                         fprintf(stderr, "Content scale rtl=%d scale=%.2f natural=%dx%d shown=%dx%d\n",
                             int(rtlContent), scale, natural.first, natural.second, shown.first, shown.second);
                         Require(std::abs(shown.first - natural.first) <= 1 && shown.second == natural.second,
                             "composed favicon retains its natural size through shrink, grow and interruption");
                     }
+                    text.Text(oldText);
                 }
                 visual.Scale({.65f, 1, 1});
                 Require(marker().first < natural.first - 2, "content compensation releases its expression on cancellation");
@@ -2271,7 +2279,61 @@ static void CheckTabStrip(HMODULE module, WinUIPaneApi& api, HWND host, bool sel
             Require(SUCCEEDED(entry(host, 1, ignored)), "restore flow direction after content-scale checks");
             settleWidths();
         }
-        struct Seen { bool tracked{}, clipOrigin{}, closing{}, neighbors{}; uint32_t addSign{}, ghostLeft{}, firstScale{}, firstShift{5000}; };
+        {
+            Controls::Grid toolbar; toolbar.Width(320); toolbar.Height(32);
+            Controls::Button left, middle, right;
+            for (auto button : {left,middle,right}) { button.Width(32); button.Height(32); }
+            Automation::AutomationProperties::SetAutomationId(middle,L"MotionButton");
+            toolbar.Children().Append(left); toolbar.Children().Append(right); root.Children().Append(toolbar);
+            auto arrange = [&](std::vector<UIElement> const& order) {
+                toolbar.ColumnDefinitions().Clear();
+                for (size_t i=0;i<order.size();++i) {
+                    Controls::ColumnDefinition column; column.Width(GridLengthHelper::FromPixels(36));
+                    toolbar.ColumnDefinitions().Append(column); Controls::Grid::SetColumn(order[i].as<FrameworkElement>(),int(i));
+                }
+                root.UpdateLayout();
+            };
+            std::vector<UIElement> pair{left,right}, triple{left,middle,right}; arrange(pair);
+            ToolbarMotion motion;
+            auto inspectToolbar=[&](bool removal) {
+                bool exit=false,move=false,enter=false;
+                for(int i=0;i<500 && motion.phase!=ToolbarMotion::Phase::Idle;++i) {
+                    winrt::Windows::Foundation::Numerics::float3 shift{};
+                    Hosting::ElementCompositionPreview::GetElementVisual(right).Properties().TryGetVector3(L"Translation",shift);
+                    if(motion.phase==ToolbarMotion::Phase::Exit) {
+                        exit=true; Require(std::abs(shift.x-36)<.01,"toolbar neighbor waits for exit");
+                        Require(!middle.IsHitTestVisible() && !middle.IsTabStop() && Automation::AutomationProperties::GetAutomationId(middle).empty(),
+                            "toolbar exit has no input or automation identity");
+                    }
+                    if(motion.phase==ToolbarMotion::Phase::Move) {
+                        move=true;
+                        if(removal) Require(motion.overlay.Visibility()==Visibility::Collapsed,"exit disappears before toolbar neighbors move");
+                        else Require(Hosting::ElementCompositionPreview::GetElementVisual(middle).Opacity()==0,"toolbar addition waits invisibly for its gap");
+                    }
+                    if(motion.phase==ToolbarMotion::Phase::Enter) {enter=true;Require(std::abs(shift.x)<.01,"toolbar neighbors finish before entrance");}
+                    Pump();Sleep(2);
+                }
+                Require(motion.phase==ToolbarMotion::Phase::Idle && !motion.overlay,"toolbar motion cleans up within its bound");
+                if(animated) Require(move && (removal?exit:enter),"toolbar runs its two ordered phases");
+            };
+            auto before=ToolbarMotion::Capture(toolbar,pair);
+            toolbar.Children().Append(middle);arrange(triple);motion.Begin(toolbar,before,triple);inspectToolbar(false);
+            before=ToolbarMotion::Capture(toolbar,triple);
+            uint32_t index{};toolbar.Children().IndexOf(middle,index);toolbar.Children().RemoveAt(index);arrange(pair);
+            motion.Begin(toolbar,before,pair);inspectToolbar(true);
+            Require(middle.IsHitTestVisible() && middle.IsTabStop() && Automation::AutomationProperties::GetAutomationId(middle)==L"MotionButton",
+                "toolbar restores reusable control input state");
+            before=ToolbarMotion::Capture(toolbar,pair);toolbar.Children().Append(middle);arrange(triple);
+            motion.Begin(toolbar,before,triple);
+            before=ToolbarMotion::Capture(toolbar,triple);motion.Cancel();
+            Require(Hosting::ElementCompositionPreview::GetElementVisual(middle).Opacity()==1 && !motion.overlay,"cancelled toolbar addition restores reusable visibility");
+            toolbar.Children().IndexOf(middle,index);toolbar.Children().RemoveAt(index);arrange(pair);
+            motion.Begin(toolbar,before,pair);
+            if(animated) Require(motion.leaving.empty(),"removing a still-hidden toolbar addition never creates a visible exit face");
+            motion.Cancel();
+            root.Children().IndexOf(toolbar,index);root.Children().RemoveAt(index);
+        }
+        struct Seen { bool tracked{}, entryChannels{}, closing{}, neighbors{}, waited{}; uint32_t addSign{}, ghostLeft{}, firstScale{}, firstShift{5000}; };
         auto observe = [&](std::function<void()> change, std::function<void()> checkGhost = {}) {
             Seen seen{};
             change();
@@ -2279,10 +2341,19 @@ static void CheckTabStrip(HMODULE module, WinUIPaneApi& api, HWND host, bool sel
                 uint32_t out[10]{};
                 Require(SUCCEEDED(entry(host, 0, out)), "inspect entry motion");
                 seen.tracked |= out[0] != 0;
-                seen.clipOrigin |= out[1] != 0 && out[1] == out[2];
+                seen.entryChannels |= out[1] != 0 && out[1] == out[2];
                 seen.closing |= out[4] != 0;
                 if (out[4] && checkGhost) checkGhost();
                 seen.neighbors |= out[6] != 0;
+                if (!out[0] && (out[3] || out[6])) {
+                    for (auto item : view.TabItems())
+                        if (auto row = item.try_as<Controls::TabViewItem>(); row && row.Opacity() == 0) seen.waited = true;
+                }
+                if (out[0] && out[1]) {
+                    uint32_t space[10]{};
+                    Require(SUCCEEDED(entry(host,7,space)) && !space[0],
+                        "new tab pops in only when its own space is clear");
+                }
                 if (out[8] && std::abs(int(out[8]) - 1000) >= 2) {
                     uint32_t protectedRows[10]{};
                     Require(SUCCEEDED(entry(host, 3, protectedRows)), "inspect resize content protection");
@@ -2300,6 +2371,7 @@ static void CheckTabStrip(HMODULE module, WinUIPaneApi& api, HWND host, bool sel
             }
             uint32_t out[10]{};
             Require(SUCCEEDED(entry(host, 0, out)), "inspect settled entry motion");
+            fprintf(stderr,"Settled entry channels: %u %u %u %u %u %u\n",out[0],out[1],out[3],out[4],out[5],out[6]);
             Require(!out[0] && !out[1] && !out[3] && !out[4] && !out[5] && !out[6],
                     "entry motion leaves no clip, offset, stand-in or composition transform behind");
             return seen;
@@ -2336,7 +2408,8 @@ static void CheckTabStrip(HMODULE module, WinUIPaneApi& api, HWND host, bool sel
                 fprintf(stderr, "Entry geometry: rtl=%d wide=%d add=%.1f->%.1f sign=%u width=%.1f->%.1f\n",
                     rtl, wide, addOld, addX(), grown.addSign, before, first.ActualWidth());
                 if (animated) {
-                    Require(grown.tracked && grown.clipOrigin, "a new tab is revealed through a clip scaled about x = 0 in both directions");
+                    Require(grown.tracked && grown.entryChannels, "a new tab rises and fades without a clipping wipe in both directions");
+                    if (addMoved || resized) Require(grown.waited, "new tab stays invisible while neighbors make room");
                     if (addMoved) Require(grown.addSign == 2u, "New Tab button eases in from its old, lower position in both directions");
                     if (resized) {
                         Require(grown.neighbors, "existing tabs ease when a new tab changes their width");
@@ -2349,8 +2422,14 @@ static void CheckTabStrip(HMODULE module, WinUIPaneApi& api, HWND host, bool sel
                     }
                 }
                 auto closingRow = view.TabItems().GetAt(2).as<Controls::TabViewItem>();
+                // A completed entry must release HoldEnd so drag hiding can
+                // subsequently write the row's opacity without an override.
+                closingRow.Opacity(0.4);
+                Require(std::abs(closingRow.Opacity() - 0.4) < .001, "entry releases opacity for subsequent drag hiding");
+                closingRow.Opacity(1);
+
                 // The visual title intentionally differs from its UIA name;
-                // status artwork and close visibility must survive the wipe.
+                // status artwork and close visibility must survive the exit.
                 auto closingHeader = closingRow.Header().as<Controls::Grid>();
                 closingHeader.Children().GetAt(2).as<Controls::StackPanel>().Children().GetAt(0)
                     .as<Controls::TextBlock>().Text(L"Visible title, not the accessibility label");
@@ -2359,7 +2438,15 @@ static void CheckTabStrip(HMODULE module, WinUIPaneApi& api, HWND host, bool sel
                 closingRow.FontWeight(winrt::Windows::UI::Text::FontWeight{600});
                 root.UpdateLayout();
                 const auto closing = closingRow.TransformToVisual(root).TransformBounds({0, 0, 1, 1});
-                auto closed = observe([&] { sync(); }, [&] {
+                closingRow.Opacity(0.65); // Closing during a fade must not brighten.
+                const auto closeAddX = addX();
+                const auto closeNeighborWidth = first.ActualWidth();
+                auto closed = observe([&] {
+                    sync();
+                    uint32_t immediate[10]{};
+                    Require(SUCCEEDED(entry(host, 0, immediate)), "inspect close before the next layout/frame");
+                    if (animated) Require(immediate[4] == 1, "close stand-in exists in the removal update, not after a layout deadline");
+                }, [&] {
                     bool foundGhost = false;
                     for (auto layer : root.Children()) {
                         auto canvas = layer.try_as<Controls::Canvas>();
@@ -2368,6 +2455,8 @@ static void CheckTabStrip(HMODULE module, WinUIPaneApi& api, HWND host, bool sel
                             auto ghost = child.try_as<Controls::TabViewItem>();
                             if (!ghost) continue;
                             foundGhost = true;
+                            Require(ghost.Opacity() <= 0.651,
+                                "closing stand-in never brightens beyond the removed row's opacity");
                             Require(ghost.Header() == closingHeader && ghost.IsClosable() == wide &&
                                 ghost.FontWeight().Weight == 600 && !ghost.IsHitTestVisible() &&
                                 Automation::AutomationProperties::GetAccessibilityView(ghost) == Automation::Peers::AccessibilityView::Raw,
@@ -2375,6 +2464,11 @@ static void CheckTabStrip(HMODULE module, WinUIPaneApi& api, HWND host, bool sel
                         }
                     }
                     Require(foundGhost, "inspect the actual closing ghost");
+                    Require(std::abs(addX() - closeAddX) < .5,
+                        "New Tab holds its old position until the closing tab has exited");
+                    const auto neighborVisual = winrt::Microsoft::UI::Xaml::Hosting::ElementCompositionPreview::GetElementVisual(first);
+                    Require(std::abs(first.ActualWidth() * neighborVisual.Scale().x - closeNeighborWidth) < .5,
+                        "neighbor width remains held across layout passes until the closing tab exits");
                 });
                 settleWidths(); waitIdle();
                 if (animated) {
@@ -2400,6 +2494,29 @@ static void CheckTabStrip(HMODULE module, WinUIPaneApi& api, HWND host, bool sel
             Require(SUCCEEDED(api.updateTabStrip(host, &rect, TRUE)), "size the strip for overflow entry motion");
             WinUITab many[14]{{11, L"Same title"}, {22, L"Y"}};
             for (uint32_t i = 2; i < 14; ++i) many[i] = {300 + i, L"Overflow tab"};
+            for (bool rtl : {false,true}) {
+                Require(SUCCEEDED(entry(host,rtl?2:1,none)),"first-overflow direction");
+                bool crossed = false;
+                for (uint32_t count=2;count<=10;++count) {
+                    Require(SUCCEEDED(api.syncTabs(host,many,count,many[count-1].id,NextTabRevision(),&selected)),
+                        "append selected tabs through first overflow");
+                    for(int frame=0;frame<80;++frame){Pump();root.UpdateLayout();Sleep(10);}
+                    auto scroll = findStripPart(view,L"ScrollViewer").as<Controls::ScrollViewer>();
+                    if (scroll.ComputedHorizontalScrollBarVisibility()!=Visibility::Visible) continue;
+                    auto newest=view.TabItems().GetAt(count-1).as<Controls::TabViewItem>();
+                    auto scrollContent=scroll.Content().as<UIElement>();
+                    const auto x=newest.TransformToVisual(scrollContent).TransformPoint({0,0}).X;
+                    fprintf(stderr,"First overflow rtl=%d count=%u x=%.2f width=%.2f offset=%.2f viewport=%.2f\n",
+                        int(rtl),count,x,newest.ActualWidth(),scroll.HorizontalOffset(),scroll.ViewportWidth());
+                    Require(x>=scroll.HorizontalOffset()-1 &&
+                        x+newest.ActualWidth()<=scroll.HorizontalOffset()+scroll.ViewportWidth()+1,
+                        "newest selected tab is fully inside the content viewport when arrows first appear");
+                    crossed=true;
+                    break;
+                }
+                Require(crossed,"first-overflow fixture crosses the scroll threshold");
+            }
+            Require(SUCCEEDED(entry(host,1,none)),"restore overflow entry direction");
             Require(SUCCEEDED(api.syncTabs(host, many, 12, 11, NextTabRevision(), &selected)), "overflow the strip");
             settleWidths(); waitIdle();
             // This host renders few frames, so lay out on each poll as a
@@ -2413,7 +2530,7 @@ static void CheckTabStrip(HMODULE module, WinUIPaneApi& api, HWND host, bool sel
                     uint32_t out[10]{};
                     Require(SUCCEEDED(entry(host, 0, out)), "inspect overflow entry motion");
                     seen.tracked |= out[0] != 0;
-                    seen.clipOrigin |= out[1] != 0 && out[1] == out[2];
+                    seen.entryChannels |= out[1] != 0 && out[1] == out[2];
                     if (seen.tracked && !out[0] && !out[1] && !out[3] && !out[6]) break;
                     Sleep(2);
                 }
@@ -2439,10 +2556,10 @@ static void CheckTabStrip(HMODULE module, WinUIPaneApi& api, HWND host, bool sel
                     Require(SUCCEEDED(api.syncTabs(host, next, count, active, NextTabRevision(), &selected)), "open a tab in an overflowing strip");
                 });
                 settleWidths(); waitIdle();
-                printf("Overflow entry (%s): tracked=%d clip=%d\n", middle ? "middle" : "end", seen.tracked, seen.clipOrigin);
+                printf("Overflow entry (%s): tracked=%d entry=%d\n", middle ? "middle" : "end", seen.tracked, seen.entryChannels);
                 fflush(stdout);
                 if (animated)
-                    Require(seen.tracked && seen.clipOrigin, "a tab opened in an overflowing strip is revealed like one in a strip with room");
+                    Require(seen.tracked && seen.entryChannels, "a tab opened in an overflowing strip is revealed like one in a strip with room");
                 uint32_t out[10]{};
                 Require(SUCCEEDED(entry(host, 0, out)) && !out[0] && !out[1] && !out[3] && !out[6],
                         "overflow entry motion leaves no clip, offset or composition transform behind");
@@ -2456,6 +2573,91 @@ static void CheckTabStrip(HMODULE module, WinUIPaneApi& api, HWND host, bool sel
             }
             sync(); settleWidths(); waitIdle();
         }
+        {
+            // A new close can arrive during the exit hold or the resize. The
+            // final five tabs must match a clean five-tab layout without hover.
+            WinUITab rapid[14]{{11,L"Same title"},{22,L"Y"}};
+            for(uint32_t i=2;i<14;++i)rapid[i]={500+i,L"Rapid close title"};
+            // Leave room for width growth before the last queued exits complete.
+            rect.right=1400;
+            Require(SUCCEEDED(api.updateTabStrip(host,&rect,TRUE)),"size rapid-close width fixture");
+            auto drain=[&] {
+                for(int i=0;i<160;++i){Pump();root.UpdateLayout();Sleep(10);}
+            };
+            for(bool rtl : {false,true}) {
+                Require(SUCCEEDED(entry(host,rtl?2:1,none)),"rapid-close direction");
+                Require(SUCCEEDED(api.syncTabs(host,rapid,5,11,NextTabRevision(),&selected)),"clean five-tab baseline");
+                drain(); const double expected=first.ActualWidth();
+                for(int spacing : {0,20,70,140}) {
+                    Require(SUCCEEDED(api.syncTabs(host,rapid,14,11,NextTabRevision(),&selected)),"populate rapid-close tabs");
+                    drain();
+                    const double burstStartWidth=first.ActualWidth();
+                    for(uint32_t count=13;count>=5;--count) {
+                        Require(SUCCEEDED(api.syncTabs(host,rapid,count,11,NextTabRevision(),&selected)),"rapid close publication");
+                        const auto until=GetTickCount64()+spacing;
+                        do {
+                            Pump();root.UpdateLayout();
+                            uint32_t clips[10]{};
+                            Require(SUCCEEDED(entry(host,6,clips)) && !clips[1],
+                                "full dropping tabs reserve their slots without clipping or overlapping neighbors");
+                            if(spacing)Sleep(2);
+                        }while(GetTickCount64()<until);
+                        if(animated && count==6 && spacing>=70) {
+                            uint32_t moving[10]{};
+                            Require(SUCCEEDED(entry(host,5,moving)),"sample width before the close burst ends");
+                            fprintf(stderr,"During close burst rtl=%d interval=%d start=%.2f moving=%.2f\n",
+                                int(rtl),spacing,burstStartWidth,double(moving[0])/1000);
+                            Require(double(moving[0])/1000>burstStartWidth+5,
+                                "tabs grow while closes keep arriving, before the burst ends");
+                        }
+                    }
+                    drain();
+                    for(auto item : view.TabItems()) if(auto row=item.try_as<Controls::TabViewItem>()) {
+                        const auto scale=Hosting::ElementCompositionPreview::GetElementVisual(row).Scale().x;
+                        fprintf(stderr,"Rapid close rtl=%d interval=%d expected=%.2f actual=%.2f min=%.2f max=%.2f scale=%.4f\n",
+                            int(rtl),spacing,expected,row.ActualWidth(),row.MinWidth(),row.MaxWidth(),scale);
+                        Require(std::abs(row.ActualWidth()-expected)<1.5 && std::abs(scale-1)<.001,
+                            "rapid closes release width holds and fill the same space as a clean layout");
+                    }
+                }
+            }
+            for(bool rtl : {false,true}) {
+                Require(SUCCEEDED(entry(host,rtl?2:1,none)),"rapid-open direction");
+                Require(SUCCEEDED(api.syncTabs(host,rapid,5,11,NextTabRevision(),&selected)),"rapid-open baseline");
+                drain(); const double startWidth=first.ActualWidth();
+                for(uint32_t count=6;count<=12;++count) {
+                    Require(SUCCEEDED(api.syncTabs(host,rapid,count,11,NextTabRevision(),&selected)),"rapid open publication");
+                    const auto until=GetTickCount64()+70;
+                    do {Pump();root.UpdateLayout();Sleep(2);}while(GetTickCount64()<until);
+                    if(animated && count==8) {
+                        uint32_t moving[10]{};
+                        Require(SUCCEEDED(entry(host,5,moving)),"sample width during rapid openings");
+                        fprintf(stderr,"During open burst rtl=%d start=%.2f moving=%.2f\n",int(rtl),startWidth,double(moving[0])/1000);
+                        Require(double(moving[0])/1000<startWidth-5,"neighbors keep shrinking during successive openings");
+                    }
+                    // Keep publishing after this checkpoint: visibility must
+                    // not depend on reaching the last addition in the burst.
+                    if(animated && count==10)
+                        Require(view.TabItems().GetAt(5).as<Controls::TabViewItem>().Opacity()>0,
+                            "earlier entrants reveal during the burst while later neighbors keep moving");
+                }
+                drain();waitIdle();
+                for(auto item:view.TabItems())Require(item.as<Controls::TabViewItem>().Opacity()==1,"all burst entrants eventually reveal");
+                Require(SUCCEEDED(api.syncTabs(host,rapid,5,11,NextTabRevision(),&selected)),"coalesced-open baseline");
+                drain();
+                Require(SUCCEEDED(api.syncTabs(host,rapid,7,11,NextTabRevision(),&selected)),"two opens in one publication");
+                if(animated) for(uint32_t i=5;i<7;++i)
+                    Require(view.TabItems().GetAt(i).as<Controls::TabViewItem>().Opacity()==0,"coalesced additions wait for their shared gap");
+                drain();waitIdle();
+                for(auto item:view.TabItems())Require(item.as<Controls::TabViewItem>().Opacity()==1,"coalesced entrants eventually reveal");
+            }
+            sync();settleWidths();waitIdle();
+        }
+        Require(SUCCEEDED(entry(host, 4, none)), "expire an interrupted tab resize hold");
+        for (int i=0;i<10;++i) { Pump(); root.UpdateLayout(); Sleep(10); }
+        uint32_t recovered[10]{};
+        Require(SUCCEEDED(entry(host, 0, recovered)) && !recovered[6],
+            "settle watchdog restores full scale and zero offset after interrupted resize");
         rect.right = 800;
         Require(SUCCEEDED(api.updateTabStrip(host, &rect, TRUE)), "restore the strip width after entry motion");
         Require(SUCCEEDED(entry(host, 1, none)), "restore left-to-right after entry motion");
@@ -2946,7 +3148,21 @@ static void CheckInlineGroups(HMODULE module, WinUIPaneApi& api, HWND host, bool
     WinUITab tabs[]{{41,L"Home"},{42,L"Research page"}};
     uint32_t selected{};
     Require(SUCCEEDED(api.syncTabs(host,tabs,2,41, NextTabRevision(), &selected)), "sync grouped tabs");
-    auto settle = [&] { for (int i=0;i<20;++i) { Pump(); Sleep(10); } root.UpdateLayout(); };
+    auto settle = [&] {
+        for (int i=0;i<20;++i) { Pump(); Sleep(10); }
+        // Layout baselines must exclude entry translation. The old fixed
+        // 200 ms wait could sample a still-running 250 ms entrance.
+        auto entry = reinterpret_cast<HRESULT(WINAPI*)(HWND, uint32_t, uint32_t*)>(GetProcAddress(module, "WinUIPaneTestEntryMotion"));
+        Require(entry != nullptr, "entry inspector for settled group geometry");
+        for (int i=0;i<200;++i) {
+            Pump(); root.UpdateLayout();
+            uint32_t motion[10]{};
+            Require(SUCCEEDED(entry(host, 0, motion)), "inspect settled group geometry");
+            if (!motion[0] && !motion[1] && !motion[3] && !motion[4] && !motion[5] && !motion[6]) return;
+            Sleep(10);
+        }
+        Require(false, "group geometry settles before measuring baseline");
+    };
     std::function<Controls::Button(DependencyObject const&, hstring const&)> find;
     find = [&](DependencyObject const& node, hstring const& id) -> Controls::Button {
         if (auto button = node.try_as<Controls::Button>(); button &&

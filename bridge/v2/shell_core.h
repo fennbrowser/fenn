@@ -86,9 +86,32 @@
 
 #define SHELL_SETTLE_HEADER 1
 
+/*
+ Shared progress clock for a WinUI exit/layout checkpoint sequence.
+ */
+#define SHELL_SETTLE_CLOCK 2
+
 #define TAB_MOTION_MS 135
 
 #define GROUP_MOTION_MS 150
+
+#define SHELL_MOTION_REPOSITION_MS 167
+
+#define SHELL_MOTION_ENTER_MS 250
+
+#define SHELL_MOTION_EXIT_MS 125
+
+#define SHELL_MOTION_FADE_MS 83
+
+#define SHELL_MOTION_TRAVEL_DIP 6.0
+
+#define SHELL_MOTION_MOVE_X1 0.55
+
+#define SHELL_MOTION_MOVE_Y1 0.55
+
+#define SHELL_MOTION_MOVE_X2 0.0
+
+#define SHELL_MOTION_MOVE_Y2 1.0
 
 #define PAGE_INPUT_MAX_TEXT 65536
 

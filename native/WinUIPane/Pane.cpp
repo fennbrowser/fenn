@@ -599,7 +599,7 @@ struct Pane {
             Enqueue(NativeShellCore::NavigationAction,0,0,action.Stringify());
         };
         address->navigation->ownerHwnd=parent;
-        windowDrag.windowCaption.SetToolbarSurface(address->toolbarSurface);
+        windowDrag.windowCaption.SetToolbarSurface(address->toolbarSurface, address->toolbarRoot);
         if (strip) {
             auto menuButton = address->navigation->productMenu.button;
             menuButton.Margin({6, 0, 4, 0});
@@ -3828,8 +3828,8 @@ extern "C" __declspec(dllexport) HRESULT WINAPI WinUIPaneTestGroupMotion(HWND hw
     } catch (...) { return to_hresult(); }
 }
 // Test-only: observe the tab add/close motion without a screenshot. Operation
-// 0 fills out[0..9]: tracked row animations, rows with a reveal clip, reveal
-// clips scaled about local x = 0, 1 when the New Tab button carries a nonzero
+// 0 fills out[0..9]: tracked row animations, rows with entry translation/fade,
+// rows with bounded entry channels and no clip, 1 when New Tab carries a nonzero
 // offset (out[3] is its sign: 1 positive, 2 negative), stand-in count, rows
 // with a composition scale or translation in flight, and the first stand-in's
 // Canvas.Left in tenths, then the first row's scale in thousandths and its translation in tenths plus 5000. Operations 1 and 2 set left-to-right or right-to-left.
@@ -3849,13 +3849,64 @@ extern "C" __declspec(dllexport) HRESULT WINAPI WinUIPaneTestEntryMotion(HWND hw
             for (auto const& held : strip.settling) if (held.content) ++out[0];
             return S_OK;
         }
+        if (operation == 7) {
+            out[0] = 0;
+            for (auto const& [id, animation] : strip.rowAnimations) {
+                auto row = strip.rows.find(id);
+                if (row != strip.rows.end() && !strip.EntrySpaceReady(row->second, id)) ++out[0];
+            }
+            return S_OK;
+        }
+        if (operation == 6) {
+            out[0] = uint32_t(strip.closeFaces.size()); out[1] = 0;
+            const auto positions = strip.ClosePositions();
+            for (auto const& face : strip.closeFaces) {
+                auto at = positions.find({SHELL_SETTLE_TAB, face.id});
+                if (at == positions.end()) continue;
+                const auto left = at->second.first, right = left + at->second.second;
+                if (Hosting::ElementCompositionPreview::GetElementVisual(face.row).Clip()) ++out[1];
+                for (auto const& [id, row] : strip.rows) {
+                    if (row.Opacity() <= 0 || row.ActualWidth() <= 0) continue;
+                    const auto live = strip.MotionBounds(row, SHELL_SETTLE_TAB, id);
+                    if (std::min(right, live.X + live.Width) - std::max(left, live.X) > 2) ++out[1];
+                }
+                for (auto const& other : strip.closeFaces) {
+                    if (other.id == face.id) continue;
+                    auto next = positions.find({SHELL_SETTLE_TAB, other.id});
+                    if (next == positions.end()) continue;
+                    if (std::min(right, next->second.first + next->second.second) - std::max(left, next->second.first) > 2) ++out[1];
+                }
+            }
+            return S_OK;
+        }
+        if (operation == 5) {
+            if (strip.rows.empty()) return E_UNEXPECTED;
+            auto const& [id, row] = *strip.rows.begin();
+            out[0] = uint32_t(strip.MotionBounds(row, SHELL_SETTLE_TAB, id).Width * 1000);
+            return S_OK;
+        }
+        if (operation == 4) {
+            // Simulate a canceled compositor resize whose completion never
+            // arrived. The real settle watchdog must release its visual hold.
+            if (strip.rows.empty()) return E_UNEXPECTED;
+            auto const& [id, row] = *strip.rows.begin();
+            auto visual = Hosting::ElementCompositionPreview::GetElementVisual(row);
+            visual.Scale({.5f, 1, 1});
+            visual.Properties().InsertVector3(L"Translation", {12, 0, 0});
+            strip.Track(SHELL_SETTLE_TAB, id, row, 12, .5f, strip.SteadyMs() - 2000);
+            strip.settlingUntil = 0;
+            strip.ambient.Update();
+            return S_OK;
+        }
         if (operation != 0) return E_INVALIDARG;
         std::fill(out, out + 10, 0u);
         out[0] = uint32_t(strip.rowAnimations.size());
         for (auto const& [id, row] : strip.rows) {
-            if (auto clip = row.Clip().try_as<Media::RectangleGeometry>()) {
+            // Entry-only motion channels, including residual values after completion.
+            const auto y = strip.RowTransform(row).Y();
+            if (std::abs(y) > .001 || row.Opacity() < .999) {
                 ++out[1];
-                if (auto scale = clip.Transform().try_as<Media::ScaleTransform>(); scale && scale.CenterX() == 0) ++out[2];
+                if (y >= 0 && y <= SHELL_MOTION_TRAVEL_DIP && row.Opacity() >= 0 && row.Opacity() <= 1 && !row.Clip()) ++out[2];
             }
             auto visual = winrt::Microsoft::UI::Xaml::Hosting::ElementCompositionPreview::GetElementVisual(row);
             winrt::Windows::Foundation::Numerics::float3 shift{};

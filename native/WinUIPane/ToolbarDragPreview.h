@@ -1,5 +1,6 @@
 #pragma once
 #include "shell_core.h"
+#include "ShellMotion.h"
 #include <winrt/Windows.UI.ViewManagement.h>
 #include <winrt/Microsoft.UI.Xaml.Hosting.h>
 
@@ -27,7 +28,7 @@ struct ToolbarDragPreview {
     }
     void Animate(Positions const& before,bool animate) {
         using winrt::Microsoft::UI::Xaml::Hosting::ElementCompositionPreview;
-        animate=animate && winrt::Windows::UI::ViewManagement::UISettings().AnimationsEnabled();
+        animate=animate && ShellMotion::Enabled();
         for(auto const& [element,x]:before) {
             ElementCompositionPreview::SetIsTranslationEnabled(element,true);
             auto visual=ElementCompositionPreview::GetElementVisual(element);
@@ -36,8 +37,8 @@ struct ToolbarDragPreview {
             // StartingValue includes any in-flight preview, avoiding jumps on rapid reversals.
             shift.SetScalarParameter(L"delta",x-element.ActualOffset().x);
             shift.InsertExpressionKeyFrame(0,L"this.StartingValue + delta");
-            shift.InsertKeyFrame(1,0,visual.Compositor().CreateCubicBezierEasingFunction({0.2f,0.7f},{0.3f,1.f}));
-            shift.Duration(std::chrono::milliseconds(160));
+            shift.InsertKeyFrame(1,0,ShellMotion::Ease(visual.Compositor()));
+            shift.Duration(ShellMotion::Duration(ShellMotion::Kind::Reposition));
             visual.Properties().StartAnimation(L"Translation.X",shift);
         }
     }

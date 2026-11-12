@@ -8,12 +8,14 @@
 use std::collections::BTreeMap;
 
 /// Shared structural motion duration, also used by the native host.
-pub const SETTLE_MS: f64 = crate::motion::TAB_MOTION_MS as f64;
+pub const SETTLE_MS: f64 = crate::motion::SHELL_MOTION_REPOSITION_MS as f64;
 /// Bound on simultaneously settling elements.
 pub const MAX_SETTLING: usize = 4096;
 
 pub const SHELL_SETTLE_TAB: u32 = 0;
 pub const SHELL_SETTLE_HEADER: u32 = 1;
+/// Shared progress clock for a WinUI exit/layout checkpoint sequence.
+pub const SHELL_SETTLE_CLOCK: u32 = 2;
 
 /// One element's current composition offset and horizontal scale.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
@@ -25,7 +27,7 @@ pub struct ShellSettleSample {
 }
 
 /// Sample the same structural curve used by XAML and Composition.
-pub fn ease(t: f64) -> f64 { crate::motion::ease(t) }
+pub fn ease(t: f64) -> f64 { crate::motion::reposition(t) }
 
 #[derive(Clone, Copy)]
 struct Hold { dx: f32, sx: f32, start: f64 }
@@ -70,14 +72,14 @@ mod tests {
         assert_eq!(ease(0.0), 0.0);
         assert!((ease(1.0) - 1.0).abs() < 1e-9);
         // Ease-out: well ahead of linear early, monotonic throughout.
-        assert!(ease(0.25) > 0.5);
+        assert!(ease(0.25) > 0.25);
         let mut last = 0.0;
         for step in 1..=100 {
             let value = ease(step as f64 / 100.0);
             assert!(value >= last);
             last = value;
         }
-        assert!((ease(0.5) - 0.875).abs() < 0.01);
+        assert!((ease(0.33125) - 0.70625).abs() < 1e-8);
     }
 
     #[test]
@@ -108,6 +110,18 @@ mod tests {
         assert!(!settle.sample(SHELL_SETTLE_HEADER, 3, SETTLE_MS + 1.0).active);
         settle.clear();
         assert!(!settle.advance(0.0));
+    }
+
+    #[test]
+    fn checkpoint_clock_does_not_alias_rows_or_headers() {
+        let mut settle = Settle::default();
+        settle.hold(SHELL_SETTLE_CLOCK, 0, 1.0, 1.0, 100.0);
+        settle.hold(SHELL_SETTLE_TAB, 0, 20.0, 0.5, 100.0);
+        assert_eq!(settle.sample(SHELL_SETTLE_CLOCK, 0, 100.0).dx, 1.0);
+        let mid = settle.sample(SHELL_SETTLE_CLOCK, 0, 100.0 + SETTLE_MS / 2.0);
+        assert!(mid.active && mid.dx > 0.0 && mid.dx < 1.0);
+        assert_eq!(settle.sample(SHELL_SETTLE_TAB, 0, 100.0).dx, 20.0);
+        assert_eq!(settle.sample(SHELL_SETTLE_CLOCK, 0, 100.0 + SETTLE_MS).dx, 0.0);
     }
 
     #[test]

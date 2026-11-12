@@ -9,6 +9,7 @@
 #include "PinnedExtensionButtons.h"
 #include "ToolbarCustomization.h"
 #include "ToolbarDragPreview.h"
+#include "ToolbarMotion.h"
 #include "HistoryMenu.h"
 #include "DownloadsPanel.h"
 #include "ProfileMenu.h"
@@ -85,6 +86,8 @@ struct NativeNavigationToolbar {
     NativePrivacyPanel clearPrivatePanel{SHELL_PRIVACY_PANEL_KIND_CLEAR_PRIVATE,L"clearPrivatePanel",L"FennClearPrivatePanel"};
     NativeProductMenu productMenu;
     ToolbarDragPreview preview;
+    ToolbarMotion motion;
+    bool layoutRunning{};
     bool keyboardActivation{};
     bool stopping{}, hasOverflow{}, requiredOverflow{}, overflowQueued{}, rootObserved{};
     NativeToolbarCustomization::State layoutState;
@@ -306,7 +309,10 @@ struct NativeNavigationToolbar {
         Automation::AutomationProperties::SetAutomationId(privateLabel,L"FennPrivateIndicatorLabel");
         customization.editorChanged=[this]{Layout(layoutState);};
         customization.dragEnded=[this]{preview.Reset();};
+        host.Unloaded([this,alive=std::weak_ptr<int>(lifetime)](auto&&,auto&&){if(!alive.expired())motion.Cancel();});
         preview.arrange=[this](auto const& order,bool extra){Arrange(order,extra);};
+        customization.presentationMoving=[this]{return motion.waiting || motion.phase!=ToolbarMotion::Phase::Idle;};
+        motion.finished=[this,alive=std::weak_ptr<int>(lifetime)]{if(!alive.expired())customization.RestoreKeyboardFocus();};
         host.AllowDrop(true);
         // The editor is not light-dismissed, so a press on anything in the row
         // other than a placed control (which can be dragged or edited) closes it.
@@ -395,6 +401,7 @@ struct NativeNavigationToolbar {
         auto palette=customization.previews.find(customization.dragId);
         const double paletteWidth=palette!=customization.previews.end() && palette->second.ActualWidth()>0
             ? palette->second.ActualWidth():ToolbarMetrics::kButton;
+        motion.Cancel();
         preview.Begin(host,ordered,dropSlots,customization.dragId,customization.dragRevision,paletteWidth);
         uint32_t index;
         if(!preview.Hit(x,host.FlowDirection()==Microsoft::UI::Xaml::FlowDirection::RightToLeft,index))return false;
@@ -421,7 +428,11 @@ struct NativeNavigationToolbar {
     void Layout(NativeToolbarCustomization::State const& state) {
         using namespace Microsoft::UI::Xaml;
         using namespace Microsoft::UI::Xaml::Controls;
-        if(!host || preview.changing)return;
+        if(!host || preview.changing || layoutRunning)return;
+        layoutRunning=true;
+        struct LayoutGuard { bool& running; ~LayoutGuard(){running=false;} } guard{layoutRunning};
+        const bool animatePlacement=visible && layoutState.revision && state.revision && host.IsLoaded() && ShellMotion::Enabled();
+        auto before=animatePlacement?ToolbarMotion::Capture(host,ordered):ToolbarMotion::Positions{};
         if(customization.editing && !customization.dragging)customization.PlacePopup();
         if(preview.active) {
             if(visible && customization.dragging && customization.editing && state.revision==preview.revision &&
@@ -548,12 +559,13 @@ struct NativeNavigationToolbar {
             if(commandState.indicators[1].shown)desired.push_back(indicatorButtons[1]);
         }
         for(auto it=dragHosts.begin();it!=dragHosts.end();) {
-            if(!keepDrag.contains(it->first)){if(it->second.Children().Size())it->second.Children().GetAt(0).IsHitTestVisible(true);it->second.Children().Clear();it=dragHosts.erase(it);}else ++it;
+            if(!keepDrag.contains(it->first)){if(!animatePlacement){if(it->second.Children().Size())it->second.Children().GetAt(0).IsHitTestVisible(true);it->second.Children().Clear();}it=dragHosts.erase(it);}else ++it;
         }
         for(auto it=stock.rows.begin();it!=stock.rows.end();) {
             if(!keepDrag.contains(it->first))it=stock.rows.erase(it);else ++it;
         }
         if(desired==ordered && arrangedCollapsed==!customization.editing)return;
+        motion.Cancel();
         // Retain the editor and flyout anchor while changing placement columns.
         for(uint32_t i=host.Children().Size();i>0;i--) {
             auto child=host.Children().GetAt(i-1);
@@ -571,6 +583,9 @@ struct NativeNavigationToolbar {
         for(auto it=spacers.begin();it!=spacers.end();) {if(!keep.contains(it->first))it=spacers.erase(it);else ++it;}
         Arrange(desired,false);
         ordered=std::move(desired);
+        if(animatePlacement && !before.empty()) {
+            try { motion.Schedule(host,std::move(before),ordered); } catch (...) { motion.Cancel(); }
+        }
     }
     // Flexible spaces take no width outside customization: the default layout
     // is the controls and the address field with fixed gaps.

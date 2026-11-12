@@ -31,6 +31,7 @@ struct NativeToolbarCustomization {
     uint64_t focusRevision{};
 
     std::function<void()> editorChanged,dragEnded,clearPreviews;
+    std::function<bool()> presentationMoving;
     std::function<Microsoft::UI::Xaml::FrameworkElement(Item const&)> createPreview;
     std::map<winrt::hstring,Microsoft::UI::Xaml::FrameworkElement> previews;
     winrt::Windows::Graphics::Imaging::SoftwareBitmap dragBitmap{nullptr};
@@ -176,7 +177,8 @@ struct NativeToolbarCustomization {
         // Wait for both MenuFlyout's anchor restoration and the refreshed palette
         // containers. A removed toolbar item cannot receive palette focus before
         // realization, even when its new collection entry is already present.
-        if(itemMenuOpen || palettePending || focusAfterChange.empty() || state.revision==focusRevision)return;
+        if(itemMenuOpen || palettePending || focusAfterChange.empty() || state.revision==focusRevision ||
+            (presentationMoving && presentationMoving()))return;
         auto id=focusAfterChange;focusAfterChange=L"";auto revision=state.revision;auto alive=std::weak_ptr<int>(lifetime);
         anchor.DispatcherQueue().TryEnqueue([this,alive,id,revision]{
             if(alive.expired() || !editing || state.revision!=revision)return;

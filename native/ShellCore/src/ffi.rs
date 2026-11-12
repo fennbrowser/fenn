@@ -2337,7 +2337,7 @@ mod tests {
             let core = core();
             let (mut sample, mut active) = (ShellSettleSample::default(), false);
             assert_eq!(shell_core_settle_hold(core, SHELL_SETTLE_HEADER, 7, -30.0, 1.0, 10.0), ShellStatus::Ok);
-            assert_eq!(shell_core_settle_hold(core, 2, 7, 0.0, 1.0, 10.0), ShellStatus::InvalidArgument);
+            assert_eq!(shell_core_settle_hold(core, 3, 7, 0.0, 1.0, 10.0), ShellStatus::InvalidArgument);
             assert_eq!(shell_core_settle_hold(core, SHELL_SETTLE_TAB, 7, f32::NAN, 1.0, 10.0), ShellStatus::InvalidArgument);
             assert_eq!(shell_core_settle_sample(core, SHELL_SETTLE_HEADER, 7, 10.0, &mut sample), ShellStatus::Ok);
             assert_eq!(sample, ShellSettleSample { active: true, dx: -30.0, sx: 1.0 });
@@ -2901,7 +2901,7 @@ pub unsafe extern "C" fn shell_core_glow_settle(
 #[no_mangle]
 pub unsafe extern "C" fn shell_core_settle_hold(core: *mut ShellCore, kind: u32, id: u32, dx: f32, sx: f32, start_ms: f64) -> ShellStatus {
     guard(core, |core| {
-        if kind > crate::settle::SHELL_SETTLE_HEADER || !dx.is_finite() || !sx.is_finite() || !start_ms.is_finite() {
+        if kind > crate::settle::SHELL_SETTLE_CLOCK || !dx.is_finite() || !sx.is_finite() || !start_ms.is_finite() {
             return ShellStatus::InvalidArgument;
         }
         if core.settle.hold(kind, id, dx, sx, start_ms) { ShellStatus::Ok } else { ShellStatus::TooLarge }

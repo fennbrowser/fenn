@@ -69,7 +69,14 @@ struct NativeAddress {
     void ArrangeEditor() {
         using namespace Microsoft::UI::Xaml::Controls;
         if (!addressSlot || !addressLayer || !addressSlot.XamlRoot()) return;
-        auto point = addressSlot.TransformToVisual(addressLayer).TransformPoint({0,0});
+        // The editor is in a separate canvas. Its layout follows the slot's
+        // arranged position; a compositor expression below follows slot motion.
+        // Sampling TransformToVisual here would bake a delayed animated offset
+        // into layout and make the editor jump during toolbar exit holds.
+        auto slotOffset = addressSlot.ActualOffset();
+        auto point = toolbarRow.TransformToVisual(addressLayer).TransformPoint({slotOffset.x,slotOffset.y});
+        auto editorVisual = Microsoft::UI::Xaml::Hosting::ElementCompositionPreview::GetElementVisual(root);
+        editorVisual.Properties().InsertScalar(L"FollowToolbarMotion",newTab.enabled?0.f:1.f);
         double width = (std::max)(0.0, addressSlot.ActualWidth()-16);
         double left = point.X+8, top = point.Y+4;
         if (newTab.enabled) {
@@ -1293,6 +1300,20 @@ struct NativeAddress {
         newTab.Create(addressLayer);
         addressLayer.Children().InsertAt(1,root);
         toolbarRoot.Children().Append(addressLayer);
+        {
+            using Microsoft::UI::Xaml::Hosting::ElementCompositionPreview;
+            ElementCompositionPreview::SetIsTranslationEnabled(addressSlot,true);
+            ElementCompositionPreview::SetIsTranslationEnabled(root,true);
+            auto slotVisual=ElementCompositionPreview::GetElementVisual(addressSlot);
+            auto editorVisual=ElementCompositionPreview::GetElementVisual(root);
+            slotVisual.Properties().InsertVector3(L"Translation",{0,0,0});
+            editorVisual.Properties().InsertVector3(L"Translation",{0,0,0});
+            editorVisual.Properties().InsertScalar(L"FollowToolbarMotion",1);
+            auto follow=editorVisual.Compositor().CreateExpressionAnimation(L"slot.Translation.X * editor.FollowToolbarMotion");
+            follow.SetReferenceParameter(L"slot",slotVisual.Properties());
+            follow.SetReferenceParameter(L"editor",editorVisual.Properties());
+            editorVisual.Properties().StartAnimation(L"Translation.X",follow);
+        }
         toolbarRoot.Children().Append(bookmarksToolbar.root);
         toolbarRoot.LayoutUpdated([this, alive = std::weak_ptr<int>(lifetime)](auto const&,auto const&) {
             if (!alive.expired()) ArrangeEditor();

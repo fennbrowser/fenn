@@ -332,7 +332,10 @@ struct InlineTabGroups {
                 if (stale || (holdScroll && holdScroll())) args.Handled(true);
                 // StartBringTabIntoView pads the tab by 2 DIP; keep that pad.
                 else {
-                    if (const auto limit = float(tab.ActualWidth()) + 2 - rect.X; tab.ActualWidth() > 0 && rect.Width > limit) {
+                    // An entering tab may have requested only the 2-DIP pad
+                    // before it was measured. Expand that stale request too,
+                    // otherwise overflow reveals only its leading edge.
+                    if (const auto limit = float(tab.ActualWidth()) + 2 - rect.X; tab.ActualWidth() > 0 && rect.Width != limit) {
                         rect.Width = std::max(0.f, limit);
                         args.TargetRect(rect);
                     }
