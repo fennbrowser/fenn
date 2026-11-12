@@ -133,6 +133,69 @@ async fn verify(
     )
     .await
 }
+const MAX_ANCHORS: usize = 8;
+/// Each shipped trust root keeps its own TUF record. A browser that ships a new
+/// root starts from it instead of failing forever on the old record, and a
+/// downgrade returns to the older root's record with its version progress.
+/// Bundle rollback stays bounded by the offline store's sequence watermark.
+pub(crate) fn anchor_state(state: &Path, identity: &str) -> Result<PathBuf> {
+    fs::create_dir_all(state)?;
+    regular(state)?;
+    let keyed = state.join(format!("anchor-{identity}"));
+    if !keyed.exists() {
+        adopt_legacy(state, identity, &keyed)?;
+    }
+    if !keyed.exists() {
+        let anchors = fetch_jobs::entries(state, 64)?
+            .into_iter()
+            .filter(|p| {
+                p.file_name()
+                    .and_then(|s| s.to_str())
+                    .is_some_and(|s| s.starts_with("anchor-"))
+            })
+            .count();
+        if anchors >= MAX_ANCHORS {
+            return Err("trust anchor record bound exceeded".into());
+        }
+    }
+    Ok(keyed)
+}
+/// Records from the former single-anchor layout keep their rollback and freeze
+/// progress: a valid record for this anchor is adopted with one directory rename.
+/// A corrupt record still fails closed; another anchor's record is left alone.
+fn adopt_legacy(state: &Path, identity: &str, keyed: &Path) -> Result<()> {
+    let legacy = state.join("state.json");
+    if !legacy.exists() {
+        return Ok(());
+    }
+    let bytes = read(&legacy, 8 * META)?;
+    let record: serde_json::Value =
+        serde_json::from_slice(&bytes).map_err(|_| "legacy trust record integrity mismatch")?;
+    let payload = &record["payload"];
+    if record["sha256"] != hex_hash(&serde_json::to_vec(payload)?) || payload["schema"] != 1 {
+        return Err("legacy trust record integrity mismatch".into());
+    }
+    if payload["anchor"] != identity {
+        return Ok(());
+    }
+    let staging = tempfile::Builder::new()
+        .prefix("adopt-")
+        .tempdir_in(state)?;
+    {
+        use std::io::Write;
+        let mut file = fs::File::create(staging.path().join("state.json"))?;
+        file.write_all(&bytes)?;
+        file.sync_all()?;
+    }
+    let staged = staging.keep();
+    if let Err(error) = fs::rename(&staged, keyed) {
+        let _ = fs::remove_dir_all(&staged);
+        if !keyed.exists() {
+            return Err(error.into());
+        }
+    }
+    Ok(())
+}
 async fn verify_transport<T: Transport + Send + Sync + 'static>(
     anchor: &Path,
     metadata: Url,
@@ -147,8 +210,8 @@ async fn verify_transport<T: Transport + Send + Sync + 'static>(
     if output.exists() {
         return Err("output already exists".into());
     }
-    let tx = state::Transaction::begin(state, &anchor)?;
     let identity = hex_hash(&anchor);
+    let tx = state::Transaction::begin(&anchor_state(state, &identity)?, &anchor)?;
     let trusted = read(&tx.work.path().join("root.json"), META)?;
     let repository = tough::RepositoryLoader::new(&trusted, metadata, targets)
         .transport(transport)

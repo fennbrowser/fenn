@@ -54,6 +54,10 @@ impl Fixture {
     fn path(&self, p: &str) -> PathBuf {
         self.temp.path().join(p)
     }
+    fn record(&self) -> PathBuf {
+        let anchor = fs::read(self.path("anchor.json")).unwrap();
+        self.path(&format!("state/anchor-{}", hex_hash(&anchor)))
+    }
     fn write(&self, name: &str, data: &[u8]) {
         fs::write(self.path(&format!("repo/metadata/{name}.json")), data).unwrap();
     }
@@ -206,7 +210,7 @@ fn missing_state_and_clock_rollback_fail_closed() {
     ] {
         let f = Fixture::new();
         f.run("valid").unwrap();
-        let path = f.path("state/state.json");
+        let path = f.record().join("state.json");
         let mut record: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
         record["payload"]["files"]
             .as_object_mut()
@@ -217,7 +221,7 @@ fn missing_state_and_clock_rollback_fail_closed() {
     }
     let f = Fixture::new();
     f.run("valid").unwrap();
-    let tx = state::Transaction::begin(&f.path("state"), &fs::read(f.path("anchor.json")).unwrap())
+    let tx = state::Transaction::begin(&f.record(), &fs::read(f.path("anchor.json")).unwrap())
         .unwrap();
     fs::write(
         tx.work.path().join("latest_known_time.json"),
@@ -243,17 +247,87 @@ fn bounds_and_single_writer_reject() {
     f.rejects("huge-descriptor");
     let f = Fixture::new();
     let _tx =
-        state::Transaction::begin(&f.path("state"), &fs::read(f.path("anchor.json")).unwrap())
+        state::Transaction::begin(&f.record(), &fs::read(f.path("anchor.json")).unwrap())
             .unwrap();
     f.rejects("busy");
 }
 #[test]
-fn changed_bootstrap_does_not_reset_trust() {
+fn changed_bootstrap_keeps_each_anchor_record() {
     let f = Fixture::new();
     f.run("valid").unwrap();
+    let old_anchor = fs::read(f.path("anchor.json")).unwrap();
+    let old_record = f.record().join("state.json");
+    let old_bytes = fs::read(&old_record).unwrap();
+    // The repository rotates its root and a later browser ships that root.
+    let next = Key::new();
+    let new_anchor = root(&next, 2, &[&f.key, &next]);
+    f.write("2.root", &new_anchor);
+    f.publish(&next, 2, None);
+    fs::write(f.path("anchor.json"), &new_anchor).unwrap();
+    assert_eq!(f.run("new-anchor").unwrap()["root_version"], 2);
+    assert_eq!(fs::read(&old_record).unwrap(), old_bytes);
+    assert!(f.record().join("state.json").exists());
+    // An unrelated root cannot adopt the repository or alter either record.
     let other = Key::new();
     fs::write(f.path("anchor.json"), root(&other, 1, &[&other])).unwrap();
-    f.rejects("changed-anchor");
+    f.rejects("unrelated-anchor");
+    assert_eq!(fs::read(&old_record).unwrap(), old_bytes);
+    // A downgrade resumes the original anchor's own record.
+    fs::write(f.path("anchor.json"), &old_anchor).unwrap();
+    assert_eq!(f.run("downgrade").unwrap()["root_version"], 2);
+}
+#[test]
+fn legacy_record_is_adopted_with_its_rollback_history() {
+    let f = Fixture::new();
+    f.publish(&f.key, 2, None);
+    f.run("newer").unwrap();
+    // Recreate the former single-anchor layout.
+    let legacy = f.path("state/state.json");
+    fs::rename(f.record().join("state.json"), &legacy).unwrap();
+    fs::remove_dir_all(f.record()).unwrap();
+    let legacy_bytes = fs::read(&legacy).unwrap();
+    f.publish(&f.key, 1, None);
+    f.rejects("legacy-rollback");
+    assert!(f.record().join("state.json").exists());
+    assert_eq!(fs::read(&legacy).unwrap(), legacy_bytes);
+    // Without adoption the same rollback would bootstrap and be accepted.
+    let fresh = Fixture::new();
+    fresh.publish(&fresh.key, 1, None);
+    fresh.run("fresh").unwrap();
+}
+#[test]
+fn legacy_record_corruption_fails_closed_and_other_anchor_is_left_alone() {
+    let f = Fixture::new();
+    fs::create_dir(f.path("state")).unwrap();
+    fs::write(f.path("state/state.json"), b"truncated").unwrap();
+    f.rejects("corrupt-legacy");
+    assert!(!f.record().exists());
+    let f = Fixture::new();
+    f.run("valid").unwrap();
+    fs::rename(f.record().join("state.json"), f.path("state/state.json")).unwrap();
+    fs::remove_dir_all(f.record()).unwrap();
+    let legacy_bytes = fs::read(f.path("state/state.json")).unwrap();
+    let next = Key::new();
+    let new_anchor = root(&next, 2, &[&f.key, &next]);
+    f.write("2.root", &new_anchor);
+    f.publish(&next, 2, None);
+    fs::write(f.path("anchor.json"), &new_anchor).unwrap();
+    assert_eq!(f.run("new-anchor").unwrap()["root_version"], 2);
+    assert_eq!(fs::read(f.path("state/state.json")).unwrap(), legacy_bytes);
+}
+#[test]
+fn anchor_records_are_bounded_but_existing_records_stay_usable() {
+    let f = Fixture::new();
+    f.run("valid").unwrap();
+    for n in 0..crate::MAX_ANCHORS - 1 {
+        fs::create_dir(f.path(&format!("state/anchor-{n:064x}"))).unwrap();
+    }
+    f.run("existing").unwrap();
+    let other = Key::new();
+    fs::write(f.path("anchor.json"), root(&other, 1, &[&other])).unwrap();
+    let error = f.run("over-bound").unwrap_err().to_string();
+    assert!(error.contains("anchor record bound"), "{error}");
+    assert!(!f.record().exists());
 }
 #[test]
 fn rejected_refresh_preserves_verified_root_rotation() {

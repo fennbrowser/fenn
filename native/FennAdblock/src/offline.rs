@@ -378,7 +378,7 @@ fn state(root: &Path) -> Result<State, String> {
     validate_state(s)
 }
 fn validate_state(s: State) -> Result<State, String> {
-    if s.quarantined.len() > 16
+    if s.quarantined.len() > QUARANTINE
         || s.active
             .iter()
             .chain(s.previous.iter())
@@ -388,6 +388,19 @@ fn validate_state(s: State) -> Result<State, String> {
         return Err("invalid state identities".into());
     }
     Ok(s)
+}
+const QUARANTINE: usize = 16;
+// Quarantine only avoids re-preparing a bundle known to fail here. Evicting the
+// oldest entry is safe: the watermark still refuses older sequences, and an
+// evicted bundle is prepared and validated again before it can become active.
+fn quarantine(s: &mut State, id: String) {
+    if s.quarantined.contains(&id) {
+        return;
+    }
+    if s.quarantined.len() >= QUARANTINE {
+        s.quarantined.remove(0);
+    }
+    s.quarantined.push(id);
 }
 fn write_state(root: &Path, old: &State, new: &State) -> Result<(), String> {
     atomic(&root.join("state.previous.json"), &encode(old)?)?;
@@ -539,10 +552,7 @@ pub fn startup_assets(profile: &Path, assets: Option<&Path>) -> Prepared {
             }
             Err(e) => {
                 recovery = e;
-                if s.quarantined.len() >= 16 {
-                    return Err("quarantine bound exceeded".into());
-                }
-                s.quarantined.push(id);
+                quarantine(&mut s, id);
             }
         }
     }
@@ -1121,6 +1131,33 @@ mod tests {
         assert!(commit(candidate, "").is_err());
         assert!(stage(&p.0, &p.bundle(1, "||one.example^"), generation).is_err());
     }
+    #[test]
+    fn full_quarantine_evicts_oldest_and_still_recovers() {
+        let p = Profile::new();
+        let first = commit(stage(&p.0, &p.bundle(1, "||one.example^"), 0).unwrap(), "").unwrap().digest;
+        let second = commit(stage(&p.0, &p.bundle(2, "||two.example^"), 1).unwrap(), "").unwrap().digest;
+        let r = root(&p.0).unwrap();
+        let mut full = state(&r).unwrap();
+        let old = full.clone();
+        full.quarantined = (0..QUARANTINE).map(|n| format!("{n:064x}")).collect();
+        write_state(&r, &old, &full).unwrap();
+        // Damaged active bundle: recovery uses the previous bundle, not an error.
+        fs::write(r.join("bundles").join(&second).join("rules.txt"), b"torn").unwrap();
+        assert_eq!(startup(&p.0).unwrap().1["offlineDigest"], json!(first));
+        let after = state(&r).unwrap();
+        assert_eq!(after.quarantined.len(), QUARANTINE);
+        assert_eq!(after.quarantined.last(), Some(&second));
+        assert!(!after.quarantined.contains(&format!("{:064x}", 0)));
+        // Both bundles damaged: the packaged baseline still starts.
+        fs::write(r.join("bundles").join(&first).join("rules.txt"), b"torn").unwrap();
+        let (_, stats) = startup(&p.0).unwrap();
+        assert!(stats["offlineDigest"].is_null());
+        let after = state(&r).unwrap();
+        assert_eq!(after.quarantined.len(), QUARANTINE);
+        assert!(after.quarantined.contains(&first) && after.quarantined.contains(&second));
+        assert!(after.active.is_none());
+    }
+
     #[test]
     fn retention_bounds_updates_and_preserves_both_recovery_records() {
         let p = Profile::new();
