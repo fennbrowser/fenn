@@ -1515,7 +1515,7 @@ index 122165dba99..d9fff8f2189 100644
 +    args[0] = panelNode.ownerDocument.defaultView.gWinUIPane?.addressToolbar?.omnibar?.anchorFor(args[0]) || args[0];
      let panelMultiViewNode = panelNode.querySelector("panelmultiview");
 diff --git a/browser/components/customizableui/content/panelUI.js b/browser/components/customizableui/content/panelUI.js
-index fb77346559b..d186d417cc5 100644
+index fb77346559b..44211c47d5b 100644
 --- a/browser/components/customizableui/content/panelUI.js
 +++ b/browser/components/customizableui/content/panelUI.js
 @@ -350,3 +350,3 @@ const PanelUI = {
@@ -1534,11 +1534,6 @@ index fb77346559b..d186d417cc5 100644
 +      }
 +      let anchor = nativeAnchor || this._getPanelAnchor(this.menuButton);
        await PanelMultiView.openPopup(this.panel, anchor, {
-@@ -1123,3 +1129,3 @@ const PanelUI = {
- 
--    let anchor = this._getPanelAnchor(this.menuButton);
-+    let anchor = nativeAnchor || this._getPanelAnchor(this.menuButton);
- 
 diff --git a/browser/components/downloads/content/downloads.js b/browser/components/downloads/content/downloads.js
 index 311e0d736c7..a61d9457612 100644
 --- a/browser/components/downloads/content/downloads.js
@@ -4726,12 +4721,12 @@ index 4d1c2c0aa62..6b99705753c 100644
 +
  }
 diff --git a/browser/components/urlbar/content/SmartbarInput.mjs b/browser/components/urlbar/content/SmartbarInput.mjs
-index 62b27dc8d0c..9bad2aa732f 100644
+index 62b27dc8d0c..161986999be 100644
 --- a/browser/components/urlbar/content/SmartbarInput.mjs
 +++ b/browser/components/urlbar/content/SmartbarInput.mjs
 @@ -4,2 +4,11 @@
  
-+import { executeUrlbarPasteAndGo } from "chrome://browser/content/urlbar/UrlbarClipboardText.mjs";
++import { executeUrlbarPasteAndGo, planUrlbarCut, planUrlbarPaste } from "chrome://browser/content/urlbar/UrlbarClipboardText.mjs";
 +import { UrlbarCompositionModel } from "chrome://browser/content/urlbar/UrlbarCompositionModel.mjs";
 +import { UrlbarAutofillModel } from "chrome://browser/content/urlbar/UrlbarAutofillModel.mjs";
 +import { UrlbarQueryModel } from "chrome://browser/content/urlbar/UrlbarQueryModel.mjs";
@@ -5954,14 +5949,12 @@ index a04f9639217..8b05a8db78c 100644
 +    if (!this.#destroyed) this.engineStore.receive(...args);
    }
 diff --git a/browser/components/urlbar/content/UrlbarChildTelemetry.mjs b/browser/components/urlbar/content/UrlbarChildTelemetry.mjs
-index 73fef3a888a..da4dae59c91 100644
+index 73fef3a888a..38ae738eb3a 100644
 --- a/browser/components/urlbar/content/UrlbarChildTelemetry.mjs
 +++ b/browser/components/urlbar/content/UrlbarChildTelemetry.mjs
-@@ -154,4 +154,4 @@ export class UrlbarChildTelemetry {
-       if (snapshot) {
--        let { input, view } = this.#controller;
+@@ -155,3 +155,3 @@ export class UrlbarChildTelemetry {
+         let { input, view } = this.#controller;
 -        let engagementData = UrlbarTelemetryUtils.engagementData(input, view);
-+        let { input } = this.#controller;
 +        let engagementData = UrlbarTelemetryUtils.engagementData(input);
          let smartbarData = UrlbarTelemetryUtils.smartbarData(input);
 @@ -321,4 +321,4 @@ export class UrlbarChildTelemetry {
@@ -6030,13 +6023,13 @@ index 4172241eafb..ce3917f8f7c 100644
 +    // Refresh the stored context with the results-bearing one: onQueryArmed
      // armed the bufferer with the pre-query context, whose results are
 diff --git a/browser/components/urlbar/content/UrlbarInputBase.mjs b/browser/components/urlbar/content/UrlbarInputBase.mjs
-index 9bf6ad33a0f..8c40e2038d1 100644
+index 9bf6ad33a0f..ee2f99c1af3 100644
 --- a/browser/components/urlbar/content/UrlbarInputBase.mjs
 +++ b/browser/components/urlbar/content/UrlbarInputBase.mjs
 @@ -4,2 +4,8 @@
  
 +import { formatUrlbarClipboardText, planUrlbarCut, planUrlbarPaste, executeUrlbarPasteAndGo } from "chrome://browser/content/urlbar/UrlbarClipboardText.mjs";
-+import { trimDisplayValue, loadedURIValue, losslessDecodeDisplaySpec, losslessDecodeURL, resultURLValue } from "chrome://browser/content/urlbar/UrlbarUrlValue.mjs";
++import { trimDisplayValue, loadedURIValue, resultURLValue } from "chrome://browser/content/urlbar/UrlbarUrlValue.mjs";
 +import { UrlbarResultPresentation } from "chrome://browser/content/urlbar/UrlbarResultPresentation.mjs";
 +import { UrlbarResultActions } from "chrome://browser/content/urlbar/UrlbarResultActions.mjs";
 +import { UrlbarSearchModeModel } from "chrome://browser/content/urlbar/UrlbarSearchModeModel.mjs";
@@ -14498,10 +14491,10 @@ index 00000000000..1faf496e025
 +<html id="fenn-native-newtab"><head><meta charset="utf-8"></head><body></body></html>
 diff --git a/browser/base/content/WinUINewTabPage.sys.mjs b/browser/base/content/WinUINewTabPage.sys.mjs
 new file mode 100644
-index 00000000000..01a9e00a04b
+index 00000000000..8a4ad101f8c
 --- /dev/null
 +++ b/browser/base/content/WinUINewTabPage.sys.mjs
-@@ -0,0 +1,261 @@
+@@ -0,0 +1,262 @@
 +// Firefox owns new-tab eligibility and shortcut destinations. The native page
 +// consumes the existing address publication (a ShellCore Session stream).
 +import {authorizeNewTabWindow} from "chrome://browser/content/WinUINewTabDocument.sys.mjs";
@@ -14630,6 +14623,7 @@ index 00000000000..01a9e00a04b
 +      // an internal presentation replacement, not a destination change. Use
 +      // Firefox's setter to retain the latest value, including newer edits;
 +      // never restore an earlier captured string after asynchronous work.
++      // eslint-disable-next-line no-self-assign
 +      if (browser.userTypedValue != null) browser.userTypedValue=browser.userTypedValue;
 +    } catch {}
 +  }
@@ -15216,10 +15210,10 @@ index 00000000000..a5aa3b66cc6
 +}
 diff --git a/browser/base/content/WinUIAutomaticStartup.sys.mjs b/browser/base/content/WinUIAutomaticStartup.sys.mjs
 new file mode 100644
-index 00000000000..714829a81e0
+index 00000000000..155d1e4deac
 --- /dev/null
 +++ b/browser/base/content/WinUIAutomaticStartup.sys.mjs
-@@ -0,0 +1,256 @@
+@@ -0,0 +1,255 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -15388,8 +15382,7 @@ index 00000000000..714829a81e0
 +  if (!automaticStartupRequested()) return;
 +  const pane = window.gWinUIPane;
 +  if (pane.automaticStartup) return;
-+  const root = window.document.documentElement;
-+  const state = pane.automaticStartup = { phase: "probing" };
++  pane.automaticStartup = { phase: "probing" };
 +  const { transferStartup } = ChromeUtils.importESModule("chrome://browser/content/WinUIStartupTransfer.sys.mjs");
 +  // The chrome stays hidden while probing; the answer takes one turn of the native thread.
 +  transferStartup(window, { version: 1, operation: 15 })
@@ -15532,7 +15525,7 @@ index 00000000000..40de554e099
 +#endif
 diff --git a/browser/base/content/WinUIStartupTransfer.sys.mjs b/browser/base/content/WinUIStartupTransfer.sys.mjs
 new file mode 100644
-index 00000000000..a2a263f90d0
+index 00000000000..22f46dd4403
 --- /dev/null
 +++ b/browser/base/content/WinUIStartupTransfer.sys.mjs
 @@ -0,0 +1,483 @@
@@ -15719,7 +15712,7 @@ index 00000000000..a2a263f90d0
 +// One lease, one execution, one terminal acknowledgment. A wake is a hint, not
 +// permission to replay an in-flight command. Failure freezes automatic draining.
 +export class WinUIStartupConnection {
-+  constructor(identity, consumer, transport, schedule = callback => setTimeout(callback, 0)) {
++  constructor(identity, consumer, transport, schedule) {
 +    this.identity = Object.freeze({ ...identity });
 +    this.consumer = consumer;
 +    this.transport = transport;

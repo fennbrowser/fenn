@@ -151,6 +151,14 @@ def fast(checks, tools):
     checks.run("JavaScript contracts", [tools["node"], "--test", *js_tests],
                missing=problem or (None if tools["node"] else "Node is missing; run the doctor.")
                or (None if js_tests else "No JavaScript test files found."))
+    if problem or tools["node"] is None:
+        checks.run("Patch JavaScript runtime lint", [], missing=problem or "Node is missing; run the doctor.")
+    elif (checks.root / "upstream/firefox/node_modules/eslint/bin/eslint.js").is_file():
+        checks.run("Patch JavaScript runtime lint", [python, "scripts/Check-PatchJavaScript.py"])
+    else:
+        # The sparse CI reconstruction has no Firefox node_modules; do not fail it for that.
+        checks.record("Patch JavaScript runtime lint", "NOT RUN",
+                      "Firefox's ESLint is not installed; run `mach eslint --setup` in upstream/firefox.")
     checks.run("Python unit tests", [python, "-m", "unittest", "discover", "-s", "tests", "-p", "test_*.py", "-v"])
     checks.run("ShellCore generated header", [python, "scripts/Export-ShellCoreHeader.py", "--check"],
                missing=None if tools["cbindgen"] and tools["cargo"] else "cbindgen and Cargo are required; run the doctor.")
