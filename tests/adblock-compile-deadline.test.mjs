@@ -11,13 +11,13 @@ source = source.replace(/^import .*;$/gm, () => stubbed ? "" : (stubbed = true,
   "class FennAdblockDomRunner { start() {} stop() {} }"));
 const {FennAdblockChild} = await import("data:text/javascript;base64," + Buffer.from(source).toString("base64"));
 
-async function run({elapsed=5,large=false,revoke=false,sandbox=null}={}) {
+async function run({elapsed=5,large=false,revoke=false,scriptable=()=>true}={}) {
   let now=0,enabled=true;
   const events=[];
   globalThis.Services={prefs:{getBoolPref:name=>name.endsWith("enabled") ? enabled : false,getIntPref:()=>100},
     cpmm:{sharedData:new Map([["FennAdblock:ResourceToken","current"]])}};
   const compiled={executeInGlobal:()=>events.push("execute")};
-  globalThis.ChromeUtils={now:()=>now,
+  globalThis.ChromeUtils={now:()=>now,fennScriptsAllowed:win=>{assert.equal(win,actor.contentWindow);return scriptable(events);},
     compileFennScript:()=>{now=elapsed;return compiled;},
     compileScript:async()=>{now=elapsed;return compiled;}};
   globalThis.fixtureTimer=(callback,delay)=>{
@@ -25,7 +25,7 @@ async function run({elapsed=5,large=false,revoke=false,sandbox=null}={}) {
     return delay+1;
   };
   const actor=new FennAdblockChild();
-  actor.document={sandboxFlagsAsString:sandbox,nodePrincipal:{origin:"https://example.com"},blockParsing:promise=>promise.then(()=>events.push("parser"))};
+  actor.document={nodePrincipal:{origin:"https://example.com"},blockParsing:promise=>promise.then(()=>events.push("parser"))};
   actor.contentWindow={};
   actor.manager={innerWindowId:1,windowContext:{topWindowContext:{innerWindowId:1}}};
   actor.configureCosmetics=()=>{};
@@ -47,10 +47,18 @@ test("permission revocation during overdue yield prevents late execution",async(
   const {events,timing}=await run({elapsed:105,revoke:true});
   assert.deepEqual(events,["parser"]);assert.equal(timing.stale,true);
 });
-test("sandboxed documents without allow-scripts never compile or run scriptlets",async()=>{
-  const {events,timing}=await run({sandbox:"allow-same-origin"});
+test("documents that may not run script never compile or run scriptlets",async()=>{
+  const {events,timing}=await run({scriptable:()=>false});
   assert.deepEqual(events,["parser"]);assert.equal(timing.injected,false);assert.equal(timing.compileMode,undefined);
-  assert.deepEqual((await run({sandbox:"allow-scripts"})).events,["execute","parser"]);
+});
+test("script disabled after compilation prevents execution",async()=>{
+  let checks=0;
+  const {events,timing}=await run({scriptable:()=>++checks===1});
+  assert.equal(checks,2);assert.deepEqual(events,["parser"]);assert.equal(timing.injected,false);assert.equal(timing.compileMode,"inline");
+});
+test("a throwing script check fails closed",async()=>{
+  const {events}=await run({scriptable:()=>{throw new Error("dead window");}});
+  assert.deepEqual(events,["parser"]);
 });
 test("null-principal documents start only with a content precursor",()=>{
   globalThis.Services={prefs:{getBoolPref:()=>true}};

@@ -9971,13 +9971,20 @@ index b5ed380f179..84de0e70ef0 100644
 +	@touch $@
  endif
 diff --git a/dom/base/ChromeUtils.h b/dom/base/ChromeUtils.h
-index 6e926af9087..bc721b03f04 100644
+index 6e926af9087..ba9bae2cd86 100644
 --- a/dom/base/ChromeUtils.h
 +++ b/dom/base/ChromeUtils.h
-@@ -162,2 +162,5 @@ class ChromeUtils {
+@@ -16,2 +16,3 @@
+ 
++class nsGlobalWindowInner;
+ class nsIRFPTargetSetIDL;
+@@ -162,2 +163,8 @@ class ChromeUtils {
  
 +  static already_AddRefed<PrecompiledScript> CompileFennScript(
 +      GlobalObject& aGlobal, const nsAString& aSource, ErrorResult& aRv);
++
++  static bool FennScriptsAllowed(GlobalObject& aGlobal,
++                                 nsGlobalWindowInner& aWindow);
 +
    static UniquePtr<MozQueryInterface> GenerateQI(
 diff --git a/dom/base/nsDOMWindowUtils.cpp b/dom/base/nsDOMWindowUtils.cpp
@@ -10197,16 +10204,23 @@ index b39212b1c97..fb9220ed391 100644
 +
  static LazyLogModule sApzZoomToFocusedInputLog("apz.zoomtofocusedinput");
 diff --git a/dom/chrome-webidl/ChromeUtils.webidl b/dom/chrome-webidl/ChromeUtils.webidl
-index 9253a4a0af1..54831306f2e 100644
+index 9253a4a0af1..6504654aea3 100644
 --- a/dom/chrome-webidl/ChromeUtils.webidl
 +++ b/dom/chrome-webidl/ChromeUtils.webidl
-@@ -685,2 +685,8 @@ partial namespace ChromeUtils {
+@@ -685,2 +685,15 @@ partial namespace ChromeUtils {
  
 +  /** Fenn-owned bounded compilation for authenticated document-start scriptlets.
 +   * No URL loading or evaluation. Execution retains PrecompiledScript semantics.
 +   */
 +  [Throws, NewObject]
 +  PrecompiledScript compileFennScript(DOMString source);
++
++  /** Whether the window's current document may run script now, by the same
++   * check Gecko's script loader applies: sandbox flags, allowJavascript on the
++   * document and its ancestors, javascript.enabled/script policy and bfcache.
++   * PrecompiledScript.executeInGlobal does not apply it itself.
++   */
++  boolean fennScriptsAllowed(Window window);
 +
    /**
 diff --git a/dom/interfaces/base/nsIDOMWindowUtils.idl b/dom/interfaces/base/nsIDOMWindowUtils.idl
@@ -11481,19 +11495,21 @@ index 30846e96272..985c9f8934e 100644
      /* the nativeWindow pointer is converted to and exposed as a string. This
 diff --git a/js/xpconnect/loader/FennScriptCompiler.cpp b/js/xpconnect/loader/FennScriptCompiler.cpp
 new file mode 100644
-index 00000000000..88fdec71299
+index 00000000000..eb1605c5341
 --- /dev/null
 +++ b/js/xpconnect/loader/FennScriptCompiler.cpp
-@@ -0,0 +1,47 @@
+@@ -0,0 +1,55 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 +
 +#include "mozilla/dom/ChromeUtils.h"
++#include "mozilla/dom/Document.h"
 +#include "mozilla/dom/PrecompiledScript.h"
 +#include "js/CompileOptions.h"
 +#include "js/SourceText.h"
 +#include "js/experimental/CompileScript.h"
++#include "nsGlobalWindowInner.h"
 +#include "nsIGlobalObject.h"
 +
 +namespace mozilla::dom {
@@ -11529,6 +11545,12 @@ index 00000000000..88fdec71299
 +  RefPtr<PrecompiledScript> script =
 +      new PrecompiledScript(aGlobal.GetAsSupports(), stencil, options);
 +  return script.forget();
++}
++
++bool ChromeUtils::FennScriptsAllowed(GlobalObject& aGlobal,
++                                     nsGlobalWindowInner& aWindow) {
++  Document* doc = aWindow.GetExtantDoc();
++  return doc && aWindow.IsCurrentInnerWindow() && doc->IsScriptEnabled();
 +}
 +
 +}  // namespace mozilla::dom
@@ -12716,10 +12738,10 @@ index 00000000000..8041e8a9625
 +}
 diff --git a/browser/components/fennadblock/FennAdblockChild.sys.mjs b/browser/components/fennadblock/FennAdblockChild.sys.mjs
 new file mode 100644
-index 00000000000..d47d7763575
+index 00000000000..e86d9750f5a
 --- /dev/null
 +++ b/browser/components/fennadblock/FennAdblockChild.sys.mjs
-@@ -0,0 +1,407 @@
+@@ -0,0 +1,408 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -12738,9 +12760,10 @@ index 00000000000..d47d7763575
 +    doc.contentType === "text/html";
 +}
 +
-+function scriptsAllowed(doc) {
-+  const flags = doc?.sandboxFlagsAsString;
-+  return flags == null || flags.split(" ").includes("allow-scripts");
++// executeInGlobal bypasses the script loader's check, so apply it here: sandbox
++// flags, allowJavascript on this and ancestor documents, and script policy.
++function scriptsAllowed(win) {
++  try { return !!win && ChromeUtils.fennScriptsAllowed(win); } catch (_) { return false; }
 +}
 +
 +export class FennAdblockChild extends JSWindowActorChild {
@@ -12792,7 +12815,7 @@ index 00000000000..d47d7763575
 +      if (!this.preparedIsCurrent(value)) { return null; }
 +      let script = null;
 +      const start = ChromeUtils.now();
-+      if (value.resources.injected_script && scriptsAllowed(this.document)) {
++      if (value.resources.injected_script && scriptsAllowed(this.contentWindow)) {
 +        const source = "(() => { const scriptletGlobals = new Map();\n" + value.resources.injected_script + "\n})();";
 +        this.compileMode = source.length <= 128 * 1024 ? "inline" : "async";
 +        script = this.compileMode === "inline" ? ChromeUtils.compileFennScript(source) :
@@ -12880,7 +12903,7 @@ index 00000000000..d47d7763575
 +      if (!current()) { stale = true; return; }
 +      const resources = prepared.value.resources;
 +      compileMs = prepared.compileMs;
-+      if (prepared.script) {
++      if (prepared.script && scriptsAllowed(win)) {
 +        phase = "execute";
 +        const executeStart = ChromeUtils.now();
 +        prepared.script.executeInGlobal(win, {reportExceptions:true});
