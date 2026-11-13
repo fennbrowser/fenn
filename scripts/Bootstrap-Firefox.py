@@ -24,6 +24,11 @@ def git_env():
     for key in ("GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_COMMON_DIR",
                 "GIT_OBJECT_DIRECTORY", "GIT_ALTERNATE_OBJECT_DIRECTORIES"):
         env.pop(key, None)
+    # The target is a fresh independent clone whose sparse checkout lazily
+    # fetches blobs from its own promisor remote. A caller's lazy-fetch block
+    # (the promotion runner sets one to protect the project object stores)
+    # does not apply to it and would break that checkout.
+    env.pop("GIT_NO_LAZY_FETCH", None)
     env["GIT_TERMINAL_PROMPT"] = "0"
     return env
 

@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 import tempfile
 import unittest
+import unittest.mock
 
 spec = importlib.util.spec_from_file_location("bootstrap", Path(__file__).resolve().parents[1] / "scripts/Bootstrap-Firefox.py")
 bootstrap = importlib.util.module_from_spec(spec)
@@ -63,6 +64,13 @@ class BootstrapTests(unittest.TestCase):
     def test_configured_remote_transport(self):
         bootstrap.prepare(self.project)
         self.assertEqual((self.project / "upstream/firefox/sample.txt").read_bytes(), b"second\n")
+
+    def test_git_env_drops_inherited_redirects_and_lazy_fetch_block(self):
+        with unittest.mock.patch.dict(bootstrap.os.environ, {"GIT_DIR": "elsewhere", "GIT_NO_LAZY_FETCH": "1"}):
+            env = bootstrap.git_env()
+        self.assertNotIn("GIT_DIR", env)
+        self.assertNotIn("GIT_NO_LAZY_FETCH", env)
+        self.assertEqual(env["GIT_TERMINAL_PROMPT"], "0")
 
     def test_sparse_checkout_holds_checked_areas_and_patch_targets(self):
         for name in ("browser/kept.txt", "nested/target/patched.txt", "outside/skipped.txt"):
