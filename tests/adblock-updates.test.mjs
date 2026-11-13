@@ -16,6 +16,17 @@ test("first check waits two minutes and successful check persists daily cadence"
   const f=fixture();await f.schedule.start();assert.equal(f.delay(),2*MINUTE);assert.equal(f.checks,0);
   await f.schedule.tick();assert.equal(f.checks,1);assert.equal(f.delay(),DAY);assert.equal(f.schedule.state.lastSuccess,f.now);
 });
+test("enabling in a running browser checks a due update after ten seconds",async()=>{
+  for(const state of [null,{schema:1,next:1,failures:0,lastSuccess:1}]){
+    const f=fixture({read:()=>state});await f.schedule.start({prompt:true});assert.equal(f.delay(),10000);assert.equal(f.checks,0);
+  }
+});
+test("a prompt start keeps the daily cadence and failure backoff",async()=>{
+  const recent=fixture({read:()=>({schema:1,next:100*DAY+20*60*MINUTE,failures:0,lastSuccess:100*DAY-4*60*MINUTE})});
+  await recent.schedule.start({prompt:true});assert.equal(recent.delay(),20*60*MINUTE);
+  const failing=fixture({read:()=>({schema:1,next:100*DAY+2*60*MINUTE,failures:2})});
+  await failing.schedule.start({prompt:true});assert.equal(failing.delay(),2*60*MINUTE);
+});
 test("restart preserves next due time and does not duplicate timers",async()=>{
   const f=fixture({read:()=>({schema:1,next:100*DAY+8*60*MINUTE,failures:0})});await f.schedule.start();await f.schedule.start();
   assert.equal(f.delay(),8*60*MINUTE);assert.equal(f.timers.size,1);

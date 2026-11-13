@@ -11663,10 +11663,10 @@ index 00000000000..85c03ebaf82
 +}
 diff --git a/browser/components/fennadblock/FennAdblockService.sys.mjs b/browser/components/fennadblock/FennAdblockService.sys.mjs
 new file mode 100644
-index 00000000000..fb954bc7948
+index 00000000000..ef5f42dcb88
 --- /dev/null
 +++ b/browser/components/fennadblock/FennAdblockService.sys.mjs
-@@ -0,0 +1,858 @@
+@@ -0,0 +1,863 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -11884,7 +11884,8 @@ index 00000000000..fb954bc7948
 +          this.testNotice = new FennAdblockTestNotice(this);
 +          this.testNotice.start();
 +        }
-+        this.startUpdates();
++        this.startUpdates({prompt:this.promptUpdates});
++        this.promptUpdates = false;
 +      } catch (error) {
 +        if (revision === this.revision && !this.shuttingDown) {
 +          this.error = String(error);
@@ -12073,7 +12074,7 @@ index 00000000000..fb954bc7948
 +    wait().catch(() => finish(false));
 +  },
 +
-+  startUpdates() {
++  startUpdates({prompt = false} = {}) {
 +    if (!this.active || this.shuttingDown || this.updateScheduler ||
 +        Services.prefs.getBoolPref("fenn.adblock.prototype.testing", false) ||
 +        !Services.prefs.getBoolPref("fenn.adblock.updates.enabled", true)) { return; }
@@ -12086,7 +12087,7 @@ index 00000000000..fb954bc7948
 +      eligible:() => this.updateNetworkAllowed(), check:() => this.installFromURL(PRODUCTION_UPDATE_URL),
 +      abort:() => { this.costProcess?.kill(); if (this.fetcher) { this.cancelUpdate(); } },
 +    });
-+    this.updateScheduler.start().catch(() => {});
++    this.updateScheduler.start({prompt}).catch(() => {});
 +  },
 +
 +  updateControls() {
@@ -12257,10 +12258,14 @@ index 00000000000..fb954bc7948
 +    }
 +    if (topic === "nsPref:changed") {
 +      if (data === "fenn.adblock.updates.enabled") {
-+        if (Services.prefs.getBoolPref(data, true)) { this.startUpdates(); }
++        if (Services.prefs.getBoolPref(data, true)) { this.startUpdates({prompt:true}); }
 +        else { this.updateScheduler?.stop(); this.updateScheduler = null; }
 +        this.notifyState();
-+      } else { this.update(); }
++      } else {
++        // Enabling in a running browser checks a due update soon after the engine is ready.
++        if (data === PREF && Services.prefs.getBoolPref(PREF, false)) { this.promptUpdates = true; }
++        this.update();
++      }
 +      return;
 +    }
 +    if (topic === "quit-application-granted") {
@@ -12527,15 +12532,16 @@ index 00000000000..fb954bc7948
 +};
 diff --git a/browser/components/fennadblock/FennAdblockUpdates.sys.mjs b/browser/components/fennadblock/FennAdblockUpdates.sys.mjs
 new file mode 100644
-index 00000000000..fb00ab4cfcc
+index 00000000000..f1316338061
 --- /dev/null
 +++ b/browser/components/fennadblock/FennAdblockUpdates.sys.mjs
-@@ -0,0 +1,87 @@
+@@ -0,0 +1,92 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 +export const PRODUCTION_UPDATE_URL = "https://updates.fennbrowser.com/adblock/stable-v1/";
-+const MINUTE = 60000;
++const SECOND = 1000;
++const MINUTE = 60 * SECOND;
 +const DAY = 24 * 60 * MINUTE;
 +const RETRY = [30 * MINUTE, 2 * 60 * MINUTE, 8 * 60 * MINUTE, DAY];
 +
@@ -12547,7 +12553,9 @@ index 00000000000..fb00ab4cfcc
 +    this.stopped = true;
 +    this.running = false;
 +  }
-+  async start() {
++  // prompt: the user just turned blocking or updates on in a running browser.
++  // A due check then runs shortly after instead of after the startup deferral.
++  async start({prompt = false} = {}) {
 +    if (!this.stopped) { return; }
 +    this.stopped = false;
 +    let value;
@@ -12563,12 +12571,14 @@ index 00000000000..fb00ab4cfcc
 +    if (!["never", "current", "failed", "checking"].includes(this.state.outcome)) { this.state.outcome = "never"; }
 +    this.changed();
 +    // Every browser start defers traffic beyond the first-window critical path.
-+    this.arm(Math.max(2 * MINUTE, this.state.next - now));
++    // Saved backoff and the daily cadence still apply to a prompt start.
++    const floor = prompt ? 10 * SECOND : 2 * MINUTE;
++    this.arm(Math.max(floor, this.state.next - now), floor);
 +  }
-+  arm(delay) {
++  arm(delay, floor = MINUTE) {
 +    if (this.stopped) { return; }
 +    this.clearTimer(this.timer);
-+    this.timer = this.setTimer(() => { this.tick().catch(() => this.arm(60 * MINUTE)); }, Math.max(MINUTE, delay));
++    this.timer = this.setTimer(() => { this.tick().catch(() => this.arm(60 * MINUTE)); }, Math.max(floor, delay));
 +  }
 +  stop() {
 +    this.stopped = true;
