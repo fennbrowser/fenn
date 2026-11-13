@@ -24,3 +24,6 @@
 # Persistent DPAPI-protected trial feed signing state; never public history.
 /.private/adblock-trial/
 /.private/adblock-production/
+
+# Lockfile-pinned tool installs
+tools/wrangler/node_modules/
