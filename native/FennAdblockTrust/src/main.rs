@@ -262,7 +262,7 @@ async fn verify_transport<T: Transport + Send + Sync + 'static>(
     for (name, data) in &verified {
         fs::write(temporary.path().join(name), data)?;
     }
-    let receipt = serde_json::json!({"schema":1,"verifier":"tough-0.24.0","transport":label,
+    let receipt = serde_json::json!({"schema":1,"verifier":concat!("tough-", env!("FENN_TOUGH_VERSION")),"transport":label,
         "root_version":repository.root().signed.version.get(),"timestamp_version":repository.timestamp().signed.version.get(),
         "snapshot_version":repository.snapshot().signed.version.get(),"targets_version":repository.targets().signed.version.get(),
         "expires_unix":([repository.root().signed.expires,repository.timestamp().signed.expires,repository.snapshot().signed.expires,repository.targets().signed.expires].iter().map(|t|t.as_second()).min()),

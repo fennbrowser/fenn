@@ -29,7 +29,22 @@ pub fn network_cost()->Value {
             (vtable.release)(object);result>=0
         } else {false};
         CoUninitialize();
-        // Unknown, fixed, variable, roaming, over-limit and congestion defer.
-        json!({"allowed":ok && flags==1,"flags":flags})
+        json!({"allowed":ok && allowed(flags),"flags":flags})
+    }
+}
+/// NLM_CONNECTION_COST flags. Following Windows' metered-connection guidance,
+/// an unknown cost is treated as unrestricted: deferring it would let filter
+/// lists expire on networks Windows cannot classify. Fixed and variable
+/// (metered) plans, roaming, congestion and approaching or exceeding a data
+/// limit defer. A failed query still defers.
+fn allowed(flags:u32)->bool { flags==0 || flags==1 }
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn unknown_and_unrestricted_allow_metered_and_limits_defer() {
+        assert!(super::allowed(0) && super::allowed(1));
+        for flags in [2, 4, 1 | 0x10000, 1 | 0x20000, 1 | 0x40000, 1 | 0x80000, 0x20000] {
+            assert!(!super::allowed(flags), "{flags:#x}");
+        }
     }
 }
