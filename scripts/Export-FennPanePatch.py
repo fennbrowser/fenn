@@ -53,6 +53,32 @@ def git(*args, **kwargs):
                           stdout=subprocess.PIPE, **kwargs).stdout
 
 
+def normalize_line_endings():
+    """Restore LF in exported sources that a Windows tool rewrote as CRLF.
+
+    Firefox is LF; a CRLF rewrite would turn every line of the file into a patch
+    change. Only files whose pinned version (or, for added files, Firefox's
+    convention) is LF are touched.
+    """
+    repaired = []
+    for path in [*TRACKED, *ADDED]:
+        source = CHECKOUT / path
+        if not source.is_file():
+            continue
+        data = source.read_bytes()
+        if b"\r" not in data:
+            continue
+        if path in TRACKED:
+            pinned = subprocess.run(["git", "show", f"{BASE}:{path}"], cwd=CHECKOUT,
+                                    capture_output=True).stdout
+            if b"\r\n" in pinned:
+                continue
+        source.write_bytes(data.replace(b"\r\n", b"\n"))
+        repaired.append(path)
+    if repaired:
+        print("Restored LF line endings: " + ", ".join(repaired))
+
+
 def check_export_scope():
     """Reject tracked source edits that the explicit export lists would omit."""
     changed = git("diff", BASE, "--name-only", "-z").decode("utf-8").split("\0")
@@ -68,6 +94,7 @@ def check_export_scope():
 if __name__ == "__main__":
     if git("rev-parse", "HEAD").decode().strip() != BASE:
         raise SystemExit("Pinned Firefox base changed; review before exporting")
+    normalize_line_endings()
     if (ROOT / "bridge/WinUIPaneApi.h").read_bytes() != (CHECKOUT / ADDED[-1]).read_bytes():
         raise SystemExit("The canonical and Firefox pane ABI headers differ")
     check_export_scope()
