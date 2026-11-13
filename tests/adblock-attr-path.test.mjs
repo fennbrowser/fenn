@@ -48,3 +48,12 @@ test('path polling tracks background changes, retains bounded keys and cancels',
  r.pollStyles();const id=r.styleTimer;timers.get(id).f();timers.delete(id);assert.equal(r.lastPath,'/shop');assert.notEqual(r.timer,null);
  w.location.pathname='/'+ 'x'.repeat(9000);const id2=r.styleTimer;timers.get(id2).f();timers.delete(id2);assert.equal(r.lastPath,'');r.stop();assert.equal(timers.size,0);assert.equal(r.lastPath,null);
 });
+test('path poll compares against the path the last pass evaluated',async()=>{
+ const {FennAdblockDomRunner}=await import('../upstream/firefox/browser/components/fennadblock/FennAdblockDom.sys.mjs');
+ let next=0;const timers=new Map();
+ const w={document:{hidden:true,createTreeWalker:()=>({nextNode:()=>null})},location:{pathname:'/shop',search:''}};
+ const r=new FennAdblockDomRunner(w,{rules:[{operators:compile('matches-path','/shop').operators}],counts:{}},p,{setTimer:(f,d)=>{timers.set(++next,{f,d});return next},clearTimer:id=>timers.delete(id),current:()=>true,now:()=>0});
+ r.lastPath='/shop';w.location.pathname='/else';r.dirty=true;r.drain();assert.equal(r.lastPath,'/else');
+ w.location.pathname='/shop';r.pollStyles();const id=r.styleTimer;timers.get(id).f();timers.delete(id);
+ assert.equal(r.pollPending,true);r.stop();
+});

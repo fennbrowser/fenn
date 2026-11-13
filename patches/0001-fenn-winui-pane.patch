@@ -13129,10 +13129,10 @@ index 00000000000..d47d7763575
 +}
 diff --git a/browser/components/fennadblock/FennAdblockDom.sys.mjs b/browser/components/fennadblock/FennAdblockDom.sys.mjs
 new file mode 100644
-index 00000000000..804897db866
+index 00000000000..2ef61aca736
 --- /dev/null
 +++ b/browser/components/fennadblock/FennAdblockDom.sys.mjs
-@@ -0,0 +1,258 @@
+@@ -0,0 +1,265 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -13193,9 +13193,7 @@ index 00000000000..804897db866
 +    this.styleTimer = this.setTimer(() => {
 +      this.styleTimer = null;
 +      if (!this.current()) { this.stop(); return; }
-+      let path = this.hasPath ? this.win.location.pathname + this.win.location.search : null;
-+      // Retain a bounded comparison key, not an arbitrarily long page URL.
-+      if (path !== null && path.length > this.policy.procedural_path_max_chars) { path = ""; }
++      const path = this.hasPath ? this.currentPath() : null;
 +      // Route changes must reconcile owned hides even in background documents.
 +      // Computed-style-only polling remains restricted to visible documents.
 +      if ((this.hasComputedStyle && !this.win.document.hidden) || path !== this.lastPath) {
@@ -13204,6 +13202,11 @@ index 00000000000..804897db866
 +      this.lastPath = path;
 +      this.pollStyles();
 +    }, this.policy.procedural_css_poll_ms);
++  }
++  // Retain a bounded comparison key, not an arbitrarily long page URL.
++  currentPath() {
++    const path = this.win.location.pathname + this.win.location.search;
++    return path.length > this.policy.procedural_path_max_chars ? "" : path;
 +  }
 +  schedule(delay = 25) {
 +    if (this.timer != null || this.counts.stopped) { return; }
@@ -13287,6 +13290,10 @@ index 00000000000..804897db866
 +      this.rate.passes++; this.scan = {checks:0,work:0,mutations:0};
 +      const cached = !this.dirty && this.pollPending && this.candidates !== null;
 +      this.dirty = false; this.pollPending = false; this.counts.passes++; this.found.clear();
++      // A mutation-driven pass evaluates the current path, so the poll must
++      // compare against it: otherwise A -> B -> A within one poll interval
++      // leaves B's result applied while the page is back on A.
++      if (this.hasPath) { this.lastPath = this.currentPath(); }
 +      if (cached) {
 +        this.counts.cachedPasses++;
 +        const nodes = this.candidates; let index = 0;
