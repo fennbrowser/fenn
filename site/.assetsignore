@@ -1,3 +1,7 @@
 # Deployment files, not site content.
 wrangler.jsonc
 .assetsignore
+package.json
+package-lock.json
+node_modules
+.wrangler

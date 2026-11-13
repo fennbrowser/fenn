@@ -27,3 +27,4 @@
 
 # Lockfile-pinned tool installs
 tools/wrangler/node_modules/
+site/node_modules/
