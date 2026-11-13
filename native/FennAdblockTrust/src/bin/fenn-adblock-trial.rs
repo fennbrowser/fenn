@@ -1,8 +1,38 @@
-//! Development feed signing and Windows connection-cost checks. No production keys.
-use super::*;
+//! Development (trial) feed signing with a DPAPI-sealed single key. Never
+//! linked into or shipped with the browser; production uses fenn-adblock-sign.
+type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
+const META: u64 = 1024 * 1024;
+const TARGETS: [(&str, u64); 3] = [
+    ("descriptor.json", 65536),
+    ("rules.txt", 10 * 1024 * 1024),
+    ("provenance.json", META),
+];
+fn read(path: &Path, limit: u64) -> std::io::Result<Vec<u8>> {
+    use std::io::Read;
+    let meta = fs::symlink_metadata(path)?;
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+        if meta.file_attributes() & 0x400 != 0 {
+            return Err(std::io::Error::other("reparse point rejected"));
+        }
+    }
+    if !meta.is_file() {
+        return Err(std::io::Error::other("expected regular input file"));
+    }
+    let mut bytes = Vec::new();
+    fs::File::open(path)?.take(limit + 1).read_to_end(&mut bytes)?;
+    if bytes.len() as u64 > limit {
+        return Err(std::io::Error::other("input bound exceeded"));
+    }
+    Ok(bytes)
+}
+fn hex_hash(bytes: &[u8]) -> String {
+    hex(aws_lc_rs::digest::digest(&aws_lc_rs::digest::SHA256, bytes).as_ref())
+}
 use aws_lc_rs::signature::{Ed25519KeyPair, KeyPair};
 use serde_json::{json, Value};
-use std::{ffi::c_void, io::Write, ptr};
+use std::{ffi::c_void, fs, io::Write, path::Path, ptr};
 #[repr(C)]
 struct Blob { len: u32, data: *mut u8 }
 #[link(name="crypt32")]
@@ -75,35 +105,33 @@ pub fn publish(path:&Path,bundle:&Path,output:&Path,version:u64,expires:&str)->R
     fs::write(output.join("metadata/timestamp.json"),timestamp)?;
     Ok(json!({"version":version,"expires":expires,"root_sha256":hex_hash(&root)}))
 }
-#[repr(C)]
-struct Guid {a:u32,b:u16,c:u16,d:[u8;8]}
-#[link(name="ole32")]
-unsafe extern "system" {
-    fn CoInitializeEx(reserved:*mut c_void,flags:u32)->i32;
-    fn CoUninitialize();
-    fn CoCreateInstance(clsid:*const Guid,outer:*mut c_void,context:u32,iid:*const Guid,result:*mut *mut c_void)->i32;
-}
-#[repr(C)]
-struct CostVtable {
-    query:usize,add:usize,release:unsafe extern "system" fn(*mut c_void)->u32,
-    cost:unsafe extern "system" fn(*mut c_void,*mut u32,*const c_void)->i32,
-}
-pub fn network_cost()->Value {
-    // SDK netlistmgr.h: INetworkCostManager/GetCost, preferred machine route.
-    unsafe {
-        let init=CoInitializeEx(ptr::null_mut(),0);
-        if init<0 {return json!({"allowed":false,"error":"COM initialization"});}
-        let cls=Guid {a:0xdcb00c01,b:0x570f,c:0x4a9b,d:[0x8d,0x69,0x19,0x9f,0xdb,0xa5,0x72,0x3b]};
-        let iid=Guid {a:0xdcb00008,..cls};let mut object=ptr::null_mut();
-        let hr=CoCreateInstance(&cls,ptr::null_mut(),23,&iid,&mut object);
-        let mut flags=0;
-        let ok=if hr>=0 && !object.is_null() {
-            let vtable=&**(object as *const *const CostVtable);
-            let result=(vtable.cost)(object,&mut flags,ptr::null());
-            (vtable.release)(object);result>=0
-        } else {false};
-        CoUninitialize();
-        // Unknown, fixed, variable, roaming, over-limit and congestion defer.
-        json!({"allowed":ok && flags==1,"flags":flags})
+fn main() {
+    let args: Vec<_> = std::env::args_os().skip(1).collect();
+    let result = if args.len() == 3 && args[0] == "--trial-key" {
+        key(Path::new(&args[1]), &args[2].to_string_lossy())
+    } else if args.len() == 6 && args[0] == "--trial-publish" {
+        args[4]
+            .to_string_lossy()
+            .parse::<u64>()
+            .map_err(|e| Box::new(e) as Box<dyn std::error::Error>)
+            .and_then(|v| {
+                publish(
+                    Path::new(&args[1]),
+                    Path::new(&args[2]),
+                    Path::new(&args[3]),
+                    v,
+                    &args[5].to_string_lossy(),
+                )
+            })
+    } else {
+        eprintln!("usage: fenn-adblock-trial --trial-key KEY EXPIRES | --trial-publish KEY BUNDLE OUTPUT VERSION EXPIRES");
+        std::process::exit(2);
+    };
+    match result {
+        Ok(value) => println!("{value}"),
+        Err(error) => {
+            eprintln!("trial publication failed: {error}");
+            std::process::exit(1);
+        }
     }
 }

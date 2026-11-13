@@ -14,7 +14,7 @@ mod broker;
 mod fetch_jobs;
 mod http;
 mod state;
-mod trial;
+mod cost;
 #[cfg(test)]
 mod tests;
 const META: u64 = 1024 * 1024;
@@ -283,15 +283,8 @@ async fn verify_transport<T: Transport + Send + Sync + 'static>(
 }
 fn main() {
     let args: Vec<_> = std::env::args_os().skip(1).collect();
-    if args.len()==1 && args[0]=="--network-cost" { println!("{}",trial::network_cost()); return; }
-    let trial_result=if args.len()==3 && args[0]=="--trial-key" {
-        Some(trial::key(Path::new(&args[1]),&args[2].to_string_lossy()))
-    } else if args.len()==6 && args[0]=="--trial-publish" {
-        Some(args[4].to_string_lossy().parse::<u64>().map_err(|e|Box::new(e) as Box<dyn std::error::Error>).and_then(|v|
-            trial::publish(Path::new(&args[1]),Path::new(&args[2]),Path::new(&args[3]),v,&args[5].to_string_lossy())))
-    } else {None};
-    if let Some(result)=trial_result {
-        match result {Ok(value)=>println!("{}",value),Err(error)=>{eprintln!("trial publication failed: {error}");std::process::exit(1);}}
+    if args.len() == 1 && args[0] == "--network-cost" {
+        println!("{}", cost::network_cost());
         return;
     }
     let http = args.len() == 5 && args[1] == "--test-http";
