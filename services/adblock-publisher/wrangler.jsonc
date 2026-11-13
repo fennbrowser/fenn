@@ -1,0 +1,10 @@
+{
+  "name": "fenn-adblock-publisher",
+  "main": "worker.mjs",
+  "compatibility_date": "2026-11-11",
+  "workers_dev": false,
+  "preview_urls": false,
+  "routes": [{ "pattern": "updates.fennbrowser.com", "custom_domain": true }],
+  "r2_buckets": [{ "binding": "FILTERS", "bucket_name": "fenn-adblock-production" }],
+  "observability": { "enabled": false }
+}

@@ -1,0 +1,92 @@
+[
+  {
+    "name": "easylist.txt",
+    "url": "https://raw.githubusercontent.com/BrowserWorks/waterfox/9230b1e71d7856ab94c7c619832be653bf7f1d4f/waterfox/browser/components/blocker/assets/filters/easylist.txt",
+    "bytes": 2255829,
+    "sha256": "0e947efcc3cffb33146bc8aae68b4b6c6e3711195d083aea55b4cf580b6db1f2"
+  },
+  {
+    "name": "easyprivacy.txt",
+    "url": "https://raw.githubusercontent.com/BrowserWorks/waterfox/9230b1e71d7856ab94c7c619832be653bf7f1d4f/waterfox/browser/components/blocker/assets/filters/easyprivacy.txt",
+    "bytes": 1486468,
+    "sha256": "ab23211a1d2274cbc4351f77e417d36df1872fdc2bedd0a17309ecec00c5f740"
+  },
+  {
+    "name": "ublock-filters.txt",
+    "url": "https://raw.githubusercontent.com/BrowserWorks/waterfox/9230b1e71d7856ab94c7c619832be653bf7f1d4f/waterfox/browser/components/blocker/assets/filters/ublock-filters.txt",
+    "bytes": 476573,
+    "sha256": "0a7400e17f942dcf05e44a79673fc6ca51f837fd0a79db0ec4692cb98b765b1c"
+  },
+  {
+    "name": "ublock-filters-general.txt",
+    "url": "https://raw.githubusercontent.com/BrowserWorks/waterfox/9230b1e71d7856ab94c7c619832be653bf7f1d4f/waterfox/browser/components/blocker/assets/filters/ublock-filters-general.txt",
+    "bytes": 598891,
+    "sha256": "55035f4416016e3e3a4f5caf4b3af7de8eb45f82b546fe06bddc73190ed0ff8f"
+  },
+  {
+    "name": "ublock-unbreak.txt",
+    "url": "https://raw.githubusercontent.com/BrowserWorks/waterfox/9230b1e71d7856ab94c7c619832be653bf7f1d4f/waterfox/browser/components/blocker/assets/filters/ublock-unbreak.txt",
+    "bytes": 274401,
+    "sha256": "aa6a079294fe5105a83c4918c3d4c1f714d2e37c4aa287b06f678004e4abe593"
+  },
+  {
+    "name": "resources.json",
+    "url": "https://raw.githubusercontent.com/BrowserWorks/waterfox/9230b1e71d7856ab94c7c619832be653bf7f1d4f/waterfox/browser/components/blocker/assets/resources/resources.json",
+    "bytes": 673945,
+    "sha256": "257b7dff99f1b8bd6004cb482f6c6de598fd83be896d9879f990c7746f6d56bd"
+  },
+  {
+    "name": "ubo-scriptlets.json",
+    "url": "https://raw.githubusercontent.com/BrowserWorks/waterfox/9230b1e71d7856ab94c7c619832be653bf7f1d4f/waterfox/browser/components/blocker/assets/resources/ubo-scriptlets.json",
+    "bytes": 2274026,
+    "sha256": "48e7081570760f73234e2413d2def2bf681443b7bdaf0e6df8b6611b25d2abf7"
+  },
+  {
+    "name": "ublock-filters-2020.txt",
+    "url": "https://raw.githubusercontent.com/BrowserWorks/waterfox/9230b1e71d7856ab94c7c619832be653bf7f1d4f/waterfox/browser/components/blocker/assets/filters/ublock-filters-2020.txt",
+    "bytes": 129769,
+    "sha256": "faad6f82264ee17ac9380dc846ba9a512a227475d0515d3186e4e7a05b4048b2"
+  },
+  {
+    "name": "ublock-filters-2021.txt",
+    "url": "https://raw.githubusercontent.com/BrowserWorks/waterfox/9230b1e71d7856ab94c7c619832be653bf7f1d4f/waterfox/browser/components/blocker/assets/filters/ublock-filters-2021.txt",
+    "bytes": 167946,
+    "sha256": "78b8fc5d4c1cbea6a9a64d5576ea58ad329eab6595955c69ec88e153743d37eb"
+  },
+  {
+    "name": "ublock-filters-2022.txt",
+    "url": "https://raw.githubusercontent.com/BrowserWorks/waterfox/9230b1e71d7856ab94c7c619832be653bf7f1d4f/waterfox/browser/components/blocker/assets/filters/ublock-filters-2022.txt",
+    "bytes": 159850,
+    "sha256": "5bd37af31b78e861e703419442043b2e2407b62fc798f4c0a276fad46865d94f"
+  },
+  {
+    "name": "ublock-filters-2023.txt",
+    "url": "https://raw.githubusercontent.com/BrowserWorks/waterfox/9230b1e71d7856ab94c7c619832be653bf7f1d4f/waterfox/browser/components/blocker/assets/filters/ublock-filters-2023.txt",
+    "bytes": 216146,
+    "sha256": "92b99f70706050dc9b383b088dd3da25c83aad5bb7f40f1ffc0d16690821c1ad"
+  },
+  {
+    "name": "ublock-filters-2024.txt",
+    "url": "https://raw.githubusercontent.com/BrowserWorks/waterfox/9230b1e71d7856ab94c7c619832be653bf7f1d4f/waterfox/browser/components/blocker/assets/filters/ublock-filters-2024.txt",
+    "bytes": 233987,
+    "sha256": "f7209ff9e6dffb482b9d4271b8cc6c5bfecbf4e5dac8b913e4dcd7e484b1ac9d"
+  },
+  {
+    "name": "ublock-filters-2025.txt",
+    "url": "https://raw.githubusercontent.com/BrowserWorks/waterfox/9230b1e71d7856ab94c7c619832be653bf7f1d4f/waterfox/browser/components/blocker/assets/filters/ublock-filters-2025.txt",
+    "bytes": 166747,
+    "sha256": "6be6406e6486977a66be3159f6ca99cf774c23235eebdc13860295292d34cd8c"
+  },
+  {
+    "name": "ublock-filters-2026.txt",
+    "url": "https://raw.githubusercontent.com/BrowserWorks/waterfox/9230b1e71d7856ab94c7c619832be653bf7f1d4f/waterfox/browser/components/blocker/assets/filters/ublock-filters-2026.txt",
+    "bytes": 43830,
+    "sha256": "8a8ce584a03945d2032a4f942b4997304cddea26594b86382bf74a3f23a0db4a"
+  },
+  {
+    "name": "ublock-link-shorteners.txt",
+    "url": "https://raw.githubusercontent.com/BrowserWorks/waterfox/9230b1e71d7856ab94c7c619832be653bf7f1d4f/waterfox/browser/components/blocker/assets/filters/ublock-link-shorteners.txt",
+    "bytes": 125393,
+    "sha256": "6e0e679ed9910e13398b22046e8fe69076143a3ee3c74be413a3961e3dca79e3"
+  }
+]

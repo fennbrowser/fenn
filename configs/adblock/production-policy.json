@@ -1,0 +1,9 @@
+{
+  "schema": 1,
+  "base_url": "https://updates.fennbrowser.com/adblock/stable-v1/",
+  "root_sha256": "72068b7a9e3c75c9e83860398e8f8f04917cb1cedf14867dec06e0fa07b044da",
+  "catalog_sha256": "0973aa1614b44f7e9b083705194a5785013c7c6e1856537a4792f8071ae7dbb5",
+  "forbidden_key_ids": [
+    "e77686e25a88db43a7d3b8338000f36ad74f314bf035c550046afbde0667c9e7"
+  ]
+}
