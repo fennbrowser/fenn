@@ -18,7 +18,7 @@ test("attribute, functional, escaped and comment commas do not split members",()
 });
 test("malformed members and unbalanced syntax reject the entire list",()=>{
   const win={CSS:{supports:()=>true}};
-  for(const s of ['', ' ', ',.ad', '.ad,', '.ad,,.x', '.ad[', '.ad)', '[x="bad]', '.ad/*oops', '.ad([)]']) {
+  for(const s of ['', ' ', ',.ad', '.ad,', '.ad,,.x', '.ad[', '.ad)', '[x="bad]', '.ad/*oops', '.ad([)]', String.raw`.trail\ `.trim(), String.raw`.a, .trail\ `.trim()]) {
     assert.equal(isSupportedSelectorList(s,win),false,s);
   }
 });

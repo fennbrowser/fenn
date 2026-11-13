@@ -12706,10 +12706,10 @@ index 00000000000..8041e8a9625
 +}
 diff --git a/browser/components/fennadblock/FennAdblockChild.sys.mjs b/browser/components/fennadblock/FennAdblockChild.sys.mjs
 new file mode 100644
-index 00000000000..8797e5c6dc8
+index 00000000000..d47d7763575
 --- /dev/null
 +++ b/browser/components/fennadblock/FennAdblockChild.sys.mjs
-@@ -0,0 +1,395 @@
+@@ -0,0 +1,407 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -13060,24 +13060,32 @@ index 00000000000..8797e5c6dc8
 +    this.seenClasses = null; this.seenIds = null; this.selectors = null;
 +  }
 +
++  hideRule(selector, win) {
++    // Generic scans grow the set; validate each selector once per window.
++    if (this.ruleCacheWindow !== win) { this.ruleCache = new Map(); this.ruleCacheWindow = win; }
++    let rule = this.ruleCache.get(selector);
++    if (rule === undefined) {
++      rule = typeof selector === "string" && selector.length <= 4096 && isSupportedSelectorList(selector, win) ?
++        selector + "{display:none!important}\n" : null;
++      if (this.ruleCache.size < 20000) { this.ruleCache.set(selector, rule); }
++    }
++    return rule;
++  }
++
 +  applySelectors(selectors) {
 +    const win = this.contentWindow;
 +    // Separate valid selectors so one unsupported procedural expression cannot
 +    // invalidate every ordinary rule. Do not interpret filter text as CSS rules.
 +    let css = this.styleCss || "";
 +    for (const selector of selectors.slice(0,10000)) {
-+      if (typeof selector !== "string" || selector.length > 4096 || !isSupportedSelectorList(selector, win)) { continue; }
-+      const rule = selector + "{display:none!important}\n";
++      const rule = this.hideRule(selector, win);
++      if (rule === null) { continue; }
 +      if (css.length + rule.length > 1024 * 1024) { break; }
 +      css += rule;
 +    }
 +    const sheet = css ? "data:text/css," + encodeURIComponent(css) : null;
 +    if (sheet === this.sheet) { return; }
-+    if (this.sheet) {
-+      this.sheetWindowUtils.removeSheetUsingURIString(this.sheet, this.sheetWindowUtils.USER_SHEET);
-+      this.sheet = null;
-+      this.sheetWindowUtils = null;
-+    }
++    this.removeSheet();
 +    if (sheet) {
 +      win.windowUtils.loadSheetUsingURIString(sheet, win.windowUtils.USER_SHEET);
 +      this.sheet = sheet;
@@ -13085,6 +13093,14 @@ index 00000000000..8797e5c6dc8
 +      // Retain the sheet owner so cached documents can still be cleaned up.
 +      this.sheetWindowUtils = win.windowUtils;
 +    }
++  }
++
++  removeSheet() {
++    if (this.sheet) {
++      try { this.sheetWindowUtils.removeSheetUsingURIString(this.sheet, this.sheetWindowUtils.USER_SHEET); } catch (_) {}
++    }
++    this.sheet = null;
++    this.sheetWindowUtils = null;
 +  }
 +
 +  stop(preserveSheet = false) {
@@ -13097,11 +13113,7 @@ index 00000000000..8797e5c6dc8
 +    this.lifecycle = (this.lifecycle || 0) + 1;
 +    this.release?.(); this.release = null;
 +    if (this.timer) { clearTimeout(this.timer); this.timer = null; }
-+    if (this.sheet && !preserveSheet) {
-+      try { this.sheetWindowUtils.removeSheetUsingURIString(this.sheet, this.sheetWindowUtils.USER_SHEET); } catch (_) {}
-+      this.sheet = null;
-+      this.sheetWindowUtils = null;
-+    }
++    if (this.sheet && !preserveSheet) { this.removeSheet(); }
 +  }
 +  didDestroy() { this.stop(); }
 +}
@@ -13837,10 +13849,10 @@ index 00000000000..5d500478866
 +}
 diff --git a/browser/components/fennadblock/FennAdblockSelectors.sys.mjs b/browser/components/fennadblock/FennAdblockSelectors.sys.mjs
 new file mode 100644
-index 00000000000..f927800d2e1
+index 00000000000..c9ea530fab6
 --- /dev/null
 +++ b/browser/components/fennadblock/FennAdblockSelectors.sys.mjs
-@@ -0,0 +1,34 @@
+@@ -0,0 +1,36 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -13855,7 +13867,9 @@ index 00000000000..f927800d2e1
 +  let start = 0, quote = "";
 +  for (let i = 0; i < selector.length; i++) {
 +    const c = selector[i];
-+    if (c === "\\") { i++; continue; }
++    // Gecko accepts a trailing escape in a selector, but in a rule it would
++    // escape the block's "{" and swallow the following rule.
++    if (c === "\\") { if (++i >= selector.length) { return false; } continue; }
 +    if (quote) { if (c === quote) { quote = ""; } continue; }
 +    if (c === '"' || c === "'") { quote = c; continue; }
 +    if (c === "/" && selector[i + 1] === "*") {
