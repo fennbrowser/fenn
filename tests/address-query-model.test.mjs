@@ -9,7 +9,7 @@ const prefs={'maxRichResults':10,'smartbar.maxResults':5,'maxCharsForSearchSugge
 const sandbox=vm.createContext({UrlbarPrefs:{get:key=>prefs[key]},
   UrlbarShared:{RESULT_TYPE:{TIP:9},RESULT_SOURCE:{ACTIONS:7},isPasteEvent:e=>e.inputType?.startsWith('insertFromPaste') || e.inputType==='insertFromYank'},
   UrlbarQueryContext:class {constructor(options){Object.assign(this,options);}}});
-vm.runInContext(readFileSync(new URL('UrlbarQueryModel.mjs',root),'utf8').replace(/^import .*;$/gm,'')
+vm.runInContext(readFileSync(new URL('UrlbarQueryModel.mjs',root),'utf8').replace(/^import\b[^;]*;$/gm,'')
   .replace('export class UrlbarQueryModel','this.Model = class UrlbarQueryModel'),sandbox);
 const state={isPrivate:false,sapName:'urlbar'};
 const create=(s={},request={searchString:'query'})=>sandbox.Model.create({...state,...s},request);

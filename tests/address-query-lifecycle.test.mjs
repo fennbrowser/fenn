@@ -71,7 +71,7 @@ test('the real editor listener defers Enter during an engine wait and after old-
     setTimeout(){return 1;},clearTimeout(){},UrlbarPrefs:{get:()=>1000},
     UrlbarContentUtils:{getPlatform:()=> 'win'},UrlbarShared:{getLogger:()=>({debug(){}})}});
   const source=readFileSync(new URL('../upstream/firefox/browser/components/urlbar/content/UrlbarEventBufferer.mjs',import.meta.url),'utf8');
-  vm.runInContext(source.replace(/^import .*;$/gm,'').replace('export class UrlbarEventBufferer','this.Buffer = class UrlbarEventBufferer'),c);
+  vm.runInContext(source.replace(/^import\b[^;]*;$/gm,'').replace('export class UrlbarEventBufferer','this.Buffer = class UrlbarEventBufferer'),c);
   let listener;
   const input={inputField:{addEventListener(){}},view:{isOpen:true,selectedResult:{heuristic:true}},
     controller:{addListener(value){listener=value;},keyEventMovesCaret:()=>false}};
@@ -101,7 +101,7 @@ test('real child controller admits queries and local editor listeners without an
       QUERY_FIRST_RESULT:'onFirstResult',QUERY_FINISHED:'onQueryFinished',QUERY_CANCELLED:'onQueryCancelled'}},
     ChromeUtils:{defineESModuleGetters(target){target.UrlbarParentController=Parent;}}});
   const source=readFileSync(new URL('../upstream/firefox/browser/components/urlbar/content/UrlbarChildController.mjs',import.meta.url),'utf8');
-  vm.runInContext(source.replace(/^import .*;$/gm,'').replace('export class UrlbarChildController','this.Controller = class UrlbarChildController'),context);
+  vm.runInContext(source.replace(/^import\b[^;]*;$/gm,'').replace('export class UrlbarChildController','this.Controller = class UrlbarChildController'),context);
   const input={sapName:'urlbar',isPrivate:false,window:{windowGlobalChild:{getActor:()=>({})}},
     get eventBufferer(){throw Error('DOM bufferer read');}};
   const controller=new context.Controller({input});

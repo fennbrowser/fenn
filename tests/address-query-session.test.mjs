@@ -6,11 +6,11 @@ import {UrlbarQueryLifecycle} from '../upstream/firefox/browser/components/urlba
 
 const sharedPolicy=vm.createContext({structuredClone,URL,UrlbarContentUtils:{},UrlbarPrefs:{get:()=>false}});
 vm.runInContext(readFileSync(new URL('../upstream/firefox/browser/components/urlbar/content/UrlbarShared.mjs',import.meta.url),'utf8')
-  .replace(/^import .*;$/gm,'').replace('export const UrlbarShared','var UrlbarShared'),sharedPolicy);
+  .replace(/^import\b[^;]*;$/gm,'').replace('export const UrlbarShared','var UrlbarShared'),sharedPolicy);
 
 const resultActionsContext=vm.createContext({UrlbarPrefs:{get:()=>false},UrlbarContentUtils:{},UrlbarShared:{RESULT_TYPE:{}},UrlbarResult:class {}});
 vm.runInContext(readFileSync(new URL('../upstream/firefox/browser/components/urlbar/content/UrlbarResultActions.mjs',import.meta.url),'utf8')
-  .replace(/^import .*;\r?$/gm,'').replace('export class UrlbarResultActions','this.UrlbarResultActions = class UrlbarResultActions'),resultActionsContext);
+  .replace(/^import\b[^;]*;\r?$/gm,'').replace('export class UrlbarResultActions','this.UrlbarResultActions = class UrlbarResultActions'),resultActionsContext);
 const UrlbarResultActionsClass=resultActionsContext.UrlbarResultActions;
 
 function fixture({hold=false,uninitializedResults=false,onPresentationRequest=null,isPrivate=true,browserId}={}) {
@@ -40,7 +40,7 @@ function fixture({hold=false,uninitializedResults=false,onPresentationRequest=nu
     UrlbarQueryContext:class {constructor(options){Object.assign(this,options,{id:++id,results:uninitializedResults?undefined:[]});}},
     ChromeUtils:{defineESModuleGetters(target){target.UrlbarParentController=Parent;target.QuickSuggest={getFeature:()=>sandbox.backend};target.UrlUtils={LOOKS_LIKE_ORIGIN:{NONE:0},looksLikeOrigin:text=>text.includes(".")?1:0};target.UrlbarTokenizer={tokenize:context=>[{value:context.searchString}]};}}});
   vm.runInContext(readFileSync(new URL('../upstream/firefox/browser/components/urlbar/content/UrlbarUrlValue.mjs',import.meta.url),'utf8')
-    .replace(/^import .*;$/gm,'').replaceAll('export function ','function '),sandbox);
+    .replace(/^import\b[^;]*;$/gm,'').replaceAll('export function ','function '),sandbox);
   Object.assign(sandbox.UrlbarShared, {isSearchbarSAP:sharedPolicy.UrlbarShared.isSearchbarSAP.bind(sharedPolicy.UrlbarShared),getLoadRequestFromResult:sharedPolicy.UrlbarShared.getLoadRequestFromResult.bind(sharedPolicy.UrlbarShared),looksLikeSingleWordHost:sharedPolicy.UrlbarShared.looksLikeSingleWordHost.bind(sharedPolicy.UrlbarShared),isInstance:(event,type)=>event instanceof type,REGEXP_SPACES:sharedPolicy.UrlbarShared.REGEXP_SPACES,RESTRICT_TOKENS:sharedPolicy.UrlbarShared.RESTRICT_TOKENS,
     LOCAL_SEARCH_MODES:sharedPolicy.UrlbarShared.LOCAL_SEARCH_MODES,
     SEARCH_MODE_RESTRICT:sharedPolicy.UrlbarShared.SEARCH_MODE_RESTRICT,
@@ -49,7 +49,7 @@ function fixture({hold=false,uninitializedResults=false,onPresentationRequest=nu
     getResultSourceName:sharedPolicy.UrlbarShared.getResultSourceName.bind(sharedPolicy.UrlbarShared)});
   for(const file of ['SearchEngineStore','UrlbarChildController','UrlbarQueryModel','UrlbarSelectedSearch','UrlbarSearchModeModel','UrlbarQuerySession','UrlbarAutofillModel','UrlbarResultPresentation','UrlbarInputIdentity','UrlbarCompositionModel','UrlbarEditSession']) {
     const source=readFileSync(new URL(`../upstream/firefox/browser/components/urlbar/content/${file}.mjs`,import.meta.url),'utf8');
-    vm.runInContext(source.replace(/^import .*;$/gm,'').replaceAll('export class ','class ').replaceAll('export function ','function ')+`\nthis.${file}=${file==='UrlbarSelectedSearch'?'querySelectedSearch':file};`,sandbox);
+    vm.runInContext(source.replace(/^import\b[^;]*;$/gm,'').replaceAll('export class ','class ').replaceAll('export function ','function ')+`\nthis.${file}=${file==='UrlbarSelectedSearch'?'querySelectedSearch':file};`,sandbox);
   }
   let current=true;
   const context={sapName:'urlbar',isPrivate,browserId,actor:{browsingContext:{isContent:false}}};
@@ -2891,7 +2891,7 @@ test('backend asynchronous rejection is handled without suppressing terminal rec
 
 function parentLoadFixture() {
   const source=readFileSync(new URL('../upstream/firefox/browser/components/urlbar/UrlbarParentController.sys.mjs',import.meta.url),'utf8');
-  const start=source.indexOf('  prepareIndependentEngineSearchTarget(browserId, where, userTypedValue, isCurrent) {');
+  const start=source.search(/^  prepareIndependentEngineSearchTarget\(/m);
   const methods=source.slice(start,source.indexOf('  /**\n   * Focuses the browser',start));
   const calls=[],browser={browserId:42,lastLocationChange:1,browsingContext:{currentWindowGlobal:{}},focus:()=>calls.push('focus')};
   let stateToken=null,lastCommit=null,latest=null;

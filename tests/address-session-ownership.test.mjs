@@ -5,7 +5,7 @@ import vm from 'node:vm';
 
 const sessionContext=vm.createContext({console});
 vm.runInContext(readFileSync(new URL('../upstream/firefox/browser/base/content/WinUIAddressSession.sys.mjs',import.meta.url),'utf8')
-  .replace(/^import .*;$/m,'').replace('export class WinUIAddressSession','this.Session = class WinUIAddressSession'),sessionContext);
+  .replace(/^import\b[^;]*;$/m,'').replace('export class WinUIAddressSession','this.Session = class WinUIAddressSession'),sessionContext);
 
 test('a new native owner can suppress DOM results without opening suggestions',()=>{
   const s=Object.create(sessionContext.Session.prototype),calls=[];

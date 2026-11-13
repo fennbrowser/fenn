@@ -47,27 +47,32 @@ struct NativeWindowDrag {
     int SystemButtonAt(POINT screen) const {
         if (!visible) return HTNOWHERE;
         ScreenToClient(owner, &screen);
-        for (auto r : systemClose) if (Contains(r, screen)) return HTCLOSE;
-        for (auto r : systemMaximize) if (Contains(r, screen)) return HTMAXBUTTON;
-        for (auto r : systemMinimize) if (Contains(r, screen)) return HTMINBUTTON;
+        for (auto r : systemClose)
+            if (Contains(r, screen)) return HTCLOSE;
+        for (auto r : systemMaximize)
+            if (Contains(r, screen)) return HTMAXBUTTON;
+        for (auto r : systemMinimize)
+            if (Contains(r, screen)) return HTMINBUTTON;
         return HTNOWHERE;
     }
     bool OwnsCaptionPoint(POINT screen) const {
         if (!visible || SystemButtonAt(screen) != HTNOWHERE) return false;
         ScreenToClient(owner, &screen);
         return std::none_of(pass.begin(), pass.end(), [&](auto r) { return Contains(r, screen); }) &&
-            std::any_of(caption.begin(), caption.end(), [&](auto r) { return Contains(r, screen); });
+               std::any_of(caption.begin(), caption.end(), [&](auto r) { return Contains(r, screen); });
     }
     bool ShowCaptionMenu(POINT screen) {
         if (!OwnsCaptionPoint(screen)) return false;
         ScreenToClient(owner, &screen);
         auto bounds = Bounds(strip->root);
         auto scale = strip->root.XamlRoot().RasterizationScale();
-        Windows::Foundation::Point position{float((screen.x-bounds.X)/scale), float((screen.y-bounds.Y)/scale)};
+        Windows::Foundation::Point position{float((screen.x - bounds.X) / scale), float((screen.y - bounds.Y) / scale)};
         auto weak = std::weak_ptr<int>(lifetime);
         strip->root.DispatcherQueue().TryEnqueue([this, weak, position] {
             if (weak.expired() || !visible) return;
-            try { strip->ShowBarMenu(position); } catch (...) {}
+            try {
+                strip->ShowBarMenu(position);
+            } catch (...) {}
         });
         return true;
     }
@@ -108,9 +113,12 @@ struct NativeWindowDrag {
                 // tab-row replacement. Only the SDK regions above own buttons.
                 if (normal == HTMINBUTTON || normal == HTMAXBUTTON || normal == HTCLOSE) normal = HTCLIENT;
                 if (normal >= HTLEFT && normal <= HTBOTTOMRIGHT) return normal;
-                POINT p = ScreenPoint(l); ScreenToClient(hwnd, &p);
-                for (auto r : self->pass) if (Contains(r, p)) return normal;
-                for (auto r : self->caption) if (Contains(r, p)) return HTCAPTION;
+                POINT p = ScreenPoint(l);
+                ScreenToClient(hwnd, &p);
+                for (auto r : self->pass)
+                    if (Contains(r, p)) return normal;
+                for (auto r : self->caption)
+                    if (Contains(r, p)) return HTCAPTION;
                 return normal;
             }
             // Empty strip space is HTCAPTION. Gecko's custom-titlebar handling
@@ -121,14 +129,14 @@ struct NativeWindowDrag {
             // (and the SDK's system-caption tracking) on the normal path.
             if (msg == WM_NCMOUSEMOVE && self->visible && w == HTCAPTION &&
                 self->SystemButtonAt(ScreenPoint(l)) == HTNOWHERE) {
-                POINT p = ScreenPoint(l); ScreenToClient(hwnd, &p);
-                const bool passthrough = std::any_of(self->pass.begin(), self->pass.end(),
-                    [&](auto rect) { return Contains(rect, p); });
+                POINT p = ScreenPoint(l);
+                ScreenToClient(hwnd, &p);
+                const bool passthrough =
+                    std::any_of(self->pass.begin(), self->pass.end(), [&](auto rect) { return Contains(rect, p); });
                 if (!passthrough) return 0;
             }
 #endif
-            if ((msg == WM_NCRBUTTONUP || msg == WM_CONTEXTMENU) &&
-                self->ShowCaptionMenu(ScreenPoint(l))) return 0;
+            if ((msg == WM_NCRBUTTONUP || msg == WM_CONTEXTMENU) && self->ShowCaptionMenu(ScreenPoint(l))) return 0;
 #if !defined(FENN_SHELL_PROCESS) || defined(WINUI_PANE_TESTING)
             if (msg == WM_CANCELMODE || (msg == WM_ACTIVATE && LOWORD(w) == WA_INACTIVE))
                 self->pendingContextMenu = false;
@@ -152,7 +160,8 @@ struct NativeWindowDrag {
                 const bool lost = msg == WM_CANCELMODE || (msg == WM_ACTIVATE && LOWORD(w) == WA_INACTIVE) ||
                                   (msg == WM_CAPTURECHANGED && HWND(l) != hwnd) || msg == WM_NCDESTROY;
                 if (msg == WM_MOUSEMOVE) {
-                    POINT now{}; GetCursorPos(&now);
+                    POINT now{};
+                    GetCursorPos(&now);
                     if (!(GetAsyncKeyState(VK_LBUTTON) & 0x8000)) {
                         self->pendingCaption = false;
                         if (GetCapture() == hwnd) ReleaseCapture();
@@ -181,7 +190,9 @@ struct NativeWindowDrag {
                 const auto weak = std::weak_ptr<int>(self->lifetime);
                 const auto result = DefSubclassProc(hwnd, msg, w, l);
                 if (!weak.expired()) {
-                    try { self->windowCaption.Update(); } catch (...) {}
+                    try {
+                        self->windowCaption.Update();
+                    } catch (...) {}
                 }
                 return result;
 #else
@@ -200,11 +211,13 @@ struct NativeWindowDrag {
         auto local = element.TransformToVisual(nullptr).TransformBounds(
             {0, 0, float(element.ActualWidth()), float(element.ActualHeight())});
         auto screen = element.XamlRoot().ContentIsland().CoordinateConverter().ConvertLocalToScreen(local);
-        POINT p{screen.X, screen.Y}; ScreenToClient(owner, &p);
+        POINT p{screen.X, screen.Y};
+        ScreenToClient(owner, &p);
         return {p.x, p.y, screen.Width, screen.Height};
     }
     void Exclusions(DependencyObject const& node, std::vector<Rect>& rects) {
-        if (auto element = node.try_as<FrameworkElement>(); element && element.Visibility() != Visibility::Visible) return;
+        if (auto element = node.try_as<FrameworkElement>(); element && element.Visibility() != Visibility::Visible)
+            return;
         // TabView can retain departed containers through a layout transition.
         // Only the exact current row owns input; never exclude its retired tree.
         if (auto row = node.try_as<Controls::TabViewItem>()) {
@@ -212,10 +225,9 @@ struct NativeWindowDrag {
             auto current = strip->rows.find(id);
             if (current == strip->rows.end() || current->second != row) return;
         }
-        if (auto button = node.try_as<Controls::Button>(); button && button.Name() == L"AddButton")
-            addButton = button;
-        bool exclude = node.try_as<Controls::Primitives::ButtonBase>() || node.try_as<Controls::Primitives::ScrollBar>() ||
-                       node.try_as<Controls::TabViewItem>();
+        if (auto button = node.try_as<Controls::Button>(); button && button.Name() == L"AddButton") addButton = button;
+        bool exclude = node.try_as<Controls::Primitives::ButtonBase>() ||
+                       node.try_as<Controls::Primitives::ScrollBar>() || node.try_as<Controls::TabViewItem>();
         if (exclude) {
             if (auto element = node.try_as<FrameworkElement>()) rects.push_back(Bounds(element));
             return;
@@ -231,8 +243,10 @@ struct NativeWindowDrag {
         auto sample = [&](size_t at, FrameworkElement const& element) {
             if (!element || !element.IsLoaded()) return;
             auto r = Bounds(element);
-            inputs.values[at] = r.X; inputs.values[at + 1] = r.Y;
-            inputs.values[at + 2] = r.Width; inputs.values[at + 3] = r.Height;
+            inputs.values[at] = r.X;
+            inputs.values[at + 1] = r.Y;
+            inputs.values[at + 2] = r.Width;
+            inputs.values[at + 3] = r.Height;
         };
         sample(0, strip->root);
         sample(4, addButton.get());
@@ -243,24 +257,26 @@ struct NativeWindowDrag {
             inputs.values[13] = scroller.ExtentWidth();
             inputs.values[14] = int(scroller.ComputedHorizontalScrollBarVisibility());
         }
-        inputs.values[15] = int(strip->root.Visibility()) + 2 * int(strip->root.IsLoaded()) +
-            4 * int(strip->view.FlowDirection());
-        return strip->LayoutWork(SHELL_LAYOUT_WORK_CAPTION, inputs,
-            strip->captionDirty || strip->ambient.observing);
+        inputs.values[15] =
+            int(strip->root.Visibility()) + 2 * int(strip->root.IsLoaded()) + 4 * int(strip->view.FlowDirection());
+        return strip->LayoutWork(SHELL_LAYOUT_WORK_CAPTION, inputs, strip->captionDirty || strip->ambient.observing);
     }
     void Replace(Kind kind, std::vector<Rect>& owned, std::vector<Rect> const& next) {
         if (owned == next) return;
         std::vector<Rect> all;
         for (auto r : input.GetRegionRects(kind))
             if (std::find(owned.begin(), owned.end(), r) == owned.end()) all.push_back(r);
-        for (auto r : next) if (std::find(all.begin(), all.end(), r) == all.end()) all.push_back(r);
+        for (auto r : next)
+            if (std::find(all.begin(), all.end(), r) == all.end()) all.push_back(r);
         owned = next;
         input.SetRegionRects(kind, all);
     }
     void RefreshCache() {
         auto c = input.GetRegionRects(Kind::Caption), p = input.GetRegionRects(Kind::Passthrough);
-        caption.assign(c.begin(), c.end()); pass.assign(p.begin(), p.end());
-        auto min = input.GetRegionRects(Kind::Minimize), max = input.GetRegionRects(Kind::Maximize), close = input.GetRegionRects(Kind::Close);
+        caption.assign(c.begin(), c.end());
+        pass.assign(p.begin(), p.end());
+        auto min = input.GetRegionRects(Kind::Minimize), max = input.GetRegionRects(Kind::Maximize),
+             close = input.GetRegionRects(Kind::Close);
         systemMinimize.assign(min.begin(), min.end());
         systemMaximize.assign(max.begin(), max.end());
         systemClose.assign(close.begin(), close.end());
@@ -297,7 +313,10 @@ struct NativeWindowDrag {
 #endif
             RefreshCache();
             strip->captionDirty = false;
-        } catch (...) { updating = false; throw; }
+        } catch (...) {
+            updating = false;
+            throw;
+        }
         updating = false;
     }
     void SetVisible(bool value) {
@@ -313,18 +332,24 @@ struct NativeWindowDrag {
             next.push_back({stripBounds.left + r.left, stripBounds.top + r.top, r.right - r.left, r.bottom - r.top});
         if (next == clipped) return;
         clipped = std::move(next);
-        if (strip) { strip->captionDirty = true; Update(); }
+        if (strip) {
+            strip->captionDirty = true;
+            Update();
+        }
     }
     void Open(HWND hwnd, NativeTabStrip* value) {
-        owner = hwnd; strip = value;
+        owner = hwnd;
+        strip = value;
         windowCaption.Open(hwnd, strip->root);
         // Caption buttons activate an inactive window on press; a XAML Button
         // otherwise waits for its release. The Button handles Pressed itself.
-        strip->allTabs.button.AddHandler(UIElement::PointerPressedEvent(),
+        strip->allTabs.button.AddHandler(
+            UIElement::PointerPressedEvent(),
             box_value(Microsoft::UI::Xaml::Input::PointerEventHandler([hwnd](auto const&, auto const&) {
                 const HWND top = GetAncestor(hwnd, GA_ROOT);
                 if (top && GetForegroundWindow() != top) SetForegroundWindow(top);
-            })), true);
+            })),
+            true);
         auto weak = std::weak_ptr<int>(lifetime);
         strip->captionGeometryChanged = [this, weak] {
             if (weak.expired()) return;
@@ -342,18 +367,26 @@ struct NativeWindowDrag {
                     strip->captionDirty = true;
                     Update();
                 }
-            } catch (...) { strip->captionDirty = true; }
+            } catch (...) {
+                strip->captionDirty = true;
+            }
             checkingLayout = false;
         });
-        strip->root.SizeChanged([this, weak](auto const&, auto const&) { if (!weak.expired()) strip->captionDirty = true; });
+        strip->root.SizeChanged([this, weak](auto const&, auto const&) {
+            if (!weak.expired()) strip->captionDirty = true;
+        });
     }
     bool AttachInput() {
         input = Input::GetForWindowId(Microsoft::UI::GetWindowIdFromWindow(owner));
-        if (!input) return false; // Gecko has not initialized this AppWindow yet.
+        if (!input) return false;  // Gecko has not initialized this AppWindow yet.
         check_bool(SetWindowSubclass(owner, Proc, reinterpret_cast<UINT_PTR>(this), reinterpret_cast<DWORD_PTR>(this)));
         auto weak = std::weak_ptr<int>(lifetime);
         regions = input.RegionsChanged([this, weak](auto const&, auto const&) {
-            if (!weak.expired()) { try { RefreshCache(); } catch (...) {} }
+            if (!weak.expired()) {
+                try {
+                    RefreshCache();
+                } catch (...) {}
+            }
         });
         return true;
     }
@@ -372,7 +405,9 @@ struct NativeWindowDrag {
                 Replace(Kind::Passthrough, ownedPass, {});
             }
         } catch (...) {}
-        input = nullptr; strip = nullptr; owner = nullptr;
+        input = nullptr;
+        strip = nullptr;
+        owner = nullptr;
     }
     ~NativeWindowDrag() { Close(); }
 };

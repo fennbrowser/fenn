@@ -5,7 +5,7 @@ import test from "node:test";
 globalThis.JSWindowActorChild = class {};
 let source = await readFile(new URL("../upstream/firefox/browser/components/fennadblock/FennAdblockChild.sys.mjs", import.meta.url), "utf8");
 let stubbed = false;
-source = source.replace(/^import .*;$/gm, () => stubbed ? "" : (stubbed = true,
+source = source.replace(/^import\b[^;]*;$/gm, () => stubbed ? "" : (stubbed = true,
   "const setTimeout=(...a)=>globalThis.fixtureTimer(...a); const clearTimeout=()=>{};" +
   "const isSupportedSelectorList=()=>true, compileStyleActions=()=>({css:'',counts:{}}), compileDomActions=()=>[];" +
   "class FennAdblockDomRunner { start() {} stop() {} }"));

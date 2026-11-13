@@ -44,10 +44,14 @@ struct CaptureCorners {
         if (!container) return;
         try {
             auto property = winrt::Microsoft::UI::Xaml::Controls::Grid::CornerRadiusProperty();
-            if (binding) container.SetBinding(property, binding);
-            else if (local == winrt::Microsoft::UI::Xaml::DependencyProperty::UnsetValue()) container.ClearValue(property);
-            else container.SetValue(property, local);
-        } catch (...) { /* The island may have been torn down during capture. */ }
+            if (binding)
+                container.SetBinding(property, binding);
+            else if (local == winrt::Microsoft::UI::Xaml::DependencyProperty::UnsetValue())
+                container.ClearValue(property);
+            else
+                container.SetValue(property, local);
+        } catch (...) { /* The island may have been torn down during capture. */
+        }
     }
     CaptureCorners(CaptureCorners const&) = delete;
     CaptureCorners& operator=(CaptureCorners const&) = delete;

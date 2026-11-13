@@ -12,7 +12,7 @@ function fixture() {
   const context=vm.createContext({UrlbarShared:shared,
     UrlbarPrefs:{get:key=>prefs[key],getScotchBonnetPref:key=>prefs[key]}});
   vm.runInContext(readFileSync(new URL('../upstream/firefox/browser/components/urlbar/content/UrlbarResultPresentation.mjs',import.meta.url),'utf8')
-    .replace(/^import .*;\r?$/gm,'').replace('export class UrlbarResultPresentation','this.Model = class UrlbarResultPresentation'),context);
+    .replace(/^import\b[^;]*;\r?$/gm,'').replace('export class UrlbarResultPresentation','this.Model = class UrlbarResultPresentation'),context);
   const model=new context.Model({async formatMessages(specs){requests.push(...specs);return specs.map(s=>({value:`Localized ${s.id}`}));}});
   return {model,prefs,requests,shared};
 }
@@ -309,7 +309,7 @@ test('both original input bindings use the model before their retained URL fallb
       losslessDecodeURL:url=>url.href,losslessDecodeURI:()=>{throw Error('unexpected URL fallback');},
       UrlbarContentUtils:{getFixupPrimitives:()=>({})},SCHEMELESS_INPUT_SCHEMELESS:2});
     vm.runInContext(readFileSync(new URL('../upstream/firefox/browser/components/urlbar/content/UrlbarUrlValue.mjs',import.meta.url),'utf8')
-      .replace(/^import .*;$/gm,'').replaceAll('export function ','function '),context);
+      .replace(/^import\b[^;]*;$/gm,'').replaceAll('export function ','function '),context);
     vm.runInContext(`this.Binding=class {#isAddressbar=false; #getSchemelessInput(){return 2;}
       ${method}
       value(result,options){return this.#getValueFromResult(result,options);}

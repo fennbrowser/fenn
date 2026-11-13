@@ -21,13 +21,16 @@ struct TabAmbient {
         winrt::Microsoft::UI::Composition::ShapeVisual rimShape{nullptr};
         winrt::Microsoft::UI::Composition::CompositionPathGeometry rimGeometry{nullptr};
         winrt::Microsoft::UI::Composition::CompositionRoundedRectangleGeometry roundedClip{nullptr};
-        uint32_t color{}; Rect bounds{}; bool capped{};
+        uint32_t color{};
+        Rect bounds{};
+        bool capped{};
         float cornerLeft{-1}, cornerRight{-1};
         // Implicit glow motion is attached (TabGlowIgnition::Attach).
         bool animated{};
         // The visual that holds this field in its layer.
         winrt::Microsoft::UI::Composition::Visual Root() const {
-            return rimShape && !visual ? winrt::Microsoft::UI::Composition::Visual(rimShape) : winrt::Microsoft::UI::Composition::Visual(visual);
+            return rimShape && !visual ? winrt::Microsoft::UI::Composition::Visual(rimShape)
+                                       : winrt::Microsoft::UI::Composition::Visual(visual);
         }
     };
     winrt::Microsoft::UI::Xaml::Controls::Canvas layer{nullptr};
@@ -47,7 +50,10 @@ struct TabAmbient {
     // except those groups' areas, where a front grows from the primary pool
     // (TabGlowIgnition::Front). Without reveals the mask is the edge fade
     // alone, as before, so no extra surface renders at rest.
-    struct Reveal { Rect area{}; Sprite sprite{nullptr}; };
+    struct Reveal {
+        Rect area{};
+        Sprite sprite{nullptr};
+    };
     std::map<uint32_t, Reveal> reveals;
     winrt::Microsoft::UI::Composition::ContainerVisual revealRoot{nullptr};
     winrt::Microsoft::UI::Composition::CompositionVisualSurface revealSurface{nullptr};
@@ -58,8 +64,8 @@ struct TabAmbient {
     static constexpr float RevealMargin = 12;
     // Start revealing `area` (layer coordinates) from `origin`; returns the
     // front for TabGlowIgnition::Reveal.
-    winrt::Microsoft::UI::Composition::CompositionRadialGradientBrush BeginReveal(uint32_t id, Rect area,
-            winrt::Windows::Foundation::Numerics::float2 origin) {
+    winrt::Microsoft::UI::Composition::CompositionRadialGradientBrush BeginReveal(
+        uint32_t id, Rect area, winrt::Windows::Foundation::Numerics::float2 origin) {
         auto compositor = output.Compositor();
         if (!revealRoot) {
             revealRoot = compositor.CreateContainerVisual();
@@ -79,10 +85,12 @@ struct TabAmbient {
         reveal.area = area;
         reveal.sprite = compositor.CreateSpriteVisual();
         reveal.sprite.Comment(L"group-reveal:" + winrt::to_hstring(id));
-        const winrt::Windows::Foundation::Numerics::float2 size{area.Width, area.Height}, center{origin.x - area.X, origin.y - area.Y};
+        const winrt::Windows::Foundation::Numerics::float2 size{area.Width, area.Height},
+            center{origin.x - area.X, origin.y - area.Y};
         auto front = TabGlowIgnition::Front(compositor, center, TabGlowIgnition::Reach(center, size));
         reveal.sprite.Brush(front);
-        reveal.sprite.Offset({area.X, area.Y, 0}); reveal.sprite.Size(size);
+        reveal.sprite.Offset({area.X, area.Y, 0});
+        reveal.sprite.Size(size);
         revealRoot.Children().InsertAtTop(reveal.sprite);
         RevealLayout();
         if (finalMask.Mask() != revealMask) finalMask.Mask(revealMask);
@@ -104,27 +112,35 @@ struct TabAmbient {
         if (it == reveals.end()) return;
         revealRoot.Children().Remove(it->second.sprite);
         reveals.erase(it);
-        if (reveals.empty()) { if (finalMask && finalMask.Mask() != edgeFade) finalMask.Mask(edgeFade); }
-        else RevealLayout();
+        if (reveals.empty()) {
+            if (finalMask && finalMask.Mask() != edgeFade) finalMask.Mask(edgeFade);
+        } else
+            RevealLayout();
     }
-    void EndReveals() { while (!reveals.empty()) EndReveal(reveals.begin()->first); }
+    void EndReveals() {
+        while (!reveals.empty()) EndReveal(reveals.begin()->first);
+    }
 
     // Recolor (glow motion): the group's wash and spill keep a copy in the
     // old color (`retiringWash`, `retiringSpill`, placed by the strip like the
     // live fields). Before the blur, the live sprites are masked by a front
     // growing from the primary pool and the copies by its complement, so the
     // new color spreads over the old with a blurred boundary.
-    struct Recolor { uint32_t color{}; std::vector<std::pair<Sprite, winrt::Microsoft::UI::Composition::CompositionBrush>> masked; };
+    struct Recolor {
+        uint32_t color{};
+        std::vector<std::pair<Sprite, winrt::Microsoft::UI::Composition::CompositionBrush>> masked;
+    };
     std::map<uint32_t, Recolor> recolors;
     std::map<uint32_t, Field> retiringWash, retiringSpill;
     static std::vector<Sprite> Painted(Field const& field) {
         std::vector<Sprite> sprites;
-        for (auto sprite : {field.left, field.middle, field.right}) if (sprite && sprite.Brush()) sprites.push_back(sprite);
+        for (auto sprite : {field.left, field.middle, field.right})
+            if (sprite && sprite.Brush()) sprites.push_back(sprite);
         if (sprites.empty() && field.visual && field.visual.Brush()) sprites.push_back(field.visual);
         return sprites;
     }
-    std::vector<winrt::Microsoft::UI::Composition::CompositionRadialGradientBrush> BeginRecolor(uint32_t id,
-            winrt::Windows::Foundation::Numerics::float2 origin, float radius) {
+    std::vector<winrt::Microsoft::UI::Composition::CompositionRadialGradientBrush> BeginRecolor(
+        uint32_t id, winrt::Windows::Foundation::Numerics::float2 origin, float radius) {
         std::vector<winrt::Microsoft::UI::Composition::CompositionRadialGradientBrush> fronts;
         auto recolor = recolors.find(id);
         if (recolor == recolors.end()) return fronts;
@@ -132,18 +148,23 @@ struct TabAmbient {
         auto mask = [&](Field const& field, bool inverse) {
             const auto base = field.visual.Offset();
             for (auto const& sprite : Painted(field)) {
-                const auto offset = sprite == field.visual ? winrt::Windows::Foundation::Numerics::float3{} : sprite.Offset();
-                const winrt::Windows::Foundation::Numerics::float2 center{origin.x - base.x - offset.x, origin.y - base.y - offset.y};
+                const auto offset =
+                    sprite == field.visual ? winrt::Windows::Foundation::Numerics::float3{} : sprite.Offset();
+                const winrt::Windows::Foundation::Numerics::float2 center{origin.x - base.x - offset.x,
+                                                                          origin.y - base.y - offset.y};
                 auto front = TabGlowIgnition::Front(compositor, center, radius, inverse);
                 auto masked = compositor.CreateMaskBrush();
-                masked.Source(sprite.Brush()); masked.Mask(front);
+                masked.Source(sprite.Brush());
+                masked.Mask(front);
                 recolor->second.masked.emplace_back(sprite, sprite.Brush());
                 sprite.Brush(masked);
                 fronts.push_back(front);
             }
         };
-        for (auto* fields : {&groups, &groupSpill}) if (auto field = fields->find(id); field != fields->end()) mask(field->second, false);
-        for (auto* fields : {&retiringWash, &retiringSpill}) if (auto field = fields->find(id); field != fields->end()) mask(field->second, true);
+        for (auto* fields : {&groups, &groupSpill})
+            if (auto field = fields->find(id); field != fields->end()) mask(field->second, false);
+        for (auto* fields : {&retiringWash, &retiringSpill})
+            if (auto field = fields->find(id); field != fields->end()) mask(field->second, true);
         return fronts;
     }
     void EndRecolor(uint32_t id) {
@@ -151,16 +172,26 @@ struct TabAmbient {
         if (recolor == recolors.end()) return;
         for (auto const& [sprite, brush] : recolor->second.masked) sprite.Brush(brush);
         recolors.erase(recolor);
-        if (auto field = retiringWash.find(id); field != retiringWash.end()) { bottom.Children().Remove(field->second.visual); retiringWash.erase(field); }
-        if (auto field = retiringSpill.find(id); field != retiringSpill.end()) { spill.Children().Remove(field->second.visual); retiringSpill.erase(field); }
+        if (auto field = retiringWash.find(id); field != retiringWash.end()) {
+            bottom.Children().Remove(field->second.visual);
+            retiringWash.erase(field);
+        }
+        if (auto field = retiringSpill.find(id); field != retiringSpill.end()) {
+            spill.Children().Remove(field->second.visual);
+            retiringSpill.erase(field);
+        }
     }
-    void EndRecolors() { while (!recolors.empty()) EndRecolor(recolors.begin()->first); }
+    void EndRecolors() {
+        while (!recolors.empty()) EndRecolor(recolors.begin()->first);
+    }
     // The mask surface matches the output; outside the revealing areas it
     // carries the edge fade unchanged.
     void RevealLayout() {
         if (!revealRoot || reveals.empty()) return;
         const auto size = output.Size();
-        revealRoot.Size(size); revealOutside.Size(size); revealSurface.SourceSize(size);
+        revealRoot.Size(size);
+        revealOutside.Size(size);
+        revealSurface.SourceSize(size);
         if (!clipFactory) winrt::check_hresult(D2D1CreateFactory(D2D1_FACTORY_TYPE_SINGLE_THREADED, clipFactory.put()));
         winrt::com_ptr<ID2D1RectangleGeometry> everything;
         winrt::check_hresult(clipFactory->CreateRectangleGeometry({0, 0, size.x, size.y}, everything.put()));
@@ -168,19 +199,25 @@ struct TabAmbient {
         std::vector<ID2D1Geometry*> geometries;
         for (auto const& [id, reveal] : reveals) {
             winrt::com_ptr<ID2D1RectangleGeometry> hole;
-            const auto offset = reveal.sprite.Offset(); const auto extent = reveal.sprite.Size();
-            winrt::check_hresult(clipFactory->CreateRectangleGeometry({offset.x, offset.y, offset.x + extent.x, offset.y + extent.y}, hole.put()));
-            geometries.push_back(hole.get()); holes.push_back(std::move(hole));
+            const auto offset = reveal.sprite.Offset();
+            const auto extent = reveal.sprite.Size();
+            winrt::check_hresult(clipFactory->CreateRectangleGeometry(
+                {offset.x, offset.y, offset.x + extent.x, offset.y + extent.y}, hole.put()));
+            geometries.push_back(hole.get());
+            holes.push_back(std::move(hole));
         }
         winrt::com_ptr<ID2D1GeometryGroup> united;
-        winrt::check_hresult(clipFactory->CreateGeometryGroup(D2D1_FILL_MODE_WINDING, geometries.data(), uint32_t(geometries.size()), united.put()));
+        winrt::check_hresult(clipFactory->CreateGeometryGroup(D2D1_FILL_MODE_WINDING, geometries.data(),
+                                                              uint32_t(geometries.size()), united.put()));
         winrt::com_ptr<ID2D1PathGeometry> remaining;
         winrt::check_hresult(clipFactory->CreatePathGeometry(remaining.put()));
         winrt::com_ptr<ID2D1GeometrySink> sink;
         winrt::check_hresult(remaining->Open(sink.put()));
-        winrt::check_hresult(everything->CombineWithGeometry(united.get(), D2D1_COMBINE_MODE_EXCLUDE, nullptr, sink.get()));
+        winrt::check_hresult(
+            everything->CombineWithGeometry(united.get(), D2D1_COMBINE_MODE_EXCLUDE, nullptr, sink.get()));
         winrt::check_hresult(sink->Close());
-        revealExterior.Path(winrt::Microsoft::UI::Composition::CompositionPath(winrt::make<TabAmbientClip>(std::move(remaining))));
+        revealExterior.Path(
+            winrt::Microsoft::UI::Composition::CompositionPath(winrt::make<TabAmbientClip>(std::move(remaining))));
     }
     TabLightContour::Mask faceMask;
     Sprite occluded{nullptr};
@@ -192,17 +229,24 @@ struct TabAmbient {
     // Unequal material light pools across a group, in its relative
     // coordinates. TabGroupSurface paints them inside the outline; the halo
     // continues the same pools outside it, so the glow stays uneven.
-    struct Pool { float x, y; int peak; };
+    struct Pool {
+        float x, y;
+        int peak;
+    };
     static constexpr Pool Pools[] = {{.22f, .9f, 48}, {.82f, .18f, 30}};
     static_assert(ARRAYSIZE(Pools) == TabGlowIgnition::PoolCount);
     // Opt-in light-up motion; the strip owns the option.
     TabGlowIgnition motion;
     // Release a field, dimming it first when its group's light went out
     // (not when it was only scrolled away) and motion is enabled.
-    void Release(winrt::Microsoft::UI::Composition::ContainerVisual const& owner, Field const& field, bool dim, float delay, float duration) {
+    void Release(winrt::Microsoft::UI::Composition::ContainerVisual const& owner, Field const& field, bool dim,
+                 float delay, float duration) {
         auto visual = field.Root();
         if (!visual) return;
-        if (!dim || !motion.Dims()) { owner.Children().Remove(visual); return; }
+        if (!dim || !motion.Dims()) {
+            owner.Children().Remove(visual);
+            return;
+        }
         motion.Dim(visual, delay, duration, [owner, visual] { owner.Children().Remove(visual); });
     }
     static constexpr float PoolRadiusX = .95f, PoolRadiusY = 1.2f;
@@ -227,10 +271,12 @@ struct TabAmbient {
     uint64_t frames{};
     // Assigning a stop's color first ends any light-up running on it
     // (TabGlowIgnition), so a recolor is not overridden by its keyframes.
-    static void Tint(winrt::Microsoft::UI::Composition::CompositionColorGradientStop const& stop,
-                     uint8_t r, uint8_t g, uint8_t b) {
+    static void Tint(winrt::Microsoft::UI::Composition::CompositionColorGradientStop const& stop, uint8_t r, uint8_t g,
+                     uint8_t b) {
         auto value = stop.Color();
-        value.R = r; value.G = g; value.B = b;
+        value.R = r;
+        value.G = g;
+        value.B = b;
         stop.StopAnimation(L"Color");
         stop.Color(value);
     }
@@ -243,54 +289,70 @@ struct TabAmbient {
         if (queued) return;
         queued = true;
         if (!layer.DispatcherQueue().TryEnqueue([this, weak = std::weak_ptr<int>(life)] {
-            if (weak.expired()) return;
+                if (weak.expired()) return;
+                queued = false;
+                Update();
+            }))
             queued = false;
-            Update();
-        })) queued = false;
     }
 
     void Create(winrt::Microsoft::UI::Xaml::Controls::Grid const& root) {
         using namespace winrt::Microsoft::UI::Xaml;
-        layer = Markup::XamlReader::Load(LR"(<Canvas xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" Grid.ColumnSpan="3" IsHitTestVisible="False" AutomationProperties.AccessibilityView="Raw" FlowDirection="LeftToRight"/>)").as<Controls::Canvas>();
+        layer =
+            Markup::XamlReader::Load(
+                LR"(<Canvas xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" Grid.ColumnSpan="3" IsHitTestVisible="False" AutomationProperties.AccessibilityView="Raw" FlowDirection="LeftToRight"/>)")
+                .as<Controls::Canvas>();
         root.Children().Append(layer);
-        rimLayer = Markup::XamlReader::Load(LR"(<Canvas xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" IsHitTestVisible="False" AutomationProperties.AccessibilityView="Raw"/>)").as<Controls::Canvas>();
+        rimLayer =
+            Markup::XamlReader::Load(
+                LR"(<Canvas xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" IsHitTestVisible="False" AutomationProperties.AccessibilityView="Raw"/>)")
+                .as<Controls::Canvas>();
         layer.Children().Append(rimLayer);
         auto weak = std::weak_ptr<int>(life);
         layer.Loaded([this, weak](auto&&, auto&&) {
             if (weak.expired()) return;
-            if (!layoutToken.value) layoutToken = layer.LayoutUpdated([this, weak](auto&&, auto&&) {
+            if (!layoutToken.value)
+                layoutToken = layer.LayoutUpdated([this, weak](auto&&, auto&&) {
 #ifdef WINUI_PANE_TESTING
-                if (!weak.expired() && layoutEntryForTest) layoutEntryForTest();
+                    if (!weak.expired() && layoutEntryForTest) layoutEntryForTest();
 #endif
-                // Geometry reads can themselves finish layout. Do not consume
-                // an observation in a nested/skipped refresh.
-                if (weak.expired() || updating || checkingLayout || !layer.IsLoaded()) return;
-                checkingLayout = true;
-                try { if (!layoutChanged || layoutChanged()) Update(); }
-                catch (...) { if (refreshFailed) refreshFailed(); }
-                checkingLayout = false;
-            });
+                    // Geometry reads can themselves finish layout. Do not consume
+                    // an observation in a nested/skipped refresh.
+                    if (weak.expired() || updating || checkingLayout || !layer.IsLoaded()) return;
+                    checkingLayout = true;
+                    try {
+                        if (!layoutChanged || layoutChanged()) Update();
+                    } catch (...) {
+                        if (refreshFailed) refreshFailed();
+                    }
+                    checkingLayout = false;
+                });
             Update();
         });
         contrastToken = settings.ColorValuesChanged([this, weak, queue = root.DispatcherQueue()](auto&&, auto&&) {
-            queue.TryEnqueue([this, weak] { if (!weak.expired()) Update(); });
+            queue.TryEnqueue([this, weak] {
+                if (!weak.expired()) Update();
+            });
         });
-
     }
     void Update() {
         if (updating || !refresh || !layer.IsLoaded()) return;
         updating = true;
         try {
             if (!bottom) {
-                auto compositor = winrt::Microsoft::UI::Xaml::Hosting::ElementCompositionPreview::GetElementVisual(layer).Compositor();
+                auto compositor =
+                    winrt::Microsoft::UI::Xaml::Hosting::ElementCompositionPreview::GetElementVisual(layer)
+                        .Compositor();
                 rims = compositor.CreateContainerVisual();
                 winrt::Microsoft::UI::Xaml::Hosting::ElementCompositionPreview::SetElementChildVisual(rimLayer, rims);
                 diffusion = compositor.CreateLayerVisual();
                 diffusion.Effect(compositor.CreateEffectFactory(winrt::make<TabGlowDiffusion>()).CreateBrush());
                 diffusion.Opacity(.9f);
                 auto parent = diffusion;
-                bottom = compositor.CreateContainerVisual(); top = compositor.CreateContainerVisual();
-                parent.Children().InsertAtTop(bottom); parent.Children().InsertAtTop(top);
+                bottom = compositor.CreateContainerVisual();
+                top = compositor.CreateContainerVisual();
+                parent.Children().InsertAtTop(bottom);
+                parent.Children().InsertAtTop(top);
                 spill = compositor.CreateContainerVisual();
                 spill.Comment(L"ambient-color-spill");
                 parent.Children().InsertAtTop(spill);
@@ -306,7 +368,8 @@ struct TabAmbient {
                 haloDiffusion.Children().InsertAtTop(halo);
                 lit = compositor.CreateContainerVisual();
                 lit.Comment(L"ambient-lit");
-                lit.Children().InsertAtTop(diffusion); lit.Children().InsertAtTop(haloDiffusion);
+                lit.Children().InsertAtTop(diffusion);
+                lit.Children().InsertAtTop(haloDiffusion);
                 // Mask the already-diffused light, so blur cannot refill the
                 // transparent tail before the new-tab button.
                 diffusedSurface = compositor.CreateVisualSurface();
@@ -314,18 +377,24 @@ struct TabAmbient {
                 auto source = compositor.CreateSurfaceBrush(diffusedSurface);
                 faceMask.Create(compositor);
                 auto occlusion = compositor.CreateMaskBrush();
-                occlusion.Source(source); occlusion.Mask(compositor.CreateSurfaceBrush(faceMask.surface));
-                occluded = compositor.CreateSpriteVisual(); occluded.Brush(occlusion);
+                occlusion.Source(source);
+                occlusion.Mask(compositor.CreateSurfaceBrush(faceMask.surface));
+                occluded = compositor.CreateSpriteVisual();
+                occluded.Brush(occlusion);
                 occluded.Comment(L"occluded-tab-light");
-                occludedSurface = compositor.CreateVisualSurface(); occludedSurface.SourceVisual(occluded);
+                occludedSurface = compositor.CreateVisualSurface();
+                occludedSurface.SourceVisual(occluded);
                 edgeFade = compositor.CreateLinearGradientBrush();
                 edgeFade.MappingMode(winrt::Microsoft::UI::Composition::CompositionMappingMode::Absolute);
                 for (int i = 0; i < 4; ++i)
-                    edgeFade.ColorStops().Append(compositor.CreateColorGradientStop(float(i) / 3, {255, 255, 255, 255}));
+                    edgeFade.ColorStops().Append(
+                        compositor.CreateColorGradientStop(float(i) / 3, {255, 255, 255, 255}));
                 auto mask = compositor.CreateMaskBrush();
-                mask.Source(compositor.CreateSurfaceBrush(occludedSurface)); mask.Mask(edgeFade);
+                mask.Source(compositor.CreateSurfaceBrush(occludedSurface));
+                mask.Mask(edgeFade);
                 finalMask = mask;
-                output = compositor.CreateSpriteVisual(); output.Brush(mask);
+                output = compositor.CreateSpriteVisual();
+                output.Brush(mask);
                 winrt::Microsoft::UI::Xaml::Hosting::ElementCompositionPreview::SetElementChildVisual(layer, output);
             }
             refresh();
@@ -334,9 +403,13 @@ struct TabAmbient {
 #ifdef WINUI_PANE_TESTING
             if (!reportedFailure) {
                 reportedFailure = true;
-                try { throw; }
-                catch (winrt::hresult_error const& error) { fwprintf(stderr, L"Ambient refresh: %08x %s\n", unsigned(error.code()), error.message().c_str()); }
-                catch (...) { fprintf(stderr, "Ambient refresh failed\n"); }
+                try {
+                    throw;
+                } catch (winrt::hresult_error const& error) {
+                    fwprintf(stderr, L"Ambient refresh: %08x %s\n", unsigned(error.code()), error.message().c_str());
+                } catch (...) {
+                    fprintf(stderr, "Ambient refresh failed\n");
+                }
             }
 #endif
             if (bottom) bottom.IsVisible(false);
@@ -353,7 +426,10 @@ struct TabAmbient {
         using namespace winrt::Microsoft::UI::Xaml;
         if (moving == observing) return;
         observing = moving;
-        if (!moving) { Media::CompositionTarget::Rendering(renderingToken); return; }
+        if (!moving) {
+            Media::CompositionTarget::Rendering(renderingToken);
+            return;
+        }
         renderingToken = Media::CompositionTarget::Rendering([this, weak = std::weak_ptr<int>(life)](auto&&, auto&&) {
             if (weak.expired()) return;
             ++frames;
@@ -364,25 +440,34 @@ struct TabAmbient {
     // which light falls to zero; zero keeps full light to that edge.
     void Clip(Rect viewport, bool visible, Rect active = {}, float fadeLeft = 0, float fadeRight = 0) {
         visible = visible && !accessibility.HighContrast();
-        bottom.IsVisible(visible); top.IsVisible(visible);
+        bottom.IsVisible(visible);
+        top.IsVisible(visible);
         rims.IsVisible(visible);
         spill.IsVisible(visible);
         halo.IsVisible(visible);
-        const winrt::Windows::Foundation::Numerics::float2 size{
-            std::max(0.f, viewport.X + viewport.Width), std::max(0.f, viewport.Y + viewport.Height)};
-        if (diffusion.Size() != size) { diffusion.Size(size); haloDiffusion.Size(size); lit.Size(size); }
+        const winrt::Windows::Foundation::Numerics::float2 size{std::max(0.f, viewport.X + viewport.Width),
+                                                                std::max(0.f, viewport.Y + viewport.Height)};
+        if (diffusion.Size() != size) {
+            diffusion.Size(size);
+            haloDiffusion.Size(size);
+            lit.Size(size);
+        }
         if (output.Size() != size) {
-            output.Size(size); diffusedSurface.SourceSize(size);
-            occluded.Size(size); occludedSurface.SourceSize(size);
+            output.Size(size);
+            diffusedSurface.SourceSize(size);
+            occluded.Size(size);
+            occludedSurface.SourceSize(size);
             RevealLayout();
         }
         const float width = std::max(1.f, viewport.Width);
         const float leftTail = std::clamp(fadeLeft, 0.f, width / 2) / width;
         const float rightTail = std::clamp(fadeRight, 0.f, width / 2) / width;
-        edgeFade.StartPoint({viewport.X, 0}); edgeFade.EndPoint({viewport.X + width, 0});
+        edgeFade.StartPoint({viewport.X, 0});
+        edgeFade.EndPoint({viewport.X + width, 0});
         auto stops = edgeFade.ColorStops();
         stops.GetAt(0).Color({uint8_t(fadeLeft > 0 ? 0 : 255), 255, 255, 255});
-        stops.GetAt(1).Offset(leftTail); stops.GetAt(2).Offset(1 - rightTail);
+        stops.GetAt(1).Offset(leftTail);
+        stops.GetAt(2).Offset(1 - rightTail);
         stops.GetAt(3).Color({uint8_t(fadeRight > 0 ? 0 : 255), 255, 255, 255});
         // Cut only the area above the active tab, after Gaussian diffusion.
         // Shared container fields keep their geometry beneath the notch.
@@ -392,24 +477,30 @@ struct TabAmbient {
             diffusion.Clip(nullptr);
             clippedActive = {};
         } else if (!diffusion.Clip() || clippedViewport != viewport || clippedActive != active) {
-            if (!clipFactory) winrt::check_hresult(D2D1CreateFactory(D2D1_FACTORY_TYPE_SINGLE_THREADED, clipFactory.put()));
+            if (!clipFactory)
+                winrt::check_hresult(D2D1CreateFactory(D2D1_FACTORY_TYPE_SINGLE_THREADED, clipFactory.put()));
             winrt::com_ptr<ID2D1PathGeometry> path;
             winrt::check_hresult(clipFactory->CreatePathGeometry(path.put()));
             winrt::com_ptr<ID2D1GeometrySink> sink;
             winrt::check_hresult(path->Open(sink.put()));
             sink->BeginFigure({viewport.X, viewport.Y}, D2D1_FIGURE_BEGIN_FILLED);
             const float edge = std::min(active.Y, viewport.Y + viewport.Height);
-            const D2D1_POINT_2F points[] = {{left, viewport.Y}, {left, edge}, {right, edge},
-                {right, viewport.Y}, {viewport.X + viewport.Width, viewport.Y},
-                {viewport.X + viewport.Width, viewport.Y + viewport.Height}, {viewport.X, viewport.Y + viewport.Height}};
+            const D2D1_POINT_2F points[] = {{left, viewport.Y},
+                                            {left, edge},
+                                            {right, edge},
+                                            {right, viewport.Y},
+                                            {viewport.X + viewport.Width, viewport.Y},
+                                            {viewport.X + viewport.Width, viewport.Y + viewport.Height},
+                                            {viewport.X, viewport.Y + viewport.Height}};
             sink->AddLines(points, ARRAYSIZE(points));
             sink->EndFigure(D2D1_FIGURE_END_CLOSED);
             winrt::check_hresult(sink->Close());
             auto compositor = diffusion.Compositor();
-            auto geometry = compositor.CreatePathGeometry(winrt::Microsoft::UI::Composition::CompositionPath(
-                winrt::make<TabAmbientClip>(std::move(path))));
+            auto geometry = compositor.CreatePathGeometry(
+                winrt::Microsoft::UI::Composition::CompositionPath(winrt::make<TabAmbientClip>(std::move(path))));
             diffusion.Clip(compositor.CreateGeometricClip(geometry));
-            clippedViewport = viewport; clippedActive = active;
+            clippedViewport = viewport;
+            clippedActive = active;
         }
         // Avoid invalidating XAML layout from LayoutUpdated.
         auto old = layer.Clip();
@@ -417,7 +508,8 @@ struct TabAmbient {
             old = winrt::Microsoft::UI::Xaml::Media::RectangleGeometry();
             old.Rect(viewport);
             layer.Clip(old);
-        } else if (old.Rect() != viewport) old.Rect(viewport);
+        } else if (old.Rect() != viewport)
+            old.Rect(viewport);
     }
     void Faces(Rect viewport, std::vector<TabLightContour::Face> const& faces) {
         if (!clipFactory) winrt::check_hresult(D2D1CreateFactory(D2D1_FACTORY_TYPE_SINGLE_THREADED, clipFactory.put()));
@@ -431,11 +523,13 @@ struct TabAmbient {
             field.visual.Comment((upper ? L"container-spill:" : L"group-spill:") + winrt::to_hstring(id));
             auto lobe = [&](float y, int peak, Gradient& target, Sprite& sprite) {
                 auto brush = compositor.CreateRadialGradientBrush();
-                brush.EllipseCenter({.5f, y}); brush.EllipseRadius({.5f, 1.65f});
+                brush.EllipseCenter({.5f, y});
+                brush.EllipseRadius({.5f, 1.65f});
                 for (auto [offset, alpha] : {std::pair{0.f, peak}, {.4f, peak * 2 / 3}, {.75f, 1}, {1.f, 0}})
                     brush.ColorStops().Append(compositor.CreateColorGradientStop(offset, {uint8_t(alpha), 0, 0, 0}));
                 target = brush;
-                sprite = compositor.CreateSpriteVisual(); sprite.Brush(brush);
+                sprite = compositor.CreateSpriteVisual();
+                sprite.Brush(brush);
                 field.visual.Children().InsertAtTop(sprite);
             };
             // Peaks are only 2–3% alpha; long vertical tails let independent
@@ -448,7 +542,8 @@ struct TabAmbient {
             field.color = color;
             for (auto brush : {field.brush, field.leftBrush}) {
                 if (!brush) continue;
-                for (auto stop : brush.ColorStops()) Tint(stop, uint8_t(color >> 16), uint8_t(color >> 8), uint8_t(color));
+                for (auto stop : brush.ColorStops())
+                    Tint(stop, uint8_t(color >> 16), uint8_t(color >> 8), uint8_t(color));
             }
         }
         if (field.bounds != bounds) {
@@ -460,10 +555,15 @@ struct TabAmbient {
             }
         }
     }
-    void PruneSpill(std::map<uint32_t, Field>& fields, std::set<uint32_t> const& live, std::set<uint32_t> const& dim = {}) {
+    void PruneSpill(std::map<uint32_t, Field>& fields, std::set<uint32_t> const& live,
+                    std::set<uint32_t> const& dim = {}) {
         for (auto it = fields.begin(); it != fields.end();) {
-            if (live.count(it->first)) { ++it; continue; }
-            Release(spill, it->second, dim.count(it->first) != 0, TabGlowIgnition::DimLag, TabGlowIgnition::DimDuration);
+            if (live.count(it->first)) {
+                ++it;
+                continue;
+            }
+            Release(spill, it->second, dim.count(it->first) != 0, TabGlowIgnition::DimLag,
+                    TabGlowIgnition::DimDuration);
             it = fields.erase(it);
         }
     }
@@ -488,8 +588,8 @@ struct TabAmbient {
                     auto brush = compositor.CreateRadialGradientBrush();
                     brush.MappingMode(CompositionMappingMode::Absolute);
                     for (auto [offset, level] : PoolStops)
-                        brush.ColorStops().Append(compositor.CreateColorGradientStop(offset,
-                            {uint8_t(pool.peak * level * HaloFade[i] + .5f), 0, 0, 0}));
+                        brush.ColorStops().Append(compositor.CreateColorGradientStop(
+                            offset, {uint8_t(pool.peak * level * HaloFade[i] + .5f), 0, 0, 0}));
                     auto ring = compositor.CreateSpriteShape(rings[i]);
                     ring.StrokeBrush(brush);
                     // Slight overlap avoids antialiased seams between rings.
@@ -500,24 +600,32 @@ struct TabAmbient {
             halo.Children().InsertAtTop(field.rimShape);
         }
         auto brushAt = [&](uint32_t index) {
-            return field.rimShape.Shapes().GetAt(index).as<CompositionSpriteShape>().StrokeBrush()
+            return field.rimShape.Shapes()
+                .GetAt(index)
+                .as<CompositionSpriteShape>()
+                .StrokeBrush()
                 .as<CompositionRadialGradientBrush>();
         };
         const uint32_t count = field.rimShape.Shapes().Size();
         if (field.color != color) {
             field.color = color;
-            for (uint32_t index = 0; index < count; ++index) for (auto stop : brushAt(index).ColorStops())
-                Tint(stop, uint8_t(color >> 16), uint8_t(color >> 8), uint8_t(color));
+            for (uint32_t index = 0; index < count; ++index)
+                for (auto stop : brushAt(index).ColorStops())
+                    Tint(stop, uint8_t(color >> 16), uint8_t(color >> 8), uint8_t(color));
         }
         if (field.bounds == bounds && field.cornerLeft == radius) return;
-        field.bounds = bounds; field.cornerLeft = radius;
+        field.bounds = bounds;
+        field.cornerLeft = radius;
         field.rimShape.Offset({bounds.X - HaloReach, bounds.Y - HaloReach, 0});
         field.rimShape.Size({bounds.Width + 2 * HaloReach, bounds.Height + 2 * HaloReach});
         for (uint32_t i = 0; i < HaloRings; ++i) {
             // Each stroke is centered on its ring, covering [d - pitch/2, d + pitch/2].
             const float d = HaloPitch * (i + .5f);
-            auto geometry = field.rimShape.Shapes().GetAt(i).as<CompositionSpriteShape>().Geometry()
-                .as<CompositionRoundedRectangleGeometry>();
+            auto geometry = field.rimShape.Shapes()
+                                .GetAt(i)
+                                .as<CompositionSpriteShape>()
+                                .Geometry()
+                                .as<CompositionRoundedRectangleGeometry>();
             geometry.Offset({HaloReach - d, HaloReach - d});
             geometry.Size({bounds.Width + 2 * d, bounds.Height + 2 * d});
             geometry.CornerRadius({radius + d, radius + d});
@@ -527,17 +635,22 @@ struct TabAmbient {
             auto const& pool = Pools[index / HaloRings];
             auto brush = brushAt(index);
             brush.EllipseCenter({HaloReach + pool.x * bounds.Width, HaloReach + pool.y * bounds.Height});
-            brush.EllipseRadius({std::max(1.f, PoolRadiusX * bounds.Width), std::max(1.f, PoolRadiusY * bounds.Height)});
+            brush.EllipseRadius(
+                {std::max(1.f, PoolRadiusX * bounds.Width), std::max(1.f, PoolRadiusY * bounds.Height)});
         }
     }
     void PruneHalo(std::set<uint32_t> const& live, std::set<uint32_t> const& dim = {}) {
         for (auto it = groupHalo.begin(); it != groupHalo.end();) {
-            if (live.count(it->first)) { ++it; continue; }
+            if (live.count(it->first)) {
+                ++it;
+                continue;
+            }
             Release(halo, it->second, dim.count(it->first) != 0, 0, TabGlowIgnition::DimEdge);
             it = groupHalo.erase(it);
         }
     }
-    void Corners(Field& field, uint32_t color, Rect bounds, float leftRadius, float rightRadius, bool reflection = false) {
+    void Corners(Field& field, uint32_t color, Rect bounds, float leftRadius, float rightRadius,
+                 bool reflection = false) {
         if (!color || bounds.Width <= 0 || bounds.Height <= 0) {
             if (field.visual) field.visual.IsVisible(false);
             return;
@@ -552,10 +665,12 @@ struct TabAmbient {
                 auto brush = compositor.CreateRadialGradientBrush();
                 brush.MappingMode(winrt::Microsoft::UI::Composition::CompositionMappingMode::Absolute);
                 for (auto [offset, alpha] : {std::pair{0.f, 180}, {.3f, 145}, {.65f, 55}, {1.f, 0}})
-                    brush.ColorStops().Append(compositor.CreateColorGradientStop(offset,
-                        {uint8_t(reflection ? alpha / 2 : alpha), 0, 0, 0}));
+                    brush.ColorStops().Append(
+                        compositor.CreateColorGradientStop(offset, {uint8_t(reflection ? alpha / 2 : alpha), 0, 0, 0}));
                 auto stroke = compositor.CreateSpriteShape(compositor.CreatePathGeometry());
-                stroke.Offset({4, 4}); stroke.StrokeBrush(brush); stroke.StrokeThickness(reflection ? 1.f : 3.f);
+                stroke.Offset({4, 4});
+                stroke.StrokeBrush(brush);
+                stroke.StrokeThickness(reflection ? 1.f : 3.f);
                 field.rimShape.Shapes().Append(stroke);
                 (side ? field.rightBrush : field.leftBrush) = brush;
             }
@@ -565,15 +680,20 @@ struct TabAmbient {
         field.visual.IsVisible(true);
         if (field.color != color) {
             field.color = color;
-            for (auto brush : {field.leftBrush, field.rightBrush}) for (auto stop : brush.ColorStops()) {
-                auto value = stop.Color();
-                auto channel = [&](uint8_t c) { return reflection ? uint8_t(c + (255 - c) * .3f) : c; };
-                value.R = channel(uint8_t(color >> 16)); value.G = channel(uint8_t(color >> 8)); value.B = channel(uint8_t(color));
-                stop.Color(value);
-            }
+            for (auto brush : {field.leftBrush, field.rightBrush})
+                for (auto stop : brush.ColorStops()) {
+                    auto value = stop.Color();
+                    auto channel = [&](uint8_t c) { return reflection ? uint8_t(c + (255 - c) * .3f) : c; };
+                    value.R = channel(uint8_t(color >> 16));
+                    value.G = channel(uint8_t(color >> 8));
+                    value.B = channel(uint8_t(color));
+                    stop.Color(value);
+                }
         }
         if (field.bounds == bounds && field.cornerLeft == leftRadius && field.cornerRight == rightRadius) return;
-        field.bounds = bounds; field.cornerLeft = leftRadius; field.cornerRight = rightRadius;
+        field.bounds = bounds;
+        field.cornerLeft = leftRadius;
+        field.cornerRight = rightRadius;
         Geometry(field.visual, {bounds.X, bounds.Y, 0}, {bounds.Width, bounds.Height});
         field.rimShape.Size({bounds.Width + 8, bounds.Height + 8});
         if (!clipFactory) winrt::check_hresult(D2D1CreateFactory(D2D1_FACTORY_TYPE_SINGLE_THREADED, clipFactory.put()));
@@ -588,16 +708,20 @@ struct TabAmbient {
             sink->BeginFigure({x(0), depth}, D2D1_FIGURE_BEGIN_HOLLOW);
             sink->AddLine({x(0), r});
             sink->AddBezier({{x(0), r * TabLightContour::Arc}, {x(r * TabLightContour::Arc), 0}, {x(r), 0}});
-            sink->AddLine({x(reach), 0}); sink->EndFigure(D2D1_FIGURE_END_OPEN);
+            sink->AddLine({x(reach), 0});
+            sink->EndFigure(D2D1_FIGURE_END_OPEN);
             winrt::check_hresult(sink->Close());
-            auto stroke = field.rimShape.Shapes().GetAt(side).as<winrt::Microsoft::UI::Composition::CompositionSpriteShape>();
+            auto stroke =
+                field.rimShape.Shapes().GetAt(side).as<winrt::Microsoft::UI::Composition::CompositionSpriteShape>();
             stroke.Geometry().as<winrt::Microsoft::UI::Composition::CompositionPathGeometry>().Path(
                 winrt::Microsoft::UI::Composition::CompositionPath(winrt::make<TabAmbientClip>(std::move(path))));
             auto brush = stroke.StrokeBrush().as<winrt::Microsoft::UI::Composition::CompositionRadialGradientBrush>();
-            brush.EllipseCenter({x(r), r}); brush.EllipseRadius({std::max(1.f, reach - r), std::max(1.f, depth - r)});
+            brush.EllipseCenter({x(r), r});
+            brush.EllipseRadius({std::max(1.f, reach - r), std::max(1.f, depth - r)});
         }
     }
-    void Put(std::map<uint32_t, Field>& fields, uint32_t id, uint32_t color, Rect bounds, bool upper, bool connected = false) {
+    void Put(std::map<uint32_t, Field>& fields, uint32_t id, uint32_t color, Rect bounds, bool upper,
+             bool connected = false) {
         const bool capped = !upper || connected;
         if (upper) {
             // Expose the upper half of the same light source above the tab.
@@ -642,7 +766,9 @@ struct TabAmbient {
                 field.left = compositor.CreateSpriteVisual();
                 field.middle = compositor.CreateSpriteVisual();
                 field.right = compositor.CreateSpriteVisual();
-                field.left.Brush(field.leftBrush); field.middle.Brush(center); field.right.Brush(field.rightBrush);
+                field.left.Brush(field.leftBrush);
+                field.middle.Brush(center);
+                field.right.Brush(field.rightBrush);
                 field.middle.Comment(upper ? L"container-center" : L"group-center");
                 field.visual.Children().InsertAtTop(field.left);
                 field.visual.Children().InsertAtTop(field.middle);
@@ -654,7 +780,8 @@ struct TabAmbient {
             // Radial alpha: 36%, 35%, 24%, 9%, 2%, then transparent.
             for (auto brush : {field.brush, field.leftBrush, field.rightBrush}) {
                 if (!brush) continue;
-                for (auto [offset, alpha] : {std::pair{0.f, 92}, {.12f, 88}, {.4f, 61}, {.65f, 23}, {.85f, 5}, {1.f, 0}})
+                for (auto [offset, alpha] :
+                     {std::pair{0.f, 92}, {.12f, 88}, {.4f, 61}, {.65f, 23}, {.85f, 5}, {1.f, 0}})
                     brush.ColorStops().Append(compositor.CreateColorGradientStop(offset, {uint8_t(alpha), 0, 0, 0}));
             }
             owner.Children().InsertAtTop(field.visual);
@@ -663,7 +790,8 @@ struct TabAmbient {
             field.color = color;
             for (auto brush : {field.brush, field.leftBrush, field.rightBrush}) {
                 if (!brush) continue;
-                for (auto stop : brush.ColorStops()) Tint(stop, uint8_t(color >> 16), uint8_t(color >> 8), uint8_t(color));
+                for (auto stop : brush.ColorStops())
+                    Tint(stop, uint8_t(color >> 16), uint8_t(color >> 8), uint8_t(color));
             }
         }
         if (field.bounds != bounds) {
@@ -677,10 +805,15 @@ struct TabAmbient {
             }
         }
     }
-    void Prune(std::map<uint32_t, Field>& fields, std::set<uint32_t> const& live, bool upper, std::set<uint32_t> const& dim = {}) {
+    void Prune(std::map<uint32_t, Field>& fields, std::set<uint32_t> const& live, bool upper,
+               std::set<uint32_t> const& dim = {}) {
         for (auto it = fields.begin(); it != fields.end();) {
-            if (live.count(it->first)) { ++it; continue; }
-            Release(upper ? top : bottom, it->second, dim.count(it->first) != 0, TabGlowIgnition::DimLag, TabGlowIgnition::DimDuration);
+            if (live.count(it->first)) {
+                ++it;
+                continue;
+            }
+            Release(upper ? top : bottom, it->second, dim.count(it->first) != 0, TabGlowIgnition::DimLag,
+                    TabGlowIgnition::DimDuration);
             it = fields.erase(it);
         }
     }

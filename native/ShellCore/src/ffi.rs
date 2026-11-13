@@ -41,8 +41,17 @@ pub const SHELL_STARTUP_ROW_CAPACITY: u32 = 4128;
 /// # Safety
 /// Output is writable and disjoint from core.
 #[no_mangle]
-pub unsafe extern "C" fn shell_core_endpoint(core:*mut ShellCore, output:*mut u64)->ShellStatus {
-    guard(core,|core| {if output.is_null(){return ShellStatus::InvalidArgument;}*output=core.endpoint;ShellStatus::Ok})
+pub unsafe extern "C" fn shell_core_endpoint(
+    core: *mut ShellCore,
+    output: *mut u64,
+) -> ShellStatus {
+    guard(core, |core| {
+        if output.is_null() {
+            return ShellStatus::InvalidArgument;
+        }
+        *output = core.endpoint;
+        ShellStatus::Ok
+    })
 }
 
 /// Revision zero inspects the current identity; otherwise accept a complete
@@ -51,16 +60,38 @@ pub unsafe extern "C" fn shell_core_endpoint(core:*mut ShellCore, output:*mut u6
 /// # Safety
 /// Input key is readable for length units; output is writable and disjoint.
 #[no_mangle]
-pub unsafe extern "C" fn shell_core_recovery_identity(core: *mut ShellCore, session: u64,
-    revision: u64, privacy: u32, key: *const u16, length: usize,
-    output: *mut crate::recovery_identity::ShellRecoveryWindowIdentity) -> ShellStatus {
+pub unsafe extern "C" fn shell_core_recovery_identity(
+    core: *mut ShellCore,
+    session: u64,
+    revision: u64,
+    privacy: u32,
+    key: *const u16,
+    length: usize,
+    output: *mut crate::recovery_identity::ShellRecoveryWindowIdentity,
+) -> ShellStatus {
     guard(core, |core| {
-        if output.is_null() || length > 32 || (length != 0 && key.is_null()) { return ShellStatus::InvalidArgument; }
-        if session != core.endpoint || core.queue.is_closed() { return ShellStatus::Rejected; }
+        if output.is_null() || length > 32 || (length != 0 && key.is_null()) {
+            return ShellStatus::InvalidArgument;
+        }
+        if session != core.endpoint || core.queue.is_closed() {
+            return ShellStatus::Rejected;
+        }
         if revision != 0 {
-            let key = if length == 0 { &[] } else { std::slice::from_raw_parts(key, length) };
-            if core.recovery_identity.publish(revision, privacy, key).is_err() { return ShellStatus::Rejected; }
-        } else if privacy != 0 || length != 0 { return ShellStatus::InvalidArgument; }
+            let key = if length == 0 {
+                &[]
+            } else {
+                std::slice::from_raw_parts(key, length)
+            };
+            if core
+                .recovery_identity
+                .publish(revision, privacy, key)
+                .is_err()
+            {
+                return ShellStatus::Rejected;
+            }
+        } else if privacy != 0 || length != 0 {
+            return ShellStatus::InvalidArgument;
+        }
         *output = core.recovery_identity.state();
         ShellStatus::Ok
     })
@@ -71,20 +102,34 @@ pub unsafe extern "C" fn shell_core_recovery_identity(core: *mut ShellCore, sess
 /// # Safety
 /// Fingerprint contains length UTF-16 units; apply is writable and disjoint.
 #[no_mangle]
-pub unsafe extern "C" fn shell_core_startup_presentation(core:*mut ShellCore, session:u64,
-    revision:u64, fingerprint:*const u16, length:usize, apply:*mut bool)->ShellStatus {
+pub unsafe extern "C" fn shell_core_startup_presentation(
+    core: *mut ShellCore,
+    session: u64,
+    revision: u64,
+    fingerprint: *const u16,
+    length: usize,
+    apply: *mut bool,
+) -> ShellStatus {
     guard(core, |core| {
-        if apply.is_null() || fingerprint.is_null() || length==0 || length>8192 {
+        if apply.is_null() || fingerprint.is_null() || length == 0 || length > 8192 {
             return ShellStatus::InvalidArgument;
         }
-        if session!=core.endpoint || core.queue.is_closed() {return ShellStatus::Rejected;}
-        let bytes=std::slice::from_raw_parts(fingerprint,length);
-        let stream=&mut core.startup_presentation;
-        let class=stream.classify(0,revision,bytes);
+        if session != core.endpoint || core.queue.is_closed() {
+            return ShellStatus::Rejected;
+        }
+        let bytes = std::slice::from_raw_parts(fingerprint, length);
+        let stream = &mut core.startup_presentation;
+        let class = stream.classify(0, revision, bytes);
         stream.record(class);
         match class.outcome(crate::publication::StreamKind::Snapshot) {
-            Ok(changed)=>{if changed {stream.commit(revision,bytes);} *apply=changed;ShellStatus::Ok},
-            Err(())=>ShellStatus::Rejected,
+            Ok(changed) => {
+                if changed {
+                    stream.commit(revision, bytes);
+                }
+                *apply = changed;
+                ShellStatus::Ok
+            }
+            Err(()) => ShellStatus::Rejected,
         }
     })
 }
@@ -96,23 +141,50 @@ pub unsafe extern "C" fn shell_core_startup_presentation(core:*mut ShellCore, se
 /// IDs reference length elements; output holds SHELL_STARTUP_ROW_CAPACITY rows.
 /// Count and output must be writable, mutually disjoint and disjoint from core.
 #[no_mangle]
-pub unsafe extern "C" fn shell_core_startup_rows(core:*mut ShellCore,session:u64,generation:u64,
-    revision:u64,ids:*const u64,length:usize,selected:u64,output:*mut ShellStartupRow,
-    capacity:usize,count:*mut u32)->ShellStatus {
-    guard(core,|core| {
-        if core.queue.is_closed() {return ShellStatus::Closed;}
-        if output.is_null() || count.is_null() || capacity!=crate::startup_rows::STARTUP_PRESENTATION_ROWS ||
-            length>crate::startup_rows::STARTUP_BROWSER_ROWS || (length!=0 && ids.is_null()) {
+pub unsafe extern "C" fn shell_core_startup_rows(
+    core: *mut ShellCore,
+    session: u64,
+    generation: u64,
+    revision: u64,
+    ids: *const u64,
+    length: usize,
+    selected: u64,
+    output: *mut ShellStartupRow,
+    capacity: usize,
+    count: *mut u32,
+) -> ShellStatus {
+    guard(core, |core| {
+        if core.queue.is_closed() {
+            return ShellStatus::Closed;
+        }
+        if output.is_null()
+            || count.is_null()
+            || capacity != crate::startup_rows::STARTUP_PRESENTATION_ROWS
+            || length > crate::startup_rows::STARTUP_BROWSER_ROWS
+            || (length != 0 && ids.is_null())
+        {
             return ShellStatus::InvalidArgument;
         }
-        let h=&core.startup_handoff;
-        if revision!=0 && (session!=core.endpoint || generation==0 || generation!=h.generation || h.lost) {
+        let h = &core.startup_handoff;
+        if revision != 0
+            && (session != core.endpoint || generation == 0 || generation != h.generation || h.lost)
+        {
             return ShellStatus::Rejected;
         }
-        let ids=if length==0 {&[]} else {std::slice::from_raw_parts(ids,length)};
-        let Ok(rows)=core.startup_rows.update(&core.startup,h,revision,ids,selected) else {return ShellStatus::Rejected;};
-        std::ptr::copy_nonoverlapping(rows.as_ptr(),output,rows.len());
-        *count=rows.len() as u32;ShellStatus::Ok
+        let ids = if length == 0 {
+            &[]
+        } else {
+            std::slice::from_raw_parts(ids, length)
+        };
+        let Ok(rows) = core
+            .startup_rows
+            .update(&core.startup, h, revision, ids, selected)
+        else {
+            return ShellStatus::Rejected;
+        };
+        std::ptr::copy_nonoverlapping(rows.as_ptr(), output, rows.len());
+        *count = rows.len() as u32;
+        ShellStatus::Ok
     })
 }
 
@@ -158,59 +230,144 @@ pub struct ShellStartupTransfer {
 /// # Safety
 /// Output must be writable and disjoint from core-owned storage.
 #[no_mangle]
-pub unsafe extern "C" fn shell_core_startup_transfer(core: *mut ShellCore,
-    operation: u32, context: u64, session: u64, generation: u64, request: u64, draft: u64,
-    browser: u64, accepted: bool, output: *mut ShellStartupTransfer) -> ShellStatus {
+pub unsafe extern "C" fn shell_core_startup_transfer(
+    core: *mut ShellCore,
+    operation: u32,
+    context: u64,
+    session: u64,
+    generation: u64,
+    request: u64,
+    draft: u64,
+    browser: u64,
+    accepted: bool,
+    output: *mut ShellStartupTransfer,
+) -> ShellStatus {
     guard(core, |core| {
-        if output.is_null() || operation>16 { return ShellStatus::InvalidArgument; }
-        if operation!=0 && core.queue.is_closed() { return ShellStatus::Closed; }
-        if operation>=2 && session!=core.endpoint { return ShellStatus::Rejected; }
-        let h=&mut core.startup_handoff;
-        if operation>=3 && (generation==0 || generation!=h.generation) { return ShellStatus::Rejected; }
-        let result=match operation {
-            0=>true, 1=>h.prepare(context), 2=>h.bind(context,generation),
-            3=>h.create(&core.startup,draft), 4=>h.submit(&core.startup),
-            5=>h.close(&core.startup,draft),
-            6=>h.complete(&mut core.startup,generation,request,browser,accepted),
-            7=>h.disconnect(generation), 8=>h.next(&core.startup),
-            9=>h.notify(&core.startup), 10=>h.notification_failed(),
-            15=>h.enable_adoption(),
-            16=>browser==core.startup_rows.selected_browser() && h.commit_adoption(&mut core.startup,browser),
-            11=>browser==core.startup_rows.selected_browser() && h.finish_editor(&core.startup,browser),
-            14=>browser==core.startup_rows.selected_browser() && h.adopt_placeholder(&mut core.startup,browser),
-            12=>core.startup_rows.contains_browser(browser) && h.select_editor(&core.startup,draft,browser,false),
-            13=>core.startup_rows.contains_browser(browser) && core.queue.address.can_yield_editor() &&
-                h.select_editor(&core.startup,draft,browser,true),
-            _=>unreachable!(),
-        };
-        if !result { return ShellStatus::Rejected; }
-        let mut view=ShellStartupTransfer {session:core.endpoint,generation:h.generation,mappings:h.mappings.len(),lost:h.lost,editor_browser:h.editor_browser,..Default::default()};
-        if let Some((draft,browser))=h.ready.as_ref() {
-            view.adoption_ready=h.ready_current(&core.startup) && h.pending.is_none() && core.startup.submissions.is_empty();view.draft=draft.id;view.browser=*browser;
-            view.revision=draft.revision;view.text=draft.text.as_ptr();view.length=draft.text.len();
-            view.selection_start=draft.selection_start;view.selection_length=draft.selection_length;
+        if output.is_null() || operation > 16 {
+            return ShellStatus::InvalidArgument;
         }
-        if let Some(pending)=h.pending.as_ref() {
-            view.request=pending.id;
+        if operation != 0 && core.queue.is_closed() {
+            return ShellStatus::Closed;
+        }
+        if operation >= 2 && session != core.endpoint {
+            return ShellStatus::Rejected;
+        }
+        let h = &mut core.startup_handoff;
+        if operation >= 3 && (generation == 0 || generation != h.generation) {
+            return ShellStatus::Rejected;
+        }
+        let result = match operation {
+            0 => true,
+            1 => h.prepare(context),
+            2 => h.bind(context, generation),
+            3 => h.create(&core.startup, draft),
+            4 => h.submit(&core.startup),
+            5 => h.close(&core.startup, draft),
+            6 => h.complete(&mut core.startup, generation, request, browser, accepted),
+            7 => h.disconnect(generation),
+            8 => h.next(&core.startup),
+            9 => h.notify(&core.startup),
+            10 => h.notification_failed(),
+            15 => h.enable_adoption(),
+            16 => {
+                browser == core.startup_rows.selected_browser()
+                    && h.commit_adoption(&mut core.startup, browser)
+            }
+            11 => {
+                browser == core.startup_rows.selected_browser()
+                    && h.finish_editor(&core.startup, browser)
+            }
+            14 => {
+                browser == core.startup_rows.selected_browser()
+                    && h.adopt_placeholder(&mut core.startup, browser)
+            }
+            12 => {
+                core.startup_rows.contains_browser(browser)
+                    && h.select_editor(&core.startup, draft, browser, false)
+            }
+            13 => {
+                core.startup_rows.contains_browser(browser)
+                    && core.queue.address.can_yield_editor()
+                    && h.select_editor(&core.startup, draft, browser, true)
+            }
+            _ => unreachable!(),
+        };
+        if !result {
+            return ShellStatus::Rejected;
+        }
+        let mut view = ShellStartupTransfer {
+            session: core.endpoint,
+            generation: h.generation,
+            mappings: h.mappings.len(),
+            lost: h.lost,
+            editor_browser: h.editor_browser,
+            ..Default::default()
+        };
+        if let Some((draft, browser)) = h.ready.as_ref() {
+            view.adoption_ready = h.ready_current(&core.startup)
+                && h.pending.is_none()
+                && core.startup.submissions.is_empty();
+            view.draft = draft.id;
+            view.browser = *browser;
+            view.revision = draft.revision;
+            view.text = draft.text.as_ptr();
+            view.length = draft.text.len();
+            view.selection_start = draft.selection_start;
+            view.selection_length = draft.selection_length;
+        }
+        if let Some(pending) = h.pending.as_ref() {
+            view.request = pending.id;
             match &pending.action {
-                crate::startup_handoff::Action::Adopt {draft,browser,selected}=>{
-                    view.kind=6;view.draft=draft.id;view.browser=*browser;view.revision=draft.revision;
-                    view.text=draft.text.as_ptr();view.length=draft.text.len();view.modifiers=u32::from(*selected);
-                    view.selection_start=draft.selection_start;view.selection_length=draft.selection_length;
-                },
-                crate::startup_handoff::Action::Create {draft}=>{view.kind=1;view.draft=*draft;},
-                crate::startup_handoff::Action::Submit {browser,submission}=>{
-                    view.kind=2;view.browser=*browser;view.draft=submission.tab;
-                    view.submission=submission.id;view.revision=submission.revision;
-                    view.modifiers=submission.modifiers;view.text=submission.text.as_ptr();view.length=submission.text.len();
-                },
-                crate::startup_handoff::Action::Close {draft,browser}=>{view.kind=3;view.draft=*draft;view.browser=*browser;},
-                crate::startup_handoff::Action::Select {draft,browser,local}=>{
-                    view.kind=if *local {5} else {4};view.draft=*draft;view.browser=*browser;
-                },
+                crate::startup_handoff::Action::Adopt {
+                    draft,
+                    browser,
+                    selected,
+                } => {
+                    view.kind = 6;
+                    view.draft = draft.id;
+                    view.browser = *browser;
+                    view.revision = draft.revision;
+                    view.text = draft.text.as_ptr();
+                    view.length = draft.text.len();
+                    view.modifiers = u32::from(*selected);
+                    view.selection_start = draft.selection_start;
+                    view.selection_length = draft.selection_length;
+                }
+                crate::startup_handoff::Action::Create { draft } => {
+                    view.kind = 1;
+                    view.draft = *draft;
+                }
+                crate::startup_handoff::Action::Submit {
+                    browser,
+                    submission,
+                } => {
+                    view.kind = 2;
+                    view.browser = *browser;
+                    view.draft = submission.tab;
+                    view.submission = submission.id;
+                    view.revision = submission.revision;
+                    view.modifiers = submission.modifiers;
+                    view.text = submission.text.as_ptr();
+                    view.length = submission.text.len();
+                }
+                crate::startup_handoff::Action::Close { draft, browser } => {
+                    view.kind = 3;
+                    view.draft = *draft;
+                    view.browser = *browser;
+                }
+                crate::startup_handoff::Action::Select {
+                    draft,
+                    browser,
+                    local,
+                } => {
+                    view.kind = if *local { 5 } else { 4 };
+                    view.draft = *draft;
+                    view.browser = *browser;
+                }
             }
         }
-        *output=view;ShellStatus::Ok
+        *output = view;
+        ShellStatus::Ok
     })
 }
 
@@ -219,14 +376,32 @@ pub unsafe extern "C" fn shell_core_startup_transfer(core: *mut ShellCore,
 /// # Safety
 /// Output must be writable. Returned text is always null.
 #[no_mangle]
-pub unsafe extern "C" fn shell_core_startup_mapping(core: *mut ShellCore,
-    session: u64, generation: u64, index: usize, output: *mut ShellStartupTransfer) -> ShellStatus {
+pub unsafe extern "C" fn shell_core_startup_mapping(
+    core: *mut ShellCore,
+    session: u64,
+    generation: u64,
+    index: usize,
+    output: *mut ShellStartupTransfer,
+) -> ShellStatus {
     guard(core, |core| {
-        let Some(output)=output.as_mut() else {return ShellStatus::InvalidArgument;};
-        let h=&core.startup_handoff;
-        if h.lost || session!=core.endpoint || generation==0 || generation!=h.generation {return ShellStatus::Rejected;}
-        let Some((draft,browser))=h.mappings.iter().nth(index) else {return ShellStatus::Rejected;};
-        *output=ShellStartupTransfer {session,generation,draft:*draft,browser:*browser,mappings:h.mappings.len(),..Default::default()};
+        let Some(output) = output.as_mut() else {
+            return ShellStatus::InvalidArgument;
+        };
+        let h = &core.startup_handoff;
+        if h.lost || session != core.endpoint || generation == 0 || generation != h.generation {
+            return ShellStatus::Rejected;
+        }
+        let Some((draft, browser)) = h.mappings.iter().nth(index) else {
+            return ShellStatus::Rejected;
+        };
+        *output = ShellStartupTransfer {
+            session,
+            generation,
+            draft: *draft,
+            browser: *browser,
+            mappings: h.mappings.len(),
+            ..Default::default()
+        };
         ShellStatus::Ok
     })
 }
@@ -237,102 +412,360 @@ mod startup_transfer_ffi_tests {
     #[test]
     fn placeholder_adoption_requires_current_selected_publication() {
         unsafe {
-            let core=shell_core_create(std::ptr::null());
-            let mut view=ShellStartupView::default();
-            assert_eq!(shell_core_startup(core,1,0,0,std::ptr::null(),0,&mut view),ShellStatus::Ok);
-            let mut state=ShellStartupTransfer::default();
-            shell_core_startup_transfer(core,1,42,0,0,0,0,0,false,&mut state);
-            let session=state.session;
-            shell_core_startup_transfer(core,2,42,session,7,0,0,0,false,&mut state);
-            assert_eq!(shell_core_startup_transfer(core,14,42,session,7,0,0,90,false,&mut state),ShellStatus::Rejected);
-            let mut rows=vec![ShellStartupRow::default();SHELL_STARTUP_ROW_CAPACITY as usize];let mut count=0;
-            assert_eq!(shell_core_startup_rows(core,session,7,1,[90,91].as_ptr(),2,90,rows.as_mut_ptr(),rows.len(),&mut count),ShellStatus::Ok);
-            for (endpoint,generation,browser) in [(session+1,7,90),(session,8,90),(session,7,91)] {
-                assert_eq!(shell_core_startup_transfer(core,14,42,endpoint,generation,0,0,browser,false,&mut state),ShellStatus::Rejected);
+            let core = shell_core_create(std::ptr::null());
+            let mut view = ShellStartupView::default();
+            assert_eq!(
+                shell_core_startup(core, 1, 0, 0, std::ptr::null(), 0, &mut view),
+                ShellStatus::Ok
+            );
+            let mut state = ShellStartupTransfer::default();
+            shell_core_startup_transfer(core, 1, 42, 0, 0, 0, 0, 0, false, &mut state);
+            let session = state.session;
+            shell_core_startup_transfer(core, 2, 42, session, 7, 0, 0, 0, false, &mut state);
+            assert_eq!(
+                shell_core_startup_transfer(core, 14, 42, session, 7, 0, 0, 90, false, &mut state),
+                ShellStatus::Rejected
+            );
+            let mut rows = vec![ShellStartupRow::default(); SHELL_STARTUP_ROW_CAPACITY as usize];
+            let mut count = 0;
+            assert_eq!(
+                shell_core_startup_rows(
+                    core,
+                    session,
+                    7,
+                    1,
+                    [90, 91].as_ptr(),
+                    2,
+                    90,
+                    rows.as_mut_ptr(),
+                    rows.len(),
+                    &mut count
+                ),
+                ShellStatus::Ok
+            );
+            for (endpoint, generation, browser) in
+                [(session + 1, 7, 90), (session, 8, 90), (session, 7, 91)]
+            {
+                assert_eq!(
+                    shell_core_startup_transfer(
+                        core, 14, 42, endpoint, generation, 0, 0, browser, false, &mut state
+                    ),
+                    ShellStatus::Rejected
+                );
             }
-            assert_eq!(shell_core_startup_transfer(core,14,42,session,7,0,0,90,false,&mut state),ShellStatus::Ok);
-            assert_eq!(state.editor_browser,90);assert_eq!(state.kind,0);assert_eq!(state.mappings,0);
+            assert_eq!(
+                shell_core_startup_transfer(core, 14, 42, session, 7, 0, 0, 90, false, &mut state),
+                ShellStatus::Ok
+            );
+            assert_eq!(state.editor_browser, 90);
+            assert_eq!(state.kind, 0);
+            assert_eq!(state.mappings, 0);
             shell_core_destroy(core);
         }
     }
     #[test]
     fn mixed_switch_guards_mutations_and_unacknowledged_browser_edits() {
         unsafe {
-            let core=shell_core_create(std::ptr::null());let mut state=ShellStartupTransfer::default();
-            let mut view=ShellStartupView::default();
-            shell_core_startup(core,1,0,0,std::ptr::null(),0,&mut view);
-            shell_core_startup_transfer(core,1,42,0,0,0,0,0,false,&mut state);let session=state.session;
-            shell_core_startup_transfer(core,2,42,session,7,0,0,0,false,&mut state);
-            shell_core_startup_transfer(core,3,42,session,7,0,1,0,false,&mut state);
-            shell_core_startup_transfer(core,6,42,session,7,state.request,0,90,true,&mut state);
-            let mut rows=vec![ShellStartupRow::default();SHELL_STARTUP_ROW_CAPACITY as usize];let mut count=0;
-            shell_core_startup_rows(core,session,7,1,[90,91].as_ptr(),2,90,rows.as_mut_ptr(),rows.len(),&mut count);
-            assert_eq!(shell_core_startup_transfer(core,12,42,session,7,0,1,92,false,&mut state),ShellStatus::Rejected);
-            assert_eq!(shell_core_startup_transfer(core,12,42,session,7,0,1,91,false,&mut state),ShellStatus::Ok);
-            assert_eq!(state.kind,4);
-            assert_eq!(shell_core_startup(core,4,1,0,std::ptr::null(),0,&mut view),ShellStatus::Rejected);
-            assert_eq!(shell_core_startup_editor(core,1,[65].as_ptr(),1,1,0,false),ShellStatus::Rejected);
-            assert_eq!(shell_core_startup_transfer(core,6,42,session,7,state.request,0,91,true,&mut state),ShellStatus::Ok);
-            assert_eq!(shell_core_startup(core,3,1,0,std::ptr::null(),0,&mut view),ShellStatus::Rejected);
-            assert_eq!(shell_core_startup_editor(core,1,[66].as_ptr(),1,1,0,false),ShellStatus::Rejected);
+            let core = shell_core_create(std::ptr::null());
+            let mut state = ShellStartupTransfer::default();
+            let mut view = ShellStartupView::default();
+            shell_core_startup(core, 1, 0, 0, std::ptr::null(), 0, &mut view);
+            shell_core_startup_transfer(core, 1, 42, 0, 0, 0, 0, 0, false, &mut state);
+            let session = state.session;
+            shell_core_startup_transfer(core, 2, 42, session, 7, 0, 0, 0, false, &mut state);
+            shell_core_startup_transfer(core, 3, 42, session, 7, 0, 1, 0, false, &mut state);
+            shell_core_startup_transfer(
+                core,
+                6,
+                42,
+                session,
+                7,
+                state.request,
+                0,
+                90,
+                true,
+                &mut state,
+            );
+            let mut rows = vec![ShellStartupRow::default(); SHELL_STARTUP_ROW_CAPACITY as usize];
+            let mut count = 0;
+            shell_core_startup_rows(
+                core,
+                session,
+                7,
+                1,
+                [90, 91].as_ptr(),
+                2,
+                90,
+                rows.as_mut_ptr(),
+                rows.len(),
+                &mut count,
+            );
+            assert_eq!(
+                shell_core_startup_transfer(core, 12, 42, session, 7, 0, 1, 92, false, &mut state),
+                ShellStatus::Rejected
+            );
+            assert_eq!(
+                shell_core_startup_transfer(core, 12, 42, session, 7, 0, 1, 91, false, &mut state),
+                ShellStatus::Ok
+            );
+            assert_eq!(state.kind, 4);
+            assert_eq!(
+                shell_core_startup(core, 4, 1, 0, std::ptr::null(), 0, &mut view),
+                ShellStatus::Rejected
+            );
+            assert_eq!(
+                shell_core_startup_editor(core, 1, [65].as_ptr(), 1, 1, 0, false),
+                ShellStatus::Rejected
+            );
+            assert_eq!(
+                shell_core_startup_transfer(
+                    core,
+                    6,
+                    42,
+                    session,
+                    7,
+                    state.request,
+                    0,
+                    91,
+                    true,
+                    &mut state
+                ),
+                ShellStatus::Ok
+            );
+            assert_eq!(
+                shell_core_startup(core, 3, 1, 0, std::ptr::null(), 0, &mut view),
+                ShellStatus::Rejected
+            );
+            assert_eq!(
+                shell_core_startup_editor(core, 1, [66].as_ptr(), 1, 1, 0, false),
+                ShellStatus::Rejected
+            );
             (*core).queue.address.edit();
-            assert_eq!(shell_core_startup_transfer(core,13,42,session,7,0,1,90,false,&mut state),ShellStatus::Rejected);
-            (*core).queue.address.publish(1,true);
-            assert_eq!(shell_core_startup_transfer(core,13,42,session,7,0,1,90,false,&mut state),ShellStatus::Rejected);
-            (*core).queue.address.stage(100,crate::intent::IntentKind::Edit);
+            assert_eq!(
+                shell_core_startup_transfer(core, 13, 42, session, 7, 0, 1, 90, false, &mut state),
+                ShellStatus::Rejected
+            );
+            (*core).queue.address.publish(1, true);
+            assert_eq!(
+                shell_core_startup_transfer(core, 13, 42, session, 7, 0, 1, 90, false, &mut state),
+                ShellStatus::Rejected
+            );
+            (*core)
+                .queue
+                .address
+                .stage(100, crate::intent::IntentKind::Edit);
             (*core).queue.address.complete(100);
-            assert_eq!(shell_core_startup_transfer(core,13,42,session,7,0,1,90,false,&mut state),ShellStatus::Ok);
-            assert_eq!(state.kind,5);
-            assert_eq!(shell_core_startup_transfer(core,6,42,session,7,state.request,0,90,true,&mut state),ShellStatus::Ok);
-            assert_eq!((*core).startup.selected,1);shell_core_destroy(core);
+            assert_eq!(
+                shell_core_startup_transfer(core, 13, 42, session, 7, 0, 1, 90, false, &mut state),
+                ShellStatus::Ok
+            );
+            assert_eq!(state.kind, 5);
+            assert_eq!(
+                shell_core_startup_transfer(
+                    core,
+                    6,
+                    42,
+                    session,
+                    7,
+                    state.request,
+                    0,
+                    90,
+                    true,
+                    &mut state
+                ),
+                ShellStatus::Ok
+            );
+            assert_eq!((*core).startup.selected, 1);
+            shell_core_destroy(core);
         }
     }
     #[test]
     fn editor_release_validates_endpoint_and_published_selection() {
         unsafe {
-            let core=shell_core_create(std::ptr::null());
-            let mut transfer=ShellStartupTransfer::default();
-            assert_eq!(shell_core_startup_transfer(core,1,42,0,0,0,0,0,false,&mut transfer),ShellStatus::Ok);
-            let session=transfer.session;
-            assert_eq!(shell_core_startup_transfer(core,2,42,session,7,0,0,0,false,&mut transfer),ShellStatus::Ok);
-            let mut rows=vec![ShellStartupRow::default();SHELL_STARTUP_ROW_CAPACITY as usize];let mut count=0;
-            assert_eq!(shell_core_startup_rows(core,session,7,1,[90,91].as_ptr(),2,90,rows.as_mut_ptr(),rows.len(),&mut count),ShellStatus::Ok);
-            assert_eq!(shell_core_startup_transfer(core,11,42,session,7,0,0,90,false,&mut transfer),ShellStatus::Rejected);
-            let mut view=ShellStartupView::default();
-            assert_eq!(shell_core_startup(core,1,0,0,std::ptr::null(),0,&mut view),ShellStatus::Ok);
-            assert_eq!(shell_core_startup(core,4,view.selected,0,std::ptr::null(),0,&mut view),ShellStatus::Ok);
-            for (endpoint,generation,browser) in [(session+1,7,90),(session,8,90),(session,7,91)] {
-                assert_eq!(shell_core_startup_transfer(core,11,42,endpoint,generation,0,0,browser,false,&mut transfer),ShellStatus::Rejected);
-                assert_eq!(transfer.editor_browser,0);
+            let core = shell_core_create(std::ptr::null());
+            let mut transfer = ShellStartupTransfer::default();
+            assert_eq!(
+                shell_core_startup_transfer(core, 1, 42, 0, 0, 0, 0, 0, false, &mut transfer),
+                ShellStatus::Ok
+            );
+            let session = transfer.session;
+            assert_eq!(
+                shell_core_startup_transfer(core, 2, 42, session, 7, 0, 0, 0, false, &mut transfer),
+                ShellStatus::Ok
+            );
+            let mut rows = vec![ShellStartupRow::default(); SHELL_STARTUP_ROW_CAPACITY as usize];
+            let mut count = 0;
+            assert_eq!(
+                shell_core_startup_rows(
+                    core,
+                    session,
+                    7,
+                    1,
+                    [90, 91].as_ptr(),
+                    2,
+                    90,
+                    rows.as_mut_ptr(),
+                    rows.len(),
+                    &mut count
+                ),
+                ShellStatus::Ok
+            );
+            assert_eq!(
+                shell_core_startup_transfer(
+                    core,
+                    11,
+                    42,
+                    session,
+                    7,
+                    0,
+                    0,
+                    90,
+                    false,
+                    &mut transfer
+                ),
+                ShellStatus::Rejected
+            );
+            let mut view = ShellStartupView::default();
+            assert_eq!(
+                shell_core_startup(core, 1, 0, 0, std::ptr::null(), 0, &mut view),
+                ShellStatus::Ok
+            );
+            assert_eq!(
+                shell_core_startup(core, 4, view.selected, 0, std::ptr::null(), 0, &mut view),
+                ShellStatus::Ok
+            );
+            for (endpoint, generation, browser) in
+                [(session + 1, 7, 90), (session, 8, 90), (session, 7, 91)]
+            {
+                assert_eq!(
+                    shell_core_startup_transfer(
+                        core,
+                        11,
+                        42,
+                        endpoint,
+                        generation,
+                        0,
+                        0,
+                        browser,
+                        false,
+                        &mut transfer
+                    ),
+                    ShellStatus::Rejected
+                );
+                assert_eq!(transfer.editor_browser, 0);
             }
-            assert_eq!(shell_core_startup_transfer(core,11,42,session,7,0,0,90,false,&mut transfer),ShellStatus::Ok);
-            assert_eq!(transfer.editor_browser,90);
+            assert_eq!(
+                shell_core_startup_transfer(
+                    core,
+                    11,
+                    42,
+                    session,
+                    7,
+                    0,
+                    0,
+                    90,
+                    false,
+                    &mut transfer
+                ),
+                ShellStatus::Ok
+            );
+            assert_eq!(transfer.editor_browser, 90);
             shell_core_destroy(core);
         }
     }
     #[test]
     fn mapping_requires_context_and_generation_and_rejection_preserves_output() {
         unsafe {
-            let core=shell_core_create(std::ptr::null());assert!(!core.is_null());
-            let mut view=ShellStartupView::default();
-            assert_eq!(shell_core_startup(core,1,0,0,std::ptr::null(),0,&mut view),ShellStatus::Ok);
-            let mut transfer=ShellStartupTransfer::default();
-            assert_eq!(shell_core_startup_transfer(core,1,42,0,0,0,0,0,false,&mut transfer),ShellStatus::Ok);
-            let session=transfer.session;
-            assert_eq!(shell_core_startup_transfer(core,2,42,session+1,7,0,0,0,false,&mut transfer),ShellStatus::Rejected);
-            assert_eq!(shell_core_startup_transfer(core,2,43,session,7,0,0,0,false,&mut transfer),ShellStatus::Rejected);
-            assert_eq!(shell_core_startup_transfer(core,2,42,session,7,0,0,0,false,&mut transfer),ShellStatus::Ok);
-            assert_eq!(shell_core_startup_transfer(core,3,0,session,7,0,1,0,false,&mut transfer),ShellStatus::Ok);
-            let request=transfer.request;
-            assert_eq!(shell_core_startup_transfer(core,6,0,session+1,7,request,0,88,true,&mut transfer),ShellStatus::Rejected);
-            assert_eq!(shell_core_startup_transfer(core,6,0,session,7,request,0,88,true,&mut transfer),ShellStatus::Ok);
-            assert_eq!(shell_core_startup_mapping(core,session,7,0,&mut transfer),ShellStatus::Ok);
-            assert_eq!((transfer.draft,transfer.browser),(1,88));
-            assert_eq!(shell_core_startup_mapping(core,session,8,0,&mut transfer),ShellStatus::Rejected);
-            assert_eq!((transfer.draft,transfer.browser),(1,88));
-            assert_eq!(shell_core_startup_transfer(core,7,0,session,7,0,0,0,false,&mut transfer),ShellStatus::Ok);
+            let core = shell_core_create(std::ptr::null());
+            assert!(!core.is_null());
+            let mut view = ShellStartupView::default();
+            assert_eq!(
+                shell_core_startup(core, 1, 0, 0, std::ptr::null(), 0, &mut view),
+                ShellStatus::Ok
+            );
+            let mut transfer = ShellStartupTransfer::default();
+            assert_eq!(
+                shell_core_startup_transfer(core, 1, 42, 0, 0, 0, 0, 0, false, &mut transfer),
+                ShellStatus::Ok
+            );
+            let session = transfer.session;
+            assert_eq!(
+                shell_core_startup_transfer(
+                    core,
+                    2,
+                    42,
+                    session + 1,
+                    7,
+                    0,
+                    0,
+                    0,
+                    false,
+                    &mut transfer
+                ),
+                ShellStatus::Rejected
+            );
+            assert_eq!(
+                shell_core_startup_transfer(core, 2, 43, session, 7, 0, 0, 0, false, &mut transfer),
+                ShellStatus::Rejected
+            );
+            assert_eq!(
+                shell_core_startup_transfer(core, 2, 42, session, 7, 0, 0, 0, false, &mut transfer),
+                ShellStatus::Ok
+            );
+            assert_eq!(
+                shell_core_startup_transfer(core, 3, 0, session, 7, 0, 1, 0, false, &mut transfer),
+                ShellStatus::Ok
+            );
+            let request = transfer.request;
+            assert_eq!(
+                shell_core_startup_transfer(
+                    core,
+                    6,
+                    0,
+                    session + 1,
+                    7,
+                    request,
+                    0,
+                    88,
+                    true,
+                    &mut transfer
+                ),
+                ShellStatus::Rejected
+            );
+            assert_eq!(
+                shell_core_startup_transfer(
+                    core,
+                    6,
+                    0,
+                    session,
+                    7,
+                    request,
+                    0,
+                    88,
+                    true,
+                    &mut transfer
+                ),
+                ShellStatus::Ok
+            );
+            assert_eq!(
+                shell_core_startup_mapping(core, session, 7, 0, &mut transfer),
+                ShellStatus::Ok
+            );
+            assert_eq!((transfer.draft, transfer.browser), (1, 88));
+            assert_eq!(
+                shell_core_startup_mapping(core, session, 8, 0, &mut transfer),
+                ShellStatus::Rejected
+            );
+            assert_eq!((transfer.draft, transfer.browser), (1, 88));
+            assert_eq!(
+                shell_core_startup_transfer(core, 7, 0, session, 7, 0, 0, 0, false, &mut transfer),
+                ShellStatus::Ok
+            );
             assert!(transfer.lost);
-            assert_eq!(shell_core_startup_mapping(core,session,7,0,&mut transfer),ShellStatus::Rejected);
+            assert_eq!(
+                shell_core_startup_mapping(core, session, 7, 0, &mut transfer),
+                ShellStatus::Rejected
+            );
             shell_core_destroy(core);
         }
     }
@@ -361,17 +794,47 @@ pub struct ShellStartupView {
 /// # Safety
 /// Text must reference length units. No borrowed buffer is retained.
 #[no_mangle]
-pub unsafe extern "C" fn shell_core_startup_editor(core: *mut ShellCore, tab: u64,
-    text: *const u16, length: usize, start: u32, selected_length: u32, composing: bool) -> ShellStatus {
+pub unsafe extern "C" fn shell_core_startup_editor(
+    core: *mut ShellCore,
+    tab: u64,
+    text: *const u16,
+    length: usize,
+    start: u32,
+    selected_length: u32,
+    composing: bool,
+) -> ShellStatus {
     guard(core, |core| {
-        if matches!(core.startup_handoff.pending.as_ref().map(|p|&p.action),Some(crate::startup_handoff::Action::Select{..})) {return ShellStatus::Rejected;}
-        if core.startup_handoff.editor_browser!=0 {return ShellStatus::Rejected;}
-        if length != 0 && text.is_null() { return ShellStatus::InvalidArgument; }
-        if length > crate::startup::STARTUP_MAX_TEXT { return ShellStatus::TooLarge; }
-        if core.queue.is_closed() { return ShellStatus::Closed; }
-        let text = if length == 0 { &[] } else { std::slice::from_raw_parts(text,length) };
-        if core.startup.editor(tab,text,start,selected_length,composing) { ShellStatus::Ok }
-        else { ShellStatus::Rejected }
+        if matches!(
+            core.startup_handoff.pending.as_ref().map(|p| &p.action),
+            Some(crate::startup_handoff::Action::Select { .. })
+        ) {
+            return ShellStatus::Rejected;
+        }
+        if core.startup_handoff.editor_browser != 0 {
+            return ShellStatus::Rejected;
+        }
+        if length != 0 && text.is_null() {
+            return ShellStatus::InvalidArgument;
+        }
+        if length > crate::startup::STARTUP_MAX_TEXT {
+            return ShellStatus::TooLarge;
+        }
+        if core.queue.is_closed() {
+            return ShellStatus::Closed;
+        }
+        let text = if length == 0 {
+            &[]
+        } else {
+            std::slice::from_raw_parts(text, length)
+        };
+        if core
+            .startup
+            .editor(tab, text, start, selected_length, composing)
+        {
+            ShellStatus::Ok
+        } else {
+            ShellStatus::Rejected
+        }
     })
 }
 
@@ -381,35 +844,70 @@ pub unsafe extern "C" fn shell_core_startup_editor(core: *mut ShellCore, tab: u6
 /// # Safety
 /// Text must reference length UTF-16 units; output must be writable and disjoint.
 #[no_mangle]
-pub unsafe extern "C" fn shell_core_startup(core: *mut ShellCore, operation: u32,
-    tab: u64, argument: u32, text: *const u16, length: usize,
-    output: *mut ShellStartupView) -> ShellStatus {
+pub unsafe extern "C" fn shell_core_startup(
+    core: *mut ShellCore,
+    operation: u32,
+    tab: u64,
+    argument: u32,
+    text: *const u16,
+    length: usize,
+    output: *mut ShellStartupView,
+) -> ShellStatus {
     guard(core, |core| {
-        if operation!=0 && matches!(core.startup_handoff.pending.as_ref().map(|p|&p.action),Some(crate::startup_handoff::Action::Select{..})) {return ShellStatus::Rejected;}
-        if core.startup_handoff.editor_browser!=0 && matches!(operation,1|3|5) {return ShellStatus::Rejected;}
+        if operation != 0
+            && matches!(
+                core.startup_handoff.pending.as_ref().map(|p| &p.action),
+                Some(crate::startup_handoff::Action::Select { .. })
+            )
+        {
+            return ShellStatus::Rejected;
+        }
+        if core.startup_handoff.editor_browser != 0 && matches!(operation, 1 | 3 | 5) {
+            return ShellStatus::Rejected;
+        }
         if output.is_null() || operation > 6 || (length != 0 && text.is_null()) {
             return ShellStatus::InvalidArgument;
         }
-        if core.queue.is_closed() { return ShellStatus::Closed; }
-        if length > crate::startup::STARTUP_MAX_TEXT { return ShellStatus::TooLarge; }
-        let text = if length == 0 { &[] } else { std::slice::from_raw_parts(text, length) };
+        if core.queue.is_closed() {
+            return ShellStatus::Closed;
+        }
+        if length > crate::startup::STARTUP_MAX_TEXT {
+            return ShellStatus::TooLarge;
+        }
+        let text = if length == 0 {
+            &[]
+        } else {
+            std::slice::from_raw_parts(text, length)
+        };
         let s = &mut core.startup;
         let accepted = match operation {
-            0 => true, 1 => s.add(), 2 => s.edit(tab, text),
-            3 => s.select(tab), 4 => s.close(tab), 5 => s.submit(tab, argument),
-            6 => s.reorder(tab, argument as usize), _ => unreachable!(),
+            0 => true,
+            1 => s.add(),
+            2 => s.edit(tab, text),
+            3 => s.select(tab),
+            4 => s.close(tab),
+            5 => s.submit(tab, argument),
+            6 => s.reorder(tab, argument as usize),
+            _ => unreachable!(),
         };
-        if !accepted { return ShellStatus::Rejected; }
+        if !accepted {
+            return ShellStatus::Rejected;
+        }
         let draft = s.tabs.iter().find(|t| t.id == s.selected);
-        *output = ShellStartupView { selected: s.selected, tabs: s.tabs.len(),
-            pending: s.submissions.len(), tab: s.selected,
+        *output = ShellStartupView {
+            selected: s.selected,
+            tabs: s.tabs.len(),
+            pending: s.submissions.len(),
+            tab: s.selected,
             revision: draft.map_or(0, |t| t.revision),
             text: draft.map_or(std::ptr::null(), |t| t.text.as_ptr()),
-            length: draft.map_or(0, |t| t.text.len()), ..Default::default() };
-        if let Some(draft)=draft {
-            (*output).selection_start=draft.selection_start;
-            (*output).selection_length=draft.selection_length;
-            (*output).composing=draft.composing;
+            length: draft.map_or(0, |t| t.text.len()),
+            ..Default::default()
+        };
+        if let Some(draft) = draft {
+            (*output).selection_start = draft.selection_start;
+            (*output).selection_length = draft.selection_length;
+            (*output).composing = draft.composing;
         }
         ShellStatus::Ok
     })
@@ -419,25 +917,47 @@ pub unsafe extern "C" fn shell_core_startup(core: *mut ShellCore, operation: u32
 /// # Safety
 /// Output must be writable; returned text is borrowed until next core mutation.
 #[no_mangle]
-pub unsafe extern "C" fn shell_core_startup_read(core: *mut ShellCore,
-    submission: bool, index: usize, output: *mut ShellStartupView) -> ShellStatus {
+pub unsafe extern "C" fn shell_core_startup_read(
+    core: *mut ShellCore,
+    submission: bool,
+    index: usize,
+    output: *mut ShellStartupView,
+) -> ShellStatus {
     guard(core, |core| {
-        let Some(output) = output.as_mut() else { return ShellStatus::InvalidArgument; };
+        let Some(output) = output.as_mut() else {
+            return ShellStatus::InvalidArgument;
+        };
         let s = &core.startup;
-        let mut view = ShellStartupView { selected:s.selected, tabs:s.tabs.len(),
-            pending:s.submissions.len(), ..Default::default() };
+        let mut view = ShellStartupView {
+            selected: s.selected,
+            tabs: s.tabs.len(),
+            pending: s.submissions.len(),
+            ..Default::default()
+        };
         if submission {
-            let Some(item) = s.submissions.get(index) else { return ShellStatus::Rejected; };
-            view.tab=item.tab; view.request=item.id; view.revision=item.revision;
-            view.modifiers=item.modifiers; view.text=item.text.as_ptr(); view.length=item.text.len();
+            let Some(item) = s.submissions.get(index) else {
+                return ShellStatus::Rejected;
+            };
+            view.tab = item.tab;
+            view.request = item.id;
+            view.revision = item.revision;
+            view.modifiers = item.modifiers;
+            view.text = item.text.as_ptr();
+            view.length = item.text.len();
         } else {
-            let Some(item) = s.tabs.get(index) else { return ShellStatus::Rejected; };
-            view.tab=item.id; view.revision=item.revision;
-            view.text=item.text.as_ptr(); view.length=item.text.len();
-            view.selection_start=item.selection_start; view.selection_length=item.selection_length;
-            view.composing=item.composing;
+            let Some(item) = s.tabs.get(index) else {
+                return ShellStatus::Rejected;
+            };
+            view.tab = item.id;
+            view.revision = item.revision;
+            view.text = item.text.as_ptr();
+            view.length = item.text.len();
+            view.selection_start = item.selection_start;
+            view.selection_length = item.selection_length;
+            view.composing = item.composing;
         }
-        *output=view; ShellStatus::Ok
+        *output = view;
+        ShellStatus::Ok
     })
 }
 
@@ -447,41 +967,124 @@ mod startup_ffi_tests {
     #[test]
     fn row_publication_validates_capacity_and_endpoint_before_mutation() {
         unsafe {
-            assert_eq!(SHELL_STARTUP_ROW_CAPACITY as usize,crate::startup_rows::STARTUP_PRESENTATION_ROWS);
-            let core=shell_core_create(std::ptr::null());
-            let mut transfer=ShellStartupTransfer::default();
-            assert_eq!(shell_core_startup_transfer(core,1,42,0,0,0,0,0,false,&mut transfer),ShellStatus::Ok);
-            assert_eq!(shell_core_startup_transfer(core,2,42,transfer.session,7,0,0,0,false,&mut transfer),ShellStatus::Ok);
-            let mut rows=vec![ShellStartupRow::default();SHELL_STARTUP_ROW_CAPACITY as usize];
-            let mut count=777;
-            assert_eq!(shell_core_startup_rows(core,transfer.session,7,1,[90].as_ptr(),1,90,
-                rows.as_mut_ptr(),1,&mut count),ShellStatus::InvalidArgument);
-            assert_eq!(count,777);
-            assert_eq!(shell_core_startup_rows(core,transfer.session,8,1,[90].as_ptr(),1,90,
-                rows.as_mut_ptr(),rows.len(),&mut count),ShellStatus::Rejected);
-            assert_eq!(count,777);
-            assert_eq!(shell_core_startup_rows(core,transfer.session,7,1,[90].as_ptr(),1,90,
-                rows.as_mut_ptr(),rows.len(),&mut count),ShellStatus::Ok);
-            assert_eq!(count,1);assert_eq!(rows[0].browser,90);assert!(rows[0].selected);
+            assert_eq!(
+                SHELL_STARTUP_ROW_CAPACITY as usize,
+                crate::startup_rows::STARTUP_PRESENTATION_ROWS
+            );
+            let core = shell_core_create(std::ptr::null());
+            let mut transfer = ShellStartupTransfer::default();
+            assert_eq!(
+                shell_core_startup_transfer(core, 1, 42, 0, 0, 0, 0, 0, false, &mut transfer),
+                ShellStatus::Ok
+            );
+            assert_eq!(
+                shell_core_startup_transfer(
+                    core,
+                    2,
+                    42,
+                    transfer.session,
+                    7,
+                    0,
+                    0,
+                    0,
+                    false,
+                    &mut transfer
+                ),
+                ShellStatus::Ok
+            );
+            let mut rows = vec![ShellStartupRow::default(); SHELL_STARTUP_ROW_CAPACITY as usize];
+            let mut count = 777;
+            assert_eq!(
+                shell_core_startup_rows(
+                    core,
+                    transfer.session,
+                    7,
+                    1,
+                    [90].as_ptr(),
+                    1,
+                    90,
+                    rows.as_mut_ptr(),
+                    1,
+                    &mut count
+                ),
+                ShellStatus::InvalidArgument
+            );
+            assert_eq!(count, 777);
+            assert_eq!(
+                shell_core_startup_rows(
+                    core,
+                    transfer.session,
+                    8,
+                    1,
+                    [90].as_ptr(),
+                    1,
+                    90,
+                    rows.as_mut_ptr(),
+                    rows.len(),
+                    &mut count
+                ),
+                ShellStatus::Rejected
+            );
+            assert_eq!(count, 777);
+            assert_eq!(
+                shell_core_startup_rows(
+                    core,
+                    transfer.session,
+                    7,
+                    1,
+                    [90].as_ptr(),
+                    1,
+                    90,
+                    rows.as_mut_ptr(),
+                    rows.len(),
+                    &mut count
+                ),
+                ShellStatus::Ok
+            );
+            assert_eq!(count, 1);
+            assert_eq!(rows[0].browser, 90);
+            assert!(rows[0].selected);
             shell_core_destroy(core);
         }
     }
     #[test]
     fn validates_before_mutation_and_cancels_pending_submissions() {
         unsafe {
-            let core=shell_core_create(std::ptr::null());
+            let core = shell_core_create(std::ptr::null());
             assert!(!core.is_null());
-            let mut view=ShellStartupView::default();
-            assert_eq!(shell_core_startup(core,1,0,0,std::ptr::null(),0,&mut view),ShellStatus::Ok);
-            assert_eq!(shell_core_startup(core,2,1,0,std::ptr::null(),1,&mut view),ShellStatus::InvalidArgument);
-            assert_eq!(shell_core_startup(core,2,1,0,[65u16].as_ptr(),1,&mut view),ShellStatus::Ok);
-            assert_eq!(shell_core_startup(core,5,1,3,std::ptr::null(),0,&mut view),ShellStatus::Ok);
-            assert_eq!(shell_core_startup_read(core,true,0,&mut view),ShellStatus::Ok);
-            assert_eq!(view.request,1); assert_eq!(view.modifiers,3);
-            assert_eq!(std::slice::from_raw_parts(view.text,view.length),[65]);
-            assert_eq!(shell_core_startup(core,4,1,0,std::ptr::null(),0,&mut view),ShellStatus::Ok);
-            assert_eq!(view.pending,0);
-            assert_eq!(shell_core_startup_read(core,true,0,&mut view),ShellStatus::Rejected);
+            let mut view = ShellStartupView::default();
+            assert_eq!(
+                shell_core_startup(core, 1, 0, 0, std::ptr::null(), 0, &mut view),
+                ShellStatus::Ok
+            );
+            assert_eq!(
+                shell_core_startup(core, 2, 1, 0, std::ptr::null(), 1, &mut view),
+                ShellStatus::InvalidArgument
+            );
+            assert_eq!(
+                shell_core_startup(core, 2, 1, 0, [65u16].as_ptr(), 1, &mut view),
+                ShellStatus::Ok
+            );
+            assert_eq!(
+                shell_core_startup(core, 5, 1, 3, std::ptr::null(), 0, &mut view),
+                ShellStatus::Ok
+            );
+            assert_eq!(
+                shell_core_startup_read(core, true, 0, &mut view),
+                ShellStatus::Ok
+            );
+            assert_eq!(view.request, 1);
+            assert_eq!(view.modifiers, 3);
+            assert_eq!(std::slice::from_raw_parts(view.text, view.length), [65]);
+            assert_eq!(
+                shell_core_startup(core, 4, 1, 0, std::ptr::null(), 0, &mut view),
+                ShellStatus::Ok
+            );
+            assert_eq!(view.pending, 0);
+            assert_eq!(
+                shell_core_startup_read(core, true, 0, &mut view),
+                ShellStatus::Rejected
+            );
             shell_core_destroy(core);
         }
     }
@@ -489,7 +1092,17 @@ mod startup_ffi_tests {
 
 /// Window binding operations. No callbacks or HWND operations occur in Rust.
 #[repr(u32)]
-pub enum ShellWindowHostOperation { Inspect = 0, Bind = 1, RequestClose = 2, ApproveClose = 3, CancelClose = 4, ContentDestroyed = 5, ShellDestroyed = 6, PrepareStartup = 7, CancelStartup = 8 }
+pub enum ShellWindowHostOperation {
+    Inspect = 0,
+    Bind = 1,
+    RequestClose = 2,
+    ApproveClose = 3,
+    CancelClose = 4,
+    ContentDestroyed = 5,
+    ShellDestroyed = 6,
+    PrepareStartup = 7,
+    CancelStartup = 8,
+}
 
 /// PrepareStartup uses shell only; Bind uses shell/content only. A prepared
 /// startup can bind only its original shell, with the endpoint generation intact.
@@ -499,26 +1112,51 @@ pub enum ShellWindowHostOperation { Inspect = 0, Bind = 1, RequestClose = 2, App
 /// # Safety
 /// See [`guard`]. Input/output must point to valid, non-overlapping values.
 #[no_mangle]
-pub unsafe extern "C" fn shell_core_window_host(core: *mut ShellCore, operation: u32,
+pub unsafe extern "C" fn shell_core_window_host(
+    core: *mut ShellCore,
+    operation: u32,
     input: *const crate::window_host::ShellWindowBinding,
-    output: *mut crate::window_host::ShellWindowBinding) -> ShellStatus {
+    output: *mut crate::window_host::ShellWindowBinding,
+) -> ShellStatus {
     guard(core, |core| {
-        let (Some(input), Some(output)) = (input.as_ref(), output.as_mut()) else { return ShellStatus::InvalidArgument; };
-        if operation > 8 { return ShellStatus::InvalidArgument; }
-        if core.queue.is_closed() && ((1..=4).contains(&operation) || operation == 7) { return ShellStatus::Closed; }
+        let (Some(input), Some(output)) = (input.as_ref(), output.as_mut()) else {
+            return ShellStatus::InvalidArgument;
+        };
+        if operation > 8 {
+            return ShellStatus::InvalidArgument;
+        }
+        if core.queue.is_closed() && ((1..=4).contains(&operation) || operation == 7) {
+            return ShellStatus::Closed;
+        }
         let accepted = match operation {
             0 => true,
-            1 => core.window_host.bind(core.endpoint, input.shell, input.content),
+            1 => core
+                .window_host
+                .bind(core.endpoint, input.shell, input.content),
             2 => core.window_host.request_close(),
-            3 | 4 => core.window_host.resolve_close(input.generation, input.close_request, operation == 3),
-            5 => core.window_host.content_destroyed(input.generation, input.content),
-            6 => core.window_host.shell_destroyed(input.generation, input.shell),
+            3 | 4 => core.window_host.resolve_close(
+                input.generation,
+                input.close_request,
+                operation == 3,
+            ),
+            5 => core
+                .window_host
+                .content_destroyed(input.generation, input.content),
+            6 => core
+                .window_host
+                .shell_destroyed(input.generation, input.shell),
             7 => core.window_host.prepare(core.endpoint, input.shell),
-            8 => core.window_host.cancel_startup(input.generation, input.shell),
+            8 => core
+                .window_host
+                .cancel_startup(input.generation, input.shell),
             _ => unreachable!(),
         };
-        if !accepted { return ShellStatus::Rejected; }
-        if operation == 5 || operation == 8 { core.queue.close(); }
+        if !accepted {
+            return ShellStatus::Rejected;
+        }
+        if operation == 5 || operation == 8 {
+            core.queue.close();
+        }
         *output = core.window_host.state();
         ShellStatus::Ok
     })
@@ -531,77 +1169,180 @@ mod window_host_ffi_tests {
     #[test]
     fn startup_cancellation_closes_endpoint_and_stale_completion_is_rejected() {
         unsafe {
-            let core=shell_core_create(std::ptr::null());
-            let input=Binding {shell:10,..Default::default()}; let mut state=Binding::default();
-            assert_eq!(shell_core_window_host(core,7,&input,&mut state),ShellStatus::Ok);
-            let ready=state;
-            let stale=Binding {generation:ready.generation+1,..ready};
-            assert_eq!(shell_core_window_host(core,8,&stale,&mut state),ShellStatus::Rejected);
-            assert_eq!(state,ready);
-            assert_eq!(shell_core_window_host(core,8,&ready,&mut state),ShellStatus::Ok);
-            let cancelled=state;
-            assert_eq!(shell_core_window_host(core,1,&Binding {content:11,..ready},&mut state),ShellStatus::Closed);
-            assert_eq!(state,cancelled);
-            assert_eq!(shell_core_window_host(core,6,&cancelled,&mut state),ShellStatus::Ok);
+            let core = shell_core_create(std::ptr::null());
+            let input = Binding {
+                shell: 10,
+                ..Default::default()
+            };
+            let mut state = Binding::default();
+            assert_eq!(
+                shell_core_window_host(core, 7, &input, &mut state),
+                ShellStatus::Ok
+            );
+            let ready = state;
+            let stale = Binding {
+                generation: ready.generation + 1,
+                ..ready
+            };
+            assert_eq!(
+                shell_core_window_host(core, 8, &stale, &mut state),
+                ShellStatus::Rejected
+            );
+            assert_eq!(state, ready);
+            assert_eq!(
+                shell_core_window_host(core, 8, &ready, &mut state),
+                ShellStatus::Ok
+            );
+            let cancelled = state;
+            assert_eq!(
+                shell_core_window_host(
+                    core,
+                    1,
+                    &Binding {
+                        content: 11,
+                        ..ready
+                    },
+                    &mut state
+                ),
+                ShellStatus::Closed
+            );
+            assert_eq!(state, cancelled);
+            assert_eq!(
+                shell_core_window_host(core, 6, &cancelled, &mut state),
+                ShellStatus::Ok
+            );
             shell_core_destroy(core);
         }
     }
     #[test]
     fn session_cancellation_and_endpoint_close_revoke_window_decisions() {
         unsafe {
-            let core=shell_core_create(std::ptr::null());
-            let input=Binding {shell:10,content:11,..Default::default()}; let mut state=Binding::default();
-            assert_eq!(shell_core_window_host(core,1,&input,&mut state),ShellStatus::Ok);
-            assert_eq!(shell_core_window_host(core,2,&input,&mut state),ShellStatus::Ok);
-            let old=state; assert_eq!(shell_core_cancel_all(core),ShellStatus::Ok);
-            assert_eq!(shell_core_window_host(core,3,&old,&mut state),ShellStatus::Rejected);
-            assert_eq!(shell_core_window_host(core,2,&input,&mut state),ShellStatus::Ok);
-            assert_ne!(state.close_request,old.close_request);
-            let current=state; assert_eq!(shell_core_window_host(core,3,&current,&mut state),ShellStatus::Ok);
-            assert_eq!(shell_core_close(core),ShellStatus::Ok);
-            assert_eq!(shell_core_window_host(core,0,&input,&mut state),ShellStatus::Ok);
-            assert_eq!((state.phase,state.close_request),(1,0));
-            assert_eq!(shell_core_window_host(core,6,&current,&mut state),ShellStatus::Rejected);
-            assert_eq!(shell_core_window_host(core,5,&current,&mut state),ShellStatus::Ok);
+            let core = shell_core_create(std::ptr::null());
+            let input = Binding {
+                shell: 10,
+                content: 11,
+                ..Default::default()
+            };
+            let mut state = Binding::default();
+            assert_eq!(
+                shell_core_window_host(core, 1, &input, &mut state),
+                ShellStatus::Ok
+            );
+            assert_eq!(
+                shell_core_window_host(core, 2, &input, &mut state),
+                ShellStatus::Ok
+            );
+            let old = state;
+            assert_eq!(shell_core_cancel_all(core), ShellStatus::Ok);
+            assert_eq!(
+                shell_core_window_host(core, 3, &old, &mut state),
+                ShellStatus::Rejected
+            );
+            assert_eq!(
+                shell_core_window_host(core, 2, &input, &mut state),
+                ShellStatus::Ok
+            );
+            assert_ne!(state.close_request, old.close_request);
+            let current = state;
+            assert_eq!(
+                shell_core_window_host(core, 3, &current, &mut state),
+                ShellStatus::Ok
+            );
+            assert_eq!(shell_core_close(core), ShellStatus::Ok);
+            assert_eq!(
+                shell_core_window_host(core, 0, &input, &mut state),
+                ShellStatus::Ok
+            );
+            assert_eq!((state.phase, state.close_request), (1, 0));
+            assert_eq!(
+                shell_core_window_host(core, 6, &current, &mut state),
+                ShellStatus::Rejected
+            );
+            assert_eq!(
+                shell_core_window_host(core, 5, &current, &mut state),
+                ShellStatus::Ok
+            );
             shell_core_destroy(core);
         }
     }
     #[test]
     fn binding_ffi_guards_lifetime_thread_and_atomic_outputs() {
         unsafe {
-            let core=shell_core_create(std::ptr::null());
-            let input=Binding {shell:10,content:11,..Default::default()};
-            let mut state=Binding::default();
-            assert_eq!(shell_core_window_host(core,1,&input,std::ptr::null_mut()),ShellStatus::InvalidArgument);
-            assert_eq!(shell_core_window_host(core,1,&input,&mut state),ShellStatus::Ok);
-            let bound=state;
-            assert_eq!(shell_core_window_host(core,9,&input,&mut state),ShellStatus::InvalidArgument);
-            assert_eq!(state,bound);
-            let handle=core as usize;
-            assert_eq!(std::thread::spawn(move || shell_core_window_host(handle as *mut ShellCore,0,&Binding::default(),&mut Binding::default())).join().unwrap(),ShellStatus::WrongThread);
-            assert_eq!(shell_core_window_host(core,2,&input,&mut state),ShellStatus::Ok);
-            assert_eq!(shell_core_window_host(core,5,&bound,&mut state),ShellStatus::Ok);
+            let core = shell_core_create(std::ptr::null());
+            let input = Binding {
+                shell: 10,
+                content: 11,
+                ..Default::default()
+            };
+            let mut state = Binding::default();
+            assert_eq!(
+                shell_core_window_host(core, 1, &input, std::ptr::null_mut()),
+                ShellStatus::InvalidArgument
+            );
+            assert_eq!(
+                shell_core_window_host(core, 1, &input, &mut state),
+                ShellStatus::Ok
+            );
+            let bound = state;
+            assert_eq!(
+                shell_core_window_host(core, 9, &input, &mut state),
+                ShellStatus::InvalidArgument
+            );
+            assert_eq!(state, bound);
+            let handle = core as usize;
+            assert_eq!(
+                std::thread::spawn(move || shell_core_window_host(
+                    handle as *mut ShellCore,
+                    0,
+                    &Binding::default(),
+                    &mut Binding::default()
+                ))
+                .join()
+                .unwrap(),
+                ShellStatus::WrongThread
+            );
+            assert_eq!(
+                shell_core_window_host(core, 2, &input, &mut state),
+                ShellStatus::Ok
+            );
+            assert_eq!(
+                shell_core_window_host(core, 5, &bound, &mut state),
+                ShellStatus::Ok
+            );
             assert!((*core).queue.is_closed());
-            assert_eq!(shell_core_window_host(core,2,&input,&mut state),ShellStatus::Closed);
-            assert_eq!(shell_core_window_host(core,6,&bound,&mut state),ShellStatus::Ok);
-            let replacement=shell_core_create(std::ptr::null());
-            assert_eq!(shell_core_window_host(replacement,1,&input,&mut state),ShellStatus::Ok);
-            assert_ne!(state.generation,bound.generation);
-            assert_eq!(shell_core_window_host(replacement,5,&bound,&mut state),ShellStatus::Rejected);
-            shell_core_destroy(core); shell_core_destroy(replacement);
+            assert_eq!(
+                shell_core_window_host(core, 2, &input, &mut state),
+                ShellStatus::Closed
+            );
+            assert_eq!(
+                shell_core_window_host(core, 6, &bound, &mut state),
+                ShellStatus::Ok
+            );
+            let replacement = shell_core_create(std::ptr::null());
+            assert_eq!(
+                shell_core_window_host(replacement, 1, &input, &mut state),
+                ShellStatus::Ok
+            );
+            assert_ne!(state.generation, bound.generation);
+            assert_eq!(
+                shell_core_window_host(replacement, 5, &bound, &mut state),
+                ShellStatus::Rejected
+            );
+            shell_core_destroy(core);
+            shell_core_destroy(replacement);
         }
     }
 }
 
+use crate::group_motion::ShellGroupMotionRow;
 use crate::intent::{self, IntentKind};
 use crate::model::{ApplyError, Change, ModelLimits, TabEntry, TabModel};
+use crate::publication::{Classification, ShellPublicationCounts};
 use crate::queue::{
     CompleteError, DrainError, EnqueueStatus, Limits, Outcome, Request, RequestKind, RequestQueue,
 };
-use crate::publication::{Classification, ShellPublicationCounts};
-use crate::SHELL_CORE_ABI_VERSION;
 use crate::strip::{ShellStripSlot, StripState};
-use crate::group_motion::ShellGroupMotionRow;
+use crate::SHELL_CORE_ABI_VERSION;
 
 /// Result of every entry point. `Ok` is zero so the host can test it directly.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -838,7 +1579,10 @@ fn limits_from(raw: &ShellCoreLimits) -> (Limits, ModelLimits) {
             max_request_bytes: pick(raw.max_request_bytes, default_queue.max_request_bytes),
             max_in_flight: pick(raw.max_in_flight, default_queue.max_in_flight),
             completion_history: pick(raw.completion_history, default_queue.completion_history),
-            max_pending_outcomes: pick(raw.max_pending_outcomes, default_queue.max_pending_outcomes),
+            max_pending_outcomes: pick(
+                raw.max_pending_outcomes,
+                default_queue.max_pending_outcomes,
+            ),
         },
         ModelLimits {
             max_tabs: pick(raw.max_tabs, default_model.max_tabs),
@@ -858,7 +1602,12 @@ fn apply_error(error: ApplyError) -> ShellStatus {
 }
 
 fn change_view(change: &Change) -> ShellChange {
-    ShellChange { kind: change.kind as u32, tab: change.tab, from: change.from, to: change.to }
+    ShellChange {
+        kind: change.kind as u32,
+        tab: change.tab,
+        from: change.from,
+        to: change.to,
+    }
 }
 
 /// Runs `body` with the core, having checked the handle, the owning thread and
@@ -964,7 +1713,9 @@ pub unsafe extern "C" fn shell_core_decide_intent(
         edit_acknowledged: raw.edit_acknowledged != 0,
         query_settled: raw.query_settled != 0,
     };
-    match catch_unwind(AssertUnwindSafe(|| intent::decide(incoming, staged, conditions))) {
+    match catch_unwind(AssertUnwindSafe(|| {
+        intent::decide(incoming, staged, conditions)
+    })) {
         Ok(decision) => {
             *out = decision as u32;
             ShellStatus::Ok
@@ -1008,7 +1759,9 @@ pub unsafe extern "C" fn shell_core_create(limits: *const ShellCoreLimits) -> *m
         startup: Default::default(),
         startup_handoff: Default::default(),
         startup_rows: Default::default(),
-        startup_presentation: crate::publication::Stream::new(crate::publication::StreamKind::Snapshot),
+        startup_presentation: crate::publication::Stream::new(
+            crate::publication::StreamKind::Snapshot,
+        ),
         recovery_identity: crate::recovery_identity::Identity::default(),
         group_hover: crate::group_hover::GroupHover::default(),
         group_surface: Default::default(),
@@ -1118,10 +1871,14 @@ pub unsafe extern "C" fn shell_core_enqueue(
 /// See [`guard`]. `out` must be writable.
 #[no_mangle]
 pub unsafe extern "C" fn shell_core_selection_pending(
-    core: *mut ShellCore, revision: u32, out: *mut bool,
+    core: *mut ShellCore,
+    revision: u32,
+    out: *mut bool,
 ) -> ShellStatus {
     guard(core, |core| {
-        let Some(out) = out.as_mut() else { return ShellStatus::InvalidArgument; };
+        let Some(out) = out.as_mut() else {
+            return ShellStatus::InvalidArgument;
+        };
         *out = core.queue.selection_pending(revision);
         ShellStatus::Ok
     })
@@ -1175,7 +1932,11 @@ pub unsafe extern "C" fn shell_core_take_batch(
     let Some(out) = out.as_mut() else {
         return ShellStatus::InvalidArgument;
     };
-    *out = ShellRequestBatch { requests: std::ptr::null(), len: 0, handle: std::ptr::null_mut() };
+    *out = ShellRequestBatch {
+        requests: std::ptr::null(),
+        len: 0,
+        handle: std::ptr::null_mut(),
+    };
     if max_entries == 0 {
         return ShellStatus::InvalidArgument;
     }
@@ -1216,7 +1977,11 @@ pub unsafe extern "C" fn shell_core_release_batch(batch: *mut ShellRequestBatch)
     if !batch.handle.is_null() {
         drop(Box::from_raw(batch.handle as *mut BatchOwner));
     }
-    *batch = ShellRequestBatch { requests: std::ptr::null(), len: 0, handle: std::ptr::null_mut() };
+    *batch = ShellRequestBatch {
+        requests: std::ptr::null(),
+        len: 0,
+        handle: std::ptr::null_mut(),
+    };
 }
 
 /// End the drain. `notify` is set when the host must schedule exactly one more
@@ -1320,7 +2085,11 @@ pub unsafe extern "C" fn shell_core_take_outcomes(
     let Some(out) = out.as_mut() else {
         return ShellStatus::InvalidArgument;
     };
-    *out = ShellOutcomeBatch { outcomes: std::ptr::null(), len: 0, handle: std::ptr::null_mut() };
+    *out = ShellOutcomeBatch {
+        outcomes: std::ptr::null(),
+        len: 0,
+        handle: std::ptr::null_mut(),
+    };
     guard(core, |core| {
         let taken = core.queue.take_outcomes();
         if taken.is_empty() {
@@ -1328,7 +2097,11 @@ pub unsafe extern "C" fn shell_core_take_outcomes(
         }
         let view: Vec<ShellOutcome> = taken
             .into_iter()
-            .map(|(id, outcome)| ShellOutcome { id, outcome: outcome as u32, reserved: 0 })
+            .map(|(id, outcome)| ShellOutcome {
+                id,
+                outcome: outcome as u32,
+                reserved: 0,
+            })
             .collect();
         let owner = Box::new(OutcomeOwner { view });
         out.outcomes = owner.view.as_ptr();
@@ -1346,7 +2119,11 @@ pub unsafe extern "C" fn shell_core_release_outcomes(batch: *mut ShellOutcomeBat
     if !batch.handle.is_null() {
         drop(Box::from_raw(batch.handle as *mut OutcomeOwner));
     }
-    *batch = ShellOutcomeBatch { outcomes: std::ptr::null(), len: 0, handle: std::ptr::null_mut() };
+    *batch = ShellOutcomeBatch {
+        outcomes: std::ptr::null(),
+        len: 0,
+        handle: std::ptr::null_mut(),
+    };
 }
 
 /// Cancel everything outstanding and advance the endpoint generation. Used when
@@ -1379,7 +2156,9 @@ pub unsafe extern "C" fn shell_core_cancel_all(core: *mut ShellCore) -> ShellSta
         core.translations_panel.dismiss();
         core.selected_translations_panel.dismiss();
         core.page_context_menu.dismiss();
-        for panel in &mut core.privacy_panels { panel.dismiss(); }
+        for panel in &mut core.privacy_panels {
+            panel.dismiss();
+        }
         core.address_interaction.reset();
         core.address_publication.reset();
         core.address_sections.reset();
@@ -1420,7 +2199,9 @@ pub unsafe extern "C" fn shell_core_close(core: *mut ShellCore) -> ShellStatus {
         core.translations_panel.dismiss();
         core.selected_translations_panel.dismiss();
         core.page_context_menu.dismiss();
-        for panel in &mut core.privacy_panels { panel.dismiss(); }
+        for panel in &mut core.privacy_panels {
+            panel.dismiss();
+        }
         core.address_interaction.reset();
         core.address_publication.reset();
         core.address_sections.reset();
@@ -1509,36 +2290,69 @@ pub unsafe extern "C" fn shell_core_publication_stats(
     channel: u32,
     out: *mut ShellPublicationCounts,
 ) -> ShellStatus {
-    let Some(out) = out.as_mut() else { return ShellStatus::InvalidArgument; };
+    let Some(out) = out.as_mut() else {
+        return ShellStatus::InvalidArgument;
+    };
     *out = ShellPublicationCounts::default();
     guard(core, |core| {
         *out = match channel {
-            7..=9 => core.address_sections.counts((channel-7) as usize).unwrap(),
-            c if c == ShellPublicationChannel::TabPreview as u32 => core.preview_publication.counts(),
+            7..=9 => core
+                .address_sections
+                .counts((channel - 7) as usize)
+                .unwrap(),
+            c if c == ShellPublicationChannel::TabPreview as u32 => {
+                core.preview_publication.counts()
+            }
             c if c == ShellPublicationChannel::TabModel as u32 => core.model.counts(),
             c if c == ShellPublicationChannel::Strip as u32 => core.strip.counts(),
             c if c == ShellPublicationChannel::TabMenuState as u32 => core.menu.counts(),
             c if c == ShellPublicationChannel::SurfaceMenu as u32 => core.surface_menu.counts(),
-            c if c == ShellPublicationChannel::DownloadsPanel as u32 => core.downloads_panel.counts(),
+            c if c == ShellPublicationChannel::DownloadsPanel as u32 => {
+                core.downloads_panel.counts()
+            }
             c if c == ShellPublicationChannel::ProfileMenu as u32 => core.profile_menu.counts(),
             c if c == ShellPublicationChannel::OverflowMenu as u32 => core.overflow_menu.counts(),
             c if c == ShellPublicationChannel::DeveloperMenu as u32 => core.developer_menu.counts(),
-            c if c == ShellPublicationChannel::BackForwardMenu as u32 => core.back_forward_menu.counts(),
+            c if c == ShellPublicationChannel::BackForwardMenu as u32 => {
+                core.back_forward_menu.counts()
+            }
             c if c == ShellPublicationChannel::AllTabsPanel as u32 => core.all_tabs_panel.counts(),
-            c if c == ShellPublicationChannel::TabGroupsMenu as u32 => core.tab_groups_menu.counts(),
+            c if c == ShellPublicationChannel::TabGroupsMenu as u32 => {
+                core.tab_groups_menu.counts()
+            }
             c if c == ShellPublicationChannel::GroupHeader as u32 => core.group_header.counts(),
             c if c == ShellPublicationChannel::ProfilerPanel as u32 => core.profiler_panel.counts(),
             c if c == ShellPublicationChannel::BookmarkPanel as u32 => core.bookmark_panel.counts(),
-            c if c == ShellPublicationChannel::PermissionsPanel as u32 => core.permissions_panel.counts(),
-            c if c == ShellPublicationChannel::NotificationPanel as u32 => core.notification_panel.counts(),
-            c if c == ShellPublicationChannel::ConnectionPanel as u32 => core.connection_panel.counts(),
-            c if c == ShellPublicationChannel::TranslationsPanel as u32 => core.translations_panel.counts(),
-            c if c == ShellPublicationChannel::SelectedTranslationsPanel as u32 => core.selected_translations_panel.counts(),
-            c if c == ShellPublicationChannel::PageContextMenu as u32 => core.page_context_menu.counts(),
-            c if c == ShellPublicationChannel::ForgetPanel as u32 => core.privacy_panels[0].counts(),
-            c if c == ShellPublicationChannel::ClearPrivatePanel as u32 => core.privacy_panels[1].counts(),
-            c if c == ShellPublicationChannel::AddressSession as u32 => core.address_publication.counts(),
-            c if c == ShellPublicationChannel::ToolbarCustomization as u32 => core.toolbar_publication.counts(),
+            c if c == ShellPublicationChannel::PermissionsPanel as u32 => {
+                core.permissions_panel.counts()
+            }
+            c if c == ShellPublicationChannel::NotificationPanel as u32 => {
+                core.notification_panel.counts()
+            }
+            c if c == ShellPublicationChannel::ConnectionPanel as u32 => {
+                core.connection_panel.counts()
+            }
+            c if c == ShellPublicationChannel::TranslationsPanel as u32 => {
+                core.translations_panel.counts()
+            }
+            c if c == ShellPublicationChannel::SelectedTranslationsPanel as u32 => {
+                core.selected_translations_panel.counts()
+            }
+            c if c == ShellPublicationChannel::PageContextMenu as u32 => {
+                core.page_context_menu.counts()
+            }
+            c if c == ShellPublicationChannel::ForgetPanel as u32 => {
+                core.privacy_panels[0].counts()
+            }
+            c if c == ShellPublicationChannel::ClearPrivatePanel as u32 => {
+                core.privacy_panels[1].counts()
+            }
+            c if c == ShellPublicationChannel::AddressSession as u32 => {
+                core.address_publication.counts()
+            }
+            c if c == ShellPublicationChannel::ToolbarCustomization as u32 => {
+                core.toolbar_publication.counts()
+            }
             _ => return ShellStatus::InvalidArgument,
         };
         ShellStatus::Ok
@@ -1549,16 +2363,26 @@ pub unsafe extern "C" fn shell_core_publication_stats(
 /// the key was absent.
 #[derive(Clone, Copy, Default)]
 #[repr(C)]
-pub struct ShellStripNumber { pub present: bool, pub value: f64 }
+pub struct ShellStripNumber {
+    pub present: bool,
+    pub value: f64,
+}
 
 #[derive(Clone, Copy, Default)]
 #[repr(C)]
-pub struct ShellStripFlag { pub present: bool, pub value: bool }
+pub struct ShellStripFlag {
+    pub present: bool,
+    pub value: bool,
+}
 
 /// UTF-16 enumeration name; `data` may be null only for length zero.
 #[derive(Clone, Copy)]
 #[repr(C)]
-pub struct ShellStripName { pub present: bool, pub data: *const u16, pub len: usize }
+pub struct ShellStripName {
+    pub present: bool,
+    pub data: *const u16,
+    pub len: usize,
+}
 
 /// Strip publication envelope as read from its JSON object. The host checks
 /// JSON types only; ranges, enumerations, defaults and retention are decided
@@ -1591,8 +2415,12 @@ unsafe fn envelope<'a>(raw: &ShellStripEnvelope) -> Option<crate::strip::Envelop
     let number = |n: ShellStripNumber| n.present.then_some(n.value);
     let flag = |f: ShellStripFlag| f.present.then_some(f.value);
     let name = |n: ShellStripName| -> Option<Option<&'a [u16]>> {
-        if !n.present { return Some(None); }
-        if n.len > 64 { return None; }
+        if !n.present {
+            return Some(None);
+        }
+        if n.len > 64 {
+            return None;
+        }
         slice(n.data, n.len).map(Some)
     };
     Some(crate::strip::Envelope {
@@ -1625,36 +2453,55 @@ unsafe fn envelope<'a>(raw: &ShellStripEnvelope) -> Option<crate::strip::Envelop
 /// `units` values (null only for zero); `out` and `unchanged` writable.
 #[no_mangle]
 pub unsafe extern "C" fn shell_core_strip_resolve(
-    core: *mut ShellCore, envelope: *const ShellStripEnvelope,
-    fingerprint: *const u16, units: usize,
-    out: *mut crate::strip::ShellStripOptions, unchanged: *mut bool,
+    core: *mut ShellCore,
+    envelope: *const ShellStripEnvelope,
+    fingerprint: *const u16,
+    units: usize,
+    out: *mut crate::strip::ShellStripOptions,
+    unchanged: *mut bool,
 ) -> ShellStatus {
     let (Some(out), Some(unchanged)) = (out.as_mut(), unchanged.as_mut()) else {
         return ShellStatus::InvalidArgument;
     };
     *out = Default::default();
     *unchanged = false;
-    let Some(raw) = envelope.as_ref() else { return ShellStatus::InvalidArgument; };
-    if units > crate::strip::MAX_FINGERPRINT { return ShellStatus::InvalidArgument; }
-    let (Some(fingerprint), Some(envelope)) = (slice(fingerprint, units), self::envelope(raw)) else {
+    let Some(raw) = envelope.as_ref() else {
         return ShellStatus::InvalidArgument;
     };
-    guard(core, |core| match core.strip.resolve(&envelope, fingerprint) {
-        Ok(crate::strip::Resolution::Unchanged) => {
-            core.strip.record(Classification::Unchanged);
-            *unchanged = true;
-            ShellStatus::Ok
+    if units > crate::strip::MAX_FINGERPRINT {
+        return ShellStatus::InvalidArgument;
+    }
+    let (Some(fingerprint), Some(envelope)) = (slice(fingerprint, units), self::envelope(raw))
+    else {
+        return ShellStatus::InvalidArgument;
+    };
+    guard(core, |core| {
+        match core.strip.resolve(&envelope, fingerprint) {
+            Ok(crate::strip::Resolution::Unchanged) => {
+                core.strip.record(Classification::Unchanged);
+                *unchanged = true;
+                ShellStatus::Ok
+            }
+            // Counted by shell_core_strip_publish, which the host calls next.
+            Ok(crate::strip::Resolution::Accepted(options)) => {
+                *out = options;
+                ShellStatus::Ok
+            }
+            Err(()) => {
+                core.strip.record(Classification::Invalid);
+                ShellStatus::InvalidArgument
+            }
         }
-        // Counted by shell_core_strip_publish, which the host calls next.
-        Ok(crate::strip::Resolution::Accepted(options)) => { *out = options; ShellStatus::Ok }
-        Err(()) => { core.strip.record(Classification::Invalid); ShellStatus::InvalidArgument }
     })
 }
 
 /// Presence and length of a row text field; the host keeps the string.
 #[derive(Clone, Copy, Default)]
 #[repr(C)]
-pub struct ShellStripText { pub present: bool, pub len: usize }
+pub struct ShellStripText {
+    pub present: bool,
+    pub len: usize,
+}
 
 /// Values of [`ShellStripImage::kind`].
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -1670,7 +2517,13 @@ pub enum ShellStripImageKind {
 /// string, readable for `len` units when `kind` is `Set`.
 #[derive(Clone, Copy)]
 #[repr(C)]
-pub struct ShellStripImage { pub kind: u32, pub width: f64, pub height: f64, pub pixels: *const u16, pub len: usize }
+pub struct ShellStripImage {
+    pub kind: u32,
+    pub width: f64,
+    pub height: f64,
+    pub pixels: *const u16,
+    pub len: usize,
+}
 
 /// One row as read from the publication's `rows`, with JSON types checked only.
 #[derive(Clone, Copy)]
@@ -1715,9 +2568,14 @@ unsafe fn row_input<'a>(raw: &ShellStripRowInput) -> Option<crate::strip::RowInp
         k if k == ShellStripImageKind::Absent as u32 => ImageInput::Absent,
         k if k == ShellStripImageKind::Null as u32 => ImageInput::Null,
         k if k == ShellStripImageKind::Set as u32 => {
-            if raw.image.len > MAX_IMAGE_UNITS { return None; }
-            ImageInput::Set { width: raw.image.width, height: raw.image.height,
-                              pixels: slice(raw.image.pixels, raw.image.len)? }
+            if raw.image.len > MAX_IMAGE_UNITS {
+                return None;
+            }
+            ImageInput::Set {
+                width: raw.image.width,
+                height: raw.image.height,
+                pixels: slice(raw.image.pixels, raw.image.len)?,
+            }
         }
         _ => return None,
     };
@@ -1749,41 +2607,80 @@ unsafe fn row_input<'a>(raw: &ShellStripRowInput) -> Option<crate::strip::RowInp
 /// `removal_count` entries (null only for zero); `out` writable.
 #[no_mangle]
 pub unsafe extern "C" fn shell_core_strip_publish(
-    core: *mut ShellCore, envelope: *const ShellStripEnvelope,
-    fingerprint: *const u16, units: usize,
+    core: *mut ShellCore,
+    envelope: *const ShellStripEnvelope,
+    fingerprint: *const u16,
+    units: usize,
     publication: *const ShellStripPublication,
     out: *mut crate::strip::ShellStripOptions,
     rows: *mut crate::strip::ShellStripRow,
     removed: *mut u32,
 ) -> ShellStatus {
-    let Some(out) = out.as_mut() else { return ShellStatus::InvalidArgument; };
-    *out = Default::default();
-    let (Some(raw), Some(p)) = (envelope.as_ref(), publication.as_ref()) else { return ShellStatus::InvalidArgument; };
-    if units > crate::strip::MAX_FINGERPRINT || p.row_count > 20_000 || p.removal_count > 20_000 || p.layout_count > 20_000 ||
-       (p.row_count != 0 && (p.rows.is_null() || rows.is_null())) ||
-       (p.removal_count != 0 && (p.removals.is_null() || removed.is_null())) ||
-       (p.layout_count != 0 && (p.layout.is_null() || !p.has_layout)) {
-        return ShellStatus::InvalidArgument;
-    }
-    let (Some(fingerprint), Some(envelope)) = (slice(fingerprint, units), self::envelope(raw)) else {
+    let Some(out) = out.as_mut() else {
         return ShellStatus::InvalidArgument;
     };
-    let raw_rows = if p.row_count == 0 { &[] } else { std::slice::from_raw_parts(p.rows, p.row_count) };
-    let Some(inputs) = raw_rows.iter().map(|row| row_input(row)).collect::<Option<Vec<_>>>() else {
+    *out = Default::default();
+    let (Some(raw), Some(p)) = (envelope.as_ref(), publication.as_ref()) else {
+        return ShellStatus::InvalidArgument;
+    };
+    if units > crate::strip::MAX_FINGERPRINT
+        || p.row_count > 20_000
+        || p.removal_count > 20_000
+        || p.layout_count > 20_000
+        || (p.row_count != 0 && (p.rows.is_null() || rows.is_null()))
+        || (p.removal_count != 0 && (p.removals.is_null() || removed.is_null()))
+        || (p.layout_count != 0 && (p.layout.is_null() || !p.has_layout))
+    {
+        return ShellStatus::InvalidArgument;
+    }
+    let (Some(fingerprint), Some(envelope)) = (slice(fingerprint, units), self::envelope(raw))
+    else {
+        return ShellStatus::InvalidArgument;
+    };
+    let raw_rows = if p.row_count == 0 {
+        &[]
+    } else {
+        std::slice::from_raw_parts(p.rows, p.row_count)
+    };
+    let Some(inputs) = raw_rows
+        .iter()
+        .map(|row| row_input(row))
+        .collect::<Option<Vec<_>>>()
+    else {
         return ShellStatus::InvalidArgument;
     };
     guard(core, |core| {
-        let removals = if p.removal_count == 0 { &[] } else { std::slice::from_raw_parts(p.removals, p.removal_count) };
-        let layout = if !p.has_layout { None } else if p.layout_count == 0 { Some(&[][..]) }
-                     else { Some(std::slice::from_raw_parts(p.layout, p.layout_count)) };
-        let Some(published) = core.strip.publish(&envelope, fingerprint, &inputs, removals, layout) else {
+        let removals = if p.removal_count == 0 {
+            &[]
+        } else {
+            std::slice::from_raw_parts(p.removals, p.removal_count)
+        };
+        let layout = if !p.has_layout {
+            None
+        } else if p.layout_count == 0 {
+            Some(&[][..])
+        } else {
+            Some(std::slice::from_raw_parts(p.layout, p.layout_count))
+        };
+        let Some(published) = core
+            .strip
+            .publish(&envelope, fingerprint, &inputs, removals, layout)
+        else {
             core.strip.record(Classification::Invalid);
             return ShellStatus::InvalidArgument;
         };
         core.strip.record(Classification::Accepted);
         *out = published.options;
-        if !published.rows.is_empty() { std::ptr::copy_nonoverlapping(published.rows.as_ptr(), rows, published.rows.len()); }
-        if !published.removed.is_empty() { std::ptr::copy_nonoverlapping(published.removed.as_ptr(), removed, published.removed.len()); }
+        if !published.rows.is_empty() {
+            std::ptr::copy_nonoverlapping(published.rows.as_ptr(), rows, published.rows.len());
+        }
+        if !published.removed.is_empty() {
+            std::ptr::copy_nonoverlapping(
+                published.removed.as_ptr(),
+                removed,
+                published.removed.len(),
+            );
+        }
         ShellStatus::Ok
     })
 }
@@ -1793,21 +2690,51 @@ pub unsafe extern "C" fn shell_core_strip_publish(
 /// See [`guard`]. Arrays have their stated readable/writable lengths.
 #[no_mangle]
 pub unsafe extern "C" fn shell_core_group_motion(
-    core: *mut ShellCore, old: *const ShellStripSlot, old_count: usize,
-    new: *const ShellStripSlot, new_count: usize, groups: *const u32, group_count: usize,
-    output: *mut ShellGroupMotionRow, capacity: usize, count: *mut usize,
+    core: *mut ShellCore,
+    old: *const ShellStripSlot,
+    old_count: usize,
+    new: *const ShellStripSlot,
+    new_count: usize,
+    groups: *const u32,
+    group_count: usize,
+    output: *mut ShellGroupMotionRow,
+    capacity: usize,
+    count: *mut usize,
 ) -> ShellStatus {
     guard(core, |_| {
-        if count.is_null() || old_count > 20_000 || new_count > 20_000 || group_count > 10_000 ||
-            (old_count != 0 && old.is_null()) || (new_count != 0 && new.is_null()) ||
-            (group_count != 0 && groups.is_null()) { return ShellStatus::InvalidArgument; }
-        let old = if old_count == 0 { &[] } else { std::slice::from_raw_parts(old, old_count) };
-        let new = if new_count == 0 { &[] } else { std::slice::from_raw_parts(new, new_count) };
-        let groups = if group_count == 0 { &[] } else { std::slice::from_raw_parts(groups, group_count) };
+        if count.is_null()
+            || old_count > 20_000
+            || new_count > 20_000
+            || group_count > 10_000
+            || (old_count != 0 && old.is_null())
+            || (new_count != 0 && new.is_null())
+            || (group_count != 0 && groups.is_null())
+        {
+            return ShellStatus::InvalidArgument;
+        }
+        let old = if old_count == 0 {
+            &[]
+        } else {
+            std::slice::from_raw_parts(old, old_count)
+        };
+        let new = if new_count == 0 {
+            &[]
+        } else {
+            std::slice::from_raw_parts(new, new_count)
+        };
+        let groups = if group_count == 0 {
+            &[]
+        } else {
+            std::slice::from_raw_parts(groups, group_count)
+        };
         let plan = crate::group_motion::plan(old, new, groups);
         *count = plan.len();
-        if capacity < plan.len() || (!plan.is_empty() && output.is_null()) { return ShellStatus::InvalidArgument; }
-        if !plan.is_empty() { std::ptr::copy_nonoverlapping(plan.as_ptr(), output, plan.len()); }
+        if capacity < plan.len() || (!plan.is_empty() && output.is_null()) {
+            return ShellStatus::InvalidArgument;
+        }
+        if !plan.is_empty() {
+            std::ptr::copy_nonoverlapping(plan.as_ptr(), output, plan.len());
+        }
         ShellStatus::Ok
     })
 }
@@ -1817,10 +2744,16 @@ pub unsafe extern "C" fn shell_core_group_motion(
 /// See [`guard`]. `group` must be writable.
 #[no_mangle]
 pub unsafe extern "C" fn shell_core_strip_drop_group(
-    core: *mut ShellCore, source: u32, tab: u32, header: u32, group: *mut u32,
+    core: *mut ShellCore,
+    source: u32,
+    tab: u32,
+    header: u32,
+    group: *mut u32,
 ) -> ShellStatus {
     guard(core, |core| {
-        if group.is_null() { return ShellStatus::InvalidArgument; }
+        if group.is_null() {
+            return ShellStatus::InvalidArgument;
+        }
         *group = crate::group_drop::target(core.strip.layout(), source, tab, header);
         ShellStatus::Ok
     })
@@ -1831,15 +2764,24 @@ pub unsafe extern "C" fn shell_core_strip_drop_group(
 /// See [`guard`]. `count` must be writable; `slots` has `capacity` writable entries.
 #[no_mangle]
 pub unsafe extern "C" fn shell_core_strip_layout(
-    core: *mut ShellCore, slots: *mut ShellStripSlot, capacity: usize, count: *mut usize,
+    core: *mut ShellCore,
+    slots: *mut ShellStripSlot,
+    capacity: usize,
+    count: *mut usize,
 ) -> ShellStatus {
     guard(core, |core| {
-        if count.is_null() { return ShellStatus::InvalidArgument; }
+        if count.is_null() {
+            return ShellStatus::InvalidArgument;
+        }
         let layout = core.strip.layout();
         *count = layout.len();
-        if capacity < layout.len() { return ShellStatus::InvalidArgument; }
+        if capacity < layout.len() {
+            return ShellStatus::InvalidArgument;
+        }
         if !layout.is_empty() {
-            if slots.is_null() { return ShellStatus::InvalidArgument; }
+            if slots.is_null() {
+                return ShellStatus::InvalidArgument;
+            }
             std::ptr::copy_nonoverlapping(layout.as_ptr(), slots, layout.len());
         }
         ShellStatus::Ok
@@ -1883,14 +2825,16 @@ pub unsafe extern "C" fn shell_core_model_set_title(
     let Some(title) = slice(title, title_len) else {
         return ShellStatus::InvalidArgument;
     };
-    guard(core, |core| match core.model.set_title(base_revision, revision, tab, title) {
-        Ok(value) => {
-            if let Some(out) = changed.as_mut() {
-                *out = value;
+    guard(core, |core| {
+        match core.model.set_title(base_revision, revision, tab, title) {
+            Ok(value) => {
+                if let Some(out) = changed.as_mut() {
+                    *out = value;
+                }
+                ShellStatus::Ok
             }
-            ShellStatus::Ok
+            Err(error) => apply_error(error),
         }
-        Err(error) => apply_error(error),
     })
 }
 
@@ -1906,15 +2850,19 @@ pub unsafe extern "C" fn shell_core_model_set_selected(
     tab: u32,
     changed: *mut bool,
 ) -> ShellStatus {
-    guard(core, |core| match core.model.set_selected(base_revision, revision, tab) {
-        Ok(value) => {
-            if value { core.queue.clear_selection(); }
-            if let Some(out) = changed.as_mut() {
-                *out = value;
+    guard(core, |core| {
+        match core.model.set_selected(base_revision, revision, tab) {
+            Ok(value) => {
+                if value {
+                    core.queue.clear_selection();
+                }
+                if let Some(out) = changed.as_mut() {
+                    *out = value;
+                }
+                ShellStatus::Ok
             }
-            ShellStatus::Ok
+            Err(error) => apply_error(error),
         }
-        Err(error) => apply_error(error),
     })
 }
 
@@ -1958,11 +2906,17 @@ pub unsafe extern "C" fn shell_core_model_push_snapshot_tab(
         let Some(builder) = core.snapshot.as_mut() else {
             return ShellStatus::NotDraining;
         };
-        if builder.entries.len() >= ModelLimits::default().max_tabs || title.len() > ModelLimits::default().max_title_units {
+        if builder.entries.len() >= ModelLimits::default().max_tabs
+            || title.len() > ModelLimits::default().max_title_units
+        {
             core.snapshot = None;
             return ShellStatus::TooLarge;
         }
-        builder.entries.push(TabEntry { id: tab, title: title.to_vec(), commands });
+        builder.entries.push(TabEntry {
+            id: tab,
+            title: title.to_vec(),
+            commands,
+        });
         ShellStatus::Ok
     })
 }
@@ -1982,7 +2936,12 @@ pub unsafe extern "C" fn shell_core_model_commit_snapshot(
         let Some(builder) = core.snapshot.take() else {
             return ShellStatus::NotDraining;
         };
-        match core.model.apply_snapshot(builder.session, builder.revision, &builder.entries, selected) {
+        match core.model.apply_snapshot(
+            builder.session,
+            builder.revision,
+            &builder.entries,
+            selected,
+        ) {
             Ok(count) => {
                 core.queue.retain_tabs(|tab| core.model.contains(tab));
                 if let Some(out) = change_count.as_mut() {
@@ -2008,23 +2967,49 @@ pub struct ShellTabTitle {
 /// See [`guard`]. Rows and their UTF-16 spans must be valid for the call.
 #[no_mangle]
 pub unsafe extern "C" fn shell_core_model_apply_delta(
-    core: *mut ShellCore, base: u32, revision: u32,
-    rows: *const ShellTabTitle, row_count: usize, has_selected: bool, selected: u32,
+    core: *mut ShellCore,
+    base: u32,
+    revision: u32,
+    rows: *const ShellTabTitle,
+    row_count: usize,
+    has_selected: bool,
+    selected: u32,
 ) -> ShellStatus {
-    if row_count > ModelLimits::default().max_tabs { return ShellStatus::TooLarge; }
-    if row_count != 0 && rows.is_null() { return ShellStatus::InvalidArgument; }
-    let rows = if row_count == 0 { &[] } else { std::slice::from_raw_parts(rows, row_count) };
+    if row_count > ModelLimits::default().max_tabs {
+        return ShellStatus::TooLarge;
+    }
+    if row_count != 0 && rows.is_null() {
+        return ShellStatus::InvalidArgument;
+    }
+    let rows = if row_count == 0 {
+        &[]
+    } else {
+        std::slice::from_raw_parts(rows, row_count)
+    };
     let mut entries = Vec::with_capacity(row_count);
     for row in rows {
-        if row.title_len > ModelLimits::default().max_title_units { return ShellStatus::TooLarge; }
-        let Some(title) = slice(row.title, row.title_len) else { return ShellStatus::InvalidArgument; };
-        entries.push(TabEntry { id: row.tab, title: title.to_vec(), commands: 0 });
+        if row.title_len > ModelLimits::default().max_title_units {
+            return ShellStatus::TooLarge;
+        }
+        let Some(title) = slice(row.title, row.title_len) else {
+            return ShellStatus::InvalidArgument;
+        };
+        entries.push(TabEntry {
+            id: row.tab,
+            title: title.to_vec(),
+            commands: 0,
+        });
     }
     guard(core, |core| {
         let previous = core.model.selected();
-        match core.model.apply_delta(base, revision, &entries, has_selected.then_some(selected)) {
+        match core
+            .model
+            .apply_delta(base, revision, &entries, has_selected.then_some(selected))
+        {
             Ok(_) => {
-                if previous != core.model.selected() { core.queue.clear_selection(); }
+                if previous != core.model.selected() {
+                    core.queue.clear_selection();
+                }
                 ShellStatus::Ok
             }
             Err(error) => apply_error(error),
@@ -2045,7 +3030,11 @@ pub unsafe extern "C" fn shell_core_model_take_changes(
     let Some(out) = out.as_mut() else {
         return ShellStatus::InvalidArgument;
     };
-    *out = ShellChangeBatch { changes: std::ptr::null(), len: 0, handle: std::ptr::null_mut() };
+    *out = ShellChangeBatch {
+        changes: std::ptr::null(),
+        len: 0,
+        handle: std::ptr::null_mut(),
+    };
     guard(core, |core| {
         let taken = core.model.take_changes();
         if taken.is_empty() {
@@ -2068,7 +3057,11 @@ pub unsafe extern "C" fn shell_core_release_changes(batch: *mut ShellChangeBatch
     if !batch.handle.is_null() {
         drop(Box::from_raw(batch.handle as *mut ChangeOwner));
     }
-    *batch = ShellChangeBatch { changes: std::ptr::null(), len: 0, handle: std::ptr::null_mut() };
+    *batch = ShellChangeBatch {
+        changes: std::ptr::null(),
+        len: 0,
+        handle: std::ptr::null_mut(),
+    };
 }
 
 /// Whether the consumer has fallen behind and the producer should send one
@@ -2105,7 +3098,10 @@ pub unsafe extern "C" fn shell_core_model_index_of(
         let Some(out) = out.as_mut() else {
             return ShellStatus::InvalidArgument;
         };
-        *out = core.model.index_of(tab).map_or(u32::MAX, |value| value as u32);
+        *out = core
+            .model
+            .index_of(tab)
+            .map_or(u32::MAX, |value| value as u32);
         ShellStatus::Ok
     })
 }
@@ -2133,43 +3129,96 @@ mod tests {
     }
 
     fn strip_envelope(version: f64, base: f64, revision: f64) -> ShellStripEnvelope {
-        let absent = ShellStripName { present: false, data: std::ptr::null(), len: 0 };
+        let absent = ShellStripName {
+            present: false,
+            data: std::ptr::null(),
+            len: 0,
+        };
         ShellStripEnvelope {
-            version, revision,
-            base: ShellStripNumber { present: true, value: base },
-            window_drag_session: Default::default(), grouping_delay: Default::default(),
-            backdrop: absent, group_reach: absent,
-            window_drag_private: Default::default(), group_glow: Default::default(),
-            container_glow: Default::default(), container_dot: Default::default(),
-            group_hover: Default::default(), group_halo: Default::default(),
-            group_glow_animations: Default::default(), group_glow_fade_out: Default::default(),
-            rtl: ShellStripFlag { present: true, value: false },
+            version,
+            revision,
+            base: ShellStripNumber {
+                present: true,
+                value: base,
+            },
+            window_drag_session: Default::default(),
+            grouping_delay: Default::default(),
+            backdrop: absent,
+            group_reach: absent,
+            window_drag_private: Default::default(),
+            group_glow: Default::default(),
+            container_glow: Default::default(),
+            container_dot: Default::default(),
+            group_hover: Default::default(),
+            group_halo: Default::default(),
+            group_glow_animations: Default::default(),
+            group_glow_fade_out: Default::default(),
+            rtl: ShellStripFlag {
+                present: true,
+                value: false,
+            },
         }
     }
 
     fn strip_row(id: f64) -> ShellStripRowInput {
         ShellStripRowInput {
-            id, flags: ShellStripNumber { present: true, value: 0.0 }, container_color: Default::default(),
-            group_source: Default::default(), group_target: Default::default(),
-            detail: ShellStripText { present: true, len: 0 }, status: Default::default(), container_name: Default::default(),
-            image: ShellStripImage { kind: ShellStripImageKind::Absent as u32, width: 0.0, height: 0.0, pixels: std::ptr::null(), len: 0 },
+            id,
+            flags: ShellStripNumber {
+                present: true,
+                value: 0.0,
+            },
+            container_color: Default::default(),
+            group_source: Default::default(),
+            group_target: Default::default(),
+            detail: ShellStripText {
+                present: true,
+                len: 0,
+            },
+            status: Default::default(),
+            container_name: Default::default(),
+            image: ShellStripImage {
+                kind: ShellStripImageKind::Absent as u32,
+                width: 0.0,
+                height: 0.0,
+                pixels: std::ptr::null(),
+                len: 0,
+            },
         }
     }
 
     fn strip_publication(rows: &[ShellStripRowInput], removals: &[f64]) -> ShellStripPublication {
         ShellStripPublication {
-            rows: if rows.is_empty() { std::ptr::null() } else { rows.as_ptr() }, row_count: rows.len(),
-            removals: if removals.is_empty() { std::ptr::null() } else { removals.as_ptr() }, removal_count: removals.len(),
-            layout: std::ptr::null(), layout_count: 0, has_layout: false,
+            rows: if rows.is_empty() {
+                std::ptr::null()
+            } else {
+                rows.as_ptr()
+            },
+            row_count: rows.len(),
+            removals: if removals.is_empty() {
+                std::ptr::null()
+            } else {
+                removals.as_ptr()
+            },
+            removal_count: removals.len(),
+            layout: std::ptr::null(),
+            layout_count: 0,
+            has_layout: false,
         }
     }
 
     fn blank_row() -> crate::strip::ShellStripRow {
         crate::strip::ShellStripRow {
-            id: 0, flags: 0, container_color: 0, image_width: 0, image_height: 0,
-            detail: crate::strip::ShellStripSource::Empty, status: crate::strip::ShellStripSource::Empty,
-            container_name: crate::strip::ShellStripSource::Empty, image: crate::strip::ShellStripSource::Empty,
-            group_source: false, group_target: false,
+            id: 0,
+            flags: 0,
+            container_color: 0,
+            image_width: 0,
+            image_height: 0,
+            detail: crate::strip::ShellStripSource::Empty,
+            status: crate::strip::ShellStripSource::Empty,
+            container_name: crate::strip::ShellStripSource::Empty,
+            image: crate::strip::ShellStripSource::Empty,
+            group_source: false,
+            group_target: false,
         }
     }
 
@@ -2186,24 +3235,101 @@ mod tests {
             let none = strip_publication(&[], &[]);
             let mut resolved = [blank_row(); 1];
             // The host resolves, then publishes: one accepted publication.
-            assert_eq!(shell_core_strip_resolve(core, &full, print.as_ptr(), print.len(), &mut options, &mut unchanged), ShellStatus::Ok);
-            assert_eq!(shell_core_strip_publish(core, &full, print.as_ptr(), print.len(), &one, &mut options,
-                                                resolved.as_mut_ptr(), std::ptr::null_mut()), ShellStatus::Ok);
+            assert_eq!(
+                shell_core_strip_resolve(
+                    core,
+                    &full,
+                    print.as_ptr(),
+                    print.len(),
+                    &mut options,
+                    &mut unchanged
+                ),
+                ShellStatus::Ok
+            );
+            assert_eq!(
+                shell_core_strip_publish(
+                    core,
+                    &full,
+                    print.as_ptr(),
+                    print.len(),
+                    &one,
+                    &mut options,
+                    resolved.as_mut_ptr(),
+                    std::ptr::null_mut()
+                ),
+                ShellStatus::Ok
+            );
             // A replay stops at resolve.
-            assert_eq!(shell_core_strip_resolve(core, &full, print.as_ptr(), print.len(), &mut options, &mut unchanged), ShellStatus::Ok);
+            assert_eq!(
+                shell_core_strip_resolve(
+                    core,
+                    &full,
+                    print.as_ptr(),
+                    print.len(),
+                    &mut options,
+                    &mut unchanged
+                ),
+                ShellStatus::Ok
+            );
             assert!(unchanged);
             // A delta against a base this core never held.
             let gap = strip_envelope(2.0, 5.0, 2.0);
-            assert_eq!(shell_core_strip_resolve(core, &gap, std::ptr::null(), 0, &mut options, &mut unchanged), ShellStatus::InvalidArgument);
+            assert_eq!(
+                shell_core_strip_resolve(
+                    core,
+                    &gap,
+                    std::ptr::null(),
+                    0,
+                    &mut options,
+                    &mut unchanged
+                ),
+                ShellStatus::InvalidArgument
+            );
             let next = strip_envelope(2.0, 1.0, 2.0);
-            assert_eq!(shell_core_strip_publish(core, &next, std::ptr::null(), 0, &none, &mut options,
-                                                std::ptr::null_mut(), std::ptr::null_mut()), ShellStatus::Ok);
+            assert_eq!(
+                shell_core_strip_publish(
+                    core,
+                    &next,
+                    std::ptr::null(),
+                    0,
+                    &none,
+                    &mut options,
+                    std::ptr::null_mut(),
+                    std::ptr::null_mut()
+                ),
+                ShellStatus::Ok
+            );
             let mut counts = ShellPublicationCounts::default();
-            assert_eq!(shell_core_publication_stats(core, ShellPublicationChannel::Strip as u32, &mut counts), ShellStatus::Ok);
-            assert_eq!(counts, ShellPublicationCounts { accepted: 2, unchanged: 1, ignored: 0, refused: 1 });
-            assert_eq!(shell_core_publication_stats(core, u32::MAX, &mut counts), ShellStatus::InvalidArgument);
-            assert_eq!(counts, ShellPublicationCounts::default(), "an unknown channel reports nothing");
-            assert_eq!(shell_core_publication_stats(core, 0, std::ptr::null_mut()), ShellStatus::InvalidArgument);
+            assert_eq!(
+                shell_core_publication_stats(
+                    core,
+                    ShellPublicationChannel::Strip as u32,
+                    &mut counts
+                ),
+                ShellStatus::Ok
+            );
+            assert_eq!(
+                counts,
+                ShellPublicationCounts {
+                    accepted: 2,
+                    unchanged: 1,
+                    ignored: 0,
+                    refused: 1
+                }
+            );
+            assert_eq!(
+                shell_core_publication_stats(core, u32::MAX, &mut counts),
+                ShellStatus::InvalidArgument
+            );
+            assert_eq!(
+                counts,
+                ShellPublicationCounts::default(),
+                "an unknown channel reports nothing"
+            );
+            assert_eq!(
+                shell_core_publication_stats(core, 0, std::ptr::null_mut()),
+                ShellStatus::InvalidArgument
+            );
             shell_core_destroy(core);
         }
     }
@@ -2216,91 +3342,369 @@ mod tests {
             let mut unchanged = true;
             let acrylic = utf16("acrylic");
             let mut full = strip_envelope(2.0, 0.0, 1.0);
-            full.backdrop = ShellStripName { present: true, data: acrylic.as_ptr(), len: acrylic.len() };
+            full.backdrop = ShellStripName {
+                present: true,
+                data: acrylic.as_ptr(),
+                len: acrylic.len(),
+            };
             let print = utf16("one");
             let rows = [strip_row(1.0)];
             let one = strip_publication(&rows, &[]);
             let none = strip_publication(&[], &[]);
             let mut resolved = [blank_row(); 1];
-            assert_eq!(shell_core_strip_resolve(core, &full, print.as_ptr(), print.len(), &mut options, &mut unchanged), ShellStatus::Ok);
+            assert_eq!(
+                shell_core_strip_resolve(
+                    core,
+                    &full,
+                    print.as_ptr(),
+                    print.len(),
+                    &mut options,
+                    &mut unchanged
+                ),
+                ShellStatus::Ok
+            );
             assert!(!unchanged);
             assert_eq!(options.backdrop, crate::strip::ShellBackdrop::Acrylic);
             // Resolving commits nothing: the same envelope publishes afterwards.
-            assert_eq!(shell_core_strip_publish(core, &full, print.as_ptr(), print.len(), &one, &mut options,
-                                                resolved.as_mut_ptr(), std::ptr::null_mut()), ShellStatus::Ok);
+            assert_eq!(
+                shell_core_strip_publish(
+                    core,
+                    &full,
+                    print.as_ptr(),
+                    print.len(),
+                    &one,
+                    &mut options,
+                    resolved.as_mut_ptr(),
+                    std::ptr::null_mut()
+                ),
+                ShellStatus::Ok
+            );
             assert_eq!(options.revision, 1);
-            assert_eq!(shell_core_strip_resolve(core, &full, print.as_ptr(), print.len(), &mut options, &mut unchanged), ShellStatus::Ok);
+            assert_eq!(
+                shell_core_strip_resolve(
+                    core,
+                    &full,
+                    print.as_ptr(),
+                    print.len(),
+                    &mut options,
+                    &mut unchanged
+                ),
+                ShellStatus::Ok
+            );
             assert!(unchanged);
-            assert_eq!(shell_core_strip_publish(core, &full, print.as_ptr(), print.len(), &one, &mut options,
-                                                resolved.as_mut_ptr(), std::ptr::null_mut()), ShellStatus::InvalidArgument);
+            assert_eq!(
+                shell_core_strip_publish(
+                    core,
+                    &full,
+                    print.as_ptr(),
+                    print.len(),
+                    &one,
+                    &mut options,
+                    resolved.as_mut_ptr(),
+                    std::ptr::null_mut()
+                ),
+                ShellStatus::InvalidArgument
+            );
             // A delta keeps the backdrop it omits.
             let next = strip_envelope(2.0, 1.0, 2.0);
-            assert_eq!(shell_core_strip_publish(core, &next, std::ptr::null(), 0, &none, &mut options,
-                                                std::ptr::null_mut(), std::ptr::null_mut()), ShellStatus::Ok);
-            assert_eq!((options.base, options.revision, options.backdrop), (1, 2, crate::strip::ShellBackdrop::Acrylic));
+            assert_eq!(
+                shell_core_strip_publish(
+                    core,
+                    &next,
+                    std::ptr::null(),
+                    0,
+                    &none,
+                    &mut options,
+                    std::ptr::null_mut(),
+                    std::ptr::null_mut()
+                ),
+                ShellStatus::Ok
+            );
+            assert_eq!(
+                (options.base, options.revision, options.backdrop),
+                (1, 2, crate::strip::ShellBackdrop::Acrylic)
+            );
             // Malformed calls change nothing and report themselves.
             let long = vec![b'a' as u16; 65];
             let mut named = strip_envelope(2.0, 2.0, 3.0);
-            named.group_reach = ShellStripName { present: true, data: long.as_ptr(), len: long.len() };
-            assert_eq!(shell_core_strip_resolve(core, &named, std::ptr::null(), 0, &mut options, &mut unchanged), ShellStatus::InvalidArgument);
-            named.group_reach = ShellStripName { present: true, data: std::ptr::null(), len: 1 };
-            assert_eq!(shell_core_strip_resolve(core, &named, std::ptr::null(), 0, &mut options, &mut unchanged), ShellStatus::InvalidArgument);
-            assert_eq!(shell_core_strip_resolve(core, std::ptr::null(), std::ptr::null(), 0, &mut options, &mut unchanged), ShellStatus::InvalidArgument);
-            assert_eq!(shell_core_strip_resolve(core, &next, std::ptr::null(), 1, &mut options, &mut unchanged), ShellStatus::InvalidArgument);
-            assert_eq!(shell_core_strip_publish(core, &named, std::ptr::null(), 0, &none, std::ptr::null_mut(),
-                                                std::ptr::null_mut(), std::ptr::null_mut()), ShellStatus::InvalidArgument);
+            named.group_reach = ShellStripName {
+                present: true,
+                data: long.as_ptr(),
+                len: long.len(),
+            };
+            assert_eq!(
+                shell_core_strip_resolve(
+                    core,
+                    &named,
+                    std::ptr::null(),
+                    0,
+                    &mut options,
+                    &mut unchanged
+                ),
+                ShellStatus::InvalidArgument
+            );
+            named.group_reach = ShellStripName {
+                present: true,
+                data: std::ptr::null(),
+                len: 1,
+            };
+            assert_eq!(
+                shell_core_strip_resolve(
+                    core,
+                    &named,
+                    std::ptr::null(),
+                    0,
+                    &mut options,
+                    &mut unchanged
+                ),
+                ShellStatus::InvalidArgument
+            );
+            assert_eq!(
+                shell_core_strip_resolve(
+                    core,
+                    std::ptr::null(),
+                    std::ptr::null(),
+                    0,
+                    &mut options,
+                    &mut unchanged
+                ),
+                ShellStatus::InvalidArgument
+            );
+            assert_eq!(
+                shell_core_strip_resolve(
+                    core,
+                    &next,
+                    std::ptr::null(),
+                    1,
+                    &mut options,
+                    &mut unchanged
+                ),
+                ShellStatus::InvalidArgument
+            );
+            assert_eq!(
+                shell_core_strip_publish(
+                    core,
+                    &named,
+                    std::ptr::null(),
+                    0,
+                    &none,
+                    std::ptr::null_mut(),
+                    std::ptr::null_mut(),
+                    std::ptr::null_mut()
+                ),
+                ShellStatus::InvalidArgument
+            );
             let delta = strip_envelope(2.0, 2.0, 3.0);
-            assert_eq!(shell_core_strip_resolve(core, &delta, std::ptr::null(), 0, &mut options, &mut unchanged), ShellStatus::Ok);
+            assert_eq!(
+                shell_core_strip_resolve(
+                    core,
+                    &delta,
+                    std::ptr::null(),
+                    0,
+                    &mut options,
+                    &mut unchanged
+                ),
+                ShellStatus::Ok
+            );
             assert_eq!(options.backdrop, crate::strip::ShellBackdrop::Acrylic);
             // Resolved rows and removals come back in order; a malformed row changes nothing.
             let mut odd = strip_row(4.0);
             odd.image.kind = 7;
             let odd_rows = [odd];
             let odd_publication = strip_publication(&odd_rows, &[]);
-            assert_eq!(shell_core_strip_publish(core, &delta, std::ptr::null(), 0, &odd_publication, &mut options,
-                                                resolved.as_mut_ptr(), std::ptr::null_mut()), ShellStatus::InvalidArgument);
+            assert_eq!(
+                shell_core_strip_publish(
+                    core,
+                    &delta,
+                    std::ptr::null(),
+                    0,
+                    &odd_publication,
+                    &mut options,
+                    resolved.as_mut_ptr(),
+                    std::ptr::null_mut()
+                ),
+                ShellStatus::InvalidArgument
+            );
             let mut long = strip_row(4.0);
-            long.image = ShellStripImage { kind: ShellStripImageKind::Set as u32, width: 32.0, height: 32.0, pixels: std::ptr::null(), len: MAX_IMAGE_UNITS + 1 };
+            long.image = ShellStripImage {
+                kind: ShellStripImageKind::Set as u32,
+                width: 32.0,
+                height: 32.0,
+                pixels: std::ptr::null(),
+                len: MAX_IMAGE_UNITS + 1,
+            };
             let long_rows = [long];
             let long_publication = strip_publication(&long_rows, &[]);
-            assert_eq!(shell_core_strip_publish(core, &delta, std::ptr::null(), 0, &long_publication, &mut options,
-                                                resolved.as_mut_ptr(), std::ptr::null_mut()), ShellStatus::InvalidArgument);
+            assert_eq!(
+                shell_core_strip_publish(
+                    core,
+                    &delta,
+                    std::ptr::null(),
+                    0,
+                    &long_publication,
+                    &mut options,
+                    resolved.as_mut_ptr(),
+                    std::ptr::null_mut()
+                ),
+                ShellStatus::InvalidArgument
+            );
             let added = [strip_row(4.0)];
             let removal = [1.0];
             let swap = strip_publication(&added, &removal);
             let mut gone = [0u32; 1];
-            assert_eq!(shell_core_strip_publish(core, &delta, std::ptr::null(), 0, &swap, std::ptr::null_mut(),
-                                                resolved.as_mut_ptr(), gone.as_mut_ptr()), ShellStatus::InvalidArgument);
-            assert_eq!(shell_core_strip_publish(core, &delta, std::ptr::null(), 0, &swap, &mut options,
-                                                resolved.as_mut_ptr(), std::ptr::null_mut()), ShellStatus::InvalidArgument);
-            assert_eq!(shell_core_strip_publish(core, &delta, std::ptr::null(), 0, &swap, &mut options,
-                                                resolved.as_mut_ptr(), gone.as_mut_ptr()), ShellStatus::Ok);
-            assert_eq!((resolved[0].id, resolved[0].detail, gone[0]), (4, crate::strip::ShellStripSource::Take, 1));
+            assert_eq!(
+                shell_core_strip_publish(
+                    core,
+                    &delta,
+                    std::ptr::null(),
+                    0,
+                    &swap,
+                    std::ptr::null_mut(),
+                    resolved.as_mut_ptr(),
+                    gone.as_mut_ptr()
+                ),
+                ShellStatus::InvalidArgument
+            );
+            assert_eq!(
+                shell_core_strip_publish(
+                    core,
+                    &delta,
+                    std::ptr::null(),
+                    0,
+                    &swap,
+                    &mut options,
+                    resolved.as_mut_ptr(),
+                    std::ptr::null_mut()
+                ),
+                ShellStatus::InvalidArgument
+            );
+            assert_eq!(
+                shell_core_strip_publish(
+                    core,
+                    &delta,
+                    std::ptr::null(),
+                    0,
+                    &swap,
+                    &mut options,
+                    resolved.as_mut_ptr(),
+                    gone.as_mut_ptr()
+                ),
+                ShellStatus::Ok
+            );
+            assert_eq!(
+                (resolved[0].id, resolved[0].detail, gone[0]),
+                (4, crate::strip::ShellStripSource::Take, 1)
+            );
             shell_core_destroy(core);
         }
     }
 
     #[test]
     fn group_surface_hold_is_bounded_and_revoked_by_cancellation() {
-        use crate::group_surface::{ShellGroupSurface, ShellGroupSurfaceFrame, ShellGroupSurfaceResult};
+        use crate::group_surface::{
+            ShellGroupSurface, ShellGroupSurfaceFrame, ShellGroupSurfaceResult,
+        };
         unsafe {
             let core = core();
             let mut out = ShellGroupSurfaceResult::default();
-            let mut surfaces = [ShellGroupSurface { group: 5, x: 0.0, y: 0.0, width: 300.0, height: 32.0 }];
-            let dragged = ShellGroupSurfaceFrame { dragging: true, join_group: 5, ..Default::default() };
-            assert_eq!(shell_core_group_surface_frame(core, &dragged, std::ptr::null(), 0, surfaces.as_mut_ptr(), 1, &mut out), ShellStatus::Ok);
-            assert_eq!(shell_core_group_surface_join(core, 5, 9, 1500.0), ShellStatus::Ok);
-            let released = ShellGroupSurfaceFrame { frame_ms: 10.0, wall_ms: 10.0, ..Default::default() };
+            let mut surfaces = [ShellGroupSurface {
+                group: 5,
+                x: 0.0,
+                y: 0.0,
+                width: 300.0,
+                height: 32.0,
+            }];
+            let dragged = ShellGroupSurfaceFrame {
+                dragging: true,
+                join_group: 5,
+                ..Default::default()
+            };
+            assert_eq!(
+                shell_core_group_surface_frame(
+                    core,
+                    &dragged,
+                    std::ptr::null(),
+                    0,
+                    surfaces.as_mut_ptr(),
+                    1,
+                    &mut out
+                ),
+                ShellStatus::Ok
+            );
+            assert_eq!(
+                shell_core_group_surface_join(core, 5, 9, 1500.0),
+                ShellStatus::Ok
+            );
+            let released = ShellGroupSurfaceFrame {
+                frame_ms: 10.0,
+                wall_ms: 10.0,
+                ..Default::default()
+            };
             surfaces[0].width = 200.0;
-            assert_eq!(shell_core_group_surface_frame(core, &released, std::ptr::null(), 0, surfaces.as_mut_ptr(), 1, &mut out), ShellStatus::Ok);
+            assert_eq!(
+                shell_core_group_surface_frame(
+                    core,
+                    &released,
+                    std::ptr::null(),
+                    0,
+                    surfaces.as_mut_ptr(),
+                    1,
+                    &mut out
+                ),
+                ShellStatus::Ok
+            );
             assert!(out.holding && surfaces[0].width == 300.0);
             assert_eq!(shell_core_cancel_all(core), ShellStatus::Ok);
             surfaces[0].width = 200.0;
-            assert_eq!(shell_core_group_surface_frame(core, &released, std::ptr::null(), 0, surfaces.as_mut_ptr(), 1, &mut out), ShellStatus::Ok);
+            assert_eq!(
+                shell_core_group_surface_frame(
+                    core,
+                    &released,
+                    std::ptr::null(),
+                    0,
+                    surfaces.as_mut_ptr(),
+                    1,
+                    &mut out
+                ),
+                ShellStatus::Ok
+            );
             assert!(!out.holding && surfaces[0].width == 200.0);
-            assert_eq!(shell_core_group_surface_frame(core, &released, std::ptr::null(), 1, surfaces.as_mut_ptr(), 1, &mut out), ShellStatus::InvalidArgument);
-            assert_eq!(shell_core_group_surface_frame(core, &released, std::ptr::null(), 0, surfaces.as_mut_ptr(), crate::group_surface::MAX_ENTRIES + 1, &mut out), ShellStatus::InvalidArgument);
-            assert_eq!(shell_core_group_surface_frame(core, &released, std::ptr::null(), 0, std::ptr::null_mut(), 0, std::ptr::null_mut()), ShellStatus::InvalidArgument);
+            assert_eq!(
+                shell_core_group_surface_frame(
+                    core,
+                    &released,
+                    std::ptr::null(),
+                    1,
+                    surfaces.as_mut_ptr(),
+                    1,
+                    &mut out
+                ),
+                ShellStatus::InvalidArgument
+            );
+            assert_eq!(
+                shell_core_group_surface_frame(
+                    core,
+                    &released,
+                    std::ptr::null(),
+                    0,
+                    surfaces.as_mut_ptr(),
+                    crate::group_surface::MAX_ENTRIES + 1,
+                    &mut out
+                ),
+                ShellStatus::InvalidArgument
+            );
+            assert_eq!(
+                shell_core_group_surface_frame(
+                    core,
+                    &released,
+                    std::ptr::null(),
+                    0,
+                    std::ptr::null_mut(),
+                    0,
+                    std::ptr::null_mut()
+                ),
+                ShellStatus::InvalidArgument
+            );
             shell_core_destroy(core);
         }
     }
@@ -2311,21 +3715,98 @@ mod tests {
         unsafe {
             let core = core();
             let (mut count, mut disabled, mut lit) = (0usize, false, false);
-            let groups = [ShellGlowGroup { group: 1, shown: true }];
-            assert_eq!(shell_core_glow_advance(core, true, false, groups.as_ptr(), 1, std::ptr::null_mut(), 0, &mut count, &mut disabled), ShellStatus::Ok);
+            let groups = [ShellGlowGroup {
+                group: 1,
+                shown: true,
+            }];
+            assert_eq!(
+                shell_core_glow_advance(
+                    core,
+                    true,
+                    false,
+                    groups.as_ptr(),
+                    1,
+                    std::ptr::null_mut(),
+                    0,
+                    &mut count,
+                    &mut disabled
+                ),
+                ShellStatus::Ok
+            );
             assert_eq!(count, 0);
-            let two = [groups[0], ShellGlowGroup { group: 2, shown: true }];
-            assert_eq!(shell_core_glow_advance(core, true, false, two.as_ptr(), 2, std::ptr::null_mut(), 0, &mut count, &mut disabled), ShellStatus::TooLarge);
+            let two = [
+                groups[0],
+                ShellGlowGroup {
+                    group: 2,
+                    shown: true,
+                },
+            ];
+            assert_eq!(
+                shell_core_glow_advance(
+                    core,
+                    true,
+                    false,
+                    two.as_ptr(),
+                    2,
+                    std::ptr::null_mut(),
+                    0,
+                    &mut count,
+                    &mut disabled
+                ),
+                ShellStatus::TooLarge
+            );
             assert_eq!(count, 1);
             assert_eq!(shell_core_glow_is_lit(core, 2, &mut lit), ShellStatus::Ok);
             assert!(!lit);
             let mut out = [ShellGlowChange::default(); 1];
-            assert_eq!(shell_core_glow_advance(core, true, false, two.as_ptr(), 2, out.as_mut_ptr(), 1, &mut count, &mut disabled), ShellStatus::Ok);
-            assert_eq!(out[0], ShellGlowChange { group: 2, flags: SHELL_GLOW_LIT });
+            assert_eq!(
+                shell_core_glow_advance(
+                    core,
+                    true,
+                    false,
+                    two.as_ptr(),
+                    2,
+                    out.as_mut_ptr(),
+                    1,
+                    &mut count,
+                    &mut disabled
+                ),
+                ShellStatus::Ok
+            );
+            assert_eq!(
+                out[0],
+                ShellGlowChange {
+                    group: 2,
+                    flags: SHELL_GLOW_LIT
+                }
+            );
             assert_eq!(shell_core_glow_is_lit(core, 2, &mut lit), ShellStatus::Ok);
             assert!(lit);
-            assert_eq!(shell_core_glow_advance(core, true, false, std::ptr::null(), 1, std::ptr::null_mut(), 0, &mut count, &mut disabled), ShellStatus::InvalidArgument);
-            assert_eq!(shell_core_glow_settle(core, false, std::ptr::null(), 0, std::ptr::null_mut(), std::ptr::null_mut()), ShellStatus::InvalidArgument);
+            assert_eq!(
+                shell_core_glow_advance(
+                    core,
+                    true,
+                    false,
+                    std::ptr::null(),
+                    1,
+                    std::ptr::null_mut(),
+                    0,
+                    &mut count,
+                    &mut disabled
+                ),
+                ShellStatus::InvalidArgument
+            );
+            assert_eq!(
+                shell_core_glow_settle(
+                    core,
+                    false,
+                    std::ptr::null(),
+                    0,
+                    std::ptr::null_mut(),
+                    std::ptr::null_mut()
+                ),
+                ShellStatus::InvalidArgument
+            );
             shell_core_destroy(core);
         }
     }
@@ -2336,16 +3817,44 @@ mod tests {
         unsafe {
             let core = core();
             let (mut sample, mut active) = (ShellSettleSample::default(), false);
-            assert_eq!(shell_core_settle_hold(core, SHELL_SETTLE_HEADER, 7, -30.0, 1.0, 10.0), ShellStatus::Ok);
-            assert_eq!(shell_core_settle_hold(core, 3, 7, 0.0, 1.0, 10.0), ShellStatus::InvalidArgument);
-            assert_eq!(shell_core_settle_hold(core, SHELL_SETTLE_TAB, 7, f32::NAN, 1.0, 10.0), ShellStatus::InvalidArgument);
-            assert_eq!(shell_core_settle_sample(core, SHELL_SETTLE_HEADER, 7, 10.0, &mut sample), ShellStatus::Ok);
-            assert_eq!(sample, ShellSettleSample { active: true, dx: -30.0, sx: 1.0 });
-            assert_eq!(shell_core_settle_advance(core, 20.0, false, &mut active), ShellStatus::Ok);
+            assert_eq!(
+                shell_core_settle_hold(core, SHELL_SETTLE_HEADER, 7, -30.0, 1.0, 10.0),
+                ShellStatus::Ok
+            );
+            assert_eq!(
+                shell_core_settle_hold(core, 3, 7, 0.0, 1.0, 10.0),
+                ShellStatus::InvalidArgument
+            );
+            assert_eq!(
+                shell_core_settle_hold(core, SHELL_SETTLE_TAB, 7, f32::NAN, 1.0, 10.0),
+                ShellStatus::InvalidArgument
+            );
+            assert_eq!(
+                shell_core_settle_sample(core, SHELL_SETTLE_HEADER, 7, 10.0, &mut sample),
+                ShellStatus::Ok
+            );
+            assert_eq!(
+                sample,
+                ShellSettleSample {
+                    active: true,
+                    dx: -30.0,
+                    sx: 1.0
+                }
+            );
+            assert_eq!(
+                shell_core_settle_advance(core, 20.0, false, &mut active),
+                ShellStatus::Ok
+            );
             assert!(active);
-            assert_eq!(shell_core_settle_advance(core, 20.0, true, &mut active), ShellStatus::Ok);
+            assert_eq!(
+                shell_core_settle_advance(core, 20.0, true, &mut active),
+                ShellStatus::Ok
+            );
             assert!(!active);
-            assert_eq!(shell_core_settle_sample(core, SHELL_SETTLE_HEADER, 7, 20.0, std::ptr::null_mut()), ShellStatus::InvalidArgument);
+            assert_eq!(
+                shell_core_settle_sample(core, SHELL_SETTLE_HEADER, 7, 20.0, std::ptr::null_mut()),
+                ShellStatus::InvalidArgument
+            );
             shell_core_destroy(core);
         }
     }
@@ -2355,14 +3864,26 @@ mod tests {
         unsafe {
             let core = core();
             let mut armed = false;
-            assert_eq!(shell_core_group_hover(core, 1, 2, 100, 240, &mut armed), ShellStatus::Ok);
+            assert_eq!(
+                shell_core_group_hover(core, 1, 2, 100, 240, &mut armed),
+                ShellStatus::Ok
+            );
             assert!(!armed);
-            assert_eq!(shell_core_group_hover(core, 1, 2, 340, 240, &mut armed), ShellStatus::Ok);
+            assert_eq!(
+                shell_core_group_hover(core, 1, 2, 340, 240, &mut armed),
+                ShellStatus::Ok
+            );
             assert!(armed);
             assert_eq!(shell_core_cancel_all(core), ShellStatus::Ok);
-            assert_eq!(shell_core_group_hover(core, 1, 2, 350, 240, &mut armed), ShellStatus::Ok);
+            assert_eq!(
+                shell_core_group_hover(core, 1, 2, 350, 240, &mut armed),
+                ShellStatus::Ok
+            );
             assert!(!armed);
-            assert_eq!(shell_core_group_hover(core, 1, 2, 590, 240, std::ptr::null_mut()), ShellStatus::InvalidArgument);
+            assert_eq!(
+                shell_core_group_hover(core, 1, 2, 590, 240, std::ptr::null_mut()),
+                ShellStatus::InvalidArgument
+            );
             shell_core_destroy(core);
         }
     }
@@ -2371,20 +3892,66 @@ mod tests {
     fn group_motion_output_is_bounded_and_never_partially_written() {
         unsafe {
             let core = core();
-            let old = [ShellStripSlot { group: 7, tab: 1 }, ShellStripSlot { group: 7, tab: 2 }];
-            let sentinel = ShellGroupMotionRow { tab: 99, group: 99, entering: true };
+            let old = [
+                ShellStripSlot { group: 7, tab: 1 },
+                ShellStripSlot { group: 7, tab: 2 },
+            ];
+            let sentinel = ShellGroupMotionRow {
+                tab: 99,
+                group: 99,
+                entering: true,
+            };
             let mut output = [sentinel; 2];
             let mut count = 0;
-            assert_eq!(shell_core_group_motion(core, old.as_ptr(), 2, std::ptr::null(), 0,
-                &7, 1, output.as_mut_ptr(), 1, &mut count), ShellStatus::InvalidArgument);
+            assert_eq!(
+                shell_core_group_motion(
+                    core,
+                    old.as_ptr(),
+                    2,
+                    std::ptr::null(),
+                    0,
+                    &7,
+                    1,
+                    output.as_mut_ptr(),
+                    1,
+                    &mut count
+                ),
+                ShellStatus::InvalidArgument
+            );
             assert_eq!(count, 2);
             assert_eq!(output, [sentinel; 2]);
-            assert_eq!(shell_core_group_motion(core, old.as_ptr(), 2, std::ptr::null(), 0,
-                &7, 1, output.as_mut_ptr(), 2, &mut count), ShellStatus::Ok);
+            assert_eq!(
+                shell_core_group_motion(
+                    core,
+                    old.as_ptr(),
+                    2,
+                    std::ptr::null(),
+                    0,
+                    &7,
+                    1,
+                    output.as_mut_ptr(),
+                    2,
+                    &mut count
+                ),
+                ShellStatus::Ok
+            );
             assert_eq!(output.iter().map(|r| r.tab).collect::<Vec<_>>(), vec![1, 2]);
             assert!(output.iter().all(|r| !r.entering));
-            assert_eq!(shell_core_group_motion(core, std::ptr::null(), 20_001, std::ptr::null(), 0,
-                &7, 1, output.as_mut_ptr(), 2, &mut count), ShellStatus::InvalidArgument);
+            assert_eq!(
+                shell_core_group_motion(
+                    core,
+                    std::ptr::null(),
+                    20_001,
+                    std::ptr::null(),
+                    0,
+                    &7,
+                    1,
+                    output.as_mut_ptr(),
+                    2,
+                    &mut count
+                ),
+                ShellStatus::InvalidArgument
+            );
             shell_core_destroy(core);
         }
     }
@@ -2410,24 +3977,66 @@ mod tests {
                 let mut result = std::mem::zeroed::<ShellEnqueueResult>();
                 shell_core_enqueue(core, kind, tab, 9, std::ptr::null(), 0, &mut result)
             };
-            assert_eq!(shell_core_model_begin_snapshot(core, 1, (*core).model.revision() + 1, 2), ShellStatus::Ok);
+            assert_eq!(
+                shell_core_model_begin_snapshot(core, 1, (*core).model.revision() + 1, 2),
+                ShellStatus::Ok
+            );
             for tab in [1, 2] {
-                assert_eq!(shell_core_model_push_snapshot_tab(core, tab, std::ptr::null(), 0, 0), ShellStatus::Ok);
+                assert_eq!(
+                    shell_core_model_push_snapshot_tab(core, tab, std::ptr::null(), 0, 0),
+                    ShellStatus::Ok
+                );
             }
-            assert_eq!(shell_core_model_commit_snapshot(core, 1, std::ptr::null_mut()), ShellStatus::Ok);
+            assert_eq!(
+                shell_core_model_commit_snapshot(core, 1, std::ptr::null_mut()),
+                ShellStatus::Ok
+            );
             assert_eq!(enqueue(1, 2), ShellStatus::Ok);
-            assert_eq!(shell_core_selection_pending(core, 9, &mut pending), ShellStatus::Ok);
+            assert_eq!(
+                shell_core_selection_pending(core, 9, &mut pending),
+                ShellStatus::Ok
+            );
             assert!(pending);
-            assert_eq!(shell_core_selection_pending(core, 10, std::ptr::null_mut()), ShellStatus::InvalidArgument);
+            assert_eq!(
+                shell_core_selection_pending(core, 10, std::ptr::null_mut()),
+                ShellStatus::InvalidArgument
+            );
             shell_core_model_revision(core, &mut revision);
             // Rejected and unchanged publications must preserve feedback.
-            assert_eq!(shell_core_model_set_selected(core, revision + 1, (*core).model.revision() + 1, 2, &mut changed), ShellStatus::Gap);
-            assert_eq!(shell_core_model_set_selected(core, revision, (*core).model.revision() + 1, 1, &mut changed), ShellStatus::Ok);
+            assert_eq!(
+                shell_core_model_set_selected(
+                    core,
+                    revision + 1,
+                    (*core).model.revision() + 1,
+                    2,
+                    &mut changed
+                ),
+                ShellStatus::Gap
+            );
+            assert_eq!(
+                shell_core_model_set_selected(
+                    core,
+                    revision,
+                    (*core).model.revision() + 1,
+                    1,
+                    &mut changed
+                ),
+                ShellStatus::Ok
+            );
             assert!(!changed);
             shell_core_selection_pending(core, 9, &mut pending);
             assert!(pending);
             shell_core_model_revision(core, &mut revision);
-            assert_eq!(shell_core_model_set_selected(core, revision, (*core).model.revision() + 1, 2, &mut changed), ShellStatus::Ok);
+            assert_eq!(
+                shell_core_model_set_selected(
+                    core,
+                    revision,
+                    (*core).model.revision() + 1,
+                    2,
+                    &mut changed
+                ),
+                ShellStatus::Ok
+            );
             assert!(changed);
             shell_core_selection_pending(core, 9, &mut pending);
             assert!(!pending);
@@ -2435,13 +4044,25 @@ mod tests {
             assert_eq!(enqueue(3, 2), ShellStatus::Ok);
             // Invalid snapshots cannot prune an admitted close.
             shell_core_model_begin_snapshot(core, 1, (*core).model.revision() + 1, 0);
-            assert_eq!(shell_core_model_commit_snapshot(core, 99, std::ptr::null_mut()), ShellStatus::UnknownTab);
-            assert_eq!(shell_core_enqueue(core, 3, 2, 9, std::ptr::null(), 0, &mut result), ShellStatus::Rejected);
+            assert_eq!(
+                shell_core_model_commit_snapshot(core, 99, std::ptr::null_mut()),
+                ShellStatus::UnknownTab
+            );
+            assert_eq!(
+                shell_core_enqueue(core, 3, 2, 9, std::ptr::null(), 0, &mut result),
+                ShellStatus::Rejected
+            );
             assert_eq!(result.status, EnqueueStatus::RejectedPendingClose as u32);
             shell_core_model_begin_snapshot(core, 1, (*core).model.revision() + 1, 0);
-            assert_eq!(shell_core_model_commit_snapshot(core, 0, std::ptr::null_mut()), ShellStatus::Ok);
+            assert_eq!(
+                shell_core_model_commit_snapshot(core, 0, std::ptr::null_mut()),
+                ShellStatus::Ok
+            );
             assert_eq!(enqueue(3, 2), ShellStatus::Ok);
-            assert_eq!(shell_core_selection_pending(std::ptr::null_mut(), 9, &mut pending), ShellStatus::InvalidArgument);
+            assert_eq!(
+                shell_core_selection_pending(std::ptr::null_mut(), 9, &mut pending),
+                ShellStatus::InvalidArgument
+            );
             shell_core_destroy(core);
         }
     }
@@ -2457,7 +4078,15 @@ mod tests {
         };
         unsafe {
             assert_eq!(
-                shell_core_enqueue(std::ptr::null_mut(), 1, 1, 0, std::ptr::null(), 0, &mut result),
+                shell_core_enqueue(
+                    std::ptr::null_mut(),
+                    1,
+                    1,
+                    0,
+                    std::ptr::null(),
+                    0,
+                    &mut result
+                ),
                 ShellStatus::InvalidArgument
             );
             let core = core();
@@ -2465,9 +4094,15 @@ mod tests {
                 shell_core_enqueue(core, 1, 1, 0, std::ptr::null(), 0, std::ptr::null_mut()),
                 ShellStatus::InvalidArgument
             );
-            assert_eq!(shell_core_stats(core, std::ptr::null_mut()), ShellStatus::InvalidArgument);
-            assert_eq!(shell_core_enqueue(core, 99, 1, 0, std::ptr::null(), 0, &mut result),
-                ShellStatus::InvalidArgument, "unknown kind");
+            assert_eq!(
+                shell_core_stats(core, std::ptr::null_mut()),
+                ShellStatus::InvalidArgument
+            );
+            assert_eq!(
+                shell_core_enqueue(core, 99, 1, 0, std::ptr::null(), 0, &mut result),
+                ShellStatus::InvalidArgument,
+                "unknown kind"
+            );
             // The C++ side mirrors these numbers by hand (NativeShellCore::Kind
             // in native/WinUIPane/ShellCore.h); cbindgen does not export the
             // enum because the boundary carries it as a u32. Pin the range so a
@@ -2475,16 +4110,24 @@ mod tests {
             for kind in 1..=10 {
                 assert_eq!(
                     shell_core_enqueue(core, kind, 1, 0, std::ptr::null(), 0, &mut result),
-                    ShellStatus::Ok, "kind {kind} is part of the boundary"
+                    ShellStatus::Ok,
+                    "kind {kind} is part of the boundary"
                 );
             }
-            assert_eq!(shell_core_enqueue(core, 11, 1, 0, std::ptr::null(), 0, &mut result),
-                ShellStatus::InvalidArgument, "one past the last kind");
+            assert_eq!(
+                shell_core_enqueue(core, 11, 1, 0, std::ptr::null(), 0, &mut result),
+                ShellStatus::InvalidArgument,
+                "one past the last kind"
+            );
             // The intent boundary refuses the same way, and refuses a staged
             // kind it does not know rather than treating it as "nothing".
             let conditions = ShellIntentConditions {
-                applying: 0, composing: 0, has_session: 1,
-                mode_intent_staged: 0, edit_acknowledged: 1, query_settled: 1,
+                applying: 0,
+                composing: 0,
+                has_session: 1,
+                mode_intent_staged: 0,
+                edit_acknowledged: 1,
+                query_settled: 1,
             };
             let mut decision = 0u32;
             assert_eq!(
@@ -2494,11 +4137,13 @@ mod tests {
             assert_eq!(decision, crate::intent::Decision::Stage as u32);
             assert_eq!(
                 shell_core_decide_intent(12, 0, &conditions, &mut decision),
-                ShellStatus::InvalidArgument, "unknown incoming kind"
+                ShellStatus::InvalidArgument,
+                "unknown incoming kind"
             );
             assert_eq!(
                 shell_core_decide_intent(1, 12, &conditions, &mut decision),
-                ShellStatus::InvalidArgument, "unknown staged kind"
+                ShellStatus::InvalidArgument,
+                "unknown staged kind"
             );
             assert_eq!(
                 shell_core_decide_intent(1, 0, std::ptr::null(), &mut decision),
@@ -2550,8 +4195,15 @@ mod tests {
             let payload = utf16("{\"tabs\":[7]}");
             let mut result = std::mem::zeroed::<ShellEnqueueResult>();
             assert_eq!(
-                shell_core_enqueue(core, RequestKind::SelectTab as u32, 7, 3,
-                    payload.as_ptr(), payload.len(), &mut result),
+                shell_core_enqueue(
+                    core,
+                    RequestKind::SelectTab as u32,
+                    7,
+                    3,
+                    payload.as_ptr(),
+                    payload.len(),
+                    &mut result
+                ),
                 ShellStatus::Ok
             );
             assert!(result.notify);
@@ -2561,7 +4213,10 @@ mod tests {
             assert_eq!(shell_core_begin_drain(core), ShellStatus::Busy);
 
             let mut batch = std::mem::zeroed::<ShellRequestBatch>();
-            assert_eq!(shell_core_take_batch(core, 8, 1 << 20, &mut batch), ShellStatus::Ok);
+            assert_eq!(
+                shell_core_take_batch(core, 8, 1 << 20, &mut batch),
+                ShellStatus::Ok
+            );
             assert_eq!(batch.len, 1);
             let request = *batch.requests;
             assert_eq!(request.kind, RequestKind::SelectTab as u32);
@@ -2577,21 +4232,36 @@ mod tests {
             let mut in_flight = false;
             shell_core_is_in_flight(core, request.id, &mut in_flight);
             assert!(in_flight);
-            assert_eq!(shell_core_complete(core, request.id, Outcome::Completed as u32), ShellStatus::Ok);
+            assert_eq!(
+                shell_core_complete(core, request.id, Outcome::Completed as u32),
+                ShellStatus::Ok
+            );
             assert_eq!(
                 shell_core_complete(core, request.id, Outcome::Completed as u32),
                 ShellStatus::DuplicateRequest
             );
-            assert_eq!(shell_core_complete(core, 404, 1), ShellStatus::UnknownRequest);
-            assert_eq!(shell_core_complete(core, request.id, 77), ShellStatus::InvalidArgument);
+            assert_eq!(
+                shell_core_complete(core, 404, 1),
+                ShellStatus::UnknownRequest
+            );
+            assert_eq!(
+                shell_core_complete(core, request.id, 77),
+                ShellStatus::InvalidArgument
+            );
 
             let mut notify = true;
             assert_eq!(shell_core_end_drain(core, &mut notify), ShellStatus::Ok);
             assert!(!notify);
-            assert_eq!(shell_core_end_drain(core, &mut notify), ShellStatus::NotDraining);
+            assert_eq!(
+                shell_core_end_drain(core, &mut notify),
+                ShellStatus::NotDraining
+            );
 
             let mut outcomes = std::mem::zeroed::<ShellOutcomeBatch>();
-            assert_eq!(shell_core_take_outcomes(core, &mut outcomes), ShellStatus::Ok);
+            assert_eq!(
+                shell_core_take_outcomes(core, &mut outcomes),
+                ShellStatus::Ok
+            );
             assert_eq!(outcomes.len, 1);
             assert_eq!((*outcomes.outcomes).outcome, Outcome::Completed as u32);
             shell_core_release_outcomes(&mut outcomes);
@@ -2618,18 +4288,42 @@ mod tests {
             let core = shell_core_create(&limits);
             let mut result = std::mem::zeroed::<ShellEnqueueResult>();
             assert_eq!(
-                shell_core_enqueue(core, RequestKind::CloseTab as u32, 1, 0, std::ptr::null(), 0, &mut result),
+                shell_core_enqueue(
+                    core,
+                    RequestKind::CloseTab as u32,
+                    1,
+                    0,
+                    std::ptr::null(),
+                    0,
+                    &mut result
+                ),
                 ShellStatus::Ok
             );
             assert_eq!(
-                shell_core_enqueue(core, RequestKind::CloseTab as u32, 2, 0, std::ptr::null(), 0, &mut result),
+                shell_core_enqueue(
+                    core,
+                    RequestKind::CloseTab as u32,
+                    2,
+                    0,
+                    std::ptr::null(),
+                    0,
+                    &mut result
+                ),
                 ShellStatus::Rejected
             );
             assert_eq!(result.status, EnqueueStatus::RejectedQueueFull as u32);
             assert_eq!(result.id, 0);
             assert_eq!(shell_core_close(core), ShellStatus::Ok);
             assert_eq!(
-                shell_core_enqueue(core, RequestKind::CloseTab as u32, 3, 0, std::ptr::null(), 0, &mut result),
+                shell_core_enqueue(
+                    core,
+                    RequestKind::CloseTab as u32,
+                    3,
+                    0,
+                    std::ptr::null(),
+                    0,
+                    &mut result
+                ),
                 ShellStatus::Closed
             );
             shell_core_destroy(core);
@@ -2640,7 +4334,10 @@ mod tests {
     fn the_model_round_trips_snapshots_and_deltas() {
         unsafe {
             let core = core();
-            assert_eq!(shell_core_model_begin_snapshot(core, 1, (*core).model.revision() + 1, 3), ShellStatus::Ok);
+            assert_eq!(
+                shell_core_model_begin_snapshot(core, 1, (*core).model.revision() + 1, 3),
+                ShellStatus::Ok
+            );
             for (id, title) in [(1u32, "one"), (2, "two"), (3, "three")] {
                 let value = utf16(title);
                 assert_eq!(
@@ -2649,11 +4346,17 @@ mod tests {
                 );
             }
             let mut count = 0;
-            assert_eq!(shell_core_model_commit_snapshot(core, 2, &mut count), ShellStatus::Ok);
+            assert_eq!(
+                shell_core_model_commit_snapshot(core, 2, &mut count),
+                ShellStatus::Ok
+            );
             assert_eq!(count, 4, "three insertions and the active tab");
 
             let mut changes = std::mem::zeroed::<ShellChangeBatch>();
-            assert_eq!(shell_core_model_take_changes(core, &mut changes), ShellStatus::Ok);
+            assert_eq!(
+                shell_core_model_take_changes(core, &mut changes),
+                ShellStatus::Ok
+            );
             assert_eq!(changes.len, 4);
             shell_core_release_changes(&mut changes);
 
@@ -2662,21 +4365,58 @@ mod tests {
             let title = utf16("renamed");
             let mut changed = false;
             assert_eq!(
-                shell_core_model_set_title(core, revision, (*core).model.revision() + 1, 3, title.as_ptr(), title.len(), &mut changed),
+                shell_core_model_set_title(
+                    core,
+                    revision,
+                    (*core).model.revision() + 1,
+                    3,
+                    title.as_ptr(),
+                    title.len(),
+                    &mut changed
+                ),
                 ShellStatus::Ok
             );
             assert!(changed);
             // The same delta replayed names a revision that has moved on.
             assert_eq!(
-                shell_core_model_set_title(core, revision, (*core).model.revision() + 1, 3, title.as_ptr(), title.len(), &mut changed),
+                shell_core_model_set_title(
+                    core,
+                    revision,
+                    (*core).model.revision() + 1,
+                    3,
+                    title.as_ptr(),
+                    title.len(),
+                    &mut changed
+                ),
                 ShellStatus::Gap
             );
             shell_core_model_revision(core, &mut revision);
-            assert_eq!(shell_core_model_set_selected(core, revision, (*core).model.revision() + 1, 99, &mut changed), ShellStatus::UnknownTab);
-            assert_eq!(shell_core_model_set_selected(core, revision, (*core).model.revision() + 1, 1, &mut changed), ShellStatus::Ok);
+            assert_eq!(
+                shell_core_model_set_selected(
+                    core,
+                    revision,
+                    (*core).model.revision() + 1,
+                    99,
+                    &mut changed
+                ),
+                ShellStatus::UnknownTab
+            );
+            assert_eq!(
+                shell_core_model_set_selected(
+                    core,
+                    revision,
+                    (*core).model.revision() + 1,
+                    1,
+                    &mut changed
+                ),
+                ShellStatus::Ok
+            );
             assert!(changed);
 
-            assert_eq!(shell_core_model_take_changes(core, &mut changes), ShellStatus::Ok);
+            assert_eq!(
+                shell_core_model_take_changes(core, &mut changes),
+                ShellStatus::Ok
+            );
             assert_eq!(changes.len, 2, "one title and one selection, nothing else");
             shell_core_release_changes(&mut changes);
 
@@ -2717,7 +4457,15 @@ mod tests {
         unsafe {
             let core = core();
             let mut result = std::mem::zeroed::<ShellEnqueueResult>();
-            shell_core_enqueue(core, RequestKind::CloseTab as u32, 1, 0, std::ptr::null(), 0, &mut result);
+            shell_core_enqueue(
+                core,
+                RequestKind::CloseTab as u32,
+                1,
+                0,
+                std::ptr::null(),
+                0,
+                &mut result,
+            );
             shell_core_model_begin_snapshot(core, 1, (*core).model.revision() + 1, 1);
             let mut before = std::mem::zeroed::<ShellCoreStats>();
             shell_core_stats(core, &mut before);
@@ -2744,7 +4492,15 @@ mod tests {
         unsafe {
             let core = core();
             let mut result = std::mem::zeroed::<ShellEnqueueResult>();
-            shell_core_enqueue(core, RequestKind::CloseTab as u32, 1, 0, std::ptr::null(), 0, &mut result);
+            shell_core_enqueue(
+                core,
+                RequestKind::CloseTab as u32,
+                1,
+                0,
+                std::ptr::null(),
+                0,
+                &mut result,
+            );
             shell_core_begin_drain(core);
             let mut batch = std::mem::zeroed::<ShellRequestBatch>();
             shell_core_take_batch(core, 8, 1 << 20, &mut batch);
@@ -2759,16 +4515,21 @@ mod tests {
 /// Observe a dwell candidate, or pass target=0 to cancel. Returns armed state.
 #[no_mangle]
 pub unsafe extern "C" fn shell_core_group_hover(
-    core: *mut ShellCore, source: u32, target: u32, now_ms: u64,
-    delay_ms: u32, armed: *mut bool,
+    core: *mut ShellCore,
+    source: u32,
+    target: u32,
+    now_ms: u64,
+    delay_ms: u32,
+    armed: *mut bool,
 ) -> ShellStatus {
     guard(core, |core| {
-        let Some(armed) = armed.as_mut() else { return ShellStatus::InvalidArgument; };
+        let Some(armed) = armed.as_mut() else {
+            return ShellStatus::InvalidArgument;
+        };
         *armed = core.group_hover.observe(source, target, now_ms, delay_ms);
         ShellStatus::Ok
     })
 }
-
 
 /// Apply this refresh's group surface motion to measured `surfaces` in place.
 /// `layout` is the accepted strip layout, read to tell when a held join has
@@ -2779,20 +4540,36 @@ pub unsafe extern "C" fn shell_core_group_hover(
 /// to `layout_len` and `surfaces_len` elements (either may be null when empty).
 #[no_mangle]
 pub unsafe extern "C" fn shell_core_group_surface_frame(
-    core: *mut ShellCore, frame: *const crate::group_surface::ShellGroupSurfaceFrame,
-    layout: *const crate::strip::ShellStripSlot, layout_len: usize,
-    surfaces: *mut crate::group_surface::ShellGroupSurface, surfaces_len: usize,
+    core: *mut ShellCore,
+    frame: *const crate::group_surface::ShellGroupSurfaceFrame,
+    layout: *const crate::strip::ShellStripSlot,
+    layout_len: usize,
+    surfaces: *mut crate::group_surface::ShellGroupSurface,
+    surfaces_len: usize,
     out: *mut crate::group_surface::ShellGroupSurfaceResult,
 ) -> ShellStatus {
     use crate::group_surface::MAX_ENTRIES;
     guard(core, |core| {
-        let (Some(frame), Some(out)) = (frame.as_ref(), out.as_mut()) else { return ShellStatus::InvalidArgument; };
-        if layout_len > MAX_ENTRIES || surfaces_len > MAX_ENTRIES ||
-           (layout.is_null() && layout_len != 0) || (surfaces.is_null() && surfaces_len != 0) {
+        let (Some(frame), Some(out)) = (frame.as_ref(), out.as_mut()) else {
+            return ShellStatus::InvalidArgument;
+        };
+        if layout_len > MAX_ENTRIES
+            || surfaces_len > MAX_ENTRIES
+            || (layout.is_null() && layout_len != 0)
+            || (surfaces.is_null() && surfaces_len != 0)
+        {
             return ShellStatus::InvalidArgument;
         }
-        let layout = if layout_len == 0 { &[][..] } else { std::slice::from_raw_parts(layout, layout_len) };
-        let surfaces = if surfaces_len == 0 { &mut [][..] } else { std::slice::from_raw_parts_mut(surfaces, surfaces_len) };
+        let layout = if layout_len == 0 {
+            &[][..]
+        } else {
+            std::slice::from_raw_parts(layout, layout_len)
+        };
+        let surfaces = if surfaces_len == 0 {
+            &mut [][..]
+        } else {
+            std::slice::from_raw_parts_mut(surfaces, surfaces_len)
+        };
         *out = core.group_surface.frame(frame, layout, surfaces);
         ShellStatus::Ok
     })
@@ -2804,10 +4581,17 @@ pub unsafe extern "C" fn shell_core_group_surface_frame(
 /// # Safety
 /// See [`guard`].
 #[no_mangle]
-pub unsafe extern "C" fn shell_core_group_surface_join(core: *mut ShellCore, group: u32, tab: u32, until_ms: f64) -> ShellStatus {
-    guard(core, |core| { core.group_surface.join(group, tab, until_ms); ShellStatus::Ok })
+pub unsafe extern "C" fn shell_core_group_surface_join(
+    core: *mut ShellCore,
+    group: u32,
+    tab: u32,
+    until_ms: f64,
+) -> ShellStatus {
+    guard(core, |core| {
+        core.group_surface.join(group, tab, until_ms);
+        ShellStatus::Ok
+    })
 }
-
 
 /// The next glow refresh shows its groups already lit (a full snapshot).
 ///
@@ -2815,7 +4599,10 @@ pub unsafe extern "C" fn shell_core_group_surface_join(core: *mut ShellCore, gro
 /// See [`guard`].
 #[no_mangle]
 pub unsafe extern "C" fn shell_core_glow_seed(core: *mut ShellCore) -> ShellStatus {
-    guard(core, |core| { core.group_glow.seed(); ShellStatus::Ok })
+    guard(core, |core| {
+        core.group_glow.seed();
+        ShellStatus::Ok
+    })
 }
 
 /// Whether `group`'s glow is lit as of the last refresh.
@@ -2823,9 +4610,15 @@ pub unsafe extern "C" fn shell_core_glow_seed(core: *mut ShellCore) -> ShellStat
 /// # Safety
 /// See [`guard`]. `lit` must be writable.
 #[no_mangle]
-pub unsafe extern "C" fn shell_core_glow_is_lit(core: *mut ShellCore, group: u32, lit: *mut bool) -> ShellStatus {
+pub unsafe extern "C" fn shell_core_glow_is_lit(
+    core: *mut ShellCore,
+    group: u32,
+    lit: *mut bool,
+) -> ShellStatus {
     guard(core, |core| {
-        let Some(lit) = lit.as_mut() else { return ShellStatus::InvalidArgument; };
+        let Some(lit) = lit.as_mut() else {
+            return ShellStatus::InvalidArgument;
+        };
         *lit = core.group_glow.is_lit(group);
         ShellStatus::Ok
     })
@@ -2841,23 +4634,42 @@ pub unsafe extern "C" fn shell_core_glow_is_lit(core: *mut ShellCore, group: u32
 /// `capacity` (either may be null when zero); `count` and `disabled` are writable.
 #[no_mangle]
 pub unsafe extern "C" fn shell_core_glow_advance(
-    core: *mut ShellCore, animate: bool, halo: bool,
-    groups: *const crate::group_glow::ShellGlowGroup, len: usize,
-    output: *mut crate::group_glow::ShellGlowChange, capacity: usize,
-    count: *mut usize, disabled: *mut bool,
+    core: *mut ShellCore,
+    animate: bool,
+    halo: bool,
+    groups: *const crate::group_glow::ShellGlowGroup,
+    len: usize,
+    output: *mut crate::group_glow::ShellGlowChange,
+    capacity: usize,
+    count: *mut usize,
+    disabled: *mut bool,
 ) -> ShellStatus {
     guard(core, |core| {
-        let (Some(count), Some(disabled)) = (count.as_mut(), disabled.as_mut()) else { return ShellStatus::InvalidArgument; };
-        *count = 0; *disabled = false;
-        if len > crate::group_glow::MAX_GROUPS || (groups.is_null() && len != 0) || (output.is_null() && capacity != 0) {
+        let (Some(count), Some(disabled)) = (count.as_mut(), disabled.as_mut()) else {
+            return ShellStatus::InvalidArgument;
+        };
+        *count = 0;
+        *disabled = false;
+        if len > crate::group_glow::MAX_GROUPS
+            || (groups.is_null() && len != 0)
+            || (output.is_null() && capacity != 0)
+        {
             return ShellStatus::InvalidArgument;
         }
-        let groups = if len == 0 { &[][..] } else { std::slice::from_raw_parts(groups, len) };
+        let groups = if len == 0 {
+            &[][..]
+        } else {
+            std::slice::from_raw_parts(groups, len)
+        };
         let mut next = core.group_glow.clone();
         let (off, changes) = next.advance(animate, halo, groups);
         *count = changes.len();
-        if changes.len() > capacity { return ShellStatus::TooLarge; }
-        if !changes.is_empty() { std::ptr::copy_nonoverlapping(changes.as_ptr(), output, changes.len()); }
+        if changes.len() > capacity {
+            return ShellStatus::TooLarge;
+        }
+        if !changes.is_empty() {
+            std::ptr::copy_nonoverlapping(changes.as_ptr(), output, changes.len());
+        }
         core.group_glow = next;
         *disabled = off;
         ShellStatus::Ok
@@ -2873,24 +4685,36 @@ pub unsafe extern "C" fn shell_core_glow_advance(
 /// (either may be null when zero); `count` is writable.
 #[no_mangle]
 pub unsafe extern "C" fn shell_core_glow_settle(
-    core: *mut ShellCore, moving: bool,
-    extents: *const crate::group_glow::ShellGlowExtent, len: usize,
-    output: *mut crate::group_glow::ShellGlowRecatch, count: *mut usize,
+    core: *mut ShellCore,
+    moving: bool,
+    extents: *const crate::group_glow::ShellGlowExtent,
+    len: usize,
+    output: *mut crate::group_glow::ShellGlowRecatch,
+    count: *mut usize,
 ) -> ShellStatus {
     guard(core, |core| {
-        let Some(count) = count.as_mut() else { return ShellStatus::InvalidArgument; };
+        let Some(count) = count.as_mut() else {
+            return ShellStatus::InvalidArgument;
+        };
         *count = 0;
-        if len > crate::group_glow::MAX_GROUPS || (len != 0 && (extents.is_null() || output.is_null())) {
+        if len > crate::group_glow::MAX_GROUPS
+            || (len != 0 && (extents.is_null() || output.is_null()))
+        {
             return ShellStatus::InvalidArgument;
         }
-        let extents = if len == 0 { &[][..] } else { std::slice::from_raw_parts(extents, len) };
+        let extents = if len == 0 {
+            &[][..]
+        } else {
+            std::slice::from_raw_parts(extents, len)
+        };
         let recatch = core.group_glow.settle(moving, extents);
         *count = recatch.len();
-        if !recatch.is_empty() { std::ptr::copy_nonoverlapping(recatch.as_ptr(), output, recatch.len()); }
+        if !recatch.is_empty() {
+            std::ptr::copy_nonoverlapping(recatch.as_ptr(), output, recatch.len());
+        }
         ShellStatus::Ok
     })
 }
-
 
 /// Record a tab row (`SHELL_SETTLE_TAB`) or group header
 /// (`SHELL_SETTLE_HEADER`) held at composition offset `dx` and left-anchored
@@ -2899,12 +4723,27 @@ pub unsafe extern "C" fn shell_core_glow_settle(
 /// # Safety
 /// See [`guard`].
 #[no_mangle]
-pub unsafe extern "C" fn shell_core_settle_hold(core: *mut ShellCore, kind: u32, id: u32, dx: f32, sx: f32, start_ms: f64) -> ShellStatus {
+pub unsafe extern "C" fn shell_core_settle_hold(
+    core: *mut ShellCore,
+    kind: u32,
+    id: u32,
+    dx: f32,
+    sx: f32,
+    start_ms: f64,
+) -> ShellStatus {
     guard(core, |core| {
-        if kind > crate::settle::SHELL_SETTLE_CLOCK || !dx.is_finite() || !sx.is_finite() || !start_ms.is_finite() {
+        if kind > crate::settle::SHELL_SETTLE_CLOCK
+            || !dx.is_finite()
+            || !sx.is_finite()
+            || !start_ms.is_finite()
+        {
             return ShellStatus::InvalidArgument;
         }
-        if core.settle.hold(kind, id, dx, sx, start_ms) { ShellStatus::Ok } else { ShellStatus::TooLarge }
+        if core.settle.hold(kind, id, dx, sx, start_ms) {
+            ShellStatus::Ok
+        } else {
+            ShellStatus::TooLarge
+        }
     })
 }
 
@@ -2913,10 +4752,17 @@ pub unsafe extern "C" fn shell_core_settle_hold(core: *mut ShellCore, kind: u32,
 /// # Safety
 /// See [`guard`]. `out` must be writable.
 #[no_mangle]
-pub unsafe extern "C" fn shell_core_settle_sample(core: *mut ShellCore, kind: u32, id: u32, now_ms: f64,
-                                                  out: *mut crate::settle::ShellSettleSample) -> ShellStatus {
+pub unsafe extern "C" fn shell_core_settle_sample(
+    core: *mut ShellCore,
+    kind: u32,
+    id: u32,
+    now_ms: f64,
+    out: *mut crate::settle::ShellSettleSample,
+) -> ShellStatus {
     guard(core, |core| {
-        let Some(out) = out.as_mut() else { return ShellStatus::InvalidArgument; };
+        let Some(out) = out.as_mut() else {
+            return ShellStatus::InvalidArgument;
+        };
         *out = core.settle.sample(kind, id, now_ms);
         ShellStatus::Ok
     })
@@ -2928,20 +4774,33 @@ pub unsafe extern "C" fn shell_core_settle_sample(core: *mut ShellCore, kind: u3
 /// # Safety
 /// See [`guard`]. `active` must be writable.
 #[no_mangle]
-pub unsafe extern "C" fn shell_core_settle_advance(core: *mut ShellCore, now_ms: f64, clear: bool, active: *mut bool) -> ShellStatus {
+pub unsafe extern "C" fn shell_core_settle_advance(
+    core: *mut ShellCore,
+    now_ms: f64,
+    clear: bool,
+    active: *mut bool,
+) -> ShellStatus {
     guard(core, |core| {
-        let Some(active) = active.as_mut() else { return ShellStatus::InvalidArgument; };
-        if clear { core.settle.clear(); }
+        let Some(active) = active.as_mut() else {
+            return ShellStatus::InvalidArgument;
+        };
+        if clear {
+            core.settle.clear();
+        }
         *active = core.settle.advance(now_ms);
         ShellStatus::Ok
     })
 }
 
-
 // Lifecycle operations share the endpoint's queue lifetime and guard.
-unsafe fn queue_guard(core: *mut ShellCore, body: impl FnOnce(&mut RequestQueue) -> ShellStatus) -> ShellStatus {
+unsafe fn queue_guard(
+    core: *mut ShellCore,
+    body: impl FnOnce(&mut RequestQueue) -> ShellStatus,
+) -> ShellStatus {
     guard(core, |core| {
-        if core.queue.is_closed() { return ShellStatus::Closed; }
+        if core.queue.is_closed() {
+            return ShellStatus::Closed;
+        }
         body(&mut core.queue)
     })
 }
@@ -2956,19 +4815,41 @@ unsafe fn queue_guard(core: *mut ShellCore, body: impl FnOnce(&mut RequestQueue)
 /// See [`guard`]. Session and fingerprint must be readable for their lengths
 /// (null only for zero); `apply` must be writable.
 #[no_mangle]
-pub unsafe extern "C" fn shell_core_address_publication(core: *mut ShellCore,
-    session: *const u16, session_units: usize, sequence: u64, revision: u64,
-    fingerprint: *const u16, units: usize, commit: bool, apply: *mut bool) -> ShellStatus {
-    let Some(apply) = apply.as_mut() else { return ShellStatus::InvalidArgument; };
+pub unsafe extern "C" fn shell_core_address_publication(
+    core: *mut ShellCore,
+    session: *const u16,
+    session_units: usize,
+    sequence: u64,
+    revision: u64,
+    fingerprint: *const u16,
+    units: usize,
+    commit: bool,
+    apply: *mut bool,
+) -> ShellStatus {
+    let Some(apply) = apply.as_mut() else {
+        return ShellStatus::InvalidArgument;
+    };
     *apply = false;
-    if session_units > 256 || units > crate::address_publication::MAX_FINGERPRINT { return ShellStatus::InvalidArgument; }
-    let (Some(session), Some(fingerprint)) = (slice(session, session_units), slice(fingerprint, units)) else {
+    if session_units > 256 || units > crate::address_publication::MAX_FINGERPRINT {
+        return ShellStatus::InvalidArgument;
+    }
+    let (Some(session), Some(fingerprint)) =
+        (slice(session, session_units), slice(fingerprint, units))
+    else {
         return ShellStatus::InvalidArgument;
     };
     guard(core, |core| {
-        if core.queue.is_closed() { return ShellStatus::Closed; }
-        match core.address_publication.resolve(session, sequence, revision, fingerprint, commit) {
-            Ok(value) => { *apply = value; ShellStatus::Ok }
+        if core.queue.is_closed() {
+            return ShellStatus::Closed;
+        }
+        match core
+            .address_publication
+            .resolve(session, sequence, revision, fingerprint, commit)
+        {
+            Ok(value) => {
+                *apply = value;
+                ShellStatus::Ok
+            }
             Err(()) => ShellStatus::InvalidArgument,
         }
     })
@@ -2979,17 +4860,36 @@ pub unsafe extern "C" fn shell_core_address_publication(core: *mut ShellCore,
 /// # Safety
 /// Live core, readable fingerprint (null only for zero), writable decision.
 #[no_mangle]
-pub unsafe extern "C" fn shell_core_toolbar_publication(core: *mut ShellCore,
-    revision: u64, fingerprint: *const u16, units: usize, commit: bool,
-    decision: *mut crate::toolbar_publication::ShellToolbarPublication) -> ShellStatus {
-    let Some(decision) = decision.as_mut() else { return ShellStatus::InvalidArgument; };
+pub unsafe extern "C" fn shell_core_toolbar_publication(
+    core: *mut ShellCore,
+    revision: u64,
+    fingerprint: *const u16,
+    units: usize,
+    commit: bool,
+    decision: *mut crate::toolbar_publication::ShellToolbarPublication,
+) -> ShellStatus {
+    let Some(decision) = decision.as_mut() else {
+        return ShellStatus::InvalidArgument;
+    };
     *decision = crate::toolbar_publication::ShellToolbarPublication::Ignored;
-    if units > crate::toolbar_publication::MAX_TOOLBAR_FINGERPRINT { return ShellStatus::InvalidArgument; }
-    let Some(fingerprint) = slice(fingerprint, units) else { return ShellStatus::InvalidArgument; };
+    if units > crate::toolbar_publication::MAX_TOOLBAR_FINGERPRINT {
+        return ShellStatus::InvalidArgument;
+    }
+    let Some(fingerprint) = slice(fingerprint, units) else {
+        return ShellStatus::InvalidArgument;
+    };
     guard(core, |core| {
-        if core.queue.is_closed() { return ShellStatus::Closed; }
-        match core.toolbar_publication.resolve(revision, fingerprint, commit) {
-            Ok(value) => { *decision = value; ShellStatus::Ok }
+        if core.queue.is_closed() {
+            return ShellStatus::Closed;
+        }
+        match core
+            .toolbar_publication
+            .resolve(revision, fingerprint, commit)
+        {
+            Ok(value) => {
+                *decision = value;
+                ShellStatus::Ok
+            }
             Err(()) => ShellStatus::InvalidArgument,
         }
     })
@@ -3001,36 +4901,101 @@ pub unsafe extern "C" fn shell_core_toolbar_publication(core: *mut ShellCore,
 #[no_mangle]
 pub unsafe extern "C" fn shell_core_toolbar_publication_reset(core: *mut ShellCore) -> ShellStatus {
     guard(core, |core| {
-        if core.queue.is_closed() { return ShellStatus::Closed; }
-        core.toolbar_publication.reset(); ShellStatus::Ok
+        if core.queue.is_closed() {
+            return ShellStatus::Closed;
+        }
+        core.toolbar_publication.reset();
+        ShellStatus::Ok
     })
 }
 
 #[cfg(test)]
 #[test]
-fn toolbar_publication_boundary_lifetime_and_counts() { unsafe {
-    use crate::toolbar_publication::ShellToolbarPublication::*;
-    let core=shell_core_create(&std::mem::zeroed());let mut decision=Accepted;
-    assert_eq!(shell_core_toolbar_publication(core,1,[7].as_ptr(),1,false,std::ptr::null_mut()),ShellStatus::InvalidArgument);
-    assert_eq!(shell_core_toolbar_publication(core,1,std::ptr::null(),1,false,&mut decision),ShellStatus::InvalidArgument);assert_eq!(decision,Ignored);
-    assert_eq!(shell_core_toolbar_publication(core,1,std::ptr::null(),crate::toolbar_publication::MAX_TOOLBAR_FINGERPRINT+1,false,&mut decision),ShellStatus::InvalidArgument);
-    assert_eq!(shell_core_toolbar_publication(std::ptr::null_mut(),1,std::ptr::null(),0,false,&mut decision),ShellStatus::InvalidArgument);
-    let publish=|revision,commit,out:&mut crate::toolbar_publication::ShellToolbarPublication| shell_core_toolbar_publication(core,revision,[7].as_ptr(),1,commit,out);
-    assert_eq!(publish(9,false,&mut decision),ShellStatus::Ok);assert_eq!(decision,Accepted);
-    assert_eq!(publish(1,true,&mut decision),ShellStatus::Ok);assert_eq!(decision,Accepted);
-    assert_eq!(publish(1,false,&mut decision),ShellStatus::Ok);assert_eq!(decision,Unchanged);
-    assert_eq!(shell_core_toolbar_publication(core,1,[8].as_ptr(),1,false,&mut decision),ShellStatus::InvalidArgument);assert_eq!(decision,Ignored);
-    let mut counts=Default::default();
-    assert_eq!(shell_core_publication_stats(core,ShellPublicationChannel::ToolbarCustomization as u32,&mut counts),ShellStatus::Ok);
-    assert_eq!(counts,crate::publication::ShellPublicationCounts{accepted:1,unchanged:1,ignored:0,refused:1});
-    assert_eq!(shell_core_toolbar_publication_reset(core),ShellStatus::Ok);
-    publish(1,true,&mut decision);assert_eq!(decision,Accepted);
-    shell_core_cancel_all(core);publish(1,true,&mut decision);assert_eq!(decision,Accepted);
-    shell_core_close(core);
-    assert_eq!(publish(2,true,&mut decision),ShellStatus::Closed);assert_eq!(decision,Ignored);
-    assert_eq!(shell_core_toolbar_publication_reset(core),ShellStatus::Closed);
-    shell_core_destroy(core);
-}}
+fn toolbar_publication_boundary_lifetime_and_counts() {
+    unsafe {
+        use crate::toolbar_publication::ShellToolbarPublication::*;
+        let core = shell_core_create(&std::mem::zeroed());
+        let mut decision = Accepted;
+        assert_eq!(
+            shell_core_toolbar_publication(core, 1, [7].as_ptr(), 1, false, std::ptr::null_mut()),
+            ShellStatus::InvalidArgument
+        );
+        assert_eq!(
+            shell_core_toolbar_publication(core, 1, std::ptr::null(), 1, false, &mut decision),
+            ShellStatus::InvalidArgument
+        );
+        assert_eq!(decision, Ignored);
+        assert_eq!(
+            shell_core_toolbar_publication(
+                core,
+                1,
+                std::ptr::null(),
+                crate::toolbar_publication::MAX_TOOLBAR_FINGERPRINT + 1,
+                false,
+                &mut decision
+            ),
+            ShellStatus::InvalidArgument
+        );
+        assert_eq!(
+            shell_core_toolbar_publication(
+                std::ptr::null_mut(),
+                1,
+                std::ptr::null(),
+                0,
+                false,
+                &mut decision
+            ),
+            ShellStatus::InvalidArgument
+        );
+        let publish =
+            |revision, commit, out: &mut crate::toolbar_publication::ShellToolbarPublication| {
+                shell_core_toolbar_publication(core, revision, [7].as_ptr(), 1, commit, out)
+            };
+        assert_eq!(publish(9, false, &mut decision), ShellStatus::Ok);
+        assert_eq!(decision, Accepted);
+        assert_eq!(publish(1, true, &mut decision), ShellStatus::Ok);
+        assert_eq!(decision, Accepted);
+        assert_eq!(publish(1, false, &mut decision), ShellStatus::Ok);
+        assert_eq!(decision, Unchanged);
+        assert_eq!(
+            shell_core_toolbar_publication(core, 1, [8].as_ptr(), 1, false, &mut decision),
+            ShellStatus::InvalidArgument
+        );
+        assert_eq!(decision, Ignored);
+        let mut counts = Default::default();
+        assert_eq!(
+            shell_core_publication_stats(
+                core,
+                ShellPublicationChannel::ToolbarCustomization as u32,
+                &mut counts
+            ),
+            ShellStatus::Ok
+        );
+        assert_eq!(
+            counts,
+            crate::publication::ShellPublicationCounts {
+                accepted: 1,
+                unchanged: 1,
+                ignored: 0,
+                refused: 1
+            }
+        );
+        assert_eq!(shell_core_toolbar_publication_reset(core), ShellStatus::Ok);
+        publish(1, true, &mut decision);
+        assert_eq!(decision, Accepted);
+        shell_core_cancel_all(core);
+        publish(1, true, &mut decision);
+        assert_eq!(decision, Accepted);
+        shell_core_close(core);
+        assert_eq!(publish(2, true, &mut decision), ShellStatus::Closed);
+        assert_eq!(decision, Ignored);
+        assert_eq!(
+            shell_core_toolbar_publication_reset(core),
+            ShellStatus::Closed
+        );
+        shell_core_destroy(core);
+    }
+}
 
 /// Reset address publication identity on disable or island recreation.
 /// Request coordination has a separate lifetime and reset entry point.
@@ -3038,17 +5003,29 @@ fn toolbar_publication_boundary_lifetime_and_counts() { unsafe {
 /// See [`guard`].
 #[no_mangle]
 pub unsafe extern "C" fn shell_core_address_publication_reset(core: *mut ShellCore) -> ShellStatus {
-    guard(core, |core| { core.address_publication.reset(); core.address_sections.reset(); ShellStatus::Ok })
+    guard(core, |core| {
+        core.address_publication.reset();
+        core.address_sections.reset();
+        ShellStatus::Ok
+    })
 }
 
 /// Read address coordination state; no WinUI objects or borrowed data escape.
 /// # Safety
 /// `core` is a live handle and `out` is writable.
 #[no_mangle]
-pub unsafe extern "C" fn shell_core_address_state(core: *mut ShellCore, out: *mut crate::address::ShellAddressState) -> ShellStatus {
-    let Some(out) = out.as_mut() else { return ShellStatus::InvalidArgument; };
+pub unsafe extern "C" fn shell_core_address_state(
+    core: *mut ShellCore,
+    out: *mut crate::address::ShellAddressState,
+) -> ShellStatus {
+    let Some(out) = out.as_mut() else {
+        return ShellStatus::InvalidArgument;
+    };
     *out = Default::default();
-    queue_guard(core, |queue| { *out = queue.address.state(); ShellStatus::Ok })
+    queue_guard(core, |queue| {
+        *out = queue.address.state();
+        ShellStatus::Ok
+    })
 }
 
 /// Reset on address disable or session replacement. Old outcomes cannot clear
@@ -3057,7 +5034,14 @@ pub unsafe extern "C" fn shell_core_address_state(core: *mut ShellCore, out: *mu
 /// `core` is a live handle.
 #[no_mangle]
 pub unsafe extern "C" fn shell_core_address_reset(core: *mut ShellCore) -> ShellStatus {
-    guard(core, |core| { if core.queue.is_closed() { return ShellStatus::Closed; } core.queue.address = Default::default(); core.address_interaction.reset(); ShellStatus::Ok })
+    guard(core, |core| {
+        if core.queue.is_closed() {
+            return ShellStatus::Closed;
+        }
+        core.queue.address = Default::default();
+        core.address_interaction.reset();
+        ShellStatus::Ok
+    })
 }
 
 /// Forget the mode request on switcher disable/reset. This revokes local
@@ -3066,7 +5050,10 @@ pub unsafe extern "C" fn shell_core_address_reset(core: *mut ShellCore) -> Shell
 /// `core` is a live handle.
 #[no_mangle]
 pub unsafe extern "C" fn shell_core_address_reset_mode(core: *mut ShellCore) -> ShellStatus {
-    queue_guard(core, |queue| { queue.address.reset_mode(); ShellStatus::Ok })
+    queue_guard(core, |queue| {
+        queue.address.reset_mode();
+        ShellStatus::Ok
+    })
 }
 
 /// Observe a new text/composition edit. Retry keeps this same edit identity.
@@ -3074,7 +5061,13 @@ pub unsafe extern "C" fn shell_core_address_reset_mode(core: *mut ShellCore) -> 
 /// `core` is a live handle.
 #[no_mangle]
 pub unsafe extern "C" fn shell_core_address_edit(core: *mut ShellCore) -> ShellStatus {
-    queue_guard(core, |queue| if queue.address.edit() { ShellStatus::Ok } else { ShellStatus::TooLarge })
+    queue_guard(core, |queue| {
+        if queue.address.edit() {
+            ShellStatus::Ok
+        } else {
+            ShellStatus::TooLarge
+        }
+    })
 }
 
 /// Associate an admitted address request with its intent before draining it.
@@ -3082,18 +5075,39 @@ pub unsafe extern "C" fn shell_core_address_edit(core: *mut ShellCore) -> ShellS
 /// # Safety
 /// `core` is a live handle.
 #[no_mangle]
-pub unsafe extern "C" fn shell_core_address_stage(core: *mut ShellCore, request: u64, kind: u32) -> ShellStatus {
-    let Some(kind) = IntentKind::from_raw(kind) else { return ShellStatus::InvalidArgument; };
-    queue_guard(core, |queue| if queue.stage_address(request, kind) { ShellStatus::Ok } else { ShellStatus::UnknownRequest })
+pub unsafe extern "C" fn shell_core_address_stage(
+    core: *mut ShellCore,
+    request: u64,
+    kind: u32,
+) -> ShellStatus {
+    let Some(kind) = IntentKind::from_raw(kind) else {
+        return ShellStatus::InvalidArgument;
+    };
+    queue_guard(core, |queue| {
+        if queue.stage_address(request, kind) {
+            ShellStatus::Ok
+        } else {
+            ShellStatus::UnknownRequest
+        }
+    })
 }
 
 /// Record the acknowledgment/readiness of an applied Firefox publication.
 /// # Safety
 /// `core` is a live handle.
 #[no_mangle]
-pub unsafe extern "C" fn shell_core_address_publish(core: *mut ShellCore, edit: u64, settled: bool) -> ShellStatus {
-    if edit > crate::address::MAX_EDIT_ID { return ShellStatus::InvalidArgument; }
-    queue_guard(core, |queue| { queue.address.publish(edit, settled); ShellStatus::Ok })
+pub unsafe extern "C" fn shell_core_address_publish(
+    core: *mut ShellCore,
+    edit: u64,
+    settled: bool,
+) -> ShellStatus {
+    if edit > crate::address::MAX_EDIT_ID {
+        return ShellStatus::InvalidArgument;
+    }
+    queue_guard(core, |queue| {
+        queue.address.publish(edit, settled);
+        ShellStatus::Ok
+    })
 }
 
 /// Cancel retained Enter (mode changes and global actions).
@@ -3101,7 +5115,10 @@ pub unsafe extern "C" fn shell_core_address_publish(core: *mut ShellCore, edit: 
 /// `core` is a live handle.
 #[no_mangle]
 pub unsafe extern "C" fn shell_core_address_cancel_submit(core: *mut ShellCore) -> ShellStatus {
-    queue_guard(core, |queue| { queue.address.cancel_submit(); ShellStatus::Ok })
+    queue_guard(core, |queue| {
+        queue.address.cancel_submit();
+        ShellStatus::Ok
+    })
 }
 
 /// Negotiate an action and retain/consume deferred Enter modifiers. The core
@@ -3110,59 +5127,130 @@ pub unsafe extern "C" fn shell_core_address_cancel_submit(core: *mut ShellCore) 
 /// # Safety
 /// `core` is live, `conditions` readable and `out` writable.
 #[no_mangle]
-pub unsafe extern "C" fn shell_core_address_action(core: *mut ShellCore, incoming: u32,
-    conditions: *const ShellIntentConditions, modifiers: u32, out: *mut crate::address::ShellAddressAction) -> ShellStatus {
-    let Some(out) = out.as_mut() else { return ShellStatus::InvalidArgument; };
-    *out = crate::address::ShellAddressAction { decision: intent::Decision::Drop as u32, modifiers: 0 };
-    let Some(raw) = conditions.as_ref() else { return ShellStatus::InvalidArgument; };
-    let Some(incoming) = IntentKind::from_raw(incoming) else { return ShellStatus::InvalidArgument; };
-    if modifiers & !15 != 0 { return ShellStatus::InvalidArgument; }
-    let observed = intent::Conditions {
-        applying: raw.applying != 0, composing: raw.composing != 0, has_session: raw.has_session != 0,
-        mode_intent_staged: false, edit_acknowledged: false, query_settled: false,
+pub unsafe extern "C" fn shell_core_address_action(
+    core: *mut ShellCore,
+    incoming: u32,
+    conditions: *const ShellIntentConditions,
+    modifiers: u32,
+    out: *mut crate::address::ShellAddressAction,
+) -> ShellStatus {
+    let Some(out) = out.as_mut() else {
+        return ShellStatus::InvalidArgument;
     };
-    queue_guard(core, |queue| { *out = queue.address.action(incoming, observed, modifiers); ShellStatus::Ok })
+    *out = crate::address::ShellAddressAction {
+        decision: intent::Decision::Drop as u32,
+        modifiers: 0,
+    };
+    let Some(raw) = conditions.as_ref() else {
+        return ShellStatus::InvalidArgument;
+    };
+    let Some(incoming) = IntentKind::from_raw(incoming) else {
+        return ShellStatus::InvalidArgument;
+    };
+    if modifiers & !15 != 0 {
+        return ShellStatus::InvalidArgument;
+    }
+    let observed = intent::Conditions {
+        applying: raw.applying != 0,
+        composing: raw.composing != 0,
+        has_session: raw.has_session != 0,
+        mode_intent_staged: false,
+        edit_acknowledged: false,
+        query_settled: false,
+    };
+    queue_guard(core, |queue| {
+        *out = queue.address.action(incoming, observed, modifiers);
+        ShellStatus::Ok
+    })
 }
 
 /// Consume the readiness notification for a retained Enter once per publication.
 /// # Safety
 /// `core` is live and `out` writable.
 #[no_mangle]
-pub unsafe extern "C" fn shell_core_address_take_deferred(core: *mut ShellCore, out: *mut bool) -> ShellStatus {
-    let Some(out) = out.as_mut() else { return ShellStatus::InvalidArgument; };
+pub unsafe extern "C" fn shell_core_address_take_deferred(
+    core: *mut ShellCore,
+    out: *mut bool,
+) -> ShellStatus {
+    let Some(out) = out.as_mut() else {
+        return ShellStatus::InvalidArgument;
+    };
     *out = false;
-    queue_guard(core, |queue| { *out = queue.address.take_deferred(); ShellStatus::Ok })
+    queue_guard(core, |queue| {
+        *out = queue.address.take_deferred();
+        ShellStatus::Ok
+    })
 }
-
 
 #[cfg(test)]
 mod address_ffi_tests {
     use super::*;
     use crate::address::{ShellAddressAction, ShellAddressState};
     #[test]
-    fn publication_identity_lifetime_and_boundary() { unsafe {
-        let core = shell_core_create(std::ptr::null());
-        let mut apply = true;
-        let session = [1u16]; let fingerprint = [2u16];
-        let publish = |sequence, revision, commit, out: &mut bool| shell_core_address_publication(core,
-            session.as_ptr(), 1, sequence, revision, fingerprint.as_ptr(), 1, commit, out);
-        assert_eq!(publish(1, 0, false, &mut apply), ShellStatus::Ok); assert!(apply);
-        assert_eq!(publish(1, 0, true, &mut apply), ShellStatus::Ok); assert!(apply);
-        assert_eq!(publish(1, 0, false, &mut apply), ShellStatus::Ok); assert!(!apply);
-        assert_eq!(publish(0, 0, true, &mut apply), ShellStatus::InvalidArgument); assert!(!apply);
-        assert_eq!(shell_core_address_publication(core, std::ptr::null(), 1, 1, 0,
-            fingerprint.as_ptr(), 1, false, &mut apply), ShellStatus::InvalidArgument);
-        assert_eq!(shell_core_cancel_all(core), ShellStatus::Ok);
-        assert_eq!(publish(1, 0, true, &mut apply), ShellStatus::Ok); assert!(apply);
-        assert_eq!(shell_core_address_publication_reset(core), ShellStatus::Ok);
-        assert_eq!(publish(1, 0, true, &mut apply), ShellStatus::Ok); assert!(apply);
-        let mut counts = ShellPublicationCounts::default();
-        assert_eq!(shell_core_publication_stats(core, 3, &mut counts), ShellStatus::Ok);
-        assert_eq!(counts.accepted, 3); assert_eq!(counts.unchanged, 1); assert_eq!(counts.refused, 1);
-        assert_eq!(shell_core_close(core), ShellStatus::Ok);
-        assert_eq!(publish(2, 0, true, &mut apply), ShellStatus::Closed); assert!(!apply);
-        shell_core_destroy(core);
-    }}
+    fn publication_identity_lifetime_and_boundary() {
+        unsafe {
+            let core = shell_core_create(std::ptr::null());
+            let mut apply = true;
+            let session = [1u16];
+            let fingerprint = [2u16];
+            let publish = |sequence, revision, commit, out: &mut bool| {
+                shell_core_address_publication(
+                    core,
+                    session.as_ptr(),
+                    1,
+                    sequence,
+                    revision,
+                    fingerprint.as_ptr(),
+                    1,
+                    commit,
+                    out,
+                )
+            };
+            assert_eq!(publish(1, 0, false, &mut apply), ShellStatus::Ok);
+            assert!(apply);
+            assert_eq!(publish(1, 0, true, &mut apply), ShellStatus::Ok);
+            assert!(apply);
+            assert_eq!(publish(1, 0, false, &mut apply), ShellStatus::Ok);
+            assert!(!apply);
+            assert_eq!(
+                publish(0, 0, true, &mut apply),
+                ShellStatus::InvalidArgument
+            );
+            assert!(!apply);
+            assert_eq!(
+                shell_core_address_publication(
+                    core,
+                    std::ptr::null(),
+                    1,
+                    1,
+                    0,
+                    fingerprint.as_ptr(),
+                    1,
+                    false,
+                    &mut apply
+                ),
+                ShellStatus::InvalidArgument
+            );
+            assert_eq!(shell_core_cancel_all(core), ShellStatus::Ok);
+            assert_eq!(publish(1, 0, true, &mut apply), ShellStatus::Ok);
+            assert!(apply);
+            assert_eq!(shell_core_address_publication_reset(core), ShellStatus::Ok);
+            assert_eq!(publish(1, 0, true, &mut apply), ShellStatus::Ok);
+            assert!(apply);
+            let mut counts = ShellPublicationCounts::default();
+            assert_eq!(
+                shell_core_publication_stats(core, 3, &mut counts),
+                ShellStatus::Ok
+            );
+            assert_eq!(counts.accepted, 3);
+            assert_eq!(counts.unchanged, 1);
+            assert_eq!(counts.refused, 1);
+            assert_eq!(shell_core_close(core), ShellStatus::Ok);
+            assert_eq!(publish(2, 0, true, &mut apply), ShellStatus::Closed);
+            assert!(!apply);
+            shell_core_destroy(core);
+        }
+    }
 
     #[test]
     fn lifecycle_boundary_checks_and_publication_gated_enter() {
@@ -3171,36 +5259,84 @@ mod address_ffi_tests {
             assert!(!core.is_null());
             let mut state = ShellAddressState::default();
             let mut action = ShellAddressAction::default();
-            let conditions = ShellIntentConditions { applying: 0, composing: 0, has_session: 1,
-                mode_intent_staged: 0, edit_acknowledged: 1, query_settled: 1 };
-            assert_eq!(shell_core_address_state(core, std::ptr::null_mut()), ShellStatus::InvalidArgument);
-            assert_eq!(shell_core_address_edit(std::ptr::null_mut()), ShellStatus::InvalidArgument);
-            assert_eq!(shell_core_address_stage(core, 0, 1), ShellStatus::UnknownRequest);
-            assert_eq!(shell_core_address_stage(core, 1, 99), ShellStatus::InvalidArgument);
-            assert_eq!(shell_core_address_publish(core, u64::MAX, true), ShellStatus::InvalidArgument);
-            assert_eq!(shell_core_address_action(core, 4, &conditions, 16, &mut action), ShellStatus::InvalidArgument);
-            assert_eq!(shell_core_address_action(core, 4, std::ptr::null(), 0, &mut action), ShellStatus::InvalidArgument);
+            let conditions = ShellIntentConditions {
+                applying: 0,
+                composing: 0,
+                has_session: 1,
+                mode_intent_staged: 0,
+                edit_acknowledged: 1,
+                query_settled: 1,
+            };
+            assert_eq!(
+                shell_core_address_state(core, std::ptr::null_mut()),
+                ShellStatus::InvalidArgument
+            );
+            assert_eq!(
+                shell_core_address_edit(std::ptr::null_mut()),
+                ShellStatus::InvalidArgument
+            );
+            assert_eq!(
+                shell_core_address_stage(core, 0, 1),
+                ShellStatus::UnknownRequest
+            );
+            assert_eq!(
+                shell_core_address_stage(core, 1, 99),
+                ShellStatus::InvalidArgument
+            );
+            assert_eq!(
+                shell_core_address_publish(core, u64::MAX, true),
+                ShellStatus::InvalidArgument
+            );
+            assert_eq!(
+                shell_core_address_action(core, 4, &conditions, 16, &mut action),
+                ShellStatus::InvalidArgument
+            );
+            assert_eq!(
+                shell_core_address_action(core, 4, std::ptr::null(), 0, &mut action),
+                ShellStatus::InvalidArgument
+            );
             assert_eq!(shell_core_address_edit(core), ShellStatus::Ok);
             let mut admitted: ShellEnqueueResult = std::mem::zeroed();
-            assert_eq!(shell_core_enqueue(core, 6, 0, 1, std::ptr::null(), 0, &mut admitted), ShellStatus::Ok);
-            assert_eq!(shell_core_address_stage(core, admitted.id, 1), ShellStatus::Ok);
-            assert_eq!(shell_core_address_action(core, 4, &conditions, 5, &mut action), ShellStatus::Ok);
+            assert_eq!(
+                shell_core_enqueue(core, 6, 0, 1, std::ptr::null(), 0, &mut admitted),
+                ShellStatus::Ok
+            );
+            assert_eq!(
+                shell_core_address_stage(core, admitted.id, 1),
+                ShellStatus::Ok
+            );
+            assert_eq!(
+                shell_core_address_action(core, 4, &conditions, 5, &mut action),
+                ShellStatus::Ok
+            );
             assert_eq!(action.decision, intent::Decision::Defer as u32); // ignores caller's claimed readiness
             assert_eq!(shell_core_begin_drain(core), ShellStatus::Ok);
             let mut batch: ShellRequestBatch = std::mem::zeroed();
-            assert_eq!(shell_core_take_batch(core, 16, 65536, &mut batch), ShellStatus::Ok);
+            assert_eq!(
+                shell_core_take_batch(core, 16, 65536, &mut batch),
+                ShellStatus::Ok
+            );
             shell_core_release_batch(&mut batch);
             assert_eq!(shell_core_complete(core, admitted.id, 1), ShellStatus::Ok);
             let mut ready = true;
-            assert_eq!(shell_core_address_take_deferred(core, &mut ready), ShellStatus::Ok);
+            assert_eq!(
+                shell_core_address_take_deferred(core, &mut ready),
+                ShellStatus::Ok
+            );
             assert!(!ready);
             assert_eq!(shell_core_address_publish(core, 1, true), ShellStatus::Ok);
-            assert_eq!(shell_core_address_take_deferred(core, &mut ready), ShellStatus::Ok);
+            assert_eq!(
+                shell_core_address_take_deferred(core, &mut ready),
+                ShellStatus::Ok
+            );
             assert!(ready);
             shell_core_address_action(core, 4, &conditions, 0, &mut action);
             assert_eq!(action.modifiers, 5);
             assert_eq!(action.decision, intent::Decision::Stage as u32);
-            assert_eq!(shell_core_enqueue(core, 7, 0, 1, std::ptr::null(), 0, &mut admitted), ShellStatus::Ok);
+            assert_eq!(
+                shell_core_enqueue(core, 7, 0, 1, std::ptr::null(), 0, &mut admitted),
+                ShellStatus::Ok
+            );
             shell_core_address_state(core, &mut state);
             assert_eq!(state.mode_pending, 1);
             shell_core_address_action(core, 4, &conditions, 0, &mut action);
@@ -3208,12 +5344,20 @@ mod address_ffi_tests {
             assert_eq!(shell_core_address_reset_mode(core), ShellStatus::Ok);
             shell_core_address_state(core, &mut state);
             assert_eq!(state.mode_pending, 0);
-            assert_eq!(shell_core_address_reset_mode(std::ptr::null_mut()), ShellStatus::InvalidArgument);
+            assert_eq!(
+                shell_core_address_reset_mode(std::ptr::null_mut()),
+                ShellStatus::InvalidArgument
+            );
             shell_core_address_reset(core);
             shell_core_address_state(core, &mut state);
             assert_eq!(state.edit_id, 0);
             let handle = core as usize;
-            assert_eq!(std::thread::spawn(move || shell_core_address_edit(handle as *mut ShellCore)).join().unwrap(), ShellStatus::WrongThread);
+            assert_eq!(
+                std::thread::spawn(move || shell_core_address_edit(handle as *mut ShellCore))
+                    .join()
+                    .unwrap(),
+                ShellStatus::WrongThread
+            );
             shell_core_close(core);
             assert_eq!(shell_core_address_edit(core), ShellStatus::Closed);
             assert_eq!(shell_core_address_reset_mode(core), ShellStatus::Closed);
@@ -3226,65 +5370,159 @@ mod address_ffi_tests {
 /// # Safety
 /// Live core, writable out.
 #[no_mangle]
-pub unsafe extern "C" fn shell_core_tab_drag_state(core: *mut ShellCore, out: *mut crate::tab_drag::ShellTabDrag) -> ShellStatus {
-    let Some(out) = out.as_mut() else { return ShellStatus::InvalidArgument; };
+pub unsafe extern "C" fn shell_core_tab_drag_state(
+    core: *mut ShellCore,
+    out: *mut crate::tab_drag::ShellTabDrag,
+) -> ShellStatus {
+    let Some(out) = out.as_mut() else {
+        return ShellStatus::InvalidArgument;
+    };
     *out = Default::default();
-    queue_guard(core, |q| { *out = q.tab_drag.state(); ShellStatus::Ok })
+    queue_guard(core, |q| {
+        *out = q.tab_drag.state();
+        ShellStatus::Ok
+    })
 }
 /// Arm a tab at a finite measured point, replacing previous local tracking.
 /// # Safety
 /// Live core.
 #[no_mangle]
-pub unsafe extern "C" fn shell_core_tab_drag_arm(core: *mut ShellCore, tab: u32, x: f64, y: f64) -> ShellStatus {
-    queue_guard(core, |q| if q.tab_drag.arm(tab,x,y) { q.departures.removed(tab); ShellStatus::Ok } else { ShellStatus::InvalidArgument })
+pub unsafe extern "C" fn shell_core_tab_drag_arm(
+    core: *mut ShellCore,
+    tab: u32,
+    x: f64,
+    y: f64,
+) -> ShellStatus {
+    queue_guard(core, |q| {
+        if q.tab_drag.arm(tab, x, y) {
+            q.departures.removed(tab);
+            ShellStatus::Ok
+        } else {
+            ShellStatus::InvalidArgument
+        }
+    })
 }
 /// Test the promotion threshold.
 /// # Safety
 /// Live core, writable out.
 #[no_mangle]
-pub unsafe extern "C" fn shell_core_tab_drag_ready(core: *mut ShellCore, tab: u32, x: f64, y: f64, out: *mut bool) -> ShellStatus {
-    let Some(out) = out.as_mut() else { return ShellStatus::InvalidArgument; };
+pub unsafe extern "C" fn shell_core_tab_drag_ready(
+    core: *mut ShellCore,
+    tab: u32,
+    x: f64,
+    y: f64,
+    out: *mut bool,
+) -> ShellStatus {
+    let Some(out) = out.as_mut() else {
+        return ShellStatus::InvalidArgument;
+    };
     *out = false;
-    queue_guard(core, |q| { *out = q.tab_drag.ready(tab,x,y); ShellStatus::Ok })
+    queue_guard(core, |q| {
+        *out = q.tab_drag.ready(tab, x, y);
+        ShellStatus::Ok
+    })
 }
 /// Copy at most 10,000 finite row rectangles when crossing the drag threshold.
 /// # Safety
 /// Live core; rows reads len aligned elements.
 #[no_mangle]
-pub unsafe extern "C" fn shell_core_tab_drag_promote(core: *mut ShellCore, original: u32, rows: *const crate::tab_drag::ShellDragRow, len: usize) -> ShellStatus {
-    if rows.is_null() || len == 0 || len > crate::tab_drag::MAX_ROWS { return ShellStatus::InvalidArgument; }
-    queue_guard(core, |q| if q.tab_drag.promote(original, std::slice::from_raw_parts(rows,len)) { ShellStatus::Ok } else { ShellStatus::InvalidArgument })
+pub unsafe extern "C" fn shell_core_tab_drag_promote(
+    core: *mut ShellCore,
+    original: u32,
+    rows: *const crate::tab_drag::ShellDragRow,
+    len: usize,
+) -> ShellStatus {
+    if rows.is_null() || len == 0 || len > crate::tab_drag::MAX_ROWS {
+        return ShellStatus::InvalidArgument;
+    }
+    queue_guard(core, |q| {
+        if q.tab_drag
+            .promote(original, std::slice::from_raw_parts(rows, len))
+        {
+            ShellStatus::Ok
+        } else {
+            ShellStatus::InvalidArgument
+        }
+    })
 }
 /// Update attachment and optionally insertion projection. Group-hover presentation
 /// can inspect attachment first and suppress projection while it owns the gap.
 /// # Safety
 /// Live core.
 #[no_mangle]
-pub unsafe extern "C" fn shell_core_tab_drag_update(core: *mut ShellCore, x: f64, y: f64, width: f64, height: f64, project: bool) -> ShellStatus {
-    queue_guard(core, |q| if q.tab_drag.update(x,y,width,height,project) { ShellStatus::Ok } else { ShellStatus::InvalidArgument })
+pub unsafe extern "C" fn shell_core_tab_drag_update(
+    core: *mut ShellCore,
+    x: f64,
+    y: f64,
+    width: f64,
+    height: f64,
+    project: bool,
+) -> ShellStatus {
+    queue_guard(core, |q| {
+        if q.tab_drag.update(x, y, width, height, project) {
+            ShellStatus::Ok
+        } else {
+            ShellStatus::InvalidArgument
+        }
+    })
 }
 /// Project a validated existing-group join; tab zero appends at the header.
 /// # Safety
 /// Live core. Identities resolve against the accepted strip layout.
 #[no_mangle]
-pub unsafe extern "C" fn shell_core_tab_drag_join(core: *mut ShellCore, group: u32, tab: u32, before: bool) -> ShellStatus {
+pub unsafe extern "C" fn shell_core_tab_drag_join(
+    core: *mut ShellCore,
+    group: u32,
+    tab: u32,
+    before: bool,
+) -> ShellStatus {
     guard(core, |core| {
-        if core.queue.is_closed() { return ShellStatus::Closed; }
-        if core.queue.tab_drag.join_group(core.strip.layout(),group,tab,before) { ShellStatus::Ok } else { ShellStatus::InvalidArgument }
+        if core.queue.is_closed() {
+            return ShellStatus::Closed;
+        }
+        if core
+            .queue
+            .tab_drag
+            .join_group(core.strip.layout(), group, tab, before)
+        {
+            ShellStatus::Ok
+        } else {
+            ShellStatus::InvalidArgument
+        }
     })
 }
 /// Hit existing-group members and the current insertion gap in preview geometry.
 /// # Safety
 /// Live core; writable outputs.
 #[no_mangle]
-pub unsafe extern "C" fn shell_core_tab_drag_join_hit(core: *mut ShellCore, x: f64, header: u32, collapsed: bool, group: *mut u32, tab: *mut u32, before: *mut bool) -> ShellStatus {
-    let (Some(group),Some(tab),Some(before)) = (group.as_mut(),tab.as_mut(),before.as_mut()) else { return ShellStatus::InvalidArgument; };
-    (*group,*tab,*before) = (0,0,false);
+pub unsafe extern "C" fn shell_core_tab_drag_join_hit(
+    core: *mut ShellCore,
+    x: f64,
+    header: u32,
+    collapsed: bool,
+    group: *mut u32,
+    tab: *mut u32,
+    before: *mut bool,
+) -> ShellStatus {
+    let (Some(group), Some(tab), Some(before)) = (group.as_mut(), tab.as_mut(), before.as_mut())
+    else {
+        return ShellStatus::InvalidArgument;
+    };
+    (*group, *tab, *before) = (0, 0, false);
     guard(core, |core| {
-        if core.queue.is_closed() { return ShellStatus::Closed; }
-        let hit = if header == 0 { core.queue.tab_drag.join_hit(core.strip.layout(),x) }
-            else { core.queue.tab_drag.header_hit(core.strip.layout(),header,collapsed) };
-        if let Some(hit) = hit { (*group,*tab,*before)=hit; }
+        if core.queue.is_closed() {
+            return ShellStatus::Closed;
+        }
+        let hit = if header == 0 {
+            core.queue.tab_drag.join_hit(core.strip.layout(), x)
+        } else {
+            core.queue
+                .tab_drag
+                .header_hit(core.strip.layout(), header, collapsed)
+        };
+        if let Some(hit) = hit {
+            (*group, *tab, *before) = hit;
+        }
         ShellStatus::Ok
     })
 }
@@ -3293,332 +5531,856 @@ pub unsafe extern "C" fn shell_core_tab_drag_join_hit(core: *mut ShellCore, x: f
 /// Live core.
 #[no_mangle]
 pub unsafe extern "C" fn shell_core_tab_drag_close_gap(core: *mut ShellCore) -> ShellStatus {
-    queue_guard(core, |q| { q.tab_drag.close_gap(); ShellStatus::Ok })
+    queue_guard(core, |q| {
+        q.tab_drag.close_gap();
+        ShellStatus::Ok
+    })
 }
 /// Compute one sibling's offset from the frozen geometry.
 /// # Safety
 /// Live core, writable out.
 #[no_mangle]
-pub unsafe extern "C" fn shell_core_tab_drag_offset(core: *mut ShellCore, index: u32, out: *mut f64) -> ShellStatus {
-    let Some(out) = out.as_mut() else { return ShellStatus::InvalidArgument; };
+pub unsafe extern "C" fn shell_core_tab_drag_offset(
+    core: *mut ShellCore,
+    index: u32,
+    out: *mut f64,
+) -> ShellStatus {
+    let Some(out) = out.as_mut() else {
+        return ShellStatus::InvalidArgument;
+    };
     *out = 0.0;
-    queue_guard(core, |q| match q.tab_drag.offset(index) { Some(v) => { *out=v; ShellStatus::Ok }, None => ShellStatus::InvalidArgument })
+    queue_guard(core, |q| match q.tab_drag.offset(index) {
+        Some(v) => {
+            *out = v;
+            ShellStatus::Ok
+        }
+        None => ShellStatus::InvalidArgument,
+    })
 }
 /// Offset a grouped-layout tab or a header anchored before index (len at end).
 /// # Safety
 /// Live core, writable out.
 #[no_mangle]
-pub unsafe extern "C" fn shell_core_tab_drag_slot_offset(core: *mut ShellCore, index: u32, header: bool, source_header: bool, join_header: bool, out: *mut f64) -> ShellStatus {
-    let Some(out) = out.as_mut() else { return ShellStatus::InvalidArgument; };
+pub unsafe extern "C" fn shell_core_tab_drag_slot_offset(
+    core: *mut ShellCore,
+    index: u32,
+    header: bool,
+    source_header: bool,
+    join_header: bool,
+    out: *mut f64,
+) -> ShellStatus {
+    let Some(out) = out.as_mut() else {
+        return ShellStatus::InvalidArgument;
+    };
     *out = 0.0;
-    queue_guard(core, |q| match q.tab_drag.slot_offset(index,header,source_header,join_header) { Some(v) => { *out=v; ShellStatus::Ok }, None => ShellStatus::InvalidArgument })
+    queue_guard(core, |q| {
+        match q
+            .tab_drag
+            .slot_offset(index, header, source_header, join_header)
+        {
+            Some(v) => {
+                *out = v;
+                ShellStatus::Ok
+            }
+            None => ShellStatus::InvalidArgument,
+        }
+    })
 }
 /// End the gesture; cancel also revokes pending reorder confirmation.
 /// # Safety
 /// Live core.
 #[no_mangle]
-pub unsafe extern "C" fn shell_core_tab_drag_end(core: *mut ShellCore, cancel: bool) -> ShellStatus {
-    queue_guard(core, |q| { q.tab_drag.end(cancel); ShellStatus::Ok })
+pub unsafe extern "C" fn shell_core_tab_drag_end(
+    core: *mut ShellCore,
+    cancel: bool,
+) -> ShellStatus {
+    queue_guard(core, |q| {
+        q.tab_drag.end(cancel);
+        ShellStatus::Ok
+    })
 }
 /// Bind a queued reorder before draining. Zero denotes queue refusal/no request.
 /// # Safety
 /// Live core.
 #[no_mangle]
-pub unsafe extern "C" fn shell_core_tab_drag_commit(core: *mut ShellCore, request: u64, before: u32) -> ShellStatus {
-    queue_guard(core, |q| if q.commit_tab_drag(request,before) { ShellStatus::Ok } else { ShellStatus::InvalidArgument })
+pub unsafe extern "C" fn shell_core_tab_drag_commit(
+    core: *mut ShellCore,
+    request: u64,
+    before: u32,
+) -> ShellStatus {
+    queue_guard(core, |q| {
+        if q.commit_tab_drag(request, before) {
+            ShellStatus::Ok
+        } else {
+            ShellStatus::InvalidArgument
+        }
+    })
 }
 /// Test authoritative order confirmation, including disappearance of the source.
 /// # Safety
 /// Live core; ids reads len aligned IDs (null allowed only for zero len); writable out.
 #[no_mangle]
-pub unsafe extern "C" fn shell_core_tab_drag_publish(core: *mut ShellCore, ids: *const u32, len: usize, out: *mut bool) -> ShellStatus {
-    let Some(out) = out.as_mut() else { return ShellStatus::InvalidArgument; };
+pub unsafe extern "C" fn shell_core_tab_drag_publish(
+    core: *mut ShellCore,
+    ids: *const u32,
+    len: usize,
+    out: *mut bool,
+) -> ShellStatus {
+    let Some(out) = out.as_mut() else {
+        return ShellStatus::InvalidArgument;
+    };
     *out = false;
-    if len > crate::tab_drag::MAX_ROWS || (ids.is_null() && len != 0) { return ShellStatus::InvalidArgument; }
-    queue_guard(core, |q| { *out = q.tab_drag.publish(if len == 0 { &[] } else { std::slice::from_raw_parts(ids,len) }); ShellStatus::Ok })
+    if len > crate::tab_drag::MAX_ROWS || (ids.is_null() && len != 0) {
+        return ShellStatus::InvalidArgument;
+    }
+    queue_guard(core, |q| {
+        *out = q.tab_drag.publish(if len == 0 {
+            &[]
+        } else {
+            std::slice::from_raw_parts(ids, len)
+        });
+        ShellStatus::Ok
+    })
 }
 
 #[cfg(test)]
 mod tab_drag_ffi_tests {
     use super::*;
     #[test]
-    fn validates_buffers_owner_lifetime_and_drag_roundtrip() { unsafe {
-        let core=shell_core_create(&std::mem::zeroed());
-        let mut state=crate::tab_drag::ShellTabDrag::default();
-        let mut ready=false;
-        assert_eq!(shell_core_tab_drag_state(core,std::ptr::null_mut()),ShellStatus::InvalidArgument);
-        assert_eq!(shell_core_tab_drag_arm(core,1,f64::NAN,0.0),ShellStatus::InvalidArgument);
-        assert_eq!(shell_core_tab_drag_arm(core,1,50.0,16.0),ShellStatus::Ok);
-        assert_eq!(shell_core_tab_drag_ready(core,1,55.0,16.0,&mut ready),ShellStatus::Ok); assert!(ready);
-        let row=crate::tab_drag::ShellDragRow{left:0.0,width:100.0};
-        assert_eq!(shell_core_tab_drag_promote(core,0,std::ptr::null(),1),ShellStatus::InvalidArgument);
-        assert_eq!(shell_core_tab_drag_promote(core,0,&row,10001),ShellStatus::InvalidArgument);
-        assert_eq!(shell_core_tab_drag_promote(core,0,&row,1),ShellStatus::Ok);
-        assert_eq!(shell_core_tab_drag_update(core,60.0,16.0,300.0,40.0,true),ShellStatus::Ok);
-        let mut offset=1.0;
-        assert_eq!(shell_core_tab_drag_offset(core,1,&mut offset),ShellStatus::InvalidArgument);
-        assert_eq!(offset,0.0);
-        assert_eq!(shell_core_tab_drag_commit(core,999,0),ShellStatus::InvalidArgument);
-        assert_eq!(shell_core_tab_drag_commit(core,0,0),ShellStatus::Ok);
-        assert_eq!(shell_core_tab_drag_publish(core,std::ptr::null(),1,&mut ready),ShellStatus::InvalidArgument);
-        assert_eq!(shell_core_tab_drag_publish(core,std::ptr::null(),0,&mut ready),ShellStatus::Ok); assert!(ready);
-        let handle=core as usize;
-        assert_eq!(std::thread::spawn(move || shell_core_tab_drag_end(handle as *mut ShellCore,true)).join().unwrap(),ShellStatus::WrongThread);
-        shell_core_cancel_all(core);
-        shell_core_tab_drag_state(core,&mut state); assert_eq!(state.phase,0);
-        shell_core_close(core);
-        assert_eq!(shell_core_tab_drag_arm(core,1,0.0,0.0),ShellStatus::Closed);
-        shell_core_destroy(core);
-    }}
+    fn validates_buffers_owner_lifetime_and_drag_roundtrip() {
+        unsafe {
+            let core = shell_core_create(&std::mem::zeroed());
+            let mut state = crate::tab_drag::ShellTabDrag::default();
+            let mut ready = false;
+            assert_eq!(
+                shell_core_tab_drag_state(core, std::ptr::null_mut()),
+                ShellStatus::InvalidArgument
+            );
+            assert_eq!(
+                shell_core_tab_drag_arm(core, 1, f64::NAN, 0.0),
+                ShellStatus::InvalidArgument
+            );
+            assert_eq!(
+                shell_core_tab_drag_arm(core, 1, 50.0, 16.0),
+                ShellStatus::Ok
+            );
+            assert_eq!(
+                shell_core_tab_drag_ready(core, 1, 55.0, 16.0, &mut ready),
+                ShellStatus::Ok
+            );
+            assert!(ready);
+            let row = crate::tab_drag::ShellDragRow {
+                left: 0.0,
+                width: 100.0,
+            };
+            assert_eq!(
+                shell_core_tab_drag_promote(core, 0, std::ptr::null(), 1),
+                ShellStatus::InvalidArgument
+            );
+            assert_eq!(
+                shell_core_tab_drag_promote(core, 0, &row, 10001),
+                ShellStatus::InvalidArgument
+            );
+            assert_eq!(
+                shell_core_tab_drag_promote(core, 0, &row, 1),
+                ShellStatus::Ok
+            );
+            assert_eq!(
+                shell_core_tab_drag_update(core, 60.0, 16.0, 300.0, 40.0, true),
+                ShellStatus::Ok
+            );
+            let mut offset = 1.0;
+            assert_eq!(
+                shell_core_tab_drag_offset(core, 1, &mut offset),
+                ShellStatus::InvalidArgument
+            );
+            assert_eq!(offset, 0.0);
+            assert_eq!(
+                shell_core_tab_drag_commit(core, 999, 0),
+                ShellStatus::InvalidArgument
+            );
+            assert_eq!(shell_core_tab_drag_commit(core, 0, 0), ShellStatus::Ok);
+            assert_eq!(
+                shell_core_tab_drag_publish(core, std::ptr::null(), 1, &mut ready),
+                ShellStatus::InvalidArgument
+            );
+            assert_eq!(
+                shell_core_tab_drag_publish(core, std::ptr::null(), 0, &mut ready),
+                ShellStatus::Ok
+            );
+            assert!(ready);
+            let handle = core as usize;
+            assert_eq!(
+                std::thread::spawn(move || shell_core_tab_drag_end(handle as *mut ShellCore, true))
+                    .join()
+                    .unwrap(),
+                ShellStatus::WrongThread
+            );
+            shell_core_cancel_all(core);
+            shell_core_tab_drag_state(core, &mut state);
+            assert_eq!(state.phase, 0);
+            shell_core_close(core);
+            assert_eq!(
+                shell_core_tab_drag_arm(core, 1, 0.0, 0.0),
+                ShellStatus::Closed
+            );
+            shell_core_destroy(core);
+        }
+    }
 }
 
 // Menu protocol lifetime follows the endpoint, independently of UI objects.
-unsafe fn menu_guard(core: *mut ShellCore, body: impl FnOnce(&mut crate::menu::MenuState) -> ShellStatus) -> ShellStatus {
-    guard(core, |core| if core.queue.is_closed() { ShellStatus::Closed } else { body(&mut core.menu) })
+unsafe fn menu_guard(
+    core: *mut ShellCore,
+    body: impl FnOnce(&mut crate::menu::MenuState) -> ShellStatus,
+) -> ShellStatus {
+    guard(core, |core| {
+        if core.queue.is_closed() {
+            ShellStatus::Closed
+        } else {
+            body(&mut core.menu)
+        }
+    })
 }
 #[repr(C)]
-pub struct ShellMenuCommand { pub data: *const u16, pub len: usize }
+pub struct ShellMenuCommand {
+    pub data: *const u16,
+    pub len: usize,
+}
 /// Read menu identity and publication revision.
 /// # Safety
 /// Live core and writable out.
 #[no_mangle]
-pub unsafe extern "C" fn shell_core_menu_state(core: *mut ShellCore, out: *mut crate::menu::ShellMenuState) -> ShellStatus {
-    let Some(out)=out.as_mut() else { return ShellStatus::InvalidArgument; }; *out=Default::default();
-    menu_guard(core,|m| { *out=m.state(); ShellStatus::Ok })
+pub unsafe extern "C" fn shell_core_menu_state(
+    core: *mut ShellCore,
+    out: *mut crate::menu::ShellMenuState,
+) -> ShellStatus {
+    let Some(out) = out.as_mut() else {
+        return ShellStatus::InvalidArgument;
+    };
+    *out = Default::default();
+    menu_guard(core, |m| {
+        *out = m.state();
+        ShellStatus::Ok
+    })
 }
 /// Apply validated publication membership and exact serialized-state identity.
 /// # Safety
 /// Live core; readable bounded arrays (null only for length zero); writable changed.
 #[no_mangle]
-pub unsafe extern "C" fn shell_core_menu_publish(core: *mut ShellCore, revision: u32, tabs: *const u32, len: usize,
-    fingerprint: *const u16, units: usize, changed: *mut bool) -> ShellStatus {
-    let Some(changed)=changed.as_mut() else { return ShellStatus::InvalidArgument; }; *changed=false;
-    if len>crate::menu::MAX_TABS || units>crate::menu::MAX_FINGERPRINT || (tabs.is_null() && len!=0) { return ShellStatus::InvalidArgument; }
-    let Some(fingerprint)=slice(fingerprint,units) else { return ShellStatus::InvalidArgument; };
-    let tabs=if len==0 { &[] } else { std::slice::from_raw_parts(tabs,len) };
-    menu_guard(core,|m| match m.publish(revision,tabs,fingerprint) {
-        Ok(value)=>{*changed=value;ShellStatus::Ok},Err(())=>ShellStatus::InvalidArgument,
+pub unsafe extern "C" fn shell_core_menu_publish(
+    core: *mut ShellCore,
+    revision: u32,
+    tabs: *const u32,
+    len: usize,
+    fingerprint: *const u16,
+    units: usize,
+    changed: *mut bool,
+) -> ShellStatus {
+    let Some(changed) = changed.as_mut() else {
+        return ShellStatus::InvalidArgument;
+    };
+    *changed = false;
+    if len > crate::menu::MAX_TABS
+        || units > crate::menu::MAX_FINGERPRINT
+        || (tabs.is_null() && len != 0)
+    {
+        return ShellStatus::InvalidArgument;
+    }
+    let Some(fingerprint) = slice(fingerprint, units) else {
+        return ShellStatus::InvalidArgument;
+    };
+    let tabs = if len == 0 {
+        &[]
+    } else {
+        std::slice::from_raw_parts(tabs, len)
+    };
+    menu_guard(core, |m| match m.publish(revision, tabs, fingerprint) {
+        Ok(value) => {
+            *changed = value;
+            ShellStatus::Ok
+        }
+        Err(()) => ShellStatus::InvalidArgument,
     })
 }
 /// Apply a compact selection context against existing publication membership.
 /// # Safety
 /// Live core; bounded readable selection and fingerprint; writable changed.
 #[no_mangle]
-pub unsafe extern "C" fn shell_core_menu_selection(core: *mut ShellCore, base: u32, revision: u32,
-    selected: *const u32, len: usize, fingerprint: *const u16, units: usize, changed: *mut bool) -> ShellStatus {
-    let Some(changed)=changed.as_mut() else { return ShellStatus::InvalidArgument; }; *changed=false;
-    if len>crate::menu::MAX_TABS || units>crate::menu::MAX_FINGERPRINT || (selected.is_null() && len!=0) { return ShellStatus::InvalidArgument; }
-    let Some(fingerprint)=slice(fingerprint,units) else { return ShellStatus::InvalidArgument; };
-    let selected=if len==0 { &[] } else { std::slice::from_raw_parts(selected,len) };
-    menu_guard(core,|m| match m.selection(base,revision,selected,fingerprint) {
-        Ok(value)=>{*changed=value;ShellStatus::Ok},Err(())=>ShellStatus::InvalidArgument,
+pub unsafe extern "C" fn shell_core_menu_selection(
+    core: *mut ShellCore,
+    base: u32,
+    revision: u32,
+    selected: *const u32,
+    len: usize,
+    fingerprint: *const u16,
+    units: usize,
+    changed: *mut bool,
+) -> ShellStatus {
+    let Some(changed) = changed.as_mut() else {
+        return ShellStatus::InvalidArgument;
+    };
+    *changed = false;
+    if len > crate::menu::MAX_TABS
+        || units > crate::menu::MAX_FINGERPRINT
+        || (selected.is_null() && len != 0)
+    {
+        return ShellStatus::InvalidArgument;
+    }
+    let Some(fingerprint) = slice(fingerprint, units) else {
+        return ShellStatus::InvalidArgument;
+    };
+    let selected = if len == 0 {
+        &[]
+    } else {
+        std::slice::from_raw_parts(selected, len)
+    };
+    menu_guard(core, |m| {
+        match m.selection(base, revision, selected, fingerprint) {
+            Ok(value) => {
+                *changed = value;
+                ShellStatus::Ok
+            }
+            Err(()) => ShellStatus::InvalidArgument,
+        }
     })
 }
 /// Retain only tabs still present in a native tab snapshot.
 /// # Safety
 /// Live core and readable IDs (null only for zero len).
 #[no_mangle]
-pub unsafe extern "C" fn shell_core_menu_retain(core: *mut ShellCore, ids: *const u32, len: usize) -> ShellStatus {
-    if len>crate::menu::MAX_TABS || (ids.is_null() && len!=0) { return ShellStatus::InvalidArgument; }
-    let ids=if len==0 { &[] } else { std::slice::from_raw_parts(ids,len) };
-    menu_guard(core,|m| { m.retain(ids);ShellStatus::Ok })
+pub unsafe extern "C" fn shell_core_menu_retain(
+    core: *mut ShellCore,
+    ids: *const u32,
+    len: usize,
+) -> ShellStatus {
+    if len > crate::menu::MAX_TABS || (ids.is_null() && len != 0) {
+        return ShellStatus::InvalidArgument;
+    }
+    let ids = if len == 0 {
+        &[]
+    } else {
+        std::slice::from_raw_parts(ids, len)
+    };
+    menu_guard(core, |m| {
+        m.retain(ids);
+        ShellStatus::Ok
+    })
 }
 /// Test current published membership.
 /// # Safety
 /// Live core and writable out.
 #[no_mangle]
-pub unsafe extern "C" fn shell_core_menu_has_tab(core: *mut ShellCore, id: u32, out: *mut bool) -> ShellStatus {
-    let Some(out)=out.as_mut() else { return ShellStatus::InvalidArgument; };*out=false;
-    menu_guard(core,|m| {*out=m.has_tab(id);ShellStatus::Ok})
+pub unsafe extern "C" fn shell_core_menu_has_tab(
+    core: *mut ShellCore,
+    id: u32,
+    out: *mut bool,
+) -> ShellStatus {
+    let Some(out) = out.as_mut() else {
+        return ShellStatus::InvalidArgument;
+    };
+    *out = false;
+    menu_guard(core, |m| {
+        *out = m.has_tab(id);
+        ShellStatus::Ok
+    })
 }
 /// Start a new pending description; unknown tabs or exhausted session IDs refuse.
 /// # Safety
 /// Live core and writable opened.
 #[no_mangle]
-pub unsafe extern "C" fn shell_core_menu_open(core: *mut ShellCore, tab: u32, opened: *mut bool) -> ShellStatus {
-    let Some(opened)=opened.as_mut() else { return ShellStatus::InvalidArgument; };*opened=false;
-    menu_guard(core,|m| {*opened=m.open(tab);ShellStatus::Ok})
+pub unsafe extern "C" fn shell_core_menu_open(
+    core: *mut ShellCore,
+    tab: u32,
+    opened: *mut bool,
+) -> ShellStatus {
+    let Some(opened) = opened.as_mut() else {
+        return ShellStatus::InvalidArgument;
+    };
+    *opened = false;
+    menu_guard(core, |m| {
+        *opened = m.open(tab);
+        ShellStatus::Ok
+    })
 }
 /// Revoke the current session before hiding WinUI controls.
 /// # Safety
 /// Live core.
 #[no_mangle]
 pub unsafe extern "C" fn shell_core_menu_dismiss(core: *mut ShellCore) -> ShellStatus {
-    menu_guard(core,|m| {m.dismiss();ShellStatus::Ok})
+    menu_guard(core, |m| {
+        m.dismiss();
+        ShellStatus::Ok
+    })
 }
 /// Clear membership and session on teardown without reusing session IDs.
 /// # Safety
 /// Live core.
 #[no_mangle]
 pub unsafe extern "C" fn shell_core_menu_close(core: *mut ShellCore) -> ShellStatus {
-    menu_guard(core,|m| {m.close();ShellStatus::Ok})
+    menu_guard(core, |m| {
+        m.close();
+        ShellStatus::Ok
+    })
 }
 /// Bind one description and its enabled opaque command IDs to the current opening.
 /// # Safety
 /// Live core; readable commands and their UTF-16 slices; writable accepted.
 #[no_mangle]
-pub unsafe extern "C" fn shell_core_menu_description(core: *mut ShellCore, session: u32, tab: u32, revision: u32,
-    commands: *const ShellMenuCommand, len: usize, accepted: *mut bool) -> ShellStatus {
-    let Some(accepted)=accepted.as_mut() else { return ShellStatus::InvalidArgument; };*accepted=false;
-    if len>crate::menu::MAX_COMMANDS || (commands.is_null() && len!=0) { return ShellStatus::InvalidArgument; }
-    let commands=if len==0 { &[] } else { std::slice::from_raw_parts(commands,len) };
-    let mut ids=Vec::with_capacity(len);
+pub unsafe extern "C" fn shell_core_menu_description(
+    core: *mut ShellCore,
+    session: u32,
+    tab: u32,
+    revision: u32,
+    commands: *const ShellMenuCommand,
+    len: usize,
+    accepted: *mut bool,
+) -> ShellStatus {
+    let Some(accepted) = accepted.as_mut() else {
+        return ShellStatus::InvalidArgument;
+    };
+    *accepted = false;
+    if len > crate::menu::MAX_COMMANDS || (commands.is_null() && len != 0) {
+        return ShellStatus::InvalidArgument;
+    }
+    let commands = if len == 0 {
+        &[]
+    } else {
+        std::slice::from_raw_parts(commands, len)
+    };
+    let mut ids = Vec::with_capacity(len);
     for command in commands {
-        if command.len==0 || command.len>crate::menu::MAX_ID {return ShellStatus::InvalidArgument;}
-        let Some(id)=slice(command.data,command.len) else {return ShellStatus::InvalidArgument;};
+        if command.len == 0 || command.len > crate::menu::MAX_ID {
+            return ShellStatus::InvalidArgument;
+        }
+        let Some(id) = slice(command.data, command.len) else {
+            return ShellStatus::InvalidArgument;
+        };
         ids.push(id.to_vec());
     }
-    menu_guard(core,|m| match m.accept(session,tab,revision,&ids) {
-        Ok(value)=>{*accepted=value;ShellStatus::Ok},Err(())=>ShellStatus::InvalidArgument,
+    menu_guard(core, |m| match m.accept(session, tab, revision, &ids) {
+        Ok(value) => {
+            *accepted = value;
+            ShellStatus::Ok
+        }
+        Err(()) => ShellStatus::InvalidArgument,
     })
 }
 /// Consume activation once for the exact session/revision and enabled opaque ID.
 /// # Safety
 /// Live core, readable ID and writable accepted.
 #[no_mangle]
-pub unsafe extern "C" fn shell_core_menu_activate(core: *mut ShellCore, session: u32, revision: u32,
-    id: *const u16, len: usize, accepted: *mut bool) -> ShellStatus {
-    let Some(accepted)=accepted.as_mut() else {return ShellStatus::InvalidArgument;};*accepted=false;
-    if len==0 || len>crate::menu::MAX_ID {return ShellStatus::InvalidArgument;}
-    let Some(id)=slice(id,len) else {return ShellStatus::InvalidArgument;};
-    menu_guard(core,|m| {*accepted=m.activate(session,revision,id);ShellStatus::Ok})
+pub unsafe extern "C" fn shell_core_menu_activate(
+    core: *mut ShellCore,
+    session: u32,
+    revision: u32,
+    id: *const u16,
+    len: usize,
+    accepted: *mut bool,
+) -> ShellStatus {
+    let Some(accepted) = accepted.as_mut() else {
+        return ShellStatus::InvalidArgument;
+    };
+    *accepted = false;
+    if len == 0 || len > crate::menu::MAX_ID {
+        return ShellStatus::InvalidArgument;
+    }
+    let Some(id) = slice(id, len) else {
+        return ShellStatus::InvalidArgument;
+    };
+    menu_guard(core, |m| {
+        *accepted = m.activate(session, revision, id);
+        ShellStatus::Ok
+    })
 }
 
 #[cfg(test)]
 mod menu_ffi_tests {
     use super::*;
     #[test]
-    fn compact_context_buffers_membership_and_revision_are_checked() { unsafe {
-        let core=shell_core_create(&std::mem::zeroed());let mut changed=false;
-        assert_eq!(shell_core_menu_publish(core,1,&7,1,&65,1,&mut changed),ShellStatus::Ok);
-        for (base,revision,ids,len) in [(1,2,std::ptr::null(),1),(1,2,&7u32 as *const u32,10001),
-            (0,2,&7,1),(9,10,&7,1),(1,2,&8,1)] {
-            changed=true;
-            assert_eq!(shell_core_menu_selection(core,base,revision,ids,len,&66,1,&mut changed),ShellStatus::InvalidArgument);
+    fn compact_context_buffers_membership_and_revision_are_checked() {
+        unsafe {
+            let core = shell_core_create(&std::mem::zeroed());
+            let mut changed = false;
+            assert_eq!(
+                shell_core_menu_publish(core, 1, &7, 1, &65, 1, &mut changed),
+                ShellStatus::Ok
+            );
+            for (base, revision, ids, len) in [
+                (1, 2, std::ptr::null(), 1),
+                (1, 2, &7u32 as *const u32, 10001),
+                (0, 2, &7, 1),
+                (9, 10, &7, 1),
+                (1, 2, &8, 1),
+            ] {
+                changed = true;
+                assert_eq!(
+                    shell_core_menu_selection(core, base, revision, ids, len, &66, 1, &mut changed),
+                    ShellStatus::InvalidArgument
+                );
+                assert!(!changed);
+            }
+            assert_eq!(
+                shell_core_menu_selection(core, 1, 2, &7, 1, &66, 1, &mut changed),
+                ShellStatus::Ok
+            );
+            assert!(changed);
+            assert_eq!(
+                shell_core_menu_selection(core, 1, 2, &7, 1, &66, 1, &mut changed),
+                ShellStatus::Ok
+            );
             assert!(!changed);
+            assert_eq!(
+                shell_core_menu_selection(core, 2, 3, std::ptr::null(), 0, &67, 1, &mut changed),
+                ShellStatus::Ok
+            );
+            assert!(changed);
+            let mut member = false;
+            shell_core_menu_has_tab(core, 7, &mut member);
+            assert!(member);
+            shell_core_destroy(core);
         }
-        assert_eq!(shell_core_menu_selection(core,1,2,&7,1,&66,1,&mut changed),ShellStatus::Ok);assert!(changed);
-        assert_eq!(shell_core_menu_selection(core,1,2,&7,1,&66,1,&mut changed),ShellStatus::Ok);assert!(!changed);
-        assert_eq!(shell_core_menu_selection(core,2,3,std::ptr::null(),0,&67,1,&mut changed),ShellStatus::Ok);assert!(changed);
-        let mut member=false;shell_core_menu_has_tab(core,7,&mut member);assert!(member);
-        shell_core_destroy(core);
-    }}
+    }
     #[test]
-    fn menu_publications_are_counted_by_policy() { unsafe {
-        let core=shell_core_create(&std::mem::zeroed());let mut changed=false;
-        let (a,b,c)=([97u16],[98u16],[99u16]);
-        for (revision,tabs,print,status) in [
-            (1,&[7u32][..],&a,ShellStatus::Ok),             // accepted
-            (1,&[7][..],&a,ShellStatus::Ok),                // unchanged
-            (1,&[7][..],&b,ShellStatus::InvalidArgument),   // conflict: refused
-            (0,&[7][..],&a,ShellStatus::InvalidArgument),   // invalid: refused
-            (2,&[7,7][..],&a,ShellStatus::InvalidArgument), // body: refused
-            (3,&[7][..],&c,ShellStatus::Ok),                // accepted
-            (2,&[7][..],&b,ShellStatus::InvalidArgument),   // late context: recover
-        ] {
-            assert_eq!(shell_core_menu_publish(core,revision,tabs.as_ptr(),tabs.len(),print.as_ptr(),1,&mut changed),status);
+    fn menu_publications_are_counted_by_policy() {
+        unsafe {
+            let core = shell_core_create(&std::mem::zeroed());
+            let mut changed = false;
+            let (a, b, c) = ([97u16], [98u16], [99u16]);
+            for (revision, tabs, print, status) in [
+                (1, &[7u32][..], &a, ShellStatus::Ok),              // accepted
+                (1, &[7][..], &a, ShellStatus::Ok),                 // unchanged
+                (1, &[7][..], &b, ShellStatus::InvalidArgument),    // conflict: refused
+                (0, &[7][..], &a, ShellStatus::InvalidArgument),    // invalid: refused
+                (2, &[7, 7][..], &a, ShellStatus::InvalidArgument), // body: refused
+                (3, &[7][..], &c, ShellStatus::Ok),                 // accepted
+                (2, &[7][..], &b, ShellStatus::InvalidArgument),    // late context: recover
+            ] {
+                assert_eq!(
+                    shell_core_menu_publish(
+                        core,
+                        revision,
+                        tabs.as_ptr(),
+                        tabs.len(),
+                        print.as_ptr(),
+                        1,
+                        &mut changed
+                    ),
+                    status
+                );
+            }
+            let mut counts = ShellPublicationCounts::default();
+            assert_eq!(
+                shell_core_publication_stats(
+                    core,
+                    ShellPublicationChannel::TabMenuState as u32,
+                    &mut counts
+                ),
+                ShellStatus::Ok
+            );
+            assert_eq!(
+                counts,
+                ShellPublicationCounts {
+                    accepted: 2,
+                    unchanged: 1,
+                    ignored: 0,
+                    refused: 4
+                }
+            );
+            let mut session = 0;
+            assert_eq!(
+                shell_core_surface_menu_open(core, &mut session),
+                ShellStatus::Ok
+            );
+            for (s, revision, actions, status) in [
+                (session, 1, &[1u32][..], ShellStatus::Ok),  // accepted
+                (session + 5, 2, &[1][..], ShellStatus::Ok), // superseded opening: ignored
+                (session, 1, &[1][..], ShellStatus::Ok),     // unchanged
+                (session, 1, &[2][..], ShellStatus::InvalidArgument), // conflict: refused
+                (session, 0, &[1][..], ShellStatus::InvalidArgument), // invalid: refused
+            ] {
+                assert_eq!(
+                    shell_core_surface_menu_accept(
+                        core,
+                        s,
+                        revision,
+                        actions.as_ptr(),
+                        actions.len(),
+                        a.as_ptr(),
+                        1,
+                        &mut changed
+                    ),
+                    status
+                );
+            }
+            assert_eq!(
+                shell_core_publication_stats(
+                    core,
+                    ShellPublicationChannel::SurfaceMenu as u32,
+                    &mut counts
+                ),
+                ShellStatus::Ok
+            );
+            assert_eq!(
+                counts,
+                ShellPublicationCounts {
+                    accepted: 1,
+                    unchanged: 1,
+                    ignored: 1,
+                    refused: 2
+                }
+            );
+            // Reopening resets the stream but keeps its lifetime counts.
+            assert_eq!(
+                shell_core_surface_menu_open(core, &mut session),
+                ShellStatus::Ok
+            );
+            assert_eq!(
+                shell_core_publication_stats(
+                    core,
+                    ShellPublicationChannel::SurfaceMenu as u32,
+                    &mut counts
+                ),
+                ShellStatus::Ok
+            );
+            assert_eq!(counts.accepted, 1);
+            shell_core_destroy(core);
         }
-        let mut counts=ShellPublicationCounts::default();
-        assert_eq!(shell_core_publication_stats(core,ShellPublicationChannel::TabMenuState as u32,&mut counts),ShellStatus::Ok);
-        assert_eq!(counts,ShellPublicationCounts{accepted:2,unchanged:1,ignored:0,refused:4});
-        let mut session=0;
-        assert_eq!(shell_core_surface_menu_open(core,&mut session),ShellStatus::Ok);
-        for (s,revision,actions,status) in [
-            (session,1,&[1u32][..],ShellStatus::Ok),          // accepted
-            (session+5,2,&[1][..],ShellStatus::Ok),           // superseded opening: ignored
-            (session,1,&[1][..],ShellStatus::Ok),             // unchanged
-            (session,1,&[2][..],ShellStatus::InvalidArgument),// conflict: refused
-            (session,0,&[1][..],ShellStatus::InvalidArgument),// invalid: refused
-        ] {
-            assert_eq!(shell_core_surface_menu_accept(core,s,revision,actions.as_ptr(),actions.len(),a.as_ptr(),1,&mut changed),status);
-        }
-        assert_eq!(shell_core_publication_stats(core,ShellPublicationChannel::SurfaceMenu as u32,&mut counts),ShellStatus::Ok);
-        assert_eq!(counts,ShellPublicationCounts{accepted:1,unchanged:1,ignored:1,refused:2});
-        // Reopening resets the stream but keeps its lifetime counts.
-        assert_eq!(shell_core_surface_menu_open(core,&mut session),ShellStatus::Ok);
-        assert_eq!(shell_core_publication_stats(core,ShellPublicationChannel::SurfaceMenu as u32,&mut counts),ShellStatus::Ok);
-        assert_eq!(counts.accepted,1);
-        shell_core_destroy(core);
-    }}
+    }
     #[test]
-    fn menu_boundary_roundtrip_and_invalid_buffers_owner_and_close() { unsafe {
-        let core=shell_core_create(&std::mem::zeroed());
-        let mut state=crate::menu::ShellMenuState::default();let mut accepted=false;
-        assert_eq!(shell_core_menu_state(core,std::ptr::null_mut()),ShellStatus::InvalidArgument);
-        assert_eq!(shell_core_menu_publish(core,1,std::ptr::null(),1,std::ptr::null(),0,&mut accepted),ShellStatus::InvalidArgument);
-        assert_eq!(shell_core_menu_publish(core,1,&7,10001,std::ptr::null(),0,&mut accepted),ShellStatus::InvalidArgument);
-        assert_eq!(shell_core_menu_publish(core,1,&7,1,&65,1,&mut accepted),ShellStatus::Ok);assert!(accepted);
-        assert_eq!(shell_core_menu_open(core,7,&mut accepted),ShellStatus::Ok);assert!(accepted);
-        shell_core_menu_state(core,&mut state);assert_eq!(state.awaiting,1);
-        assert_eq!(shell_core_menu_description(core,state.session,7,1,std::ptr::null(),1,&mut accepted),ShellStatus::InvalidArgument);
-        let invalid=ShellMenuCommand{data:std::ptr::null(),len:1};
-        assert_eq!(shell_core_menu_description(core,state.session,7,1,&invalid,1,&mut accepted),ShellStatus::InvalidArgument);
-        let id=[65u16];let cmd=ShellMenuCommand{data:id.as_ptr(),len:1};
-        assert_eq!(shell_core_menu_description(core,state.session,7,1,&cmd,1,&mut accepted),ShellStatus::Ok);assert!(accepted);
-        assert_eq!(shell_core_menu_activate(core,state.session,1,id.as_ptr(),1,&mut accepted),ShellStatus::Ok);assert!(accepted);
-        shell_core_menu_activate(core,state.session,1,id.as_ptr(),1,&mut accepted);assert!(!accepted);
-        let handle=core as usize;
-        assert_eq!(std::thread::spawn(move || shell_core_menu_dismiss(handle as *mut ShellCore)).join().unwrap(),ShellStatus::WrongThread);
-        shell_core_cancel_all(core);shell_core_menu_state(core,&mut state);assert_eq!(state.session,0);
-        shell_core_menu_has_tab(core,7,&mut accepted);assert!(!accepted);
-        shell_core_close(core);assert_eq!(shell_core_menu_open(core,7,&mut accepted),ShellStatus::Closed);
-        shell_core_destroy(core);
-    }}
+    fn menu_boundary_roundtrip_and_invalid_buffers_owner_and_close() {
+        unsafe {
+            let core = shell_core_create(&std::mem::zeroed());
+            let mut state = crate::menu::ShellMenuState::default();
+            let mut accepted = false;
+            assert_eq!(
+                shell_core_menu_state(core, std::ptr::null_mut()),
+                ShellStatus::InvalidArgument
+            );
+            assert_eq!(
+                shell_core_menu_publish(
+                    core,
+                    1,
+                    std::ptr::null(),
+                    1,
+                    std::ptr::null(),
+                    0,
+                    &mut accepted
+                ),
+                ShellStatus::InvalidArgument
+            );
+            assert_eq!(
+                shell_core_menu_publish(core, 1, &7, 10001, std::ptr::null(), 0, &mut accepted),
+                ShellStatus::InvalidArgument
+            );
+            assert_eq!(
+                shell_core_menu_publish(core, 1, &7, 1, &65, 1, &mut accepted),
+                ShellStatus::Ok
+            );
+            assert!(accepted);
+            assert_eq!(
+                shell_core_menu_open(core, 7, &mut accepted),
+                ShellStatus::Ok
+            );
+            assert!(accepted);
+            shell_core_menu_state(core, &mut state);
+            assert_eq!(state.awaiting, 1);
+            assert_eq!(
+                shell_core_menu_description(
+                    core,
+                    state.session,
+                    7,
+                    1,
+                    std::ptr::null(),
+                    1,
+                    &mut accepted
+                ),
+                ShellStatus::InvalidArgument
+            );
+            let invalid = ShellMenuCommand {
+                data: std::ptr::null(),
+                len: 1,
+            };
+            assert_eq!(
+                shell_core_menu_description(core, state.session, 7, 1, &invalid, 1, &mut accepted),
+                ShellStatus::InvalidArgument
+            );
+            let id = [65u16];
+            let cmd = ShellMenuCommand {
+                data: id.as_ptr(),
+                len: 1,
+            };
+            assert_eq!(
+                shell_core_menu_description(core, state.session, 7, 1, &cmd, 1, &mut accepted),
+                ShellStatus::Ok
+            );
+            assert!(accepted);
+            assert_eq!(
+                shell_core_menu_activate(core, state.session, 1, id.as_ptr(), 1, &mut accepted),
+                ShellStatus::Ok
+            );
+            assert!(accepted);
+            shell_core_menu_activate(core, state.session, 1, id.as_ptr(), 1, &mut accepted);
+            assert!(!accepted);
+            let handle = core as usize;
+            assert_eq!(
+                std::thread::spawn(move || shell_core_menu_dismiss(handle as *mut ShellCore))
+                    .join()
+                    .unwrap(),
+                ShellStatus::WrongThread
+            );
+            shell_core_cancel_all(core);
+            shell_core_menu_state(core, &mut state);
+            assert_eq!(state.session, 0);
+            shell_core_menu_has_tab(core, 7, &mut accepted);
+            assert!(!accepted);
+            shell_core_close(core);
+            assert_eq!(
+                shell_core_menu_open(core, 7, &mut accepted),
+                ShellStatus::Closed
+            );
+            shell_core_destroy(core);
+        }
+    }
 }
 
-unsafe fn foreign_rows<'a>(rows:*const crate::foreign_drag::ShellForeignRow,len:usize) -> Option<&'a [crate::foreign_drag::ShellForeignRow]> {
-    if len>crate::foreign_drag::MAX_ROWS || (rows.is_null() && len!=0) {None}
-    else {Some(if len==0 {&[]} else {std::slice::from_raw_parts(rows,len)})}
+unsafe fn foreign_rows<'a>(
+    rows: *const crate::foreign_drag::ShellForeignRow,
+    len: usize,
+) -> Option<&'a [crate::foreign_drag::ShellForeignRow]> {
+    if len > crate::foreign_drag::MAX_ROWS || (rows.is_null() && len != 0) {
+        None
+    } else {
+        Some(if len == 0 {
+            &[]
+        } else {
+            std::slice::from_raw_parts(rows, len)
+        })
+    }
 }
 /// Read preview state, including after cancellation/close for native cleanup.
 /// # Safety
 /// Live core and writable out.
 #[no_mangle]
-pub unsafe extern "C" fn shell_core_foreign_state(core:*mut ShellCore,out:*mut crate::foreign_drag::ShellForeignPreview)->ShellStatus {
-    let Some(out)=out.as_mut() else{return ShellStatus::InvalidArgument;};*out=Default::default();
-    guard(core,|c|{*out=c.queue.foreign.state();ShellStatus::Ok})
+pub unsafe extern "C" fn shell_core_foreign_state(
+    core: *mut ShellCore,
+    out: *mut crate::foreign_drag::ShellForeignPreview,
+) -> ShellStatus {
+    let Some(out) = out.as_mut() else {
+        return ShellStatus::InvalidArgument;
+    };
+    *out = Default::default();
+    guard(core, |c| {
+        *out = c.queue.foreign.state();
+        ShellStatus::Ok
+    })
 }
 /// Copy finite, bounded measured destination rows before starting a preview.
 /// # Safety
 /// Live core and readable rows (null allowed only for zero len).
 #[no_mangle]
-pub unsafe extern "C" fn shell_core_foreign_begin(core:*mut ShellCore,rows:*const crate::foreign_drag::ShellForeignRow,len:usize)->ShellStatus {
-    let Some(rows)=foreign_rows(rows,len) else{return ShellStatus::InvalidArgument;};
-    queue_guard(core,|q|if q.foreign.begin(rows){ShellStatus::Ok}else{ShellStatus::InvalidArgument})
+pub unsafe extern "C" fn shell_core_foreign_begin(
+    core: *mut ShellCore,
+    rows: *const crate::foreign_drag::ShellForeignRow,
+    len: usize,
+) -> ShellStatus {
+    let Some(rows) = foreign_rows(rows, len) else {
+        return ShellStatus::InvalidArgument;
+    };
+    queue_guard(core, |q| {
+        if q.foreign.begin(rows) {
+            ShellStatus::Ok
+        } else {
+            ShellStatus::InvalidArgument
+        }
+    })
 }
 /// Project against frozen positions with the existing uniform gap-width rule.
 /// # Safety
 /// Live core and writable changed.
 #[no_mangle]
-pub unsafe extern "C" fn shell_core_foreign_hover(core:*mut ShellCore,x:f64,changed:*mut bool)->ShellStatus {
-    let Some(changed)=changed.as_mut() else{return ShellStatus::InvalidArgument;};*changed=false;
-    queue_guard(core,|q|match q.foreign.hover(x){Some(v)=>{*changed=v;ShellStatus::Ok},None=>ShellStatus::InvalidArgument})
+pub unsafe extern "C" fn shell_core_foreign_hover(
+    core: *mut ShellCore,
+    x: f64,
+    changed: *mut bool,
+) -> ShellStatus {
+    let Some(changed) = changed.as_mut() else {
+        return ShellStatus::InvalidArgument;
+    };
+    *changed = false;
+    queue_guard(core, |q| match q.foreign.hover(x) {
+        Some(v) => {
+            *changed = v;
+            ShellStatus::Ok
+        }
+        None => ShellStatus::InvalidArgument,
+    })
 }
 /// Hover exit preserves a pending drop unless explicitly forced.
 /// # Safety
 /// Live core.
 #[no_mangle]
-pub unsafe extern "C" fn shell_core_foreign_end(core:*mut ShellCore,force:bool)->ShellStatus {
-    guard(core,|c|{c.queue.foreign.end(force);ShellStatus::Ok})
+pub unsafe extern "C" fn shell_core_foreign_end(core: *mut ShellCore, force: bool) -> ShellStatus {
+    guard(core, |c| {
+        c.queue.foreign.end(force);
+        ShellStatus::Ok
+    })
 }
 /// Invalidate geometry on ordered membership change, returning whether to rehover.
 /// # Safety
 /// Live core, readable IDs (null only for zero len), writable refresh.
 #[no_mangle]
-pub unsafe extern "C" fn shell_core_foreign_layout(core:*mut ShellCore,ids:*const u32,len:usize,refresh:*mut bool)->ShellStatus {
-    let Some(refresh)=refresh.as_mut() else{return ShellStatus::InvalidArgument;};*refresh=false;
-    if len>crate::foreign_drag::MAX_ROWS || (ids.is_null() && len!=0){return ShellStatus::InvalidArgument;}
-    let ids=if len==0 {&[]} else {std::slice::from_raw_parts(ids,len)};
-    queue_guard(core,|q|{*refresh=q.foreign.layout(ids);ShellStatus::Ok})
+pub unsafe extern "C" fn shell_core_foreign_layout(
+    core: *mut ShellCore,
+    ids: *const u32,
+    len: usize,
+    refresh: *mut bool,
+) -> ShellStatus {
+    let Some(refresh) = refresh.as_mut() else {
+        return ShellStatus::InvalidArgument;
+    };
+    *refresh = false;
+    if len > crate::foreign_drag::MAX_ROWS || (ids.is_null() && len != 0) {
+        return ShellStatus::InvalidArgument;
+    }
+    let ids = if len == 0 {
+        &[]
+    } else {
+        std::slice::from_raw_parts(ids, len)
+    };
+    queue_guard(core, |q| {
+        *refresh = q.foreign.layout(ids);
+        ShellStatus::Ok
+    })
 }
 /// Whole-window merge projection uses each measured row's own width.
 /// # Safety
 /// Live core, readable rows, writable index.
 #[no_mangle]
-pub unsafe extern "C" fn shell_core_foreign_external_index(core:*mut ShellCore,rows:*const crate::foreign_drag::ShellForeignRow,len:usize,x:f64,index:*mut u32)->ShellStatus {
-    let Some(index)=index.as_mut() else{return ShellStatus::InvalidArgument;};*index=0;
-    let Some(rows)=foreign_rows(rows,len) else{return ShellStatus::InvalidArgument;};
-    queue_guard(core,|_|match crate::foreign_drag::ForeignPreview::external_index(rows,x){Some(v)=>{*index=v;ShellStatus::Ok},None=>ShellStatus::InvalidArgument})
+pub unsafe extern "C" fn shell_core_foreign_external_index(
+    core: *mut ShellCore,
+    rows: *const crate::foreign_drag::ShellForeignRow,
+    len: usize,
+    x: f64,
+    index: *mut u32,
+) -> ShellStatus {
+    let Some(index) = index.as_mut() else {
+        return ShellStatus::InvalidArgument;
+    };
+    *index = 0;
+    let Some(rows) = foreign_rows(rows, len) else {
+        return ShellStatus::InvalidArgument;
+    };
+    queue_guard(
+        core,
+        |_| match crate::foreign_drag::ForeignPreview::external_index(rows, x) {
+            Some(v) => {
+                *index = v;
+                ShellStatus::Ok
+            }
+            None => ShellStatus::InvalidArgument,
+        },
+    )
 }
 /// Reserve durable destination tracking and an exact source departure token
 /// before hiding the source or admitting work. Both cores must share a thread;
@@ -3626,22 +6388,44 @@ pub unsafe extern "C" fn shell_core_foreign_external_index(core:*mut ShellCore,r
 /// # Safety
 /// Both handles live; writable out. No reentrant access during this call.
 #[no_mangle]
-pub unsafe extern "C" fn shell_core_transfer_reserve(destination:*mut ShellCore,source:*mut ShellCore,tab:u32,out:*mut crate::foreign_drag::ShellTransfer)->ShellStatus {
-    let Some(out)=out.as_mut() else{return ShellStatus::InvalidArgument;};*out=Default::default();
-    if tab==0{return ShellStatus::InvalidArgument;}
-    guard(destination,|d|{
-        if d.queue.is_closed(){return ShellStatus::Closed;}
-        if !d.queue.transfers.can_reserve(){return ShellStatus::Busy;}
-        if destination==source {
-            if !d.queue.departures.can_begin(tab){return ShellStatus::Busy;}
-            let token=d.queue.departures.begin(tab);
-            *out=d.queue.transfers.reserve(d.endpoint,token,tab);ShellStatus::Ok
+pub unsafe extern "C" fn shell_core_transfer_reserve(
+    destination: *mut ShellCore,
+    source: *mut ShellCore,
+    tab: u32,
+    out: *mut crate::foreign_drag::ShellTransfer,
+) -> ShellStatus {
+    let Some(out) = out.as_mut() else {
+        return ShellStatus::InvalidArgument;
+    };
+    *out = Default::default();
+    if tab == 0 {
+        return ShellStatus::InvalidArgument;
+    }
+    guard(destination, |d| {
+        if d.queue.is_closed() {
+            return ShellStatus::Closed;
+        }
+        if !d.queue.transfers.can_reserve() {
+            return ShellStatus::Busy;
+        }
+        if destination == source {
+            if !d.queue.departures.can_begin(tab) {
+                return ShellStatus::Busy;
+            }
+            let token = d.queue.departures.begin(tab);
+            *out = d.queue.transfers.reserve(d.endpoint, token, tab);
+            ShellStatus::Ok
         } else {
-            guard(source,|s|{
-                if s.queue.is_closed(){return ShellStatus::Closed;}
-                if !s.queue.departures.can_begin(tab){return ShellStatus::Busy;}
-                let token=s.queue.departures.begin(tab);
-                *out=d.queue.transfers.reserve(s.endpoint,token,tab);ShellStatus::Ok
+            guard(source, |s| {
+                if s.queue.is_closed() {
+                    return ShellStatus::Closed;
+                }
+                if !s.queue.departures.can_begin(tab) {
+                    return ShellStatus::Busy;
+                }
+                let token = s.queue.departures.begin(tab);
+                *out = d.queue.transfers.reserve(s.endpoint, token, tab);
+                ShellStatus::Ok
             })
         }
     })
@@ -3650,111 +6434,294 @@ pub unsafe extern "C" fn shell_core_transfer_reserve(destination:*mut ShellCore,
 /// # Safety
 /// Live core. preview is true for ordinary destination drops, false for detach.
 #[no_mangle]
-pub unsafe extern "C" fn shell_core_transfer_bind(core:*mut ShellCore,ticket:u64,request:u64,preview:bool)->ShellStatus {
-    guard(core,|c|{
-        if request!=0 && c.queue.is_closed(){return ShellStatus::Closed;}
-        if c.queue.bind_transfer(ticket,request,c.endpoint,preview){ShellStatus::Ok}else{ShellStatus::InvalidArgument}
+pub unsafe extern "C" fn shell_core_transfer_bind(
+    core: *mut ShellCore,
+    ticket: u64,
+    request: u64,
+    preview: bool,
+) -> ShellStatus {
+    guard(core, |c| {
+        if request != 0 && c.queue.is_closed() {
+            return ShellStatus::Closed;
+        }
+        if c.queue.bind_transfer(ticket, request, c.endpoint, preview) {
+            ShellStatus::Ok
+        } else {
+            ShellStatus::InvalidArgument
+        }
     })
 }
 /// Peek a durable cleanup decision. Repeated reads return it until acknowledged.
 /// # Safety
 /// Live core and writable out. Valid after close for destruction-time cleanup.
 #[no_mangle]
-pub unsafe extern "C" fn shell_core_transfer_next(core:*mut ShellCore,after:u64,out:*mut crate::foreign_drag::ShellTransfer)->ShellStatus {
-    let Some(out)=out.as_mut() else{return ShellStatus::InvalidArgument;};*out=Default::default();
-    guard(core,|c|{*out=c.queue.transfers.next_effect(after);ShellStatus::Ok})
+pub unsafe extern "C" fn shell_core_transfer_next(
+    core: *mut ShellCore,
+    after: u64,
+    out: *mut crate::foreign_drag::ShellTransfer,
+) -> ShellStatus {
+    let Some(out) = out.as_mut() else {
+        return ShellStatus::InvalidArgument;
+    };
+    *out = Default::default();
+    guard(core, |c| {
+        *out = c.queue.transfers.next_effect(after);
+        ShellStatus::Ok
+    })
 }
 /// Release tracking capacity only after native effects have been applied.
 /// # Safety
 /// Live core.
 #[no_mangle]
-pub unsafe extern "C" fn shell_core_transfer_ack(core:*mut ShellCore,ticket:u64)->ShellStatus {
-    guard(core,|c|if c.queue.transfers.ack(ticket){ShellStatus::Ok}else{ShellStatus::UnknownRequest})
+pub unsafe extern "C" fn shell_core_transfer_ack(core: *mut ShellCore, ticket: u64) -> ShellStatus {
+    guard(core, |c| {
+        if c.queue.transfers.ack(ticket) {
+            ShellStatus::Ok
+        } else {
+            ShellStatus::UnknownRequest
+        }
+    })
 }
 /// Cancel unresolved transfers when their native destination is destroyed.
 /// Already accepted outcomes remain accepted and still await source publication.
 /// # Safety
 /// Live core.
 #[no_mangle]
-pub unsafe extern "C" fn shell_core_transfer_cancel(core:*mut ShellCore)->ShellStatus {
-    guard(core,|c|{c.queue.transfers.cancel();c.queue.foreign.end(true);ShellStatus::Ok})
+pub unsafe extern "C" fn shell_core_transfer_cancel(core: *mut ShellCore) -> ShellStatus {
+    guard(core, |c| {
+        c.queue.transfers.cancel();
+        c.queue.foreign.end(true);
+        ShellStatus::Ok
+    })
 }
 /// Test a peer's exact endpoint and source departure token before UI restoration.
 /// If clear is true, clear only that matching token after the restoration succeeds.
 /// # Safety
 /// Live source core, writable matches.
 #[no_mangle]
-pub unsafe extern "C" fn shell_core_departure_match(core:*mut ShellCore,endpoint:u64,tab:u32,token:u64,clear:bool,matches:*mut bool)->ShellStatus {
-    let Some(matches)=matches.as_mut() else{return ShellStatus::InvalidArgument;};*matches=false;
-    guard(core,|c|{*matches=c.endpoint==endpoint && c.queue.departures.matches(tab,token);
-        if *matches && clear{c.queue.departures.clear(tab,token);}ShellStatus::Ok})
+pub unsafe extern "C" fn shell_core_departure_match(
+    core: *mut ShellCore,
+    endpoint: u64,
+    tab: u32,
+    token: u64,
+    clear: bool,
+    matches: *mut bool,
+) -> ShellStatus {
+    let Some(matches) = matches.as_mut() else {
+        return ShellStatus::InvalidArgument;
+    };
+    *matches = false;
+    guard(core, |c| {
+        *matches = c.endpoint == endpoint && c.queue.departures.matches(tab, token);
+        if *matches && clear {
+            c.queue.departures.clear(tab, token);
+        }
+        ShellStatus::Ok
+    })
 }
 /// Source removal confirms an accepted transfer and releases departure tracking.
 /// # Safety
 /// Live core.
 #[no_mangle]
-pub unsafe extern "C" fn shell_core_departure_removed(core:*mut ShellCore,tab:u32)->ShellStatus {
-    guard(core,|c|{c.queue.departures.removed(tab);ShellStatus::Ok})
+pub unsafe extern "C" fn shell_core_departure_removed(
+    core: *mut ShellCore,
+    tab: u32,
+) -> ShellStatus {
+    guard(core, |c| {
+        c.queue.departures.removed(tab);
+        ShellStatus::Ok
+    })
 }
 
 #[cfg(test)]
 mod transfer_ffi_tests {
     use super::*;
     #[test]
-    fn exact_peers_bounds_closed_cleanup_and_same_core_detach(){unsafe{
-        let source=shell_core_create(&std::mem::zeroed());let dest=shell_core_create(&std::mem::zeroed());
-        let mut old=crate::foreign_drag::ShellTransfer::default();let mut new=old;let mut effect=old;let mut matched=false;
-        assert_eq!(shell_core_transfer_reserve(dest,source,0,&mut old),ShellStatus::InvalidArgument);
-        assert_eq!(shell_core_transfer_reserve(dest,source,7,&mut old),ShellStatus::Ok);
-        assert_eq!(shell_core_transfer_bind(dest,old.ticket,0,false),ShellStatus::Ok);
-        assert_eq!(shell_core_transfer_reserve(dest,source,7,&mut new),ShellStatus::Ok);
-        shell_core_departure_match(source,old.source_endpoint,7,old.source_token,false,&mut matched);assert!(!matched);
-        shell_core_departure_match(source,new.source_endpoint+1,7,new.source_token,false,&mut matched);assert!(!matched);
-        shell_core_departure_match(source,new.source_endpoint,7,new.source_token,false,&mut matched);assert!(matched);
-        shell_core_transfer_next(dest,0,&mut effect);assert_eq!(effect.ticket,old.ticket);
-        shell_core_transfer_ack(dest,old.ticket);shell_core_close(dest);
-        shell_core_transfer_next(dest,0,&mut effect);assert_eq!(effect.ticket,new.ticket);assert_eq!(effect.result,2);
-        shell_core_departure_match(source,new.source_endpoint,7,new.source_token,true,&mut matched);assert!(matched);
-        shell_core_transfer_ack(dest,new.ticket);
-        assert_eq!(shell_core_transfer_reserve(dest,source,7,&mut new),ShellStatus::Closed);
-        assert_eq!(shell_core_transfer_reserve(source,source,7,&mut new),ShellStatus::Ok);
-        shell_core_tab_drag_arm(source,7,0.0,0.0);
-        shell_core_departure_match(source,new.source_endpoint,7,new.source_token,false,&mut matched);assert!(!matched);
-        let handle=source as usize;
-        assert_eq!(std::thread::spawn(move || shell_core_transfer_cancel(handle as *mut ShellCore)).join().unwrap(),ShellStatus::WrongThread);
-        assert_eq!(shell_core_foreign_begin(source,std::ptr::null(),1),ShellStatus::InvalidArgument);
-        assert_eq!(shell_core_foreign_begin(source,std::ptr::null(),0),ShellStatus::Ok);
-        assert_eq!(shell_core_foreign_hover(source,f64::NAN,&mut matched),ShellStatus::InvalidArgument);
-        assert_eq!(shell_core_foreign_layout(source,std::ptr::null(),1,&mut matched),ShellStatus::InvalidArgument);
-        shell_core_transfer_cancel(source);shell_core_destroy(dest);shell_core_destroy(source);
-    }}
+    fn exact_peers_bounds_closed_cleanup_and_same_core_detach() {
+        unsafe {
+            let source = shell_core_create(&std::mem::zeroed());
+            let dest = shell_core_create(&std::mem::zeroed());
+            let mut old = crate::foreign_drag::ShellTransfer::default();
+            let mut new = old;
+            let mut effect = old;
+            let mut matched = false;
+            assert_eq!(
+                shell_core_transfer_reserve(dest, source, 0, &mut old),
+                ShellStatus::InvalidArgument
+            );
+            assert_eq!(
+                shell_core_transfer_reserve(dest, source, 7, &mut old),
+                ShellStatus::Ok
+            );
+            assert_eq!(
+                shell_core_transfer_bind(dest, old.ticket, 0, false),
+                ShellStatus::Ok
+            );
+            assert_eq!(
+                shell_core_transfer_reserve(dest, source, 7, &mut new),
+                ShellStatus::Ok
+            );
+            shell_core_departure_match(
+                source,
+                old.source_endpoint,
+                7,
+                old.source_token,
+                false,
+                &mut matched,
+            );
+            assert!(!matched);
+            shell_core_departure_match(
+                source,
+                new.source_endpoint + 1,
+                7,
+                new.source_token,
+                false,
+                &mut matched,
+            );
+            assert!(!matched);
+            shell_core_departure_match(
+                source,
+                new.source_endpoint,
+                7,
+                new.source_token,
+                false,
+                &mut matched,
+            );
+            assert!(matched);
+            shell_core_transfer_next(dest, 0, &mut effect);
+            assert_eq!(effect.ticket, old.ticket);
+            shell_core_transfer_ack(dest, old.ticket);
+            shell_core_close(dest);
+            shell_core_transfer_next(dest, 0, &mut effect);
+            assert_eq!(effect.ticket, new.ticket);
+            assert_eq!(effect.result, 2);
+            shell_core_departure_match(
+                source,
+                new.source_endpoint,
+                7,
+                new.source_token,
+                true,
+                &mut matched,
+            );
+            assert!(matched);
+            shell_core_transfer_ack(dest, new.ticket);
+            assert_eq!(
+                shell_core_transfer_reserve(dest, source, 7, &mut new),
+                ShellStatus::Closed
+            );
+            assert_eq!(
+                shell_core_transfer_reserve(source, source, 7, &mut new),
+                ShellStatus::Ok
+            );
+            shell_core_tab_drag_arm(source, 7, 0.0, 0.0);
+            shell_core_departure_match(
+                source,
+                new.source_endpoint,
+                7,
+                new.source_token,
+                false,
+                &mut matched,
+            );
+            assert!(!matched);
+            let handle = source as usize;
+            assert_eq!(
+                std::thread::spawn(move || shell_core_transfer_cancel(handle as *mut ShellCore))
+                    .join()
+                    .unwrap(),
+                ShellStatus::WrongThread
+            );
+            assert_eq!(
+                shell_core_foreign_begin(source, std::ptr::null(), 1),
+                ShellStatus::InvalidArgument
+            );
+            assert_eq!(
+                shell_core_foreign_begin(source, std::ptr::null(), 0),
+                ShellStatus::Ok
+            );
+            assert_eq!(
+                shell_core_foreign_hover(source, f64::NAN, &mut matched),
+                ShellStatus::InvalidArgument
+            );
+            assert_eq!(
+                shell_core_foreign_layout(source, std::ptr::null(), 1, &mut matched),
+                ShellStatus::InvalidArgument
+            );
+            shell_core_transfer_cancel(source);
+            shell_core_destroy(dest);
+            shell_core_destroy(source);
+        }
+    }
 }
 
 /// Read whole-group gesture state.
 /// # Safety
 /// Live core and writable out.
 #[no_mangle]
-pub unsafe extern "C" fn shell_core_group_drag_state(core:*mut ShellCore,out:*mut crate::group_drag::ShellGroupDrag)->ShellStatus {
-    let Some(out)=out.as_mut() else { return ShellStatus::InvalidArgument; };
-    *out=Default::default();
-    queue_guard(core,|q| { *out=q.group_drag.state(); ShellStatus::Ok })
+pub unsafe extern "C" fn shell_core_group_drag_state(
+    core: *mut ShellCore,
+    out: *mut crate::group_drag::ShellGroupDrag,
+) -> ShellStatus {
+    let Some(out) = out.as_mut() else {
+        return ShellStatus::InvalidArgument;
+    };
+    *out = Default::default();
+    queue_guard(core, |q| {
+        *out = q.group_drag.state();
+        ShellStatus::Ok
+    })
 }
 /// Arm a group; IDs are group-scoped, never fake tab IDs.
 /// # Safety
 /// Live core.
 #[no_mangle]
-pub unsafe extern "C" fn shell_core_group_drag_arm(core:*mut ShellCore,group:u32,x:f64,y:f64)->ShellStatus {
-    queue_guard(core,|q| if q.group_drag.arm(group,x,y) { ShellStatus::Ok } else { ShellStatus::InvalidArgument })
+pub unsafe extern "C" fn shell_core_group_drag_arm(
+    core: *mut ShellCore,
+    group: u32,
+    x: f64,
+    y: f64,
+) -> ShellStatus {
+    queue_guard(core, |q| {
+        if q.group_drag.arm(group, x, y) {
+            ShellStatus::Ok
+        } else {
+            ShellStatus::InvalidArgument
+        }
+    })
 }
 /// Advance a group using measured logical-axis blocks in browser order.
 /// # Safety
 /// Live core; slots reads len aligned entries, at most 10000.
 #[no_mangle]
-pub unsafe extern "C" fn shell_core_group_drag_update(core:*mut ShellCore,x:f64,y:f64,inside:bool,start:f64,end:f64,slots:*const crate::group_drag::ShellGroupDragSlot,len:usize)->ShellStatus {
-    if slots.is_null() || len==0 || len>10000 { return ShellStatus::InvalidArgument; }
-    guard(core,|core| {
-        if core.queue.is_closed() { return ShellStatus::Closed; }
-        if core.queue.group_drag.update_viewport(x,y,inside,start,end,std::slice::from_raw_parts(slots,len),core.strip.layout()) { ShellStatus::Ok } else { ShellStatus::InvalidArgument }
+pub unsafe extern "C" fn shell_core_group_drag_update(
+    core: *mut ShellCore,
+    x: f64,
+    y: f64,
+    inside: bool,
+    start: f64,
+    end: f64,
+    slots: *const crate::group_drag::ShellGroupDragSlot,
+    len: usize,
+) -> ShellStatus {
+    if slots.is_null() || len == 0 || len > 10000 {
+        return ShellStatus::InvalidArgument;
+    }
+    guard(core, |core| {
+        if core.queue.is_closed() {
+            return ShellStatus::Closed;
+        }
+        if core.queue.group_drag.update_viewport(
+            x,
+            y,
+            inside,
+            start,
+            end,
+            std::slice::from_raw_parts(slots, len),
+            core.strip.layout(),
+        ) {
+            ShellStatus::Ok
+        } else {
+            ShellStatus::InvalidArgument
+        }
     })
 }
 /// Classify whether the group has been pulled off its strip, after
@@ -3764,211 +6731,476 @@ pub unsafe extern "C" fn shell_core_group_drag_update(core:*mut ShellCore,x:f64,
 /// # Safety
 /// Live core.
 #[no_mangle]
-pub unsafe extern "C" fn shell_core_group_drag_detach(core:*mut ShellCore,x:f64,y:f64,width:f64,height:f64,foreign:bool)->ShellStatus {
-    queue_guard(core,|q| if q.group_drag.classify(x,y,width,height,foreign) { ShellStatus::Ok } else { ShellStatus::InvalidArgument })
+pub unsafe extern "C" fn shell_core_group_drag_detach(
+    core: *mut ShellCore,
+    x: f64,
+    y: f64,
+    width: f64,
+    height: f64,
+    foreign: bool,
+) -> ShellStatus {
+    queue_guard(core, |q| {
+        if q.group_drag.classify(x, y, width, height, foreign) {
+            ShellStatus::Ok
+        } else {
+            ShellStatus::InvalidArgument
+        }
+    })
 }
 /// Read the group, if any, leaving this strip for another window.
 /// # Safety
 /// Live core and writable out.
 #[no_mangle]
-pub unsafe extern "C" fn shell_core_group_departure_state(core:*mut ShellCore,out:*mut crate::group_drag::ShellGroupDeparture)->ShellStatus {
-    let Some(out)=out.as_mut() else { return ShellStatus::InvalidArgument; };
-    *out=Default::default();
-    queue_guard(core,|q| { *out=q.group_departure.state(); ShellStatus::Ok })
+pub unsafe extern "C" fn shell_core_group_departure_state(
+    core: *mut ShellCore,
+    out: *mut crate::group_drag::ShellGroupDeparture,
+) -> ShellStatus {
+    let Some(out) = out.as_mut() else {
+        return ShellStatus::InvalidArgument;
+    };
+    *out = Default::default();
+    queue_guard(core, |q| {
+        *out = q.group_departure.state();
+        ShellStatus::Ok
+    })
 }
 /// Keep `group` hidden while it leaves. `request` is this strip's own queued
 /// detach request, or 0 when another window's strip queued the adopt.
 /// # Safety
 /// Live core.
 #[no_mangle]
-pub unsafe extern "C" fn shell_core_group_departure_begin(core:*mut ShellCore,group:u32,request:u64)->ShellStatus {
-    queue_guard(core,|q| if q.begin_group_departure(group,request) { ShellStatus::Ok } else { ShellStatus::InvalidArgument })
+pub unsafe extern "C" fn shell_core_group_departure_begin(
+    core: *mut ShellCore,
+    group: u32,
+    request: u64,
+) -> ShellStatus {
+    queue_guard(core, |q| {
+        if q.begin_group_departure(group, request) {
+            ShellStatus::Ok
+        } else {
+            ShellStatus::InvalidArgument
+        }
+    })
 }
 /// Another window's strip reports that Firefox refused to adopt `group`.
 /// # Safety
 /// Live core; changed is writable.
 #[no_mangle]
-pub unsafe extern "C" fn shell_core_group_departure_reject(core:*mut ShellCore,group:u32,changed:*mut bool)->ShellStatus {
-    let Some(changed)=changed.as_mut() else { return ShellStatus::InvalidArgument; };
-    *changed=false;
-    queue_guard(core,|q| { *changed=q.group_departure.reject(group); ShellStatus::Ok })
+pub unsafe extern "C" fn shell_core_group_departure_reject(
+    core: *mut ShellCore,
+    group: u32,
+    changed: *mut bool,
+) -> ShellStatus {
+    let Some(changed) = changed.as_mut() else {
+        return ShellStatus::InvalidArgument;
+    };
+    *changed = false;
+    queue_guard(core, |q| {
+        *changed = q.group_departure.reject(group);
+        ShellStatus::Ok
+    })
 }
 /// After a layout publication: whether the departing group has left it.
 /// # Safety
 /// Live core; left is writable.
 #[no_mangle]
-pub unsafe extern "C" fn shell_core_group_departure_publish(core:*mut ShellCore,left:*mut bool)->ShellStatus {
-    let Some(left)=left.as_mut() else { return ShellStatus::InvalidArgument; };
-    *left=false;
-    guard(core,|core| {
-        if core.queue.is_closed() { return ShellStatus::Closed; }
-        *left=core.queue.group_departure.publish(core.strip.layout()); ShellStatus::Ok
+pub unsafe extern "C" fn shell_core_group_departure_publish(
+    core: *mut ShellCore,
+    left: *mut bool,
+) -> ShellStatus {
+    let Some(left) = left.as_mut() else {
+        return ShellStatus::InvalidArgument;
+    };
+    *left = false;
+    guard(core, |core| {
+        if core.queue.is_closed() {
+            return ShellStatus::Closed;
+        }
+        *left = core.queue.group_departure.publish(core.strip.layout());
+        ShellStatus::Ok
     })
 }
 /// Forget the departure once its visuals are restored or removed.
 /// # Safety
 /// Live core.
 #[no_mangle]
-pub unsafe extern "C" fn shell_core_group_departure_end(core:*mut ShellCore)->ShellStatus {
-    queue_guard(core,|q| { q.group_departure.end(); ShellStatus::Ok })
+pub unsafe extern "C" fn shell_core_group_departure_end(core: *mut ShellCore) -> ShellStatus {
+    queue_guard(core, |q| {
+        q.group_departure.end();
+        ShellStatus::Ok
+    })
 }
 /// Read this strip's state as the destination of another window's group drag.
 /// # Safety
 /// Live core and writable out.
 #[no_mangle]
-pub unsafe extern "C" fn shell_core_group_foreign_state(core:*mut ShellCore,out:*mut crate::group_drag::ShellForeignGroup)->ShellStatus {
-    let Some(out)=out.as_mut() else { return ShellStatus::InvalidArgument; };
-    *out=Default::default();
-    queue_guard(core,|q| { *out=q.foreign_group.state(); ShellStatus::Ok })
+pub unsafe extern "C" fn shell_core_group_foreign_state(
+    core: *mut ShellCore,
+    out: *mut crate::group_drag::ShellForeignGroup,
+) -> ShellStatus {
+    let Some(out) = out.as_mut() else {
+        return ShellStatus::InvalidArgument;
+    };
+    *out = Default::default();
+    queue_guard(core, |q| {
+        *out = q.foreign_group.state();
+        ShellStatus::Ok
+    })
 }
 /// Target another window's group between this strip's measured whole blocks
 /// (view-local logical axis, browser order, unshifted).
 /// # Safety
 /// Live core; slots reads len aligned entries, at most 10000 (may be null when 0).
 #[no_mangle]
-pub unsafe extern "C" fn shell_core_group_foreign_hover(core:*mut ShellCore,x:f64,slots:*const crate::group_drag::ShellGroupDragSlot,len:usize)->ShellStatus {
-    if len>10000 || (slots.is_null() && len!=0) { return ShellStatus::InvalidArgument; }
-    guard(core,|core| {
-        if core.queue.is_closed() { return ShellStatus::Closed; }
-        let slots=if len==0 { &[][..] } else { std::slice::from_raw_parts(slots,len) };
-        if core.queue.foreign_group.hover(x,slots,core.strip.layout()) { ShellStatus::Ok } else { ShellStatus::InvalidArgument }
+pub unsafe extern "C" fn shell_core_group_foreign_hover(
+    core: *mut ShellCore,
+    x: f64,
+    slots: *const crate::group_drag::ShellGroupDragSlot,
+    len: usize,
+) -> ShellStatus {
+    if len > 10000 || (slots.is_null() && len != 0) {
+        return ShellStatus::InvalidArgument;
+    }
+    guard(core, |core| {
+        if core.queue.is_closed() {
+            return ShellStatus::Closed;
+        }
+        let slots = if len == 0 {
+            &[][..]
+        } else {
+            std::slice::from_raw_parts(slots, len)
+        };
+        if core
+            .queue
+            .foreign_group
+            .hover(x, slots, core.strip.layout())
+        {
+            ShellStatus::Ok
+        } else {
+            ShellStatus::InvalidArgument
+        }
     })
 }
 /// Visual offset opening the destination gap for one measured block.
 /// # Safety
 /// Live core; out is writable for one double.
 #[no_mangle]
-pub unsafe extern "C" fn shell_core_group_foreign_offset(core:*mut ShellCore,index:usize,width:f64,out:*mut f64)->ShellStatus {
-    if out.is_null() { return ShellStatus::InvalidArgument; }
-    queue_guard(core,|q| match q.foreign_group.offset(index,width) {
-        Some(value)=> { *out=value; ShellStatus::Ok },
-        None=>ShellStatus::InvalidArgument,
+pub unsafe extern "C" fn shell_core_group_foreign_offset(
+    core: *mut ShellCore,
+    index: usize,
+    width: f64,
+    out: *mut f64,
+) -> ShellStatus {
+    if out.is_null() {
+        return ShellStatus::InvalidArgument;
+    }
+    queue_guard(core, |q| match q.foreign_group.offset(index, width) {
+        Some(value) => {
+            *out = value;
+            ShellStatus::Ok
+        }
+        None => ShellStatus::InvalidArgument,
     })
 }
 /// Hold the destination gap for a queued, tab-less adopt request.
 /// # Safety
 /// Live core.
 #[no_mangle]
-pub unsafe extern "C" fn shell_core_group_foreign_hold(core:*mut ShellCore,request:u64)->ShellStatus {
-    queue_guard(core,|q| if q.hold_foreign_group(request) { ShellStatus::Ok } else { ShellStatus::InvalidArgument })
+pub unsafe extern "C" fn shell_core_group_foreign_hold(
+    core: *mut ShellCore,
+    request: u64,
+) -> ShellStatus {
+    queue_guard(core, |q| {
+        if q.hold_foreign_group(request) {
+            ShellStatus::Ok
+        } else {
+            ShellStatus::InvalidArgument
+        }
+    })
 }
 /// End the destination preview. Without `force`, a held gap survives until its
 /// request is rejected; `force` is for a new authoritative layout.
 /// # Safety
 /// Live core; ended is writable.
 #[no_mangle]
-pub unsafe extern "C" fn shell_core_group_foreign_end(core:*mut ShellCore,force:bool,ended:*mut bool)->ShellStatus {
-    let Some(ended)=ended.as_mut() else { return ShellStatus::InvalidArgument; };
-    *ended=false;
-    queue_guard(core,|q| { *ended=q.foreign_group.end(force); ShellStatus::Ok })
+pub unsafe extern "C" fn shell_core_group_foreign_end(
+    core: *mut ShellCore,
+    force: bool,
+    ended: *mut bool,
+) -> ShellStatus {
+    let Some(ended) = ended.as_mut() else {
+        return ShellStatus::InvalidArgument;
+    };
+    *ended = false;
+    queue_guard(core, |q| {
+        *ended = q.foreign_group.end(force);
+        ShellStatus::Ok
+    })
 }
 /// Logical-axis visual offset for a whole group or ungrouped-tab block.
 /// # Safety
 /// Live core; out is writable for one double.
 #[no_mangle]
-pub unsafe extern "C" fn shell_core_group_drag_offset(core:*mut ShellCore,index:usize,width:f64,out:*mut f64)->ShellStatus {
-    if out.is_null() { return ShellStatus::InvalidArgument; }
-    queue_guard(core,|q| match q.group_drag.offset(index,width) {
-        Some(value)=> { *out=value; ShellStatus::Ok },
-        None=>ShellStatus::InvalidArgument,
+pub unsafe extern "C" fn shell_core_group_drag_offset(
+    core: *mut ShellCore,
+    index: usize,
+    width: f64,
+    out: *mut f64,
+) -> ShellStatus {
+    if out.is_null() {
+        return ShellStatus::InvalidArgument;
+    }
+    queue_guard(core, |q| match q.group_drag.offset(index, width) {
+        Some(value) => {
+            *out = value;
+            ShellStatus::Ok
+        }
+        None => ShellStatus::InvalidArgument,
     })
 }
 /// Cancel or end the local group gesture before releasing native capture.
 /// # Safety
 /// Live core.
 #[no_mangle]
-pub unsafe extern "C" fn shell_core_group_drag_end(core:*mut ShellCore)->ShellStatus {
-    queue_guard(core,|q| { q.group_drag.end(); ShellStatus::Ok })
+pub unsafe extern "C" fn shell_core_group_drag_end(core: *mut ShellCore) -> ShellStatus {
+    queue_guard(core, |q| {
+        q.group_drag.end();
+        ShellStatus::Ok
+    })
 }
 
 #[cfg(test)]
 mod group_drag_ffi_tests {
     use super::*;
     #[test]
-    fn group_drag_bounds_lifetime_and_endpoint_cancellation() { unsafe {
-        let core=shell_core_create(&std::mem::zeroed());
-        let mut state=crate::group_drag::ShellGroupDrag::default();
-        assert_eq!(shell_core_group_drag_state(core,std::ptr::null_mut()),ShellStatus::InvalidArgument);
-        assert_eq!(shell_core_group_drag_arm(core,9,0.,0.),ShellStatus::Ok);
-        let slot=crate::group_drag::ShellGroupDragSlot{group:9,tab:0,start:0.,end:40.};
-        assert_eq!(shell_core_group_drag_update(core,8.,0.,true,0.,300.,std::ptr::null(),1),ShellStatus::InvalidArgument);
-        assert_eq!(shell_core_group_drag_update(core,8.,0.,true,0.,300.,&slot,10001),ShellStatus::InvalidArgument);
-        assert_eq!(shell_core_group_drag_update(core,8.,0.,true,0.,300.,&slot,1),ShellStatus::Ok);
-        let mut offset=99.;
-        assert_eq!(shell_core_group_drag_offset(core,0,40.,std::ptr::null_mut()),ShellStatus::InvalidArgument);
-        assert_eq!(shell_core_group_drag_offset(core,1,40.,&mut offset),ShellStatus::InvalidArgument);
-        assert_eq!(shell_core_group_drag_offset(core,0,f64::NAN,&mut offset),ShellStatus::InvalidArgument);
-        assert_eq!(shell_core_group_drag_offset(core,0,40.,&mut offset),ShellStatus::Ok);
-        assert_eq!(offset,0.);
-        assert_eq!(shell_core_group_drag_detach(core,8.,200.,300.,40.,false),ShellStatus::Ok);
-        shell_core_group_drag_state(core,&mut state); assert!(state.detaching);
-        assert_eq!(shell_core_group_drag_detach(core,8.,0.,300.,40.,true),ShellStatus::Ok);
-        shell_core_group_drag_state(core,&mut state); assert!(state.detaching && !state.valid);
-        assert_eq!(shell_core_group_drag_detach(core,f64::NAN,0.,300.,40.,false),ShellStatus::InvalidArgument);
-        let mut foreign=crate::group_drag::ShellForeignGroup::default();
-        let mut ended=false;
-        assert_eq!(shell_core_group_foreign_state(core,std::ptr::null_mut()),ShellStatus::InvalidArgument);
-        assert_eq!(shell_core_group_foreign_hover(core,0.,std::ptr::null(),1),ShellStatus::InvalidArgument);
-        assert_eq!(shell_core_group_foreign_hover(core,0.,&slot,10001),ShellStatus::InvalidArgument);
-        assert_eq!(shell_core_group_foreign_hover(core,0.,std::ptr::null(),0),ShellStatus::Ok);
-        assert_eq!(shell_core_group_foreign_hover(core,50.,&slot,1),ShellStatus::Ok);
-        shell_core_group_foreign_state(core,&mut foreign); assert!(foreign.active && foreign.index==1);
-        assert_eq!(shell_core_group_foreign_offset(core,0,40.,std::ptr::null_mut()),ShellStatus::InvalidArgument);
-        assert_eq!(shell_core_group_foreign_offset(core,1,40.,&mut offset),ShellStatus::InvalidArgument);
-        // Only a queued strip request can hold the gap.
-        assert_eq!(shell_core_group_foreign_hold(core,77),ShellStatus::InvalidArgument);
-        assert_eq!(shell_core_group_foreign_end(core,false,std::ptr::null_mut()),ShellStatus::InvalidArgument);
-        assert_eq!(shell_core_group_foreign_end(core,false,&mut ended),ShellStatus::Ok); assert!(ended);
-        let mut departure=crate::group_drag::ShellGroupDeparture::default();
-        let mut left=false;
-        assert_eq!(shell_core_group_departure_state(core,std::ptr::null_mut()),ShellStatus::InvalidArgument);
-        assert_eq!(shell_core_group_departure_begin(core,9,77),ShellStatus::InvalidArgument); // not queued
-        assert_eq!(shell_core_group_departure_begin(core,0,0),ShellStatus::InvalidArgument);
-        assert_eq!(shell_core_group_departure_begin(core,9,0),ShellStatus::Ok);
-        shell_core_group_departure_state(core,&mut departure); assert_eq!(departure.group,9);
-        assert_eq!(shell_core_group_departure_publish(core,std::ptr::null_mut()),ShellStatus::InvalidArgument);
-        assert_eq!(shell_core_group_departure_publish(core,&mut left),ShellStatus::Ok); assert!(left); // empty layout
-        assert_eq!(shell_core_group_departure_reject(core,9,&mut ended),ShellStatus::Ok); assert!(ended);
-        assert_eq!(shell_core_group_departure_end(core),ShellStatus::Ok);
-        shell_core_group_departure_state(core,&mut departure); assert_eq!(departure.group,0);
-        let handle=core as usize;
-        assert_eq!(std::thread::spawn(move || shell_core_group_drag_end(handle as *mut ShellCore)).join().unwrap(),ShellStatus::WrongThread);
-        shell_core_cancel_all(core);
-        shell_core_group_drag_state(core,&mut state); assert_eq!(state.phase,0);
-        shell_core_close(core);
-        assert_eq!(shell_core_group_drag_arm(core,9,0.,0.),ShellStatus::Closed);
-        shell_core_destroy(core);
-    }}
+    fn group_drag_bounds_lifetime_and_endpoint_cancellation() {
+        unsafe {
+            let core = shell_core_create(&std::mem::zeroed());
+            let mut state = crate::group_drag::ShellGroupDrag::default();
+            assert_eq!(
+                shell_core_group_drag_state(core, std::ptr::null_mut()),
+                ShellStatus::InvalidArgument
+            );
+            assert_eq!(shell_core_group_drag_arm(core, 9, 0., 0.), ShellStatus::Ok);
+            let slot = crate::group_drag::ShellGroupDragSlot {
+                group: 9,
+                tab: 0,
+                start: 0.,
+                end: 40.,
+            };
+            assert_eq!(
+                shell_core_group_drag_update(core, 8., 0., true, 0., 300., std::ptr::null(), 1),
+                ShellStatus::InvalidArgument
+            );
+            assert_eq!(
+                shell_core_group_drag_update(core, 8., 0., true, 0., 300., &slot, 10001),
+                ShellStatus::InvalidArgument
+            );
+            assert_eq!(
+                shell_core_group_drag_update(core, 8., 0., true, 0., 300., &slot, 1),
+                ShellStatus::Ok
+            );
+            let mut offset = 99.;
+            assert_eq!(
+                shell_core_group_drag_offset(core, 0, 40., std::ptr::null_mut()),
+                ShellStatus::InvalidArgument
+            );
+            assert_eq!(
+                shell_core_group_drag_offset(core, 1, 40., &mut offset),
+                ShellStatus::InvalidArgument
+            );
+            assert_eq!(
+                shell_core_group_drag_offset(core, 0, f64::NAN, &mut offset),
+                ShellStatus::InvalidArgument
+            );
+            assert_eq!(
+                shell_core_group_drag_offset(core, 0, 40., &mut offset),
+                ShellStatus::Ok
+            );
+            assert_eq!(offset, 0.);
+            assert_eq!(
+                shell_core_group_drag_detach(core, 8., 200., 300., 40., false),
+                ShellStatus::Ok
+            );
+            shell_core_group_drag_state(core, &mut state);
+            assert!(state.detaching);
+            assert_eq!(
+                shell_core_group_drag_detach(core, 8., 0., 300., 40., true),
+                ShellStatus::Ok
+            );
+            shell_core_group_drag_state(core, &mut state);
+            assert!(state.detaching && !state.valid);
+            assert_eq!(
+                shell_core_group_drag_detach(core, f64::NAN, 0., 300., 40., false),
+                ShellStatus::InvalidArgument
+            );
+            let mut foreign = crate::group_drag::ShellForeignGroup::default();
+            let mut ended = false;
+            assert_eq!(
+                shell_core_group_foreign_state(core, std::ptr::null_mut()),
+                ShellStatus::InvalidArgument
+            );
+            assert_eq!(
+                shell_core_group_foreign_hover(core, 0., std::ptr::null(), 1),
+                ShellStatus::InvalidArgument
+            );
+            assert_eq!(
+                shell_core_group_foreign_hover(core, 0., &slot, 10001),
+                ShellStatus::InvalidArgument
+            );
+            assert_eq!(
+                shell_core_group_foreign_hover(core, 0., std::ptr::null(), 0),
+                ShellStatus::Ok
+            );
+            assert_eq!(
+                shell_core_group_foreign_hover(core, 50., &slot, 1),
+                ShellStatus::Ok
+            );
+            shell_core_group_foreign_state(core, &mut foreign);
+            assert!(foreign.active && foreign.index == 1);
+            assert_eq!(
+                shell_core_group_foreign_offset(core, 0, 40., std::ptr::null_mut()),
+                ShellStatus::InvalidArgument
+            );
+            assert_eq!(
+                shell_core_group_foreign_offset(core, 1, 40., &mut offset),
+                ShellStatus::InvalidArgument
+            );
+            // Only a queued strip request can hold the gap.
+            assert_eq!(
+                shell_core_group_foreign_hold(core, 77),
+                ShellStatus::InvalidArgument
+            );
+            assert_eq!(
+                shell_core_group_foreign_end(core, false, std::ptr::null_mut()),
+                ShellStatus::InvalidArgument
+            );
+            assert_eq!(
+                shell_core_group_foreign_end(core, false, &mut ended),
+                ShellStatus::Ok
+            );
+            assert!(ended);
+            let mut departure = crate::group_drag::ShellGroupDeparture::default();
+            let mut left = false;
+            assert_eq!(
+                shell_core_group_departure_state(core, std::ptr::null_mut()),
+                ShellStatus::InvalidArgument
+            );
+            assert_eq!(
+                shell_core_group_departure_begin(core, 9, 77),
+                ShellStatus::InvalidArgument
+            ); // not queued
+            assert_eq!(
+                shell_core_group_departure_begin(core, 0, 0),
+                ShellStatus::InvalidArgument
+            );
+            assert_eq!(
+                shell_core_group_departure_begin(core, 9, 0),
+                ShellStatus::Ok
+            );
+            shell_core_group_departure_state(core, &mut departure);
+            assert_eq!(departure.group, 9);
+            assert_eq!(
+                shell_core_group_departure_publish(core, std::ptr::null_mut()),
+                ShellStatus::InvalidArgument
+            );
+            assert_eq!(
+                shell_core_group_departure_publish(core, &mut left),
+                ShellStatus::Ok
+            );
+            assert!(left); // empty layout
+            assert_eq!(
+                shell_core_group_departure_reject(core, 9, &mut ended),
+                ShellStatus::Ok
+            );
+            assert!(ended);
+            assert_eq!(shell_core_group_departure_end(core), ShellStatus::Ok);
+            shell_core_group_departure_state(core, &mut departure);
+            assert_eq!(departure.group, 0);
+            let handle = core as usize;
+            assert_eq!(
+                std::thread::spawn(move || shell_core_group_drag_end(handle as *mut ShellCore))
+                    .join()
+                    .unwrap(),
+                ShellStatus::WrongThread
+            );
+            shell_core_cancel_all(core);
+            shell_core_group_drag_state(core, &mut state);
+            assert_eq!(state.phase, 0);
+            shell_core_close(core);
+            assert_eq!(
+                shell_core_group_drag_arm(core, 9, 0., 0.),
+                ShellStatus::Closed
+            );
+            shell_core_destroy(core);
+        }
+    }
 }
 
 /// Bind group selection stabilization to an admitted reorder request.
 /// # Safety
 /// Live core.
 #[no_mangle]
-pub unsafe extern "C" fn shell_core_group_drag_wait(core:*mut ShellCore,request:u64,group:u32,before_group:u32,before_tab:u32)->ShellStatus {
-    queue_guard(core,|q| if q.wait_group_drag(request,group,before_group,before_tab) { ShellStatus::Ok } else { ShellStatus::InvalidArgument })
+pub unsafe extern "C" fn shell_core_group_drag_wait(
+    core: *mut ShellCore,
+    request: u64,
+    group: u32,
+    before_group: u32,
+    before_tab: u32,
+) -> ShellStatus {
+    queue_guard(core, |q| {
+        if q.wait_group_drag(request, group, before_group, before_tab) {
+            ShellStatus::Ok
+        } else {
+            ShellStatus::InvalidArgument
+        }
+    })
 }
 /// Confirm whole-group order from a validated strip layout.
 /// # Safety
 /// Live core; slots reads len aligned entries, at most 20000.
 #[no_mangle]
-pub unsafe extern "C" fn shell_core_group_drag_publish(core:*mut ShellCore,slots:*const crate::strip::ShellStripSlot,len:usize)->ShellStatus {
-    if len>20000 || (slots.is_null() && len!=0) { return ShellStatus::InvalidArgument; }
-    queue_guard(core,|q| { q.group_drag.publish(if len==0 { &[] } else { std::slice::from_raw_parts(slots,len) }); ShellStatus::Ok })
+pub unsafe extern "C" fn shell_core_group_drag_publish(
+    core: *mut ShellCore,
+    slots: *const crate::strip::ShellStripSlot,
+    len: usize,
+) -> ShellStatus {
+    if len > 20000 || (slots.is_null() && len != 0) {
+        return ShellStatus::InvalidArgument;
+    }
+    queue_guard(core, |q| {
+        q.group_drag.publish(if len == 0 {
+            &[]
+        } else {
+            std::slice::from_raw_parts(slots, len)
+        });
+        ShellStatus::Ok
+    })
 }
-
 
 /// Pure bounded toolbar layout; no retained pointers or allocations. On rejection
 /// the output is untouched. Callers supply at most 55 readable slots.
 #[no_mangle]
 pub unsafe extern "C" fn shell_core_toolbar_overflow(
-    slots: *const crate::toolbar::ShellToolbarSlot, len: usize, width: f64,
-    required_menu: bool, out_mask: *mut u64,
+    slots: *const crate::toolbar::ShellToolbarSlot,
+    len: usize,
+    width: f64,
+    required_menu: bool,
+    out_mask: *mut u64,
 ) -> ShellStatus {
-    if out_mask.is_null() || len > 55 || (len != 0 && slots.is_null()) { return ShellStatus::InvalidArgument; }
-    let rows = if len == 0 { &[] } else { std::slice::from_raw_parts(slots,len) };
-    match crate::toolbar::plan(rows,width,required_menu) {
-        Some(mask) => { *out_mask=mask; ShellStatus::Ok },
+    if out_mask.is_null() || len > 55 || (len != 0 && slots.is_null()) {
+        return ShellStatus::InvalidArgument;
+    }
+    let rows = if len == 0 {
+        &[]
+    } else {
+        std::slice::from_raw_parts(slots, len)
+    };
+    match crate::toolbar::plan(rows, width, required_menu) {
+        Some(mask) => {
+            *out_mask = mask;
+            ShellStatus::Ok
+        }
         None => ShellStatus::InvalidArgument,
     }
 }
@@ -3977,24 +7209,51 @@ pub unsafe extern "C" fn shell_core_toolbar_overflow(
 #[test]
 fn toolbar_overflow_ffi_rejects_invalid_buffers_without_mutation() {
     unsafe {
-        let mut mask=99;
-        assert_eq!(shell_core_toolbar_overflow(std::ptr::null(),1,500.0,false,&mut mask),ShellStatus::InvalidArgument);
-        assert_eq!(shell_core_toolbar_overflow(std::ptr::null(),0,f64::NAN,false,&mut mask),ShellStatus::InvalidArgument);
-        assert_eq!(mask,99);
-        assert_eq!(shell_core_toolbar_overflow(std::ptr::null(),0,500.0,false,std::ptr::null_mut()),ShellStatus::InvalidArgument);
-        assert_eq!(shell_core_toolbar_overflow(std::ptr::null(),0,500.0,false,&mut mask),ShellStatus::Ok);
-        assert_eq!(mask,0);
+        let mut mask = 99;
+        assert_eq!(
+            shell_core_toolbar_overflow(std::ptr::null(), 1, 500.0, false, &mut mask),
+            ShellStatus::InvalidArgument
+        );
+        assert_eq!(
+            shell_core_toolbar_overflow(std::ptr::null(), 0, f64::NAN, false, &mut mask),
+            ShellStatus::InvalidArgument
+        );
+        assert_eq!(mask, 99);
+        assert_eq!(
+            shell_core_toolbar_overflow(std::ptr::null(), 0, 500.0, false, std::ptr::null_mut()),
+            ShellStatus::InvalidArgument
+        );
+        assert_eq!(
+            shell_core_toolbar_overflow(std::ptr::null(), 0, 500.0, false, &mut mask),
+            ShellStatus::Ok
+        );
+        assert_eq!(mask, 0);
     }
 }
 
 /// Bounded pure hit testing for native customization. Output is unchanged on failure.
 #[no_mangle]
-pub unsafe extern "C" fn shell_core_toolbar_drop_target(slots:*const crate::toolbar::ShellToolbarDropSlot,len:usize,x:f64,rtl:bool,out_index:*mut u32)->ShellStatus {
-    if out_index.is_null() || len>55 || (len!=0 && slots.is_null()) { return ShellStatus::InvalidArgument; }
-    let rows=if len==0 {&[]} else {std::slice::from_raw_parts(slots,len)};
-    match crate::toolbar::drop_target(rows,x,rtl) {
-        Some(index)=>{*out_index=index as u32;ShellStatus::Ok},
-        None=>ShellStatus::InvalidArgument,
+pub unsafe extern "C" fn shell_core_toolbar_drop_target(
+    slots: *const crate::toolbar::ShellToolbarDropSlot,
+    len: usize,
+    x: f64,
+    rtl: bool,
+    out_index: *mut u32,
+) -> ShellStatus {
+    if out_index.is_null() || len > 55 || (len != 0 && slots.is_null()) {
+        return ShellStatus::InvalidArgument;
+    }
+    let rows = if len == 0 {
+        &[]
+    } else {
+        std::slice::from_raw_parts(slots, len)
+    };
+    match crate::toolbar::drop_target(rows, x, rtl) {
+        Some(index) => {
+            *out_index = index as u32;
+            ShellStatus::Ok
+        }
+        None => ShellStatus::InvalidArgument,
     }
 }
 
@@ -4002,14 +7261,29 @@ pub unsafe extern "C" fn shell_core_toolbar_drop_target(slots:*const crate::tool
 #[test]
 fn toolbar_drop_ffi_rejects_invalid_buffers_without_mutation() {
     unsafe {
-        let mut index=77;
-        assert_eq!(shell_core_toolbar_drop_target(std::ptr::null(),1,0.0,false,&mut index),ShellStatus::InvalidArgument);
-        assert_eq!(shell_core_toolbar_drop_target(std::ptr::null(),0,f64::NAN,false,&mut index),ShellStatus::InvalidArgument);
-        assert_eq!(shell_core_toolbar_drop_target(std::ptr::null(),56,0.0,false,&mut index),ShellStatus::InvalidArgument);
-        assert_eq!(index,77);
-        assert_eq!(shell_core_toolbar_drop_target(std::ptr::null(),0,0.0,false,std::ptr::null_mut()),ShellStatus::InvalidArgument);
-        assert_eq!(shell_core_toolbar_drop_target(std::ptr::null(),0,0.0,false,&mut index),ShellStatus::Ok);
-        assert_eq!(index,0);
+        let mut index = 77;
+        assert_eq!(
+            shell_core_toolbar_drop_target(std::ptr::null(), 1, 0.0, false, &mut index),
+            ShellStatus::InvalidArgument
+        );
+        assert_eq!(
+            shell_core_toolbar_drop_target(std::ptr::null(), 0, f64::NAN, false, &mut index),
+            ShellStatus::InvalidArgument
+        );
+        assert_eq!(
+            shell_core_toolbar_drop_target(std::ptr::null(), 56, 0.0, false, &mut index),
+            ShellStatus::InvalidArgument
+        );
+        assert_eq!(index, 77);
+        assert_eq!(
+            shell_core_toolbar_drop_target(std::ptr::null(), 0, 0.0, false, std::ptr::null_mut()),
+            ShellStatus::InvalidArgument
+        );
+        assert_eq!(
+            shell_core_toolbar_drop_target(std::ptr::null(), 0, 0.0, false, &mut index),
+            ShellStatus::Ok
+        );
+        assert_eq!(index, 0);
     }
 }
 
@@ -4017,12 +7291,26 @@ fn toolbar_drop_ffi_rejects_invalid_buffers_without_mutation() {
 /// # Safety
 /// Readable spans (null only for zero count), writable out.
 #[no_mangle]
-pub unsafe extern "C" fn shell_core_toolbar_palette_order(spans:*const u32,count:usize,columns:u32,
-    out:*mut crate::toolbar::ShellToolbarPaletteOrder)->ShellStatus {
-    if out.is_null() || count>59 || (spans.is_null() && count!=0){return ShellStatus::InvalidArgument;}
-    let spans=if count==0 {&[]} else {std::slice::from_raw_parts(spans,count)};
-    match crate::toolbar::palette_order(spans,columns) {
-        Some(plan)=>{*out=plan;ShellStatus::Ok},None=>ShellStatus::InvalidArgument,
+pub unsafe extern "C" fn shell_core_toolbar_palette_order(
+    spans: *const u32,
+    count: usize,
+    columns: u32,
+    out: *mut crate::toolbar::ShellToolbarPaletteOrder,
+) -> ShellStatus {
+    if out.is_null() || count > 59 || (spans.is_null() && count != 0) {
+        return ShellStatus::InvalidArgument;
+    }
+    let spans = if count == 0 {
+        &[]
+    } else {
+        std::slice::from_raw_parts(spans, count)
+    };
+    match crate::toolbar::palette_order(spans, columns) {
+        Some(plan) => {
+            *out = plan;
+            ShellStatus::Ok
+        }
+        None => ShellStatus::InvalidArgument,
     }
 }
 
@@ -4030,23 +7318,53 @@ pub unsafe extern "C" fn shell_core_toolbar_palette_order(spans:*const u32,count
 #[test]
 fn toolbar_palette_ffi_refuses_invalid_input_without_mutating_output() {
     unsafe {
-        let mut out=crate::toolbar::ShellToolbarPaletteOrder{order:[99;59],len:99};
-        assert_eq!(shell_core_toolbar_palette_order(std::ptr::null(),1,7,&mut out),ShellStatus::InvalidArgument);
-        assert_eq!(shell_core_toolbar_palette_order([1].as_ptr(),60,7,&mut out),ShellStatus::InvalidArgument);
-        assert_eq!(shell_core_toolbar_palette_order([2].as_ptr(),1,7,&mut out),ShellStatus::InvalidArgument);
-        assert_eq!(out.len,99);assert_eq!(out.order,[99;59]);
-        assert_eq!(shell_core_toolbar_palette_order(std::ptr::null(),0,7,std::ptr::null_mut()),ShellStatus::InvalidArgument);
-        assert_eq!(shell_core_toolbar_palette_order(std::ptr::null(),0,7,&mut out),ShellStatus::Ok);
-        assert_eq!(out.len,0);
+        let mut out = crate::toolbar::ShellToolbarPaletteOrder {
+            order: [99; 59],
+            len: 99,
+        };
+        assert_eq!(
+            shell_core_toolbar_palette_order(std::ptr::null(), 1, 7, &mut out),
+            ShellStatus::InvalidArgument
+        );
+        assert_eq!(
+            shell_core_toolbar_palette_order([1].as_ptr(), 60, 7, &mut out),
+            ShellStatus::InvalidArgument
+        );
+        assert_eq!(
+            shell_core_toolbar_palette_order([2].as_ptr(), 1, 7, &mut out),
+            ShellStatus::InvalidArgument
+        );
+        assert_eq!(out.len, 99);
+        assert_eq!(out.order, [99; 59]);
+        assert_eq!(
+            shell_core_toolbar_palette_order(std::ptr::null(), 0, 7, std::ptr::null_mut()),
+            ShellStatus::InvalidArgument
+        );
+        assert_eq!(
+            shell_core_toolbar_palette_order(std::ptr::null(), 0, 7, &mut out),
+            ShellStatus::Ok
+        );
+        assert_eq!(out.len, 0);
     }
 }
 
 /// Plan a bounded preview permutation without changing persistent toolbar state.
 #[no_mangle]
-pub unsafe extern "C" fn shell_core_toolbar_preview(len:usize,source:usize,target:usize,out:*mut crate::toolbar::ShellToolbarPreview)->ShellStatus {
-    if out.is_null(){return ShellStatus::InvalidArgument;}
-    match crate::toolbar::preview(len,source,target) {
-        Some(plan)=>{*out=plan;ShellStatus::Ok},None=>ShellStatus::InvalidArgument,
+pub unsafe extern "C" fn shell_core_toolbar_preview(
+    len: usize,
+    source: usize,
+    target: usize,
+    out: *mut crate::toolbar::ShellToolbarPreview,
+) -> ShellStatus {
+    if out.is_null() {
+        return ShellStatus::InvalidArgument;
+    }
+    match crate::toolbar::preview(len, source, target) {
+        Some(plan) => {
+            *out = plan;
+            ShellStatus::Ok
+        }
+        None => ShellStatus::InvalidArgument,
     }
 }
 
@@ -4054,13 +7372,27 @@ pub unsafe extern "C" fn shell_core_toolbar_preview(len:usize,source:usize,targe
 #[test]
 fn toolbar_preview_ffi_checks_bounds_without_mutating_output() {
     unsafe {
-        let mut out=crate::toolbar::ShellToolbarPreview{order:[99;56],len:99};
-        assert_eq!(shell_core_toolbar_preview(3,0,0,std::ptr::null_mut()),ShellStatus::InvalidArgument);
-        for (n,s,t) in [(56,0,0),(3,4,0),(3,0,4)] {
-            assert_eq!(shell_core_toolbar_preview(n,s,t,&mut out),ShellStatus::InvalidArgument);
-            assert_eq!(out.len,99);assert_eq!(out.order,[99;56]);
+        let mut out = crate::toolbar::ShellToolbarPreview {
+            order: [99; 56],
+            len: 99,
+        };
+        assert_eq!(
+            shell_core_toolbar_preview(3, 0, 0, std::ptr::null_mut()),
+            ShellStatus::InvalidArgument
+        );
+        for (n, s, t) in [(56, 0, 0), (3, 4, 0), (3, 0, 4)] {
+            assert_eq!(
+                shell_core_toolbar_preview(n, s, t, &mut out),
+                ShellStatus::InvalidArgument
+            );
+            assert_eq!(out.len, 99);
+            assert_eq!(out.order, [99; 56]);
         }
-        assert_eq!(shell_core_toolbar_preview(55,55,55,&mut out),ShellStatus::Ok);assert_eq!(out.len,56);
+        assert_eq!(
+            shell_core_toolbar_preview(55, 55, 55, &mut out),
+            ShellStatus::Ok
+        );
+        assert_eq!(out.len, 56);
     }
 }
 
@@ -4068,16 +7400,34 @@ fn toolbar_preview_ffi_checks_bounds_without_mutating_output() {
 /// # Safety
 /// Live core and writable out.
 #[no_mangle]
-pub unsafe extern "C" fn shell_core_surface_menu_open(core:*mut ShellCore,out:*mut u32)->ShellStatus {
- let Some(out)=out.as_mut() else{return ShellStatus::InvalidArgument;};*out=0;
- guard(core,|c|{if c.queue.is_closed(){return ShellStatus::Closed;}*out=c.surface_menu.open();ShellStatus::Ok})
+pub unsafe extern "C" fn shell_core_surface_menu_open(
+    core: *mut ShellCore,
+    out: *mut u32,
+) -> ShellStatus {
+    let Some(out) = out.as_mut() else {
+        return ShellStatus::InvalidArgument;
+    };
+    *out = 0;
+    guard(core, |c| {
+        if c.queue.is_closed() {
+            return ShellStatus::Closed;
+        }
+        *out = c.surface_menu.open();
+        ShellStatus::Ok
+    })
 }
 /// Revoke a window-scoped menu, preserving its identity high-water mark.
 /// # Safety
 /// Live core.
 #[no_mangle]
-pub unsafe extern "C" fn shell_core_surface_menu_dismiss(core:*mut ShellCore)->ShellStatus {
- guard(core,|c|{if c.queue.is_closed(){return ShellStatus::Closed;}c.surface_menu.dismiss();ShellStatus::Ok})
+pub unsafe extern "C" fn shell_core_surface_menu_dismiss(core: *mut ShellCore) -> ShellStatus {
+    guard(core, |c| {
+        if c.queue.is_closed() {
+            return ShellStatus::Closed;
+        }
+        c.surface_menu.dismiss();
+        ShellStatus::Ok
+    })
 }
 /// Resolve a validated session description before mutating the host container.
 /// Accepted work is committed and counted by shell_core_surface_menu_accept;
@@ -4085,116 +7435,459 @@ pub unsafe extern "C" fn shell_core_surface_menu_dismiss(core:*mut ShellCore)->S
 /// # Safety
 /// Live core, readable arrays (null only for zero length), writable changed.
 #[no_mangle]
-pub unsafe extern "C" fn shell_core_surface_menu_resolve(core:*mut ShellCore,session:u32,revision:u32,
- actions:*const u32,count:usize,fingerprint:*const u16,units:usize,changed:*mut bool)->ShellStatus {
- let Some(changed)=changed.as_mut() else{return ShellStatus::InvalidArgument;};*changed=false;
- if count>crate::surface_menu::MAX_ACTIONS || units>crate::surface_menu::MAX_DESCRIPTION || (actions.is_null() && count!=0){return ShellStatus::InvalidArgument;}
- let Some(fingerprint)=slice(fingerprint,units) else{return ShellStatus::InvalidArgument;};
- let actions=if count==0{&[]}else{std::slice::from_raw_parts(actions,count)};
- guard(core,|c|if c.queue.is_closed(){ShellStatus::Closed}else{match c.surface_menu.resolve(session,revision,actions,fingerprint){Ok(v)=>{*changed=v;ShellStatus::Ok},Err(())=>ShellStatus::InvalidArgument}})
+pub unsafe extern "C" fn shell_core_surface_menu_resolve(
+    core: *mut ShellCore,
+    session: u32,
+    revision: u32,
+    actions: *const u32,
+    count: usize,
+    fingerprint: *const u16,
+    units: usize,
+    changed: *mut bool,
+) -> ShellStatus {
+    let Some(changed) = changed.as_mut() else {
+        return ShellStatus::InvalidArgument;
+    };
+    *changed = false;
+    if count > crate::surface_menu::MAX_ACTIONS
+        || units > crate::surface_menu::MAX_DESCRIPTION
+        || (actions.is_null() && count != 0)
+    {
+        return ShellStatus::InvalidArgument;
+    }
+    let Some(fingerprint) = slice(fingerprint, units) else {
+        return ShellStatus::InvalidArgument;
+    };
+    let actions = if count == 0 {
+        &[]
+    } else {
+        std::slice::from_raw_parts(actions, count)
+    };
+    guard(core, |c| {
+        if c.queue.is_closed() {
+            ShellStatus::Closed
+        } else {
+            match c
+                .surface_menu
+                .resolve(session, revision, actions, fingerprint)
+            {
+                Ok(v) => {
+                    *changed = v;
+                    ShellStatus::Ok
+                }
+                Err(()) => ShellStatus::InvalidArgument,
+            }
+        }
+    })
 }
 
 /// Accept a complete bounded description atomically; unchanged descriptions do not rebuild controls.
 /// # Safety
 /// Live core, readable arrays (null only for zero length), writable changed.
 #[no_mangle]
-pub unsafe extern "C" fn shell_core_surface_menu_accept(core:*mut ShellCore,session:u32,revision:u32,
- actions:*const u32,count:usize,fingerprint:*const u16,units:usize,changed:*mut bool)->ShellStatus {
- let Some(changed)=changed.as_mut() else{return ShellStatus::InvalidArgument;};*changed=false;
- if count>crate::surface_menu::MAX_ACTIONS || units>crate::surface_menu::MAX_DESCRIPTION || (actions.is_null() && count!=0){return ShellStatus::InvalidArgument;}
- let Some(fingerprint)=slice(fingerprint,units) else{return ShellStatus::InvalidArgument;};
- let actions=if count==0{&[]}else{std::slice::from_raw_parts(actions,count)};
- guard(core,|c|if c.queue.is_closed(){ShellStatus::Closed}else{match c.surface_menu.accept(session,revision,actions,fingerprint){Ok(v)=>{*changed=v;ShellStatus::Ok},Err(())=>ShellStatus::InvalidArgument}})
+pub unsafe extern "C" fn shell_core_surface_menu_accept(
+    core: *mut ShellCore,
+    session: u32,
+    revision: u32,
+    actions: *const u32,
+    count: usize,
+    fingerprint: *const u16,
+    units: usize,
+    changed: *mut bool,
+) -> ShellStatus {
+    let Some(changed) = changed.as_mut() else {
+        return ShellStatus::InvalidArgument;
+    };
+    *changed = false;
+    if count > crate::surface_menu::MAX_ACTIONS
+        || units > crate::surface_menu::MAX_DESCRIPTION
+        || (actions.is_null() && count != 0)
+    {
+        return ShellStatus::InvalidArgument;
+    }
+    let Some(fingerprint) = slice(fingerprint, units) else {
+        return ShellStatus::InvalidArgument;
+    };
+    let actions = if count == 0 {
+        &[]
+    } else {
+        std::slice::from_raw_parts(actions, count)
+    };
+    guard(core, |c| {
+        if c.queue.is_closed() {
+            ShellStatus::Closed
+        } else {
+            match c
+                .surface_menu
+                .accept(session, revision, actions, fingerprint)
+            {
+                Ok(v) => {
+                    *changed = v;
+                    ShellStatus::Ok
+                }
+                Err(()) => ShellStatus::InvalidArgument,
+            }
+        }
+    })
 }
 /// Consume one current enabled action; dismissal and late updates cannot resurrect it.
 /// # Safety
 /// Live core and writable accepted.
 #[no_mangle]
-pub unsafe extern "C" fn shell_core_surface_menu_activate(core:*mut ShellCore,session:u32,revision:u32,action:u32,accepted:*mut bool)->ShellStatus {
- let Some(accepted)=accepted.as_mut() else{return ShellStatus::InvalidArgument;};*accepted=false;
- guard(core,|c|{if c.queue.is_closed(){return ShellStatus::Closed;}*accepted=c.surface_menu.activate(session,revision,action);ShellStatus::Ok})
+pub unsafe extern "C" fn shell_core_surface_menu_activate(
+    core: *mut ShellCore,
+    session: u32,
+    revision: u32,
+    action: u32,
+    accepted: *mut bool,
+) -> ShellStatus {
+    let Some(accepted) = accepted.as_mut() else {
+        return ShellStatus::InvalidArgument;
+    };
+    *accepted = false;
+    guard(core, |c| {
+        if c.queue.is_closed() {
+            return ShellStatus::Closed;
+        }
+        *accepted = c.surface_menu.activate(session, revision, action);
+        ShellStatus::Ok
+    })
 }
 
 #[cfg(test)]
 mod surface_menu_ffi_tests {
- use super::*;
- #[test] fn resolution_checks_boundary_and_never_commits() {unsafe {
-  let core=shell_core_create(&std::mem::zeroed());let mut session=0;let mut changed=true;
-  shell_core_surface_menu_open(core,&mut session);
-  assert_eq!(shell_core_surface_menu_resolve(core,session,1,[7].as_ptr(),1,[9].as_ptr(),1,std::ptr::null_mut()),ShellStatus::InvalidArgument);
-  assert_eq!(shell_core_surface_menu_resolve(core,session,1,std::ptr::null(),1,[9].as_ptr(),1,&mut changed),ShellStatus::InvalidArgument);assert!(!changed);
-  assert_eq!(shell_core_surface_menu_resolve(core,session,1,[7].as_ptr(),1,std::ptr::null(),1,&mut changed),ShellStatus::InvalidArgument);
-  assert_eq!(shell_core_surface_menu_resolve(core,session,1,std::ptr::null(),257,std::ptr::null(),0,&mut changed),ShellStatus::InvalidArgument);
-  assert_eq!(shell_core_surface_menu_resolve(core,session,1,std::ptr::null(),0,std::ptr::null(),65537,&mut changed),ShellStatus::InvalidArgument);
-  assert_eq!(shell_core_surface_menu_resolve(std::ptr::null_mut(),session,1,std::ptr::null(),0,std::ptr::null(),0,&mut changed),ShellStatus::InvalidArgument);
-  assert_eq!(shell_core_surface_menu_resolve(core,session,1,[7].as_ptr(),1,[9].as_ptr(),1,&mut changed),ShellStatus::Ok);assert!(changed);
-  shell_core_surface_menu_activate(core,session,1,7,&mut changed);assert!(!changed);
-  shell_core_surface_menu_accept(core,session,1,[7].as_ptr(),1,[9].as_ptr(),1,&mut changed);assert!(changed);
-  assert_eq!(shell_core_surface_menu_resolve(core,session,1,[8].as_ptr(),1,[9].as_ptr(),1,&mut changed),ShellStatus::InvalidArgument);assert!(!changed);
-  shell_core_surface_menu_activate(core,session,1,7,&mut changed);assert!(changed);
-  shell_core_close(core);
-  assert_eq!(shell_core_surface_menu_resolve(core,session,2,[7].as_ptr(),1,[9].as_ptr(),1,&mut changed),ShellStatus::Closed);assert!(!changed);
-  shell_core_destroy(core);
- }}
- #[test] fn bounded_surface_menu_boundary_and_cancellation() {unsafe {
-  let core=shell_core_create(&std::mem::zeroed());let mut session=0;let mut accepted=false;
-  assert_eq!(shell_core_surface_menu_open(core,std::ptr::null_mut()),ShellStatus::InvalidArgument);
-  assert_eq!(shell_core_surface_menu_open(core,&mut session),ShellStatus::Ok);assert_ne!(session,0);
-  assert_eq!(shell_core_surface_menu_accept(core,session,1,std::ptr::null(),1,std::ptr::null(),0,&mut accepted),ShellStatus::InvalidArgument);
-  assert_eq!(shell_core_surface_menu_accept(core,session,1,[7].as_ptr(),1,[9].as_ptr(),1,&mut accepted),ShellStatus::Ok);assert!(accepted);
-  assert_eq!(shell_core_surface_menu_activate(core,session,1,7,&mut accepted),ShellStatus::Ok);assert!(accepted);
-  assert_eq!(shell_core_surface_menu_activate(core,session,1,7,&mut accepted),ShellStatus::Ok);assert!(!accepted);
-  let old=session;shell_core_surface_menu_open(core,&mut session);assert!(session>old);shell_core_cancel_all(core);
-  shell_core_surface_menu_accept(core,session,2,[7].as_ptr(),1,[9].as_ptr(),1,&mut accepted);assert!(!accepted);
-  shell_core_close(core);assert_eq!(shell_core_surface_menu_open(core,&mut session),ShellStatus::Closed);assert_eq!(session,0);
-  shell_core_destroy(core);
- }}
+    use super::*;
+    #[test]
+    fn resolution_checks_boundary_and_never_commits() {
+        unsafe {
+            let core = shell_core_create(&std::mem::zeroed());
+            let mut session = 0;
+            let mut changed = true;
+            shell_core_surface_menu_open(core, &mut session);
+            assert_eq!(
+                shell_core_surface_menu_resolve(
+                    core,
+                    session,
+                    1,
+                    [7].as_ptr(),
+                    1,
+                    [9].as_ptr(),
+                    1,
+                    std::ptr::null_mut()
+                ),
+                ShellStatus::InvalidArgument
+            );
+            assert_eq!(
+                shell_core_surface_menu_resolve(
+                    core,
+                    session,
+                    1,
+                    std::ptr::null(),
+                    1,
+                    [9].as_ptr(),
+                    1,
+                    &mut changed
+                ),
+                ShellStatus::InvalidArgument
+            );
+            assert!(!changed);
+            assert_eq!(
+                shell_core_surface_menu_resolve(
+                    core,
+                    session,
+                    1,
+                    [7].as_ptr(),
+                    1,
+                    std::ptr::null(),
+                    1,
+                    &mut changed
+                ),
+                ShellStatus::InvalidArgument
+            );
+            assert_eq!(
+                shell_core_surface_menu_resolve(
+                    core,
+                    session,
+                    1,
+                    std::ptr::null(),
+                    257,
+                    std::ptr::null(),
+                    0,
+                    &mut changed
+                ),
+                ShellStatus::InvalidArgument
+            );
+            assert_eq!(
+                shell_core_surface_menu_resolve(
+                    core,
+                    session,
+                    1,
+                    std::ptr::null(),
+                    0,
+                    std::ptr::null(),
+                    65537,
+                    &mut changed
+                ),
+                ShellStatus::InvalidArgument
+            );
+            assert_eq!(
+                shell_core_surface_menu_resolve(
+                    std::ptr::null_mut(),
+                    session,
+                    1,
+                    std::ptr::null(),
+                    0,
+                    std::ptr::null(),
+                    0,
+                    &mut changed
+                ),
+                ShellStatus::InvalidArgument
+            );
+            assert_eq!(
+                shell_core_surface_menu_resolve(
+                    core,
+                    session,
+                    1,
+                    [7].as_ptr(),
+                    1,
+                    [9].as_ptr(),
+                    1,
+                    &mut changed
+                ),
+                ShellStatus::Ok
+            );
+            assert!(changed);
+            shell_core_surface_menu_activate(core, session, 1, 7, &mut changed);
+            assert!(!changed);
+            shell_core_surface_menu_accept(
+                core,
+                session,
+                1,
+                [7].as_ptr(),
+                1,
+                [9].as_ptr(),
+                1,
+                &mut changed,
+            );
+            assert!(changed);
+            assert_eq!(
+                shell_core_surface_menu_resolve(
+                    core,
+                    session,
+                    1,
+                    [8].as_ptr(),
+                    1,
+                    [9].as_ptr(),
+                    1,
+                    &mut changed
+                ),
+                ShellStatus::InvalidArgument
+            );
+            assert!(!changed);
+            shell_core_surface_menu_activate(core, session, 1, 7, &mut changed);
+            assert!(changed);
+            shell_core_close(core);
+            assert_eq!(
+                shell_core_surface_menu_resolve(
+                    core,
+                    session,
+                    2,
+                    [7].as_ptr(),
+                    1,
+                    [9].as_ptr(),
+                    1,
+                    &mut changed
+                ),
+                ShellStatus::Closed
+            );
+            assert!(!changed);
+            shell_core_destroy(core);
+        }
+    }
+    #[test]
+    fn bounded_surface_menu_boundary_and_cancellation() {
+        unsafe {
+            let core = shell_core_create(&std::mem::zeroed());
+            let mut session = 0;
+            let mut accepted = false;
+            assert_eq!(
+                shell_core_surface_menu_open(core, std::ptr::null_mut()),
+                ShellStatus::InvalidArgument
+            );
+            assert_eq!(
+                shell_core_surface_menu_open(core, &mut session),
+                ShellStatus::Ok
+            );
+            assert_ne!(session, 0);
+            assert_eq!(
+                shell_core_surface_menu_accept(
+                    core,
+                    session,
+                    1,
+                    std::ptr::null(),
+                    1,
+                    std::ptr::null(),
+                    0,
+                    &mut accepted
+                ),
+                ShellStatus::InvalidArgument
+            );
+            assert_eq!(
+                shell_core_surface_menu_accept(
+                    core,
+                    session,
+                    1,
+                    [7].as_ptr(),
+                    1,
+                    [9].as_ptr(),
+                    1,
+                    &mut accepted
+                ),
+                ShellStatus::Ok
+            );
+            assert!(accepted);
+            assert_eq!(
+                shell_core_surface_menu_activate(core, session, 1, 7, &mut accepted),
+                ShellStatus::Ok
+            );
+            assert!(accepted);
+            assert_eq!(
+                shell_core_surface_menu_activate(core, session, 1, 7, &mut accepted),
+                ShellStatus::Ok
+            );
+            assert!(!accepted);
+            let old = session;
+            shell_core_surface_menu_open(core, &mut session);
+            assert!(session > old);
+            shell_core_cancel_all(core);
+            shell_core_surface_menu_accept(
+                core,
+                session,
+                2,
+                [7].as_ptr(),
+                1,
+                [9].as_ptr(),
+                1,
+                &mut accepted,
+            );
+            assert!(!accepted);
+            shell_core_close(core);
+            assert_eq!(
+                shell_core_surface_menu_open(core, &mut session),
+                ShellStatus::Closed
+            );
+            assert_eq!(session, 0);
+            shell_core_destroy(core);
+        }
+    }
 }
 
 #[cfg(test)]
 mod tab_publication_ffi_tests {
     use super::*;
     #[test]
-    fn atomic_batch_boundary_acknowledges_producer_and_revokes_on_cancel() { unsafe {
-        let core = shell_core_create(std::ptr::null());
-        assert_eq!(shell_core_model_begin_snapshot(core, 1, 80, 2), ShellStatus::Ok);
-        for tab in [1, 2] { assert_eq!(shell_core_model_push_snapshot_tab(core, tab, std::ptr::null(), 0, 3), ShellStatus::Ok); }
-        assert_eq!(shell_core_model_commit_snapshot(core, 1, std::ptr::null_mut()), ShellStatus::Ok);
-        (*core).model.take_changes();
-        let text = [65u16];
-        let rows = [ShellTabTitle { tab: 1, title: text.as_ptr(), title_len: 1 },
-                    ShellTabTitle { tab: 99, title: text.as_ptr(), title_len: 1 }];
-        assert_eq!(shell_core_model_apply_delta(core, 80, 900, rows.as_ptr(), 2, true, 2), ShellStatus::UnknownTab);
-        assert_eq!((*core).model.title(1), Some(&[][..]));
-        assert_eq!((*core).model.selected(), 1);
-        assert_eq!(shell_core_model_apply_delta(core, 80, 900, rows.as_ptr(), 1, true, 2), ShellStatus::Ok);
-        assert_eq!((*core).model.revision(), 900);
-        (*core).model.take_changes();
-        assert_eq!(shell_core_model_apply_delta(core, 80, 900, rows.as_ptr(), 1, true, 2), ShellStatus::Ok);
-        assert!((*core).model.pending_changes().is_empty());
-        assert_eq!(shell_core_model_apply_delta(core, 900, 901, std::ptr::null(), 1, false, 0), ShellStatus::InvalidArgument);
-        assert_eq!(shell_core_model_apply_delta(core, 900, 901, std::ptr::null(), 0, false, 0), ShellStatus::Ok);
-        shell_core_cancel_all(core);
-        assert_eq!((*core).model.revision(), 0);
-        assert_eq!(shell_core_model_apply_delta(core, 901, 902, std::ptr::null(), 0, false, 0), ShellStatus::Gap);
-        let mut counts = ShellPublicationCounts::default();
-        assert_eq!(shell_core_publication_stats(core, ShellPublicationChannel::TabModel as u32, &mut counts), ShellStatus::Ok);
-        assert_eq!((counts.accepted, counts.unchanged, counts.refused), (3, 1, 2));
-        shell_core_destroy(core);
-    }}
+    fn atomic_batch_boundary_acknowledges_producer_and_revokes_on_cancel() {
+        unsafe {
+            let core = shell_core_create(std::ptr::null());
+            assert_eq!(
+                shell_core_model_begin_snapshot(core, 1, 80, 2),
+                ShellStatus::Ok
+            );
+            for tab in [1, 2] {
+                assert_eq!(
+                    shell_core_model_push_snapshot_tab(core, tab, std::ptr::null(), 0, 3),
+                    ShellStatus::Ok
+                );
+            }
+            assert_eq!(
+                shell_core_model_commit_snapshot(core, 1, std::ptr::null_mut()),
+                ShellStatus::Ok
+            );
+            (*core).model.take_changes();
+            let text = [65u16];
+            let rows = [
+                ShellTabTitle {
+                    tab: 1,
+                    title: text.as_ptr(),
+                    title_len: 1,
+                },
+                ShellTabTitle {
+                    tab: 99,
+                    title: text.as_ptr(),
+                    title_len: 1,
+                },
+            ];
+            assert_eq!(
+                shell_core_model_apply_delta(core, 80, 900, rows.as_ptr(), 2, true, 2),
+                ShellStatus::UnknownTab
+            );
+            assert_eq!((*core).model.title(1), Some(&[][..]));
+            assert_eq!((*core).model.selected(), 1);
+            assert_eq!(
+                shell_core_model_apply_delta(core, 80, 900, rows.as_ptr(), 1, true, 2),
+                ShellStatus::Ok
+            );
+            assert_eq!((*core).model.revision(), 900);
+            (*core).model.take_changes();
+            assert_eq!(
+                shell_core_model_apply_delta(core, 80, 900, rows.as_ptr(), 1, true, 2),
+                ShellStatus::Ok
+            );
+            assert!((*core).model.pending_changes().is_empty());
+            assert_eq!(
+                shell_core_model_apply_delta(core, 900, 901, std::ptr::null(), 1, false, 0),
+                ShellStatus::InvalidArgument
+            );
+            assert_eq!(
+                shell_core_model_apply_delta(core, 900, 901, std::ptr::null(), 0, false, 0),
+                ShellStatus::Ok
+            );
+            shell_core_cancel_all(core);
+            assert_eq!((*core).model.revision(), 0);
+            assert_eq!(
+                shell_core_model_apply_delta(core, 901, 902, std::ptr::null(), 0, false, 0),
+                ShellStatus::Gap
+            );
+            let mut counts = ShellPublicationCounts::default();
+            assert_eq!(
+                shell_core_publication_stats(
+                    core,
+                    ShellPublicationChannel::TabModel as u32,
+                    &mut counts
+                ),
+                ShellStatus::Ok
+            );
+            assert_eq!(
+                (counts.accepted, counts.unchanged, counts.refused),
+                (3, 1, 2)
+            );
+            shell_core_destroy(core);
+        }
+    }
 }
 
 /// Open a preview request; IDs stay safe JavaScript integers and never wrap.
 /// # Safety
 /// See [`guard`]. `request` must be writable.
 #[no_mangle]
-pub unsafe extern "C" fn shell_core_preview_begin(core: *mut ShellCore, tab: u32, request: *mut u64) -> ShellStatus {
-    let Some(out) = request.as_mut() else { return ShellStatus::InvalidArgument; };
+pub unsafe extern "C" fn shell_core_preview_begin(
+    core: *mut ShellCore,
+    tab: u32,
+    request: *mut u64,
+) -> ShellStatus {
+    let Some(out) = request.as_mut() else {
+        return ShellStatus::InvalidArgument;
+    };
     *out = 0;
     guard(core, |core| {
-        if core.queue.is_closed() { return ShellStatus::Closed; }
+        if core.queue.is_closed() {
+            return ShellStatus::Closed;
+        }
         match core.preview_publication.begin(tab) {
-            Ok(value) => { *out = value; ShellStatus::Ok }
+            Ok(value) => {
+                *out = value;
+                ShellStatus::Ok
+            }
             Err(()) => ShellStatus::InvalidArgument,
         }
     })
@@ -4203,23 +7896,51 @@ pub unsafe extern "C" fn shell_core_preview_begin(core: *mut ShellCore, tab: u32
 /// # Safety
 /// See [`guard`].
 #[no_mangle]
-pub unsafe extern "C" fn shell_core_preview_dismiss(core: *mut ShellCore, request: u64) -> ShellStatus {
-    guard(core, |core| { core.preview_publication.dismiss(request); ShellStatus::Ok })
+pub unsafe extern "C" fn shell_core_preview_dismiss(
+    core: *mut ShellCore,
+    request: u64,
+) -> ShellStatus {
+    guard(core, |core| {
+        core.preview_publication.dismiss(request);
+        ShellStatus::Ok
+    })
 }
 /// Resolve/commit fully validated preview content before native mutation.
 /// Phase 1 has no wire image key; phase 2 has an image key, including null.
 /// # Safety
 /// See [`guard`]. The fingerprint span must be readable and `apply` writable.
 #[no_mangle]
-pub unsafe extern "C" fn shell_core_preview_publication(core: *mut ShellCore, tab: u32, request: u64,
-    phase: u32, fingerprint: *const u16, fingerprint_len: usize, commit: bool, apply: *mut bool) -> ShellStatus {
-    let Some(out) = apply.as_mut() else { return ShellStatus::InvalidArgument; };
+pub unsafe extern "C" fn shell_core_preview_publication(
+    core: *mut ShellCore,
+    tab: u32,
+    request: u64,
+    phase: u32,
+    fingerprint: *const u16,
+    fingerprint_len: usize,
+    commit: bool,
+    apply: *mut bool,
+) -> ShellStatus {
+    let Some(out) = apply.as_mut() else {
+        return ShellStatus::InvalidArgument;
+    };
     *out = false;
-    if fingerprint_len > crate::preview_publication::MAX_PREVIEW_FINGERPRINT { return ShellStatus::TooLarge; }
-    let Some(fingerprint) = slice(fingerprint, fingerprint_len) else { return ShellStatus::InvalidArgument; };
-    guard(core, |core| match core.preview_publication.resolve(tab, request, phase, fingerprint, commit) {
-        Ok(value) => { *out = value; ShellStatus::Ok }
-        Err(()) => ShellStatus::InvalidArgument,
+    if fingerprint_len > crate::preview_publication::MAX_PREVIEW_FINGERPRINT {
+        return ShellStatus::TooLarge;
+    }
+    let Some(fingerprint) = slice(fingerprint, fingerprint_len) else {
+        return ShellStatus::InvalidArgument;
+    };
+    guard(core, |core| {
+        match core
+            .preview_publication
+            .resolve(tab, request, phase, fingerprint, commit)
+        {
+            Ok(value) => {
+                *out = value;
+                ShellStatus::Ok
+            }
+            Err(()) => ShellStatus::InvalidArgument,
+        }
     })
 }
 
@@ -4227,34 +7948,140 @@ pub unsafe extern "C" fn shell_core_preview_publication(core: *mut ShellCore, ta
 mod preview_publication_ffi_tests {
     use super::*;
     #[test]
-    fn preview_boundary_preflight_cancellation_and_close_preserve_counts() { unsafe {
-        let core=shell_core_create(std::ptr::null());let mut request=0;let mut apply=true;
-        assert_eq!(shell_core_preview_begin(core,7,&mut request),ShellStatus::Ok);
-        assert_eq!(shell_core_preview_begin(core,8,std::ptr::null_mut()),ShellStatus::InvalidArgument);
-        let publish=|tab,req,phase,body:&[u16],commit,out|shell_core_preview_publication(core,tab,req,phase,body.as_ptr(),body.len(),commit,out);
-        assert_eq!(publish(7,request,1,&[1],false,&mut apply),ShellStatus::Ok);assert!(apply);
-        assert_eq!(publish(7,request,1,&[1],true,&mut apply),ShellStatus::Ok);assert!(apply);
-        assert_eq!(publish(7,request,1,&[1],false,&mut apply),ShellStatus::Ok);assert!(!apply);
-        assert_eq!(publish(7,request,1,&[2],false,&mut apply),ShellStatus::InvalidArgument);assert!(!apply);
-        assert_eq!(publish(7,request,2,&[2],true,&mut apply),ShellStatus::Ok);assert!(apply);
-        assert_eq!(publish(7,request,1,&[3],false,&mut apply),ShellStatus::Ok);assert!(!apply);
-        assert_eq!(publish(8,request,2,&[2],false,&mut apply),ShellStatus::Ok);assert!(!apply);
-        assert_eq!(shell_core_preview_publication(core,7,request,2,std::ptr::null(),1,false,&mut apply),ShellStatus::InvalidArgument);
-        assert_eq!(shell_core_preview_publication(core,7,request,2,std::ptr::null(),usize::MAX,false,&mut apply),ShellStatus::TooLarge);
-        shell_core_cancel_all(core);
-        assert_eq!(publish(7,request,2,&[2],true,&mut apply),ShellStatus::Ok);assert!(!apply);
-        let previous=request;shell_core_preview_begin(core,8,&mut request);assert!(request>previous);
-        assert_eq!(shell_core_toolbar_publication_reset(core),ShellStatus::Ok);
-        shell_core_preview_dismiss(core,previous);
-        assert_eq!(publish(8,request,1,&[4],true,&mut apply),ShellStatus::Ok);assert!(apply);
-        shell_core_close(core);
-        assert_eq!(publish(8,request,2,&[5],true,&mut apply),ShellStatus::Ok);assert!(!apply);
-        assert_eq!(shell_core_preview_begin(core,8,&mut request),ShellStatus::Closed);assert_eq!(request,0);
-        let mut counts=ShellPublicationCounts::default();
-        assert_eq!(shell_core_publication_stats(core,ShellPublicationChannel::TabPreview as u32,&mut counts),ShellStatus::Ok);
-        assert_eq!((counts.accepted,counts.unchanged,counts.ignored,counts.refused),(3,1,4,1));
-        shell_core_destroy(core);
-    }}
+    fn preview_boundary_preflight_cancellation_and_close_preserve_counts() {
+        unsafe {
+            let core = shell_core_create(std::ptr::null());
+            let mut request = 0;
+            let mut apply = true;
+            assert_eq!(
+                shell_core_preview_begin(core, 7, &mut request),
+                ShellStatus::Ok
+            );
+            assert_eq!(
+                shell_core_preview_begin(core, 8, std::ptr::null_mut()),
+                ShellStatus::InvalidArgument
+            );
+            let publish = |tab, req, phase, body: &[u16], commit, out| {
+                shell_core_preview_publication(
+                    core,
+                    tab,
+                    req,
+                    phase,
+                    body.as_ptr(),
+                    body.len(),
+                    commit,
+                    out,
+                )
+            };
+            assert_eq!(
+                publish(7, request, 1, &[1], false, &mut apply),
+                ShellStatus::Ok
+            );
+            assert!(apply);
+            assert_eq!(
+                publish(7, request, 1, &[1], true, &mut apply),
+                ShellStatus::Ok
+            );
+            assert!(apply);
+            assert_eq!(
+                publish(7, request, 1, &[1], false, &mut apply),
+                ShellStatus::Ok
+            );
+            assert!(!apply);
+            assert_eq!(
+                publish(7, request, 1, &[2], false, &mut apply),
+                ShellStatus::InvalidArgument
+            );
+            assert!(!apply);
+            assert_eq!(
+                publish(7, request, 2, &[2], true, &mut apply),
+                ShellStatus::Ok
+            );
+            assert!(apply);
+            assert_eq!(
+                publish(7, request, 1, &[3], false, &mut apply),
+                ShellStatus::Ok
+            );
+            assert!(!apply);
+            assert_eq!(
+                publish(8, request, 2, &[2], false, &mut apply),
+                ShellStatus::Ok
+            );
+            assert!(!apply);
+            assert_eq!(
+                shell_core_preview_publication(
+                    core,
+                    7,
+                    request,
+                    2,
+                    std::ptr::null(),
+                    1,
+                    false,
+                    &mut apply
+                ),
+                ShellStatus::InvalidArgument
+            );
+            assert_eq!(
+                shell_core_preview_publication(
+                    core,
+                    7,
+                    request,
+                    2,
+                    std::ptr::null(),
+                    usize::MAX,
+                    false,
+                    &mut apply
+                ),
+                ShellStatus::TooLarge
+            );
+            shell_core_cancel_all(core);
+            assert_eq!(
+                publish(7, request, 2, &[2], true, &mut apply),
+                ShellStatus::Ok
+            );
+            assert!(!apply);
+            let previous = request;
+            shell_core_preview_begin(core, 8, &mut request);
+            assert!(request > previous);
+            assert_eq!(shell_core_toolbar_publication_reset(core), ShellStatus::Ok);
+            shell_core_preview_dismiss(core, previous);
+            assert_eq!(
+                publish(8, request, 1, &[4], true, &mut apply),
+                ShellStatus::Ok
+            );
+            assert!(apply);
+            shell_core_close(core);
+            assert_eq!(
+                publish(8, request, 2, &[5], true, &mut apply),
+                ShellStatus::Ok
+            );
+            assert!(!apply);
+            assert_eq!(
+                shell_core_preview_begin(core, 8, &mut request),
+                ShellStatus::Closed
+            );
+            assert_eq!(request, 0);
+            let mut counts = ShellPublicationCounts::default();
+            assert_eq!(
+                shell_core_publication_stats(
+                    core,
+                    ShellPublicationChannel::TabPreview as u32,
+                    &mut counts
+                ),
+                ShellStatus::Ok
+            );
+            assert_eq!(
+                (
+                    counts.accepted,
+                    counts.unchanged,
+                    counts.ignored,
+                    counts.refused
+                ),
+                (3, 1, 4, 1)
+            );
+            shell_core_destroy(core);
+        }
+    }
 }
 
 /// Classify/commit a C++-validated address section (channels 7..=9).
@@ -4263,94 +8090,289 @@ mod preview_publication_ffi_tests {
 /// # Safety
 /// See [`guard`]. All input spans are readable; decision is writable.
 #[no_mangle]
-pub unsafe extern "C" fn shell_core_address_section(core: *mut ShellCore, channel: u32,
- session: *const u16, session_len: usize, generation: u64,
- fingerprint: *const u16, fingerprint_len: usize, eligible: bool, commit: bool,
- decision: *mut crate::address_sections::ShellAddressSectionDecision) -> ShellStatus {
- use crate::address_sections::{ShellAddressSectionDecision as D,MAX_ADDRESS_SECTION_FINGERPRINT};
- let Some(out)=decision.as_mut() else {return ShellStatus::InvalidArgument;}; *out=D::Ignored;
- if !(7..=9).contains(&channel) {return ShellStatus::InvalidArgument;}
- if session_len>256 || fingerprint_len>MAX_ADDRESS_SECTION_FINGERPRINT {return ShellStatus::TooLarge;}
- let Some(session)=slice(session,session_len) else {return ShellStatus::InvalidArgument;};
- let Some(fingerprint)=slice(fingerprint,fingerprint_len) else {return ShellStatus::InvalidArgument;};
- guard(core,|core| {
-  if core.queue.is_closed() {return ShellStatus::Closed;}
-  match core.address_sections.resolve((channel-7) as usize,session,generation,fingerprint,eligible,commit) {
-   Ok(v)=>{*out=v;ShellStatus::Ok},Err(())=>ShellStatus::InvalidArgument
-  }
- })
+pub unsafe extern "C" fn shell_core_address_section(
+    core: *mut ShellCore,
+    channel: u32,
+    session: *const u16,
+    session_len: usize,
+    generation: u64,
+    fingerprint: *const u16,
+    fingerprint_len: usize,
+    eligible: bool,
+    commit: bool,
+    decision: *mut crate::address_sections::ShellAddressSectionDecision,
+) -> ShellStatus {
+    use crate::address_sections::{
+        ShellAddressSectionDecision as D, MAX_ADDRESS_SECTION_FINGERPRINT,
+    };
+    let Some(out) = decision.as_mut() else {
+        return ShellStatus::InvalidArgument;
+    };
+    *out = D::Ignored;
+    if !(7..=9).contains(&channel) {
+        return ShellStatus::InvalidArgument;
+    }
+    if session_len > 256 || fingerprint_len > MAX_ADDRESS_SECTION_FINGERPRINT {
+        return ShellStatus::TooLarge;
+    }
+    let Some(session) = slice(session, session_len) else {
+        return ShellStatus::InvalidArgument;
+    };
+    let Some(fingerprint) = slice(fingerprint, fingerprint_len) else {
+        return ShellStatus::InvalidArgument;
+    };
+    guard(core, |core| {
+        if core.queue.is_closed() {
+            return ShellStatus::Closed;
+        }
+        match core.address_sections.resolve(
+            (channel - 7) as usize,
+            session,
+            generation,
+            fingerprint,
+            eligible,
+            commit,
+        ) {
+            Ok(v) => {
+                *out = v;
+                ShellStatus::Ok
+            }
+            Err(()) => ShellStatus::InvalidArgument,
+        }
+    })
 }
 #[cfg(test)]
 mod address_section_ffi_tests {
- use super::*;
- #[test] fn table_boundary_cancellation_and_disable_keep_counts_and_channels_separate() {unsafe {
-  use crate::address_sections::ShellAddressSectionDecision as D;
-  let core=shell_core_create(std::ptr::null());let mut decision=D::Ignored;
-  let resolve=|channel,generation,body:&[u16],eligible,commit,out|shell_core_address_section(core,channel,[1].as_ptr(),1,generation,body.as_ptr(),body.len(),eligible,commit,out);
-  for channel in 7..=9 {
-   assert_eq!(resolve(channel,0,&[1],true,false,&mut decision),ShellStatus::Ok);assert_eq!(decision,D::Accepted);
-   assert_eq!(resolve(channel,0,&[1],true,true,&mut decision),ShellStatus::Ok);
-   assert_eq!(resolve(channel,0,&[2],true,false,&mut decision),ShellStatus::InvalidArgument);assert_eq!(decision,D::Ignored);
-  }
-  assert_eq!(resolve(6,0,&[],true,false,&mut decision),ShellStatus::InvalidArgument);
-  assert_eq!(shell_core_address_section(core,7,std::ptr::null(),1,0,std::ptr::null(),0,true,false,&mut decision),ShellStatus::InvalidArgument);
-  assert_eq!(shell_core_address_section(core,7,[1].as_ptr(),1,0,std::ptr::null(),usize::MAX,true,false,&mut decision),ShellStatus::TooLarge);
-  shell_core_address_publication_reset(core);
-  assert_eq!(resolve(7,0,&[2],true,true,&mut decision),ShellStatus::Ok);
-  shell_core_cancel_all(core);
-  assert_eq!(resolve(8,0,&[3],true,true,&mut decision),ShellStatus::Ok);
-  let mut counts=ShellPublicationCounts::default();
-  assert_eq!(shell_core_publication_stats(core,8,&mut counts),ShellStatus::Ok);assert_eq!(counts.accepted,2);assert_eq!(counts.refused,1);
-  shell_core_close(core);
-  assert_eq!(resolve(7,0,&[1],true,true,&mut decision),ShellStatus::Closed);assert_eq!(decision,D::Ignored);
-  shell_core_destroy(core);
- }}
+    use super::*;
+    #[test]
+    fn table_boundary_cancellation_and_disable_keep_counts_and_channels_separate() {
+        unsafe {
+            use crate::address_sections::ShellAddressSectionDecision as D;
+            let core = shell_core_create(std::ptr::null());
+            let mut decision = D::Ignored;
+            let resolve = |channel, generation, body: &[u16], eligible, commit, out| {
+                shell_core_address_section(
+                    core,
+                    channel,
+                    [1].as_ptr(),
+                    1,
+                    generation,
+                    body.as_ptr(),
+                    body.len(),
+                    eligible,
+                    commit,
+                    out,
+                )
+            };
+            for channel in 7..=9 {
+                assert_eq!(
+                    resolve(channel, 0, &[1], true, false, &mut decision),
+                    ShellStatus::Ok
+                );
+                assert_eq!(decision, D::Accepted);
+                assert_eq!(
+                    resolve(channel, 0, &[1], true, true, &mut decision),
+                    ShellStatus::Ok
+                );
+                assert_eq!(
+                    resolve(channel, 0, &[2], true, false, &mut decision),
+                    ShellStatus::InvalidArgument
+                );
+                assert_eq!(decision, D::Ignored);
+            }
+            assert_eq!(
+                resolve(6, 0, &[], true, false, &mut decision),
+                ShellStatus::InvalidArgument
+            );
+            assert_eq!(
+                shell_core_address_section(
+                    core,
+                    7,
+                    std::ptr::null(),
+                    1,
+                    0,
+                    std::ptr::null(),
+                    0,
+                    true,
+                    false,
+                    &mut decision
+                ),
+                ShellStatus::InvalidArgument
+            );
+            assert_eq!(
+                shell_core_address_section(
+                    core,
+                    7,
+                    [1].as_ptr(),
+                    1,
+                    0,
+                    std::ptr::null(),
+                    usize::MAX,
+                    true,
+                    false,
+                    &mut decision
+                ),
+                ShellStatus::TooLarge
+            );
+            shell_core_address_publication_reset(core);
+            assert_eq!(
+                resolve(7, 0, &[2], true, true, &mut decision),
+                ShellStatus::Ok
+            );
+            shell_core_cancel_all(core);
+            assert_eq!(
+                resolve(8, 0, &[3], true, true, &mut decision),
+                ShellStatus::Ok
+            );
+            let mut counts = ShellPublicationCounts::default();
+            assert_eq!(
+                shell_core_publication_stats(core, 8, &mut counts),
+                ShellStatus::Ok
+            );
+            assert_eq!(counts.accepted, 2);
+            assert_eq!(counts.refused, 1);
+            shell_core_close(core);
+            assert_eq!(
+                resolve(7, 0, &[1], true, true, &mut decision),
+                ShellStatus::Closed
+            );
+            assert_eq!(decision, D::Ignored);
+            shell_core_destroy(core);
+        }
+    }
 }
-
 
 /// Borrowed native menu context. Firefox supplies publication identity; WinUI
 /// supplies the current opening, editor and target observations.
 #[repr(C)]
 pub struct ShellAddressMenuContext {
- pub session: *const u16, pub session_len: usize,
- pub current_session: *const u16, pub current_session_len: usize,
- pub edit: u64, pub current_edit: u64,
- pub target: *const u16, pub target_len: usize,
- pub expected_target: *const u16, pub expected_target_len: usize,
- pub requested: bool, pub focused: bool,
+    pub session: *const u16,
+    pub session_len: usize,
+    pub current_session: *const u16,
+    pub current_session_len: usize,
+    pub edit: u64,
+    pub current_edit: u64,
+    pub target: *const u16,
+    pub target_len: usize,
+    pub expected_target: *const u16,
+    pub expected_target_len: usize,
+    pub requested: bool,
+    pub focused: bool,
 }
 /// Test publication eligibility without consuming its generation or content.
 /// # Safety
 /// See [`guard`]. Context and its spans are readable; eligible is writable.
 #[no_mangle]
-pub unsafe extern "C" fn shell_core_address_menu_eligible(core: *mut ShellCore,
- context: *const ShellAddressMenuContext, eligible: *mut bool) -> ShellStatus {
- let Some(out)=eligible.as_mut() else { return ShellStatus::InvalidArgument; }; *out=false;
- let Some(c)=context.as_ref() else { return ShellStatus::InvalidArgument; };
- if c.session_len>256 || c.current_session_len>256 || c.target_len>64 || c.expected_target_len>64 { return ShellStatus::TooLarge; }
- let (Some(session),Some(current),Some(target),Some(expected))=(slice(c.session,c.session_len),slice(c.current_session,c.current_session_len),slice(c.target,c.target_len),slice(c.expected_target,c.expected_target_len)) else {return ShellStatus::InvalidArgument;};
- guard(core,|core| {
-  if core.queue.is_closed() {return ShellStatus::Closed;}
-  match crate::address_sections::menu_eligible(session,current,c.edit,c.current_edit,target,expected,c.requested,c.focused) {
-   Ok(v)=>{*out=v;ShellStatus::Ok},Err(())=>ShellStatus::InvalidArgument
-  }
- })
+pub unsafe extern "C" fn shell_core_address_menu_eligible(
+    core: *mut ShellCore,
+    context: *const ShellAddressMenuContext,
+    eligible: *mut bool,
+) -> ShellStatus {
+    let Some(out) = eligible.as_mut() else {
+        return ShellStatus::InvalidArgument;
+    };
+    *out = false;
+    let Some(c) = context.as_ref() else {
+        return ShellStatus::InvalidArgument;
+    };
+    if c.session_len > 256
+        || c.current_session_len > 256
+        || c.target_len > 64
+        || c.expected_target_len > 64
+    {
+        return ShellStatus::TooLarge;
+    }
+    let (Some(session), Some(current), Some(target), Some(expected)) = (
+        slice(c.session, c.session_len),
+        slice(c.current_session, c.current_session_len),
+        slice(c.target, c.target_len),
+        slice(c.expected_target, c.expected_target_len),
+    ) else {
+        return ShellStatus::InvalidArgument;
+    };
+    guard(core, |core| {
+        if core.queue.is_closed() {
+            return ShellStatus::Closed;
+        }
+        match crate::address_sections::menu_eligible(
+            session,
+            current,
+            c.edit,
+            c.current_edit,
+            target,
+            expected,
+            c.requested,
+            c.focused,
+        ) {
+            Ok(v) => {
+                *out = v;
+                ShellStatus::Ok
+            }
+            Err(()) => ShellStatus::InvalidArgument,
+        }
+    })
 }
 #[cfg(test)]
 mod address_menu_context_ffi_tests {
- use super::*;
- #[test] fn borrowed_context_bounds_defaults_and_closed_endpoint() { unsafe {
-  let core=shell_core_create(std::ptr::null());let mut eligible=true;let session=[1u16];let target=[7u16];
-  let mut c=ShellAddressMenuContext {session:session.as_ptr(),session_len:1,current_session:session.as_ptr(),current_session_len:1,
-   edit:0,current_edit:0,target:target.as_ptr(),target_len:1,expected_target:target.as_ptr(),expected_target_len:1,requested:true,focused:true};
-  assert_eq!(shell_core_address_menu_eligible(core,&c,&mut eligible),ShellStatus::Ok);assert!(eligible);
-  c.current_edit=1;assert_eq!(shell_core_address_menu_eligible(core,&c,&mut eligible),ShellStatus::Ok);assert!(!eligible);
-  c.target_len=usize::MAX;assert_eq!(shell_core_address_menu_eligible(core,&c,&mut eligible),ShellStatus::TooLarge);assert!(!eligible);
-  c.target_len=1;c.target=std::ptr::null();assert_eq!(shell_core_address_menu_eligible(core,&c,&mut eligible),ShellStatus::InvalidArgument);
-  c.target=target.as_ptr();assert_eq!(shell_core_address_menu_eligible(core,std::ptr::null(),&mut eligible),ShellStatus::InvalidArgument);
-  shell_core_close(core);assert_eq!(shell_core_address_menu_eligible(core,&c,&mut eligible),ShellStatus::Closed);assert!(!eligible);
-  shell_core_destroy(core);
- }}
+    use super::*;
+    #[test]
+    fn borrowed_context_bounds_defaults_and_closed_endpoint() {
+        unsafe {
+            let core = shell_core_create(std::ptr::null());
+            let mut eligible = true;
+            let session = [1u16];
+            let target = [7u16];
+            let mut c = ShellAddressMenuContext {
+                session: session.as_ptr(),
+                session_len: 1,
+                current_session: session.as_ptr(),
+                current_session_len: 1,
+                edit: 0,
+                current_edit: 0,
+                target: target.as_ptr(),
+                target_len: 1,
+                expected_target: target.as_ptr(),
+                expected_target_len: 1,
+                requested: true,
+                focused: true,
+            };
+            assert_eq!(
+                shell_core_address_menu_eligible(core, &c, &mut eligible),
+                ShellStatus::Ok
+            );
+            assert!(eligible);
+            c.current_edit = 1;
+            assert_eq!(
+                shell_core_address_menu_eligible(core, &c, &mut eligible),
+                ShellStatus::Ok
+            );
+            assert!(!eligible);
+            c.target_len = usize::MAX;
+            assert_eq!(
+                shell_core_address_menu_eligible(core, &c, &mut eligible),
+                ShellStatus::TooLarge
+            );
+            assert!(!eligible);
+            c.target_len = 1;
+            c.target = std::ptr::null();
+            assert_eq!(
+                shell_core_address_menu_eligible(core, &c, &mut eligible),
+                ShellStatus::InvalidArgument
+            );
+            c.target = target.as_ptr();
+            assert_eq!(
+                shell_core_address_menu_eligible(core, std::ptr::null(), &mut eligible),
+                ShellStatus::InvalidArgument
+            );
+            shell_core_close(core);
+            assert_eq!(
+                shell_core_address_menu_eligible(core, &c, &mut eligible),
+                ShellStatus::Closed
+            );
+            assert!(!eligible);
+            shell_core_destroy(core);
+        }
+    }
 }
 
 // Independent live Downloads session; shared publication semantics, no download state.
@@ -4358,16 +8380,34 @@ mod address_menu_context_ffi_tests {
 /// # Safety
 /// Live core and writable out.
 #[no_mangle]
-pub unsafe extern "C" fn shell_core_downloads_panel_open(core:*mut ShellCore,out:*mut u32)->ShellStatus {
- let Some(out)=out.as_mut() else{return ShellStatus::InvalidArgument;};*out=0;
- guard(core,|c|{if c.queue.is_closed(){return ShellStatus::Closed;}*out=c.downloads_panel.open();ShellStatus::Ok})
+pub unsafe extern "C" fn shell_core_downloads_panel_open(
+    core: *mut ShellCore,
+    out: *mut u32,
+) -> ShellStatus {
+    let Some(out) = out.as_mut() else {
+        return ShellStatus::InvalidArgument;
+    };
+    *out = 0;
+    guard(core, |c| {
+        if c.queue.is_closed() {
+            return ShellStatus::Closed;
+        }
+        *out = c.downloads_panel.open();
+        ShellStatus::Ok
+    })
 }
 /// Revoke a window-scoped menu, preserving its identity high-water mark.
 /// # Safety
 /// Live core.
 #[no_mangle]
-pub unsafe extern "C" fn shell_core_downloads_panel_dismiss(core:*mut ShellCore)->ShellStatus {
- guard(core,|c|{if c.queue.is_closed(){return ShellStatus::Closed;}c.downloads_panel.dismiss();ShellStatus::Ok})
+pub unsafe extern "C" fn shell_core_downloads_panel_dismiss(core: *mut ShellCore) -> ShellStatus {
+    guard(core, |c| {
+        if c.queue.is_closed() {
+            return ShellStatus::Closed;
+        }
+        c.downloads_panel.dismiss();
+        ShellStatus::Ok
+    })
 }
 /// Resolve a validated session description before mutating the host container.
 /// Accepted work is committed and counted by shell_core_downloads_panel_accept;
@@ -4375,56 +8415,217 @@ pub unsafe extern "C" fn shell_core_downloads_panel_dismiss(core:*mut ShellCore)
 /// # Safety
 /// Live core, readable arrays (null only for zero length), writable changed.
 #[no_mangle]
-pub unsafe extern "C" fn shell_core_downloads_panel_resolve(core:*mut ShellCore,session:u32,revision:u32,
- actions:*const u32,count:usize,fingerprint:*const u16,units:usize,changed:*mut bool)->ShellStatus {
- let Some(changed)=changed.as_mut() else{return ShellStatus::InvalidArgument;};*changed=false;
- if count>crate::surface_menu::MAX_ACTIONS || units>crate::surface_menu::MAX_DESCRIPTION || (actions.is_null() && count!=0){return ShellStatus::InvalidArgument;}
- let Some(fingerprint)=slice(fingerprint,units) else{return ShellStatus::InvalidArgument;};
- let actions=if count==0{&[]}else{std::slice::from_raw_parts(actions,count)};
- guard(core,|c|if c.queue.is_closed(){ShellStatus::Closed}else{match c.downloads_panel.resolve(session,revision,actions,fingerprint){Ok(v)=>{*changed=v;ShellStatus::Ok},Err(())=>ShellStatus::InvalidArgument}})
+pub unsafe extern "C" fn shell_core_downloads_panel_resolve(
+    core: *mut ShellCore,
+    session: u32,
+    revision: u32,
+    actions: *const u32,
+    count: usize,
+    fingerprint: *const u16,
+    units: usize,
+    changed: *mut bool,
+) -> ShellStatus {
+    let Some(changed) = changed.as_mut() else {
+        return ShellStatus::InvalidArgument;
+    };
+    *changed = false;
+    if count > crate::surface_menu::MAX_ACTIONS
+        || units > crate::surface_menu::MAX_DESCRIPTION
+        || (actions.is_null() && count != 0)
+    {
+        return ShellStatus::InvalidArgument;
+    }
+    let Some(fingerprint) = slice(fingerprint, units) else {
+        return ShellStatus::InvalidArgument;
+    };
+    let actions = if count == 0 {
+        &[]
+    } else {
+        std::slice::from_raw_parts(actions, count)
+    };
+    guard(core, |c| {
+        if c.queue.is_closed() {
+            ShellStatus::Closed
+        } else {
+            match c
+                .downloads_panel
+                .resolve(session, revision, actions, fingerprint)
+            {
+                Ok(v) => {
+                    *changed = v;
+                    ShellStatus::Ok
+                }
+                Err(()) => ShellStatus::InvalidArgument,
+            }
+        }
+    })
 }
 
 /// Accept a complete bounded description atomically; unchanged descriptions do not rebuild controls.
 /// # Safety
 /// Live core, readable arrays (null only for zero length), writable changed.
 #[no_mangle]
-pub unsafe extern "C" fn shell_core_downloads_panel_accept(core:*mut ShellCore,session:u32,revision:u32,
- actions:*const u32,count:usize,fingerprint:*const u16,units:usize,changed:*mut bool)->ShellStatus {
- let Some(changed)=changed.as_mut() else{return ShellStatus::InvalidArgument;};*changed=false;
- if count>crate::surface_menu::MAX_ACTIONS || units>crate::surface_menu::MAX_DESCRIPTION || (actions.is_null() && count!=0){return ShellStatus::InvalidArgument;}
- let Some(fingerprint)=slice(fingerprint,units) else{return ShellStatus::InvalidArgument;};
- let actions=if count==0{&[]}else{std::slice::from_raw_parts(actions,count)};
- guard(core,|c|if c.queue.is_closed(){ShellStatus::Closed}else{match c.downloads_panel.accept(session,revision,actions,fingerprint){Ok(v)=>{*changed=v;ShellStatus::Ok},Err(())=>ShellStatus::InvalidArgument}})
+pub unsafe extern "C" fn shell_core_downloads_panel_accept(
+    core: *mut ShellCore,
+    session: u32,
+    revision: u32,
+    actions: *const u32,
+    count: usize,
+    fingerprint: *const u16,
+    units: usize,
+    changed: *mut bool,
+) -> ShellStatus {
+    let Some(changed) = changed.as_mut() else {
+        return ShellStatus::InvalidArgument;
+    };
+    *changed = false;
+    if count > crate::surface_menu::MAX_ACTIONS
+        || units > crate::surface_menu::MAX_DESCRIPTION
+        || (actions.is_null() && count != 0)
+    {
+        return ShellStatus::InvalidArgument;
+    }
+    let Some(fingerprint) = slice(fingerprint, units) else {
+        return ShellStatus::InvalidArgument;
+    };
+    let actions = if count == 0 {
+        &[]
+    } else {
+        std::slice::from_raw_parts(actions, count)
+    };
+    guard(core, |c| {
+        if c.queue.is_closed() {
+            ShellStatus::Closed
+        } else {
+            match c
+                .downloads_panel
+                .accept(session, revision, actions, fingerprint)
+            {
+                Ok(v) => {
+                    *changed = v;
+                    ShellStatus::Ok
+                }
+                Err(()) => ShellStatus::InvalidArgument,
+            }
+        }
+    })
 }
 /// Consume one current enabled action; dismissal and late updates cannot resurrect it.
 /// # Safety
 /// Live core and writable accepted.
 #[no_mangle]
-pub unsafe extern "C" fn shell_core_downloads_panel_activate(core:*mut ShellCore,session:u32,revision:u32,action:u32,accepted:*mut bool)->ShellStatus {
- let Some(accepted)=accepted.as_mut() else{return ShellStatus::InvalidArgument;};*accepted=false;
- guard(core,|c|{if c.queue.is_closed(){return ShellStatus::Closed;}*accepted=c.downloads_panel.activate_retained(session,revision,action);ShellStatus::Ok})
+pub unsafe extern "C" fn shell_core_downloads_panel_activate(
+    core: *mut ShellCore,
+    session: u32,
+    revision: u32,
+    action: u32,
+    accepted: *mut bool,
+) -> ShellStatus {
+    let Some(accepted) = accepted.as_mut() else {
+        return ShellStatus::InvalidArgument;
+    };
+    *accepted = false;
+    guard(core, |c| {
+        if c.queue.is_closed() {
+            return ShellStatus::Closed;
+        }
+        *accepted = c
+            .downloads_panel
+            .activate_retained(session, revision, action);
+        ShellStatus::Ok
+    })
 }
 
 #[cfg(test)]
 mod downloads_panel_ffi_tests {
- use super::*;
- #[test] fn independent_live_openings_bounds_and_teardown() { unsafe {
-  let core=shell_core_create(std::ptr::null());let(mut panel,mut menu)=(0,0);let mut changed=false;
-  assert_eq!(shell_core_downloads_panel_open(core,&mut panel),ShellStatus::Ok);
-  shell_core_surface_menu_open(core,&mut menu);
-  assert_eq!(shell_core_downloads_panel_resolve(core,panel,1,[7].as_ptr(),1,[9].as_ptr(),1,&mut changed),ShellStatus::Ok);assert!(changed);
-  shell_core_downloads_panel_activate(core,panel,1,7,&mut changed);assert!(!changed);
-  shell_core_downloads_panel_accept(core,panel,1,[7].as_ptr(),1,[9].as_ptr(),1,&mut changed);assert!(changed);
-  shell_core_surface_menu_dismiss(core);
-  shell_core_downloads_panel_activate(core,panel,1,7,&mut changed);assert!(changed);
-  shell_core_downloads_panel_activate(core,panel,1,7,&mut changed);assert!(!changed);
-  assert_eq!(shell_core_downloads_panel_accept(core,panel,2,std::ptr::null(),257,std::ptr::null(),0,&mut changed),ShellStatus::InvalidArgument);
-  assert_eq!(shell_core_downloads_panel_resolve(core,panel,2,std::ptr::null(),0,std::ptr::null(),65537,&mut changed),ShellStatus::InvalidArgument);
-  let mut counts=ShellPublicationCounts::default();shell_core_publication_stats(core,ShellPublicationChannel::DownloadsPanel as u32,&mut counts);assert_eq!(counts.accepted,1);
-  shell_core_cancel_all(core);shell_core_downloads_panel_activate(core,panel,1,7,&mut changed);assert!(!changed);
-  shell_core_close(core);assert_eq!(shell_core_downloads_panel_open(core,&mut panel),ShellStatus::Closed);
-  shell_core_destroy(core);
- }}
+    use super::*;
+    #[test]
+    fn independent_live_openings_bounds_and_teardown() {
+        unsafe {
+            let core = shell_core_create(std::ptr::null());
+            let (mut panel, mut menu) = (0, 0);
+            let mut changed = false;
+            assert_eq!(
+                shell_core_downloads_panel_open(core, &mut panel),
+                ShellStatus::Ok
+            );
+            shell_core_surface_menu_open(core, &mut menu);
+            assert_eq!(
+                shell_core_downloads_panel_resolve(
+                    core,
+                    panel,
+                    1,
+                    [7].as_ptr(),
+                    1,
+                    [9].as_ptr(),
+                    1,
+                    &mut changed
+                ),
+                ShellStatus::Ok
+            );
+            assert!(changed);
+            shell_core_downloads_panel_activate(core, panel, 1, 7, &mut changed);
+            assert!(!changed);
+            shell_core_downloads_panel_accept(
+                core,
+                panel,
+                1,
+                [7].as_ptr(),
+                1,
+                [9].as_ptr(),
+                1,
+                &mut changed,
+            );
+            assert!(changed);
+            shell_core_surface_menu_dismiss(core);
+            shell_core_downloads_panel_activate(core, panel, 1, 7, &mut changed);
+            assert!(changed);
+            shell_core_downloads_panel_activate(core, panel, 1, 7, &mut changed);
+            assert!(!changed);
+            assert_eq!(
+                shell_core_downloads_panel_accept(
+                    core,
+                    panel,
+                    2,
+                    std::ptr::null(),
+                    257,
+                    std::ptr::null(),
+                    0,
+                    &mut changed
+                ),
+                ShellStatus::InvalidArgument
+            );
+            assert_eq!(
+                shell_core_downloads_panel_resolve(
+                    core,
+                    panel,
+                    2,
+                    std::ptr::null(),
+                    0,
+                    std::ptr::null(),
+                    65537,
+                    &mut changed
+                ),
+                ShellStatus::InvalidArgument
+            );
+            let mut counts = ShellPublicationCounts::default();
+            shell_core_publication_stats(
+                core,
+                ShellPublicationChannel::DownloadsPanel as u32,
+                &mut counts,
+            );
+            assert_eq!(counts.accepted, 1);
+            shell_core_cancel_all(core);
+            shell_core_downloads_panel_activate(core, panel, 1, 7, &mut changed);
+            assert!(!changed);
+            shell_core_close(core);
+            assert_eq!(
+                shell_core_downloads_panel_open(core, &mut panel),
+                ShellStatus::Closed
+            );
+            shell_core_destroy(core);
+        }
+    }
 }
 
 // Independent Profile menu session; shared publication semantics, no download state.
@@ -4432,16 +8633,34 @@ mod downloads_panel_ffi_tests {
 /// # Safety
 /// Live core and writable out.
 #[no_mangle]
-pub unsafe extern "C" fn shell_core_profile_menu_open(core:*mut ShellCore,out:*mut u32)->ShellStatus {
- let Some(out)=out.as_mut() else{return ShellStatus::InvalidArgument;};*out=0;
- guard(core,|c|{if c.queue.is_closed(){return ShellStatus::Closed;}*out=c.profile_menu.open();ShellStatus::Ok})
+pub unsafe extern "C" fn shell_core_profile_menu_open(
+    core: *mut ShellCore,
+    out: *mut u32,
+) -> ShellStatus {
+    let Some(out) = out.as_mut() else {
+        return ShellStatus::InvalidArgument;
+    };
+    *out = 0;
+    guard(core, |c| {
+        if c.queue.is_closed() {
+            return ShellStatus::Closed;
+        }
+        *out = c.profile_menu.open();
+        ShellStatus::Ok
+    })
 }
 /// Revoke a window-scoped menu, preserving its identity high-water mark.
 /// # Safety
 /// Live core.
 #[no_mangle]
-pub unsafe extern "C" fn shell_core_profile_menu_dismiss(core:*mut ShellCore)->ShellStatus {
- guard(core,|c|{if c.queue.is_closed(){return ShellStatus::Closed;}c.profile_menu.dismiss();ShellStatus::Ok})
+pub unsafe extern "C" fn shell_core_profile_menu_dismiss(core: *mut ShellCore) -> ShellStatus {
+    guard(core, |c| {
+        if c.queue.is_closed() {
+            return ShellStatus::Closed;
+        }
+        c.profile_menu.dismiss();
+        ShellStatus::Ok
+    })
 }
 /// Resolve a validated session description before mutating the host container.
 /// Accepted work is committed and counted by shell_core_profile_menu_accept;
@@ -4449,57 +8668,205 @@ pub unsafe extern "C" fn shell_core_profile_menu_dismiss(core:*mut ShellCore)->S
 /// # Safety
 /// Live core, readable arrays (null only for zero length), writable changed.
 #[no_mangle]
-pub unsafe extern "C" fn shell_core_profile_menu_resolve(core:*mut ShellCore,session:u32,revision:u32,
- actions:*const u32,count:usize,fingerprint:*const u16,units:usize,changed:*mut bool)->ShellStatus {
- let Some(changed)=changed.as_mut() else{return ShellStatus::InvalidArgument;};*changed=false;
- if count>crate::surface_menu::MAX_ACTIONS || units>crate::surface_menu::MAX_DESCRIPTION || (actions.is_null() && count!=0){return ShellStatus::InvalidArgument;}
- let Some(fingerprint)=slice(fingerprint,units) else{return ShellStatus::InvalidArgument;};
- let actions=if count==0{&[]}else{std::slice::from_raw_parts(actions,count)};
- guard(core,|c|if c.queue.is_closed(){ShellStatus::Closed}else{match c.profile_menu.resolve(session,revision,actions,fingerprint){Ok(v)=>{*changed=v;ShellStatus::Ok},Err(())=>ShellStatus::InvalidArgument}})
+pub unsafe extern "C" fn shell_core_profile_menu_resolve(
+    core: *mut ShellCore,
+    session: u32,
+    revision: u32,
+    actions: *const u32,
+    count: usize,
+    fingerprint: *const u16,
+    units: usize,
+    changed: *mut bool,
+) -> ShellStatus {
+    let Some(changed) = changed.as_mut() else {
+        return ShellStatus::InvalidArgument;
+    };
+    *changed = false;
+    if count > crate::surface_menu::MAX_ACTIONS
+        || units > crate::surface_menu::MAX_DESCRIPTION
+        || (actions.is_null() && count != 0)
+    {
+        return ShellStatus::InvalidArgument;
+    }
+    let Some(fingerprint) = slice(fingerprint, units) else {
+        return ShellStatus::InvalidArgument;
+    };
+    let actions = if count == 0 {
+        &[]
+    } else {
+        std::slice::from_raw_parts(actions, count)
+    };
+    guard(core, |c| {
+        if c.queue.is_closed() {
+            ShellStatus::Closed
+        } else {
+            match c
+                .profile_menu
+                .resolve(session, revision, actions, fingerprint)
+            {
+                Ok(v) => {
+                    *changed = v;
+                    ShellStatus::Ok
+                }
+                Err(()) => ShellStatus::InvalidArgument,
+            }
+        }
+    })
 }
 
 /// Accept a complete bounded description atomically; unchanged descriptions do not rebuild controls.
 /// # Safety
 /// Live core, readable arrays (null only for zero length), writable changed.
 #[no_mangle]
-pub unsafe extern "C" fn shell_core_profile_menu_accept(core:*mut ShellCore,session:u32,revision:u32,
- actions:*const u32,count:usize,fingerprint:*const u16,units:usize,changed:*mut bool)->ShellStatus {
- let Some(changed)=changed.as_mut() else{return ShellStatus::InvalidArgument;};*changed=false;
- if count>crate::surface_menu::MAX_ACTIONS || units>crate::surface_menu::MAX_DESCRIPTION || (actions.is_null() && count!=0){return ShellStatus::InvalidArgument;}
- let Some(fingerprint)=slice(fingerprint,units) else{return ShellStatus::InvalidArgument;};
- let actions=if count==0{&[]}else{std::slice::from_raw_parts(actions,count)};
- guard(core,|c|if c.queue.is_closed(){ShellStatus::Closed}else{match c.profile_menu.accept(session,revision,actions,fingerprint){Ok(v)=>{*changed=v;ShellStatus::Ok},Err(())=>ShellStatus::InvalidArgument}})
+pub unsafe extern "C" fn shell_core_profile_menu_accept(
+    core: *mut ShellCore,
+    session: u32,
+    revision: u32,
+    actions: *const u32,
+    count: usize,
+    fingerprint: *const u16,
+    units: usize,
+    changed: *mut bool,
+) -> ShellStatus {
+    let Some(changed) = changed.as_mut() else {
+        return ShellStatus::InvalidArgument;
+    };
+    *changed = false;
+    if count > crate::surface_menu::MAX_ACTIONS
+        || units > crate::surface_menu::MAX_DESCRIPTION
+        || (actions.is_null() && count != 0)
+    {
+        return ShellStatus::InvalidArgument;
+    }
+    let Some(fingerprint) = slice(fingerprint, units) else {
+        return ShellStatus::InvalidArgument;
+    };
+    let actions = if count == 0 {
+        &[]
+    } else {
+        std::slice::from_raw_parts(actions, count)
+    };
+    guard(core, |c| {
+        if c.queue.is_closed() {
+            ShellStatus::Closed
+        } else {
+            match c
+                .profile_menu
+                .accept(session, revision, actions, fingerprint)
+            {
+                Ok(v) => {
+                    *changed = v;
+                    ShellStatus::Ok
+                }
+                Err(()) => ShellStatus::InvalidArgument,
+            }
+        }
+    })
 }
 /// Consume one current enabled action; dismissal and late updates cannot resurrect it.
 /// # Safety
 /// Live core and writable accepted.
 #[no_mangle]
-pub unsafe extern "C" fn shell_core_profile_menu_activate(core:*mut ShellCore,session:u32,revision:u32,action:u32,accepted:*mut bool)->ShellStatus {
- let Some(accepted)=accepted.as_mut() else{return ShellStatus::InvalidArgument;};*accepted=false;
- guard(core,|c|{if c.queue.is_closed(){return ShellStatus::Closed;}*accepted=c.profile_menu.activate(session,revision,action);ShellStatus::Ok})
+pub unsafe extern "C" fn shell_core_profile_menu_activate(
+    core: *mut ShellCore,
+    session: u32,
+    revision: u32,
+    action: u32,
+    accepted: *mut bool,
+) -> ShellStatus {
+    let Some(accepted) = accepted.as_mut() else {
+        return ShellStatus::InvalidArgument;
+    };
+    *accepted = false;
+    guard(core, |c| {
+        if c.queue.is_closed() {
+            return ShellStatus::Closed;
+        }
+        *accepted = c.profile_menu.activate(session, revision, action);
+        ShellStatus::Ok
+    })
 }
-
 
 #[cfg(test)]
 mod profile_menu_ffi_tests {
- use super::*;
- #[test] fn profile_openings_are_independent_and_consumed_once() {unsafe {
-  let core=shell_core_create(std::ptr::null());let(mut profile,mut downloads)=(0,0);let mut changed=false;
-  assert_eq!(shell_core_profile_menu_open(core,&mut profile),ShellStatus::Ok);
-  shell_core_downloads_panel_open(core,&mut downloads);
-  shell_core_profile_menu_resolve(core,profile,1,[3].as_ptr(),1,[9].as_ptr(),1,&mut changed);assert!(changed);
-  shell_core_profile_menu_activate(core,profile,1,3,&mut changed);assert!(!changed);
-  shell_core_profile_menu_accept(core,profile,1,[3].as_ptr(),1,[9].as_ptr(),1,&mut changed);assert!(changed);
-  shell_core_downloads_panel_dismiss(core);shell_core_surface_menu_dismiss(core);
-  shell_core_profile_menu_activate(core,profile,2,3,&mut changed);assert!(!changed);
-  shell_core_profile_menu_activate(core,profile,1,3,&mut changed);assert!(changed);
-  shell_core_profile_menu_activate(core,profile,1,3,&mut changed);assert!(!changed);
-  shell_core_profile_menu_open(core,&mut profile);shell_core_cancel_all(core);
-  shell_core_profile_menu_accept(core,profile,1,[3].as_ptr(),1,[9].as_ptr(),1,&mut changed);assert!(!changed);
-  assert_eq!(shell_core_profile_menu_resolve(core,profile,1,std::ptr::null(),257,std::ptr::null(),0,&mut changed),ShellStatus::InvalidArgument);
-  shell_core_close(core);assert_eq!(shell_core_profile_menu_open(core,&mut profile),ShellStatus::Closed);
-  shell_core_destroy(core);
- }}
+    use super::*;
+    #[test]
+    fn profile_openings_are_independent_and_consumed_once() {
+        unsafe {
+            let core = shell_core_create(std::ptr::null());
+            let (mut profile, mut downloads) = (0, 0);
+            let mut changed = false;
+            assert_eq!(
+                shell_core_profile_menu_open(core, &mut profile),
+                ShellStatus::Ok
+            );
+            shell_core_downloads_panel_open(core, &mut downloads);
+            shell_core_profile_menu_resolve(
+                core,
+                profile,
+                1,
+                [3].as_ptr(),
+                1,
+                [9].as_ptr(),
+                1,
+                &mut changed,
+            );
+            assert!(changed);
+            shell_core_profile_menu_activate(core, profile, 1, 3, &mut changed);
+            assert!(!changed);
+            shell_core_profile_menu_accept(
+                core,
+                profile,
+                1,
+                [3].as_ptr(),
+                1,
+                [9].as_ptr(),
+                1,
+                &mut changed,
+            );
+            assert!(changed);
+            shell_core_downloads_panel_dismiss(core);
+            shell_core_surface_menu_dismiss(core);
+            shell_core_profile_menu_activate(core, profile, 2, 3, &mut changed);
+            assert!(!changed);
+            shell_core_profile_menu_activate(core, profile, 1, 3, &mut changed);
+            assert!(changed);
+            shell_core_profile_menu_activate(core, profile, 1, 3, &mut changed);
+            assert!(!changed);
+            shell_core_profile_menu_open(core, &mut profile);
+            shell_core_cancel_all(core);
+            shell_core_profile_menu_accept(
+                core,
+                profile,
+                1,
+                [3].as_ptr(),
+                1,
+                [9].as_ptr(),
+                1,
+                &mut changed,
+            );
+            assert!(!changed);
+            assert_eq!(
+                shell_core_profile_menu_resolve(
+                    core,
+                    profile,
+                    1,
+                    std::ptr::null(),
+                    257,
+                    std::ptr::null(),
+                    0,
+                    &mut changed
+                ),
+                ShellStatus::InvalidArgument
+            );
+            shell_core_close(core);
+            assert_eq!(
+                shell_core_profile_menu_open(core, &mut profile),
+                ShellStatus::Closed
+            );
+            shell_core_destroy(core);
+        }
+    }
 }
 
 // Independent overflow menu session; shared publication semantics, no widget state.
@@ -4507,16 +8874,34 @@ mod profile_menu_ffi_tests {
 /// # Safety
 /// Live core and writable out.
 #[no_mangle]
-pub unsafe extern "C" fn shell_core_overflow_menu_open(core:*mut ShellCore,out:*mut u32)->ShellStatus {
- let Some(out)=out.as_mut() else{return ShellStatus::InvalidArgument;};*out=0;
- guard(core,|c|{if c.queue.is_closed(){return ShellStatus::Closed;}*out=c.overflow_menu.open();ShellStatus::Ok})
+pub unsafe extern "C" fn shell_core_overflow_menu_open(
+    core: *mut ShellCore,
+    out: *mut u32,
+) -> ShellStatus {
+    let Some(out) = out.as_mut() else {
+        return ShellStatus::InvalidArgument;
+    };
+    *out = 0;
+    guard(core, |c| {
+        if c.queue.is_closed() {
+            return ShellStatus::Closed;
+        }
+        *out = c.overflow_menu.open();
+        ShellStatus::Ok
+    })
 }
 /// Revoke a window-scoped menu, preserving its identity high-water mark.
 /// # Safety
 /// Live core.
 #[no_mangle]
-pub unsafe extern "C" fn shell_core_overflow_menu_dismiss(core:*mut ShellCore)->ShellStatus {
- guard(core,|c|{if c.queue.is_closed(){return ShellStatus::Closed;}c.overflow_menu.dismiss();ShellStatus::Ok})
+pub unsafe extern "C" fn shell_core_overflow_menu_dismiss(core: *mut ShellCore) -> ShellStatus {
+    guard(core, |c| {
+        if c.queue.is_closed() {
+            return ShellStatus::Closed;
+        }
+        c.overflow_menu.dismiss();
+        ShellStatus::Ok
+    })
 }
 /// Resolve a validated session description before mutating the host container.
 /// Accepted work is committed and counted by shell_core_overflow_menu_accept;
@@ -4524,57 +8909,205 @@ pub unsafe extern "C" fn shell_core_overflow_menu_dismiss(core:*mut ShellCore)->
 /// # Safety
 /// Live core, readable arrays (null only for zero length), writable changed.
 #[no_mangle]
-pub unsafe extern "C" fn shell_core_overflow_menu_resolve(core:*mut ShellCore,session:u32,revision:u32,
- actions:*const u32,count:usize,fingerprint:*const u16,units:usize,changed:*mut bool)->ShellStatus {
- let Some(changed)=changed.as_mut() else{return ShellStatus::InvalidArgument;};*changed=false;
- if count>crate::surface_menu::MAX_ACTIONS || units>crate::surface_menu::MAX_DESCRIPTION || (actions.is_null() && count!=0){return ShellStatus::InvalidArgument;}
- let Some(fingerprint)=slice(fingerprint,units) else{return ShellStatus::InvalidArgument;};
- let actions=if count==0{&[]}else{std::slice::from_raw_parts(actions,count)};
- guard(core,|c|if c.queue.is_closed(){ShellStatus::Closed}else{match c.overflow_menu.resolve(session,revision,actions,fingerprint){Ok(v)=>{*changed=v;ShellStatus::Ok},Err(())=>ShellStatus::InvalidArgument}})
+pub unsafe extern "C" fn shell_core_overflow_menu_resolve(
+    core: *mut ShellCore,
+    session: u32,
+    revision: u32,
+    actions: *const u32,
+    count: usize,
+    fingerprint: *const u16,
+    units: usize,
+    changed: *mut bool,
+) -> ShellStatus {
+    let Some(changed) = changed.as_mut() else {
+        return ShellStatus::InvalidArgument;
+    };
+    *changed = false;
+    if count > crate::surface_menu::MAX_ACTIONS
+        || units > crate::surface_menu::MAX_DESCRIPTION
+        || (actions.is_null() && count != 0)
+    {
+        return ShellStatus::InvalidArgument;
+    }
+    let Some(fingerprint) = slice(fingerprint, units) else {
+        return ShellStatus::InvalidArgument;
+    };
+    let actions = if count == 0 {
+        &[]
+    } else {
+        std::slice::from_raw_parts(actions, count)
+    };
+    guard(core, |c| {
+        if c.queue.is_closed() {
+            ShellStatus::Closed
+        } else {
+            match c
+                .overflow_menu
+                .resolve(session, revision, actions, fingerprint)
+            {
+                Ok(v) => {
+                    *changed = v;
+                    ShellStatus::Ok
+                }
+                Err(()) => ShellStatus::InvalidArgument,
+            }
+        }
+    })
 }
 
 /// Accept a complete bounded description atomically; unchanged descriptions do not rebuild controls.
 /// # Safety
 /// Live core, readable arrays (null only for zero length), writable changed.
 #[no_mangle]
-pub unsafe extern "C" fn shell_core_overflow_menu_accept(core:*mut ShellCore,session:u32,revision:u32,
- actions:*const u32,count:usize,fingerprint:*const u16,units:usize,changed:*mut bool)->ShellStatus {
- let Some(changed)=changed.as_mut() else{return ShellStatus::InvalidArgument;};*changed=false;
- if count>crate::surface_menu::MAX_ACTIONS || units>crate::surface_menu::MAX_DESCRIPTION || (actions.is_null() && count!=0){return ShellStatus::InvalidArgument;}
- let Some(fingerprint)=slice(fingerprint,units) else{return ShellStatus::InvalidArgument;};
- let actions=if count==0{&[]}else{std::slice::from_raw_parts(actions,count)};
- guard(core,|c|if c.queue.is_closed(){ShellStatus::Closed}else{match c.overflow_menu.accept(session,revision,actions,fingerprint){Ok(v)=>{*changed=v;ShellStatus::Ok},Err(())=>ShellStatus::InvalidArgument}})
+pub unsafe extern "C" fn shell_core_overflow_menu_accept(
+    core: *mut ShellCore,
+    session: u32,
+    revision: u32,
+    actions: *const u32,
+    count: usize,
+    fingerprint: *const u16,
+    units: usize,
+    changed: *mut bool,
+) -> ShellStatus {
+    let Some(changed) = changed.as_mut() else {
+        return ShellStatus::InvalidArgument;
+    };
+    *changed = false;
+    if count > crate::surface_menu::MAX_ACTIONS
+        || units > crate::surface_menu::MAX_DESCRIPTION
+        || (actions.is_null() && count != 0)
+    {
+        return ShellStatus::InvalidArgument;
+    }
+    let Some(fingerprint) = slice(fingerprint, units) else {
+        return ShellStatus::InvalidArgument;
+    };
+    let actions = if count == 0 {
+        &[]
+    } else {
+        std::slice::from_raw_parts(actions, count)
+    };
+    guard(core, |c| {
+        if c.queue.is_closed() {
+            ShellStatus::Closed
+        } else {
+            match c
+                .overflow_menu
+                .accept(session, revision, actions, fingerprint)
+            {
+                Ok(v) => {
+                    *changed = v;
+                    ShellStatus::Ok
+                }
+                Err(()) => ShellStatus::InvalidArgument,
+            }
+        }
+    })
 }
 /// Consume one current enabled action; dismissal and late updates cannot resurrect it.
 /// # Safety
 /// Live core and writable accepted.
 #[no_mangle]
-pub unsafe extern "C" fn shell_core_overflow_menu_activate(core:*mut ShellCore,session:u32,revision:u32,action:u32,accepted:*mut bool)->ShellStatus {
- let Some(accepted)=accepted.as_mut() else{return ShellStatus::InvalidArgument;};*accepted=false;
- guard(core,|c|{if c.queue.is_closed(){return ShellStatus::Closed;}*accepted=c.overflow_menu.activate(session,revision,action);ShellStatus::Ok})
+pub unsafe extern "C" fn shell_core_overflow_menu_activate(
+    core: *mut ShellCore,
+    session: u32,
+    revision: u32,
+    action: u32,
+    accepted: *mut bool,
+) -> ShellStatus {
+    let Some(accepted) = accepted.as_mut() else {
+        return ShellStatus::InvalidArgument;
+    };
+    *accepted = false;
+    guard(core, |c| {
+        if c.queue.is_closed() {
+            return ShellStatus::Closed;
+        }
+        *accepted = c.overflow_menu.activate(session, revision, action);
+        ShellStatus::Ok
+    })
 }
-
 
 #[cfg(test)]
 mod overflow_menu_ffi_tests {
- use super::*;
- #[test] fn overflow_openings_are_independent_and_consumed_once() {unsafe {
-  let core=shell_core_create(std::ptr::null());let(mut overflow,mut profile)=(0,0);let mut changed=false;
-  assert_eq!(shell_core_overflow_menu_open(core,&mut overflow),ShellStatus::Ok);
-  shell_core_profile_menu_open(core,&mut profile);
-  shell_core_overflow_menu_resolve(core,overflow,1,[3].as_ptr(),1,[9].as_ptr(),1,&mut changed);assert!(changed);
-  shell_core_overflow_menu_activate(core,overflow,1,3,&mut changed);assert!(!changed);
-  shell_core_overflow_menu_accept(core,overflow,1,[3].as_ptr(),1,[9].as_ptr(),1,&mut changed);assert!(changed);
-  shell_core_profile_menu_dismiss(core);shell_core_surface_menu_dismiss(core);
-  shell_core_overflow_menu_activate(core,overflow,2,3,&mut changed);assert!(!changed);
-  shell_core_overflow_menu_activate(core,overflow,1,3,&mut changed);assert!(changed);
-  shell_core_overflow_menu_activate(core,overflow,1,3,&mut changed);assert!(!changed);
-  shell_core_overflow_menu_open(core,&mut overflow);shell_core_cancel_all(core);
-  shell_core_overflow_menu_accept(core,overflow,1,[3].as_ptr(),1,[9].as_ptr(),1,&mut changed);assert!(!changed);
-  assert_eq!(shell_core_overflow_menu_resolve(core,overflow,1,std::ptr::null(),257,std::ptr::null(),0,&mut changed),ShellStatus::InvalidArgument);
-  shell_core_close(core);assert_eq!(shell_core_overflow_menu_open(core,&mut overflow),ShellStatus::Closed);
-  shell_core_destroy(core);
- }}
+    use super::*;
+    #[test]
+    fn overflow_openings_are_independent_and_consumed_once() {
+        unsafe {
+            let core = shell_core_create(std::ptr::null());
+            let (mut overflow, mut profile) = (0, 0);
+            let mut changed = false;
+            assert_eq!(
+                shell_core_overflow_menu_open(core, &mut overflow),
+                ShellStatus::Ok
+            );
+            shell_core_profile_menu_open(core, &mut profile);
+            shell_core_overflow_menu_resolve(
+                core,
+                overflow,
+                1,
+                [3].as_ptr(),
+                1,
+                [9].as_ptr(),
+                1,
+                &mut changed,
+            );
+            assert!(changed);
+            shell_core_overflow_menu_activate(core, overflow, 1, 3, &mut changed);
+            assert!(!changed);
+            shell_core_overflow_menu_accept(
+                core,
+                overflow,
+                1,
+                [3].as_ptr(),
+                1,
+                [9].as_ptr(),
+                1,
+                &mut changed,
+            );
+            assert!(changed);
+            shell_core_profile_menu_dismiss(core);
+            shell_core_surface_menu_dismiss(core);
+            shell_core_overflow_menu_activate(core, overflow, 2, 3, &mut changed);
+            assert!(!changed);
+            shell_core_overflow_menu_activate(core, overflow, 1, 3, &mut changed);
+            assert!(changed);
+            shell_core_overflow_menu_activate(core, overflow, 1, 3, &mut changed);
+            assert!(!changed);
+            shell_core_overflow_menu_open(core, &mut overflow);
+            shell_core_cancel_all(core);
+            shell_core_overflow_menu_accept(
+                core,
+                overflow,
+                1,
+                [3].as_ptr(),
+                1,
+                [9].as_ptr(),
+                1,
+                &mut changed,
+            );
+            assert!(!changed);
+            assert_eq!(
+                shell_core_overflow_menu_resolve(
+                    core,
+                    overflow,
+                    1,
+                    std::ptr::null(),
+                    257,
+                    std::ptr::null(),
+                    0,
+                    &mut changed
+                ),
+                ShellStatus::InvalidArgument
+            );
+            shell_core_close(core);
+            assert_eq!(
+                shell_core_overflow_menu_open(core, &mut overflow),
+                ShellStatus::Closed
+            );
+            shell_core_destroy(core);
+        }
+    }
 }
 
 // Independent developer menu session; shared publication semantics, no widget state.
@@ -4582,16 +9115,34 @@ mod overflow_menu_ffi_tests {
 /// # Safety
 /// Live core and writable out.
 #[no_mangle]
-pub unsafe extern "C" fn shell_core_developer_menu_open(core:*mut ShellCore,out:*mut u32)->ShellStatus {
- let Some(out)=out.as_mut() else{return ShellStatus::InvalidArgument;};*out=0;
- guard(core,|c|{if c.queue.is_closed(){return ShellStatus::Closed;}*out=c.developer_menu.open();ShellStatus::Ok})
+pub unsafe extern "C" fn shell_core_developer_menu_open(
+    core: *mut ShellCore,
+    out: *mut u32,
+) -> ShellStatus {
+    let Some(out) = out.as_mut() else {
+        return ShellStatus::InvalidArgument;
+    };
+    *out = 0;
+    guard(core, |c| {
+        if c.queue.is_closed() {
+            return ShellStatus::Closed;
+        }
+        *out = c.developer_menu.open();
+        ShellStatus::Ok
+    })
 }
 /// Revoke a window-scoped menu, preserving its identity high-water mark.
 /// # Safety
 /// Live core.
 #[no_mangle]
-pub unsafe extern "C" fn shell_core_developer_menu_dismiss(core:*mut ShellCore)->ShellStatus {
- guard(core,|c|{if c.queue.is_closed(){return ShellStatus::Closed;}c.developer_menu.dismiss();ShellStatus::Ok})
+pub unsafe extern "C" fn shell_core_developer_menu_dismiss(core: *mut ShellCore) -> ShellStatus {
+    guard(core, |c| {
+        if c.queue.is_closed() {
+            return ShellStatus::Closed;
+        }
+        c.developer_menu.dismiss();
+        ShellStatus::Ok
+    })
 }
 /// Resolve a validated session description before mutating the host container.
 /// Accepted work is committed and counted by shell_core_developer_menu_accept;
@@ -4599,144 +9150,491 @@ pub unsafe extern "C" fn shell_core_developer_menu_dismiss(core:*mut ShellCore)-
 /// # Safety
 /// Live core, readable arrays (null only for zero length), writable changed.
 #[no_mangle]
-pub unsafe extern "C" fn shell_core_developer_menu_resolve(core:*mut ShellCore,session:u32,revision:u32,
- actions:*const u32,count:usize,fingerprint:*const u16,units:usize,changed:*mut bool)->ShellStatus {
- let Some(changed)=changed.as_mut() else{return ShellStatus::InvalidArgument;};*changed=false;
- if count>crate::surface_menu::MAX_ACTIONS || units>crate::surface_menu::MAX_DESCRIPTION || (actions.is_null() && count!=0){return ShellStatus::InvalidArgument;}
- let Some(fingerprint)=slice(fingerprint,units) else{return ShellStatus::InvalidArgument;};
- let actions=if count==0{&[]}else{std::slice::from_raw_parts(actions,count)};
- guard(core,|c|if c.queue.is_closed(){ShellStatus::Closed}else{match c.developer_menu.resolve(session,revision,actions,fingerprint){Ok(v)=>{*changed=v;ShellStatus::Ok},Err(())=>ShellStatus::InvalidArgument}})
+pub unsafe extern "C" fn shell_core_developer_menu_resolve(
+    core: *mut ShellCore,
+    session: u32,
+    revision: u32,
+    actions: *const u32,
+    count: usize,
+    fingerprint: *const u16,
+    units: usize,
+    changed: *mut bool,
+) -> ShellStatus {
+    let Some(changed) = changed.as_mut() else {
+        return ShellStatus::InvalidArgument;
+    };
+    *changed = false;
+    if count > crate::surface_menu::MAX_ACTIONS
+        || units > crate::surface_menu::MAX_DESCRIPTION
+        || (actions.is_null() && count != 0)
+    {
+        return ShellStatus::InvalidArgument;
+    }
+    let Some(fingerprint) = slice(fingerprint, units) else {
+        return ShellStatus::InvalidArgument;
+    };
+    let actions = if count == 0 {
+        &[]
+    } else {
+        std::slice::from_raw_parts(actions, count)
+    };
+    guard(core, |c| {
+        if c.queue.is_closed() {
+            ShellStatus::Closed
+        } else {
+            match c
+                .developer_menu
+                .resolve(session, revision, actions, fingerprint)
+            {
+                Ok(v) => {
+                    *changed = v;
+                    ShellStatus::Ok
+                }
+                Err(()) => ShellStatus::InvalidArgument,
+            }
+        }
+    })
 }
 
 /// Accept a complete bounded description atomically; unchanged descriptions do not rebuild controls.
 /// # Safety
 /// Live core, readable arrays (null only for zero length), writable changed.
 #[no_mangle]
-pub unsafe extern "C" fn shell_core_developer_menu_accept(core:*mut ShellCore,session:u32,revision:u32,
- actions:*const u32,count:usize,fingerprint:*const u16,units:usize,changed:*mut bool)->ShellStatus {
- let Some(changed)=changed.as_mut() else{return ShellStatus::InvalidArgument;};*changed=false;
- if count>crate::surface_menu::MAX_ACTIONS || units>crate::surface_menu::MAX_DESCRIPTION || (actions.is_null() && count!=0){return ShellStatus::InvalidArgument;}
- let Some(fingerprint)=slice(fingerprint,units) else{return ShellStatus::InvalidArgument;};
- let actions=if count==0{&[]}else{std::slice::from_raw_parts(actions,count)};
- guard(core,|c|if c.queue.is_closed(){ShellStatus::Closed}else{match c.developer_menu.accept(session,revision,actions,fingerprint){Ok(v)=>{*changed=v;ShellStatus::Ok},Err(())=>ShellStatus::InvalidArgument}})
+pub unsafe extern "C" fn shell_core_developer_menu_accept(
+    core: *mut ShellCore,
+    session: u32,
+    revision: u32,
+    actions: *const u32,
+    count: usize,
+    fingerprint: *const u16,
+    units: usize,
+    changed: *mut bool,
+) -> ShellStatus {
+    let Some(changed) = changed.as_mut() else {
+        return ShellStatus::InvalidArgument;
+    };
+    *changed = false;
+    if count > crate::surface_menu::MAX_ACTIONS
+        || units > crate::surface_menu::MAX_DESCRIPTION
+        || (actions.is_null() && count != 0)
+    {
+        return ShellStatus::InvalidArgument;
+    }
+    let Some(fingerprint) = slice(fingerprint, units) else {
+        return ShellStatus::InvalidArgument;
+    };
+    let actions = if count == 0 {
+        &[]
+    } else {
+        std::slice::from_raw_parts(actions, count)
+    };
+    guard(core, |c| {
+        if c.queue.is_closed() {
+            ShellStatus::Closed
+        } else {
+            match c
+                .developer_menu
+                .accept(session, revision, actions, fingerprint)
+            {
+                Ok(v) => {
+                    *changed = v;
+                    ShellStatus::Ok
+                }
+                Err(()) => ShellStatus::InvalidArgument,
+            }
+        }
+    })
 }
 /// Consume one current enabled action; dismissal and late updates cannot resurrect it.
 /// # Safety
 /// Live core and writable accepted.
 #[no_mangle]
-pub unsafe extern "C" fn shell_core_developer_menu_activate(core:*mut ShellCore,session:u32,revision:u32,action:u32,accepted:*mut bool)->ShellStatus {
- let Some(accepted)=accepted.as_mut() else{return ShellStatus::InvalidArgument;};*accepted=false;
- guard(core,|c|{if c.queue.is_closed(){return ShellStatus::Closed;}*accepted=c.developer_menu.activate(session,revision,action);ShellStatus::Ok})
+pub unsafe extern "C" fn shell_core_developer_menu_activate(
+    core: *mut ShellCore,
+    session: u32,
+    revision: u32,
+    action: u32,
+    accepted: *mut bool,
+) -> ShellStatus {
+    let Some(accepted) = accepted.as_mut() else {
+        return ShellStatus::InvalidArgument;
+    };
+    *accepted = false;
+    guard(core, |c| {
+        if c.queue.is_closed() {
+            return ShellStatus::Closed;
+        }
+        *accepted = c.developer_menu.activate(session, revision, action);
+        ShellStatus::Ok
+    })
 }
-
 
 #[cfg(test)]
 mod developer_menu_ffi_tests {
- use super::*;
- #[test] fn developer_openings_are_independent_and_consumed_once() {unsafe {
-  let core=shell_core_create(std::ptr::null());let(mut developer,mut profile)=(0,0);let mut changed=false;
-  assert_eq!(shell_core_developer_menu_open(core,&mut developer),ShellStatus::Ok);
-  shell_core_profile_menu_open(core,&mut profile);
-  shell_core_developer_menu_resolve(core,developer,1,[3].as_ptr(),1,[9].as_ptr(),1,&mut changed);assert!(changed);
-  shell_core_developer_menu_activate(core,developer,1,3,&mut changed);assert!(!changed);
-  shell_core_developer_menu_accept(core,developer,1,[3].as_ptr(),1,[9].as_ptr(),1,&mut changed);assert!(changed);
-  shell_core_profile_menu_dismiss(core);shell_core_surface_menu_dismiss(core);
-  shell_core_developer_menu_activate(core,developer,2,3,&mut changed);assert!(!changed);
-  shell_core_developer_menu_activate(core,developer,1,3,&mut changed);assert!(changed);
-  shell_core_developer_menu_activate(core,developer,1,3,&mut changed);assert!(!changed);
-  shell_core_developer_menu_open(core,&mut developer);shell_core_cancel_all(core);
-  shell_core_developer_menu_accept(core,developer,1,[3].as_ptr(),1,[9].as_ptr(),1,&mut changed);assert!(!changed);
-  assert_eq!(shell_core_developer_menu_resolve(core,developer,1,std::ptr::null(),257,std::ptr::null(),0,&mut changed),ShellStatus::InvalidArgument);
-  shell_core_close(core);assert_eq!(shell_core_developer_menu_open(core,&mut developer),ShellStatus::Closed);
-  shell_core_destroy(core);
- }}
+    use super::*;
+    #[test]
+    fn developer_openings_are_independent_and_consumed_once() {
+        unsafe {
+            let core = shell_core_create(std::ptr::null());
+            let (mut developer, mut profile) = (0, 0);
+            let mut changed = false;
+            assert_eq!(
+                shell_core_developer_menu_open(core, &mut developer),
+                ShellStatus::Ok
+            );
+            shell_core_profile_menu_open(core, &mut profile);
+            shell_core_developer_menu_resolve(
+                core,
+                developer,
+                1,
+                [3].as_ptr(),
+                1,
+                [9].as_ptr(),
+                1,
+                &mut changed,
+            );
+            assert!(changed);
+            shell_core_developer_menu_activate(core, developer, 1, 3, &mut changed);
+            assert!(!changed);
+            shell_core_developer_menu_accept(
+                core,
+                developer,
+                1,
+                [3].as_ptr(),
+                1,
+                [9].as_ptr(),
+                1,
+                &mut changed,
+            );
+            assert!(changed);
+            shell_core_profile_menu_dismiss(core);
+            shell_core_surface_menu_dismiss(core);
+            shell_core_developer_menu_activate(core, developer, 2, 3, &mut changed);
+            assert!(!changed);
+            shell_core_developer_menu_activate(core, developer, 1, 3, &mut changed);
+            assert!(changed);
+            shell_core_developer_menu_activate(core, developer, 1, 3, &mut changed);
+            assert!(!changed);
+            shell_core_developer_menu_open(core, &mut developer);
+            shell_core_cancel_all(core);
+            shell_core_developer_menu_accept(
+                core,
+                developer,
+                1,
+                [3].as_ptr(),
+                1,
+                [9].as_ptr(),
+                1,
+                &mut changed,
+            );
+            assert!(!changed);
+            assert_eq!(
+                shell_core_developer_menu_resolve(
+                    core,
+                    developer,
+                    1,
+                    std::ptr::null(),
+                    257,
+                    std::ptr::null(),
+                    0,
+                    &mut changed
+                ),
+                ShellStatus::InvalidArgument
+            );
+            shell_core_close(core);
+            assert_eq!(
+                shell_core_developer_menu_open(core, &mut developer),
+                ShellStatus::Closed
+            );
+            shell_core_destroy(core);
+        }
+    }
 }
 
 /// Native privacy confirmation surfaces; browser operations remain in Firefox.
 #[repr(u32)]
 #[derive(Clone, Copy)]
-pub enum ShellPrivacyPanelKind { Forget = 1, ClearPrivate = 2 }
+pub enum ShellPrivacyPanelKind {
+    Forget = 1,
+    ClearPrivate = 2,
+}
 
 fn privacy_panel(core: &mut ShellCore, kind: u32) -> Option<&mut crate::surface_menu::SurfaceMenu> {
-    match kind { 1 => Some(&mut core.privacy_panels[0]), 2 => Some(&mut core.privacy_panels[1]), _ => None }
+    match kind {
+        1 => Some(&mut core.privacy_panels[0]),
+        2 => Some(&mut core.privacy_panels[1]),
+        _ => None,
+    }
 }
 
 /// Allocate an independent privacy-panel opening. Zero means identity exhaustion.
 /// # Safety
 /// Live core and writable out.
 #[no_mangle]
-pub unsafe extern "C" fn shell_core_privacy_panel_open(core:*mut ShellCore,kind:u32,out:*mut u32)->ShellStatus {
- let Some(out)=out.as_mut() else{return ShellStatus::InvalidArgument;};*out=0;
- guard(core,|c|{if c.queue.is_closed(){return ShellStatus::Closed;}let Some(panel)=privacy_panel(c,kind) else{return ShellStatus::InvalidArgument;};*out=panel.open();ShellStatus::Ok})
+pub unsafe extern "C" fn shell_core_privacy_panel_open(
+    core: *mut ShellCore,
+    kind: u32,
+    out: *mut u32,
+) -> ShellStatus {
+    let Some(out) = out.as_mut() else {
+        return ShellStatus::InvalidArgument;
+    };
+    *out = 0;
+    guard(core, |c| {
+        if c.queue.is_closed() {
+            return ShellStatus::Closed;
+        }
+        let Some(panel) = privacy_panel(c, kind) else {
+            return ShellStatus::InvalidArgument;
+        };
+        *out = panel.open();
+        ShellStatus::Ok
+    })
 }
 /// Revoke one privacy panel without resetting its identity high-water mark.
 /// # Safety
 /// Live core.
 #[no_mangle]
-pub unsafe extern "C" fn shell_core_privacy_panel_dismiss(core:*mut ShellCore,kind:u32)->ShellStatus {
- guard(core,|c|{if c.queue.is_closed(){return ShellStatus::Closed;}let Some(panel)=privacy_panel(c,kind) else{return ShellStatus::InvalidArgument;};panel.dismiss();ShellStatus::Ok})
+pub unsafe extern "C" fn shell_core_privacy_panel_dismiss(
+    core: *mut ShellCore,
+    kind: u32,
+) -> ShellStatus {
+    guard(core, |c| {
+        if c.queue.is_closed() {
+            return ShellStatus::Closed;
+        }
+        let Some(panel) = privacy_panel(c, kind) else {
+            return ShellStatus::InvalidArgument;
+        };
+        panel.dismiss();
+        ShellStatus::Ok
+    })
 }
 /// Resolve a bounded confirmation description before native mutation.
 /// # Safety
 /// Live core, readable arrays (null only for zero length), writable changed.
 #[no_mangle]
-pub unsafe extern "C" fn shell_core_privacy_panel_resolve(core:*mut ShellCore,kind:u32,session:u32,revision:u32,
- actions:*const u32,count:usize,fingerprint:*const u16,units:usize,changed:*mut bool)->ShellStatus {
- privacy_panel_publish(core,kind,session,revision,actions,count,fingerprint,units,changed,false)
+pub unsafe extern "C" fn shell_core_privacy_panel_resolve(
+    core: *mut ShellCore,
+    kind: u32,
+    session: u32,
+    revision: u32,
+    actions: *const u32,
+    count: usize,
+    fingerprint: *const u16,
+    units: usize,
+    changed: *mut bool,
+) -> ShellStatus {
+    privacy_panel_publish(
+        core,
+        kind,
+        session,
+        revision,
+        actions,
+        count,
+        fingerprint,
+        units,
+        changed,
+        false,
+    )
 }
 /// Accept a bounded confirmation description using Session publication semantics.
 /// # Safety
 /// Live core, readable arrays (null only for zero length), writable changed.
 #[no_mangle]
-pub unsafe extern "C" fn shell_core_privacy_panel_accept(core:*mut ShellCore,kind:u32,session:u32,revision:u32,
- actions:*const u32,count:usize,fingerprint:*const u16,units:usize,changed:*mut bool)->ShellStatus {
- privacy_panel_publish(core,kind,session,revision,actions,count,fingerprint,units,changed,true)
+pub unsafe extern "C" fn shell_core_privacy_panel_accept(
+    core: *mut ShellCore,
+    kind: u32,
+    session: u32,
+    revision: u32,
+    actions: *const u32,
+    count: usize,
+    fingerprint: *const u16,
+    units: usize,
+    changed: *mut bool,
+) -> ShellStatus {
+    privacy_panel_publish(
+        core,
+        kind,
+        session,
+        revision,
+        actions,
+        count,
+        fingerprint,
+        units,
+        changed,
+        true,
+    )
 }
-unsafe fn privacy_panel_publish(core:*mut ShellCore,kind:u32,session:u32,revision:u32,
- actions:*const u32,count:usize,fingerprint:*const u16,units:usize,changed:*mut bool,commit:bool)->ShellStatus {
- let Some(changed)=changed.as_mut() else{return ShellStatus::InvalidArgument;};*changed=false;
- if count>crate::surface_menu::MAX_ACTIONS || units>crate::surface_menu::MAX_DESCRIPTION || (actions.is_null() && count!=0){return ShellStatus::InvalidArgument;}
- let Some(fingerprint)=slice(fingerprint,units) else{return ShellStatus::InvalidArgument;};
- let actions=if count==0{&[]}else{std::slice::from_raw_parts(actions,count)};
- guard(core,|c|{
-  if c.queue.is_closed(){return ShellStatus::Closed;}
-  let Some(panel)=privacy_panel(c,kind) else{return ShellStatus::InvalidArgument;};
-  let result=if commit{panel.accept(session,revision,actions,fingerprint)}else{panel.resolve(session,revision,actions,fingerprint)};
-  match result{Ok(v)=>{*changed=v;ShellStatus::Ok},Err(())=>ShellStatus::InvalidArgument}
- })
+unsafe fn privacy_panel_publish(
+    core: *mut ShellCore,
+    kind: u32,
+    session: u32,
+    revision: u32,
+    actions: *const u32,
+    count: usize,
+    fingerprint: *const u16,
+    units: usize,
+    changed: *mut bool,
+    commit: bool,
+) -> ShellStatus {
+    let Some(changed) = changed.as_mut() else {
+        return ShellStatus::InvalidArgument;
+    };
+    *changed = false;
+    if count > crate::surface_menu::MAX_ACTIONS
+        || units > crate::surface_menu::MAX_DESCRIPTION
+        || (actions.is_null() && count != 0)
+    {
+        return ShellStatus::InvalidArgument;
+    }
+    let Some(fingerprint) = slice(fingerprint, units) else {
+        return ShellStatus::InvalidArgument;
+    };
+    let actions = if count == 0 {
+        &[]
+    } else {
+        std::slice::from_raw_parts(actions, count)
+    };
+    guard(core, |c| {
+        if c.queue.is_closed() {
+            return ShellStatus::Closed;
+        }
+        let Some(panel) = privacy_panel(c, kind) else {
+            return ShellStatus::InvalidArgument;
+        };
+        let result = if commit {
+            panel.accept(session, revision, actions, fingerprint)
+        } else {
+            panel.resolve(session, revision, actions, fingerprint)
+        };
+        match result {
+            Ok(v) => {
+                *changed = v;
+                ShellStatus::Ok
+            }
+            Err(()) => ShellStatus::InvalidArgument,
+        }
+    })
 }
 /// Consume one current privacy confirmation action once.
 /// # Safety
 /// Live core and writable accepted.
 #[no_mangle]
-pub unsafe extern "C" fn shell_core_privacy_panel_activate(core:*mut ShellCore,kind:u32,session:u32,revision:u32,action:u32,accepted:*mut bool)->ShellStatus {
- let Some(accepted)=accepted.as_mut() else{return ShellStatus::InvalidArgument;};*accepted=false;
- guard(core,|c|{if c.queue.is_closed(){return ShellStatus::Closed;}let Some(panel)=privacy_panel(c,kind) else{return ShellStatus::InvalidArgument;};*accepted=panel.activate(session,revision,action);ShellStatus::Ok})
+pub unsafe extern "C" fn shell_core_privacy_panel_activate(
+    core: *mut ShellCore,
+    kind: u32,
+    session: u32,
+    revision: u32,
+    action: u32,
+    accepted: *mut bool,
+) -> ShellStatus {
+    let Some(accepted) = accepted.as_mut() else {
+        return ShellStatus::InvalidArgument;
+    };
+    *accepted = false;
+    guard(core, |c| {
+        if c.queue.is_closed() {
+            return ShellStatus::Closed;
+        }
+        let Some(panel) = privacy_panel(c, kind) else {
+            return ShellStatus::InvalidArgument;
+        };
+        *accepted = panel.activate(session, revision, action);
+        ShellStatus::Ok
+    })
 }
 
 #[cfg(test)]
 mod privacy_panel_ffi_tests {
- use super::*;
- #[test] fn privacy_confirmations_are_independent_bounded_and_single_use() {unsafe {
-  let core=shell_core_create(std::ptr::null());let(mut forget,mut private)=(0,0);let mut changed=false;
-  assert_eq!(shell_core_privacy_panel_open(core,0,&mut forget),ShellStatus::InvalidArgument);
-  for (kind,opening) in [(1,&mut forget),(2,&mut private)] {
-   assert_eq!(shell_core_privacy_panel_open(core,kind,opening),ShellStatus::Ok);
-   shell_core_privacy_panel_resolve(core,kind,*opening,1,[1].as_ptr(),1,[9].as_ptr(),1,&mut changed);assert!(changed);
-   shell_core_privacy_panel_activate(core,kind,*opening,1,1,&mut changed);assert!(!changed);
-   shell_core_privacy_panel_accept(core,kind,*opening,1,[1].as_ptr(),1,[9].as_ptr(),1,&mut changed);assert!(changed);
-  }
-  shell_core_privacy_panel_dismiss(core,1);
-  shell_core_privacy_panel_activate(core,1,forget,1,1,&mut changed);assert!(!changed);
-  shell_core_privacy_panel_activate(core,2,private,1,2,&mut changed);assert!(!changed);
-  shell_core_privacy_panel_activate(core,2,private,1,1,&mut changed);assert!(changed);
-  shell_core_privacy_panel_activate(core,2,private,1,1,&mut changed);assert!(!changed);
-  assert_eq!(shell_core_privacy_panel_resolve(core,2,private,1,std::ptr::null(),257,std::ptr::null(),0,&mut changed),ShellStatus::InvalidArgument);
-  shell_core_privacy_panel_open(core,1,&mut forget);shell_core_cancel_all(core);
-  shell_core_privacy_panel_accept(core,1,forget,1,[1].as_ptr(),1,[9].as_ptr(),1,&mut changed);assert!(!changed);
-  shell_core_close(core);assert_eq!(shell_core_privacy_panel_open(core,1,&mut forget),ShellStatus::Closed);
-  shell_core_destroy(core);
- }}
+    use super::*;
+    #[test]
+    fn privacy_confirmations_are_independent_bounded_and_single_use() {
+        unsafe {
+            let core = shell_core_create(std::ptr::null());
+            let (mut forget, mut private) = (0, 0);
+            let mut changed = false;
+            assert_eq!(
+                shell_core_privacy_panel_open(core, 0, &mut forget),
+                ShellStatus::InvalidArgument
+            );
+            for (kind, opening) in [(1, &mut forget), (2, &mut private)] {
+                assert_eq!(
+                    shell_core_privacy_panel_open(core, kind, opening),
+                    ShellStatus::Ok
+                );
+                shell_core_privacy_panel_resolve(
+                    core,
+                    kind,
+                    *opening,
+                    1,
+                    [1].as_ptr(),
+                    1,
+                    [9].as_ptr(),
+                    1,
+                    &mut changed,
+                );
+                assert!(changed);
+                shell_core_privacy_panel_activate(core, kind, *opening, 1, 1, &mut changed);
+                assert!(!changed);
+                shell_core_privacy_panel_accept(
+                    core,
+                    kind,
+                    *opening,
+                    1,
+                    [1].as_ptr(),
+                    1,
+                    [9].as_ptr(),
+                    1,
+                    &mut changed,
+                );
+                assert!(changed);
+            }
+            shell_core_privacy_panel_dismiss(core, 1);
+            shell_core_privacy_panel_activate(core, 1, forget, 1, 1, &mut changed);
+            assert!(!changed);
+            shell_core_privacy_panel_activate(core, 2, private, 1, 2, &mut changed);
+            assert!(!changed);
+            shell_core_privacy_panel_activate(core, 2, private, 1, 1, &mut changed);
+            assert!(changed);
+            shell_core_privacy_panel_activate(core, 2, private, 1, 1, &mut changed);
+            assert!(!changed);
+            assert_eq!(
+                shell_core_privacy_panel_resolve(
+                    core,
+                    2,
+                    private,
+                    1,
+                    std::ptr::null(),
+                    257,
+                    std::ptr::null(),
+                    0,
+                    &mut changed
+                ),
+                ShellStatus::InvalidArgument
+            );
+            shell_core_privacy_panel_open(core, 1, &mut forget);
+            shell_core_cancel_all(core);
+            shell_core_privacy_panel_accept(
+                core,
+                1,
+                forget,
+                1,
+                [1].as_ptr(),
+                1,
+                [9].as_ptr(),
+                1,
+                &mut changed,
+            );
+            assert!(!changed);
+            shell_core_close(core);
+            assert_eq!(
+                shell_core_privacy_panel_open(core, 1, &mut forget),
+                ShellStatus::Closed
+            );
+            shell_core_destroy(core);
+        }
+    }
 }
 
 // Independent tab_groups menu session; shared publication semantics, no widget state.
@@ -4744,16 +9642,34 @@ mod privacy_panel_ffi_tests {
 /// # Safety
 /// Live core and writable out.
 #[no_mangle]
-pub unsafe extern "C" fn shell_core_tab_groups_menu_open(core:*mut ShellCore,out:*mut u32)->ShellStatus {
- let Some(out)=out.as_mut() else{return ShellStatus::InvalidArgument;};*out=0;
- guard(core,|c|{if c.queue.is_closed(){return ShellStatus::Closed;}*out=c.tab_groups_menu.open();ShellStatus::Ok})
+pub unsafe extern "C" fn shell_core_tab_groups_menu_open(
+    core: *mut ShellCore,
+    out: *mut u32,
+) -> ShellStatus {
+    let Some(out) = out.as_mut() else {
+        return ShellStatus::InvalidArgument;
+    };
+    *out = 0;
+    guard(core, |c| {
+        if c.queue.is_closed() {
+            return ShellStatus::Closed;
+        }
+        *out = c.tab_groups_menu.open();
+        ShellStatus::Ok
+    })
 }
 /// Revoke a window-scoped menu, preserving its identity high-water mark.
 /// # Safety
 /// Live core.
 #[no_mangle]
-pub unsafe extern "C" fn shell_core_tab_groups_menu_dismiss(core:*mut ShellCore)->ShellStatus {
- guard(core,|c|{if c.queue.is_closed(){return ShellStatus::Closed;}c.tab_groups_menu.dismiss();ShellStatus::Ok})
+pub unsafe extern "C" fn shell_core_tab_groups_menu_dismiss(core: *mut ShellCore) -> ShellStatus {
+    guard(core, |c| {
+        if c.queue.is_closed() {
+            return ShellStatus::Closed;
+        }
+        c.tab_groups_menu.dismiss();
+        ShellStatus::Ok
+    })
 }
 /// Resolve a validated session description before mutating the host container.
 /// Accepted work is committed and counted by shell_core_tab_groups_menu_accept;
@@ -4761,57 +9677,205 @@ pub unsafe extern "C" fn shell_core_tab_groups_menu_dismiss(core:*mut ShellCore)
 /// # Safety
 /// Live core, readable arrays (null only for zero length), writable changed.
 #[no_mangle]
-pub unsafe extern "C" fn shell_core_tab_groups_menu_resolve(core:*mut ShellCore,session:u32,revision:u32,
- actions:*const u32,count:usize,fingerprint:*const u16,units:usize,changed:*mut bool)->ShellStatus {
- let Some(changed)=changed.as_mut() else{return ShellStatus::InvalidArgument;};*changed=false;
- if count>crate::surface_menu::MAX_ACTIONS || units>crate::surface_menu::MAX_DESCRIPTION || (actions.is_null() && count!=0){return ShellStatus::InvalidArgument;}
- let Some(fingerprint)=slice(fingerprint,units) else{return ShellStatus::InvalidArgument;};
- let actions=if count==0{&[]}else{std::slice::from_raw_parts(actions,count)};
- guard(core,|c|if c.queue.is_closed(){ShellStatus::Closed}else{match c.tab_groups_menu.resolve(session,revision,actions,fingerprint){Ok(v)=>{*changed=v;ShellStatus::Ok},Err(())=>ShellStatus::InvalidArgument}})
+pub unsafe extern "C" fn shell_core_tab_groups_menu_resolve(
+    core: *mut ShellCore,
+    session: u32,
+    revision: u32,
+    actions: *const u32,
+    count: usize,
+    fingerprint: *const u16,
+    units: usize,
+    changed: *mut bool,
+) -> ShellStatus {
+    let Some(changed) = changed.as_mut() else {
+        return ShellStatus::InvalidArgument;
+    };
+    *changed = false;
+    if count > crate::surface_menu::MAX_ACTIONS
+        || units > crate::surface_menu::MAX_DESCRIPTION
+        || (actions.is_null() && count != 0)
+    {
+        return ShellStatus::InvalidArgument;
+    }
+    let Some(fingerprint) = slice(fingerprint, units) else {
+        return ShellStatus::InvalidArgument;
+    };
+    let actions = if count == 0 {
+        &[]
+    } else {
+        std::slice::from_raw_parts(actions, count)
+    };
+    guard(core, |c| {
+        if c.queue.is_closed() {
+            ShellStatus::Closed
+        } else {
+            match c
+                .tab_groups_menu
+                .resolve(session, revision, actions, fingerprint)
+            {
+                Ok(v) => {
+                    *changed = v;
+                    ShellStatus::Ok
+                }
+                Err(()) => ShellStatus::InvalidArgument,
+            }
+        }
+    })
 }
 
 /// Accept a complete bounded description atomically; unchanged descriptions do not rebuild controls.
 /// # Safety
 /// Live core, readable arrays (null only for zero length), writable changed.
 #[no_mangle]
-pub unsafe extern "C" fn shell_core_tab_groups_menu_accept(core:*mut ShellCore,session:u32,revision:u32,
- actions:*const u32,count:usize,fingerprint:*const u16,units:usize,changed:*mut bool)->ShellStatus {
- let Some(changed)=changed.as_mut() else{return ShellStatus::InvalidArgument;};*changed=false;
- if count>crate::surface_menu::MAX_ACTIONS || units>crate::surface_menu::MAX_DESCRIPTION || (actions.is_null() && count!=0){return ShellStatus::InvalidArgument;}
- let Some(fingerprint)=slice(fingerprint,units) else{return ShellStatus::InvalidArgument;};
- let actions=if count==0{&[]}else{std::slice::from_raw_parts(actions,count)};
- guard(core,|c|if c.queue.is_closed(){ShellStatus::Closed}else{match c.tab_groups_menu.accept(session,revision,actions,fingerprint){Ok(v)=>{*changed=v;ShellStatus::Ok},Err(())=>ShellStatus::InvalidArgument}})
+pub unsafe extern "C" fn shell_core_tab_groups_menu_accept(
+    core: *mut ShellCore,
+    session: u32,
+    revision: u32,
+    actions: *const u32,
+    count: usize,
+    fingerprint: *const u16,
+    units: usize,
+    changed: *mut bool,
+) -> ShellStatus {
+    let Some(changed) = changed.as_mut() else {
+        return ShellStatus::InvalidArgument;
+    };
+    *changed = false;
+    if count > crate::surface_menu::MAX_ACTIONS
+        || units > crate::surface_menu::MAX_DESCRIPTION
+        || (actions.is_null() && count != 0)
+    {
+        return ShellStatus::InvalidArgument;
+    }
+    let Some(fingerprint) = slice(fingerprint, units) else {
+        return ShellStatus::InvalidArgument;
+    };
+    let actions = if count == 0 {
+        &[]
+    } else {
+        std::slice::from_raw_parts(actions, count)
+    };
+    guard(core, |c| {
+        if c.queue.is_closed() {
+            ShellStatus::Closed
+        } else {
+            match c
+                .tab_groups_menu
+                .accept(session, revision, actions, fingerprint)
+            {
+                Ok(v) => {
+                    *changed = v;
+                    ShellStatus::Ok
+                }
+                Err(()) => ShellStatus::InvalidArgument,
+            }
+        }
+    })
 }
 /// Consume one current enabled action; dismissal and late updates cannot resurrect it.
 /// # Safety
 /// Live core and writable accepted.
 #[no_mangle]
-pub unsafe extern "C" fn shell_core_tab_groups_menu_activate(core:*mut ShellCore,session:u32,revision:u32,action:u32,accepted:*mut bool)->ShellStatus {
- let Some(accepted)=accepted.as_mut() else{return ShellStatus::InvalidArgument;};*accepted=false;
- guard(core,|c|{if c.queue.is_closed(){return ShellStatus::Closed;}*accepted=c.tab_groups_menu.activate(session,revision,action);ShellStatus::Ok})
+pub unsafe extern "C" fn shell_core_tab_groups_menu_activate(
+    core: *mut ShellCore,
+    session: u32,
+    revision: u32,
+    action: u32,
+    accepted: *mut bool,
+) -> ShellStatus {
+    let Some(accepted) = accepted.as_mut() else {
+        return ShellStatus::InvalidArgument;
+    };
+    *accepted = false;
+    guard(core, |c| {
+        if c.queue.is_closed() {
+            return ShellStatus::Closed;
+        }
+        *accepted = c.tab_groups_menu.activate(session, revision, action);
+        ShellStatus::Ok
+    })
 }
-
 
 #[cfg(test)]
 mod tab_groups_menu_ffi_tests {
- use super::*;
- #[test] fn tab_groups_openings_are_independent_and_consumed_once() {unsafe {
-  let core=shell_core_create(std::ptr::null());let(mut tab_groups,mut profile)=(0,0);let mut changed=false;
-  assert_eq!(shell_core_tab_groups_menu_open(core,&mut tab_groups),ShellStatus::Ok);
-  shell_core_profile_menu_open(core,&mut profile);
-  shell_core_tab_groups_menu_resolve(core,tab_groups,1,[3].as_ptr(),1,[9].as_ptr(),1,&mut changed);assert!(changed);
-  shell_core_tab_groups_menu_activate(core,tab_groups,1,3,&mut changed);assert!(!changed);
-  shell_core_tab_groups_menu_accept(core,tab_groups,1,[3].as_ptr(),1,[9].as_ptr(),1,&mut changed);assert!(changed);
-  shell_core_profile_menu_dismiss(core);shell_core_surface_menu_dismiss(core);
-  shell_core_tab_groups_menu_activate(core,tab_groups,2,3,&mut changed);assert!(!changed);
-  shell_core_tab_groups_menu_activate(core,tab_groups,1,3,&mut changed);assert!(changed);
-  shell_core_tab_groups_menu_activate(core,tab_groups,1,3,&mut changed);assert!(!changed);
-  shell_core_tab_groups_menu_open(core,&mut tab_groups);shell_core_cancel_all(core);
-  shell_core_tab_groups_menu_accept(core,tab_groups,1,[3].as_ptr(),1,[9].as_ptr(),1,&mut changed);assert!(!changed);
-  assert_eq!(shell_core_tab_groups_menu_resolve(core,tab_groups,1,std::ptr::null(),257,std::ptr::null(),0,&mut changed),ShellStatus::InvalidArgument);
-  shell_core_close(core);assert_eq!(shell_core_tab_groups_menu_open(core,&mut tab_groups),ShellStatus::Closed);
-  shell_core_destroy(core);
- }}
+    use super::*;
+    #[test]
+    fn tab_groups_openings_are_independent_and_consumed_once() {
+        unsafe {
+            let core = shell_core_create(std::ptr::null());
+            let (mut tab_groups, mut profile) = (0, 0);
+            let mut changed = false;
+            assert_eq!(
+                shell_core_tab_groups_menu_open(core, &mut tab_groups),
+                ShellStatus::Ok
+            );
+            shell_core_profile_menu_open(core, &mut profile);
+            shell_core_tab_groups_menu_resolve(
+                core,
+                tab_groups,
+                1,
+                [3].as_ptr(),
+                1,
+                [9].as_ptr(),
+                1,
+                &mut changed,
+            );
+            assert!(changed);
+            shell_core_tab_groups_menu_activate(core, tab_groups, 1, 3, &mut changed);
+            assert!(!changed);
+            shell_core_tab_groups_menu_accept(
+                core,
+                tab_groups,
+                1,
+                [3].as_ptr(),
+                1,
+                [9].as_ptr(),
+                1,
+                &mut changed,
+            );
+            assert!(changed);
+            shell_core_profile_menu_dismiss(core);
+            shell_core_surface_menu_dismiss(core);
+            shell_core_tab_groups_menu_activate(core, tab_groups, 2, 3, &mut changed);
+            assert!(!changed);
+            shell_core_tab_groups_menu_activate(core, tab_groups, 1, 3, &mut changed);
+            assert!(changed);
+            shell_core_tab_groups_menu_activate(core, tab_groups, 1, 3, &mut changed);
+            assert!(!changed);
+            shell_core_tab_groups_menu_open(core, &mut tab_groups);
+            shell_core_cancel_all(core);
+            shell_core_tab_groups_menu_accept(
+                core,
+                tab_groups,
+                1,
+                [3].as_ptr(),
+                1,
+                [9].as_ptr(),
+                1,
+                &mut changed,
+            );
+            assert!(!changed);
+            assert_eq!(
+                shell_core_tab_groups_menu_resolve(
+                    core,
+                    tab_groups,
+                    1,
+                    std::ptr::null(),
+                    257,
+                    std::ptr::null(),
+                    0,
+                    &mut changed
+                ),
+                ShellStatus::InvalidArgument
+            );
+            shell_core_close(core);
+            assert_eq!(
+                shell_core_tab_groups_menu_open(core, &mut tab_groups),
+                ShellStatus::Closed
+            );
+            shell_core_destroy(core);
+        }
+    }
 }
 
 // Independent group header editor session; shared publication semantics, no widget state.
@@ -4819,16 +9883,34 @@ mod tab_groups_menu_ffi_tests {
 /// # Safety
 /// Live core and writable out.
 #[no_mangle]
-pub unsafe extern "C" fn shell_core_group_header_open(core:*mut ShellCore,out:*mut u32)->ShellStatus {
- let Some(out)=out.as_mut() else{return ShellStatus::InvalidArgument;};*out=0;
- guard(core,|c|{if c.queue.is_closed(){return ShellStatus::Closed;}*out=c.group_header.open();ShellStatus::Ok})
+pub unsafe extern "C" fn shell_core_group_header_open(
+    core: *mut ShellCore,
+    out: *mut u32,
+) -> ShellStatus {
+    let Some(out) = out.as_mut() else {
+        return ShellStatus::InvalidArgument;
+    };
+    *out = 0;
+    guard(core, |c| {
+        if c.queue.is_closed() {
+            return ShellStatus::Closed;
+        }
+        *out = c.group_header.open();
+        ShellStatus::Ok
+    })
 }
 /// Revoke a window-scoped menu, preserving its identity high-water mark.
 /// # Safety
 /// Live core.
 #[no_mangle]
-pub unsafe extern "C" fn shell_core_group_header_dismiss(core:*mut ShellCore)->ShellStatus {
- guard(core,|c|{if c.queue.is_closed(){return ShellStatus::Closed;}c.group_header.dismiss();ShellStatus::Ok})
+pub unsafe extern "C" fn shell_core_group_header_dismiss(core: *mut ShellCore) -> ShellStatus {
+    guard(core, |c| {
+        if c.queue.is_closed() {
+            return ShellStatus::Closed;
+        }
+        c.group_header.dismiss();
+        ShellStatus::Ok
+    })
 }
 /// Resolve a validated session description before mutating the host container.
 /// Accepted work is committed and counted by shell_core_group_header_accept;
@@ -4836,67 +9918,246 @@ pub unsafe extern "C" fn shell_core_group_header_dismiss(core:*mut ShellCore)->S
 /// # Safety
 /// Live core, readable arrays (null only for zero length), writable changed.
 #[no_mangle]
-pub unsafe extern "C" fn shell_core_group_header_resolve(core:*mut ShellCore,session:u32,revision:u32,
- actions:*const u32,count:usize,fingerprint:*const u16,units:usize,changed:*mut bool)->ShellStatus {
- let Some(changed)=changed.as_mut() else{return ShellStatus::InvalidArgument;};*changed=false;
- if count>crate::surface_menu::MAX_ACTIONS || units>crate::surface_menu::MAX_DESCRIPTION || (actions.is_null() && count!=0){return ShellStatus::InvalidArgument;}
- let Some(fingerprint)=slice(fingerprint,units) else{return ShellStatus::InvalidArgument;};
- let actions=if count==0{&[]}else{std::slice::from_raw_parts(actions,count)};
- guard(core,|c|if c.queue.is_closed(){ShellStatus::Closed}else{match c.group_header.resolve(session,revision,actions,fingerprint){Ok(v)=>{*changed=v;ShellStatus::Ok},Err(())=>ShellStatus::InvalidArgument}})
+pub unsafe extern "C" fn shell_core_group_header_resolve(
+    core: *mut ShellCore,
+    session: u32,
+    revision: u32,
+    actions: *const u32,
+    count: usize,
+    fingerprint: *const u16,
+    units: usize,
+    changed: *mut bool,
+) -> ShellStatus {
+    let Some(changed) = changed.as_mut() else {
+        return ShellStatus::InvalidArgument;
+    };
+    *changed = false;
+    if count > crate::surface_menu::MAX_ACTIONS
+        || units > crate::surface_menu::MAX_DESCRIPTION
+        || (actions.is_null() && count != 0)
+    {
+        return ShellStatus::InvalidArgument;
+    }
+    let Some(fingerprint) = slice(fingerprint, units) else {
+        return ShellStatus::InvalidArgument;
+    };
+    let actions = if count == 0 {
+        &[]
+    } else {
+        std::slice::from_raw_parts(actions, count)
+    };
+    guard(core, |c| {
+        if c.queue.is_closed() {
+            ShellStatus::Closed
+        } else {
+            match c
+                .group_header
+                .resolve(session, revision, actions, fingerprint)
+            {
+                Ok(v) => {
+                    *changed = v;
+                    ShellStatus::Ok
+                }
+                Err(()) => ShellStatus::InvalidArgument,
+            }
+        }
+    })
 }
 
 /// Accept a complete bounded description atomically; unchanged descriptions do not rebuild controls.
 /// # Safety
 /// Live core, readable arrays (null only for zero length), writable changed.
 #[no_mangle]
-pub unsafe extern "C" fn shell_core_group_header_accept(core:*mut ShellCore,session:u32,revision:u32,
- actions:*const u32,count:usize,fingerprint:*const u16,units:usize,changed:*mut bool)->ShellStatus {
- let Some(changed)=changed.as_mut() else{return ShellStatus::InvalidArgument;};*changed=false;
- if count>crate::surface_menu::MAX_ACTIONS || units>crate::surface_menu::MAX_DESCRIPTION || (actions.is_null() && count!=0){return ShellStatus::InvalidArgument;}
- let Some(fingerprint)=slice(fingerprint,units) else{return ShellStatus::InvalidArgument;};
- let actions=if count==0{&[]}else{std::slice::from_raw_parts(actions,count)};
- guard(core,|c|if c.queue.is_closed(){ShellStatus::Closed}else{match c.group_header.accept(session,revision,actions,fingerprint){Ok(v)=>{*changed=v;ShellStatus::Ok},Err(())=>ShellStatus::InvalidArgument}})
+pub unsafe extern "C" fn shell_core_group_header_accept(
+    core: *mut ShellCore,
+    session: u32,
+    revision: u32,
+    actions: *const u32,
+    count: usize,
+    fingerprint: *const u16,
+    units: usize,
+    changed: *mut bool,
+) -> ShellStatus {
+    let Some(changed) = changed.as_mut() else {
+        return ShellStatus::InvalidArgument;
+    };
+    *changed = false;
+    if count > crate::surface_menu::MAX_ACTIONS
+        || units > crate::surface_menu::MAX_DESCRIPTION
+        || (actions.is_null() && count != 0)
+    {
+        return ShellStatus::InvalidArgument;
+    }
+    let Some(fingerprint) = slice(fingerprint, units) else {
+        return ShellStatus::InvalidArgument;
+    };
+    let actions = if count == 0 {
+        &[]
+    } else {
+        std::slice::from_raw_parts(actions, count)
+    };
+    guard(core, |c| {
+        if c.queue.is_closed() {
+            ShellStatus::Closed
+        } else {
+            match c
+                .group_header
+                .accept(session, revision, actions, fingerprint)
+            {
+                Ok(v) => {
+                    *changed = v;
+                    ShellStatus::Ok
+                }
+                Err(()) => ShellStatus::InvalidArgument,
+            }
+        }
+    })
 }
 /// Consume one current enabled action; dismissal and late updates cannot resurrect it.
 /// # Safety
 /// Live core and writable accepted.
 #[no_mangle]
-pub unsafe extern "C" fn shell_core_group_header_activate(core:*mut ShellCore,session:u32,revision:u32,action:u32,retained:bool,accepted:*mut bool)->ShellStatus {
- let Some(accepted)=accepted.as_mut() else{return ShellStatus::InvalidArgument;};*accepted=false;
- guard(core,|c|{if c.queue.is_closed(){return ShellStatus::Closed;}*accepted=if retained{c.group_header.activate_retained(session,revision,action)}else{c.group_header.activate(session,revision,action)};ShellStatus::Ok})
+pub unsafe extern "C" fn shell_core_group_header_activate(
+    core: *mut ShellCore,
+    session: u32,
+    revision: u32,
+    action: u32,
+    retained: bool,
+    accepted: *mut bool,
+) -> ShellStatus {
+    let Some(accepted) = accepted.as_mut() else {
+        return ShellStatus::InvalidArgument;
+    };
+    *accepted = false;
+    guard(core, |c| {
+        if c.queue.is_closed() {
+            return ShellStatus::Closed;
+        }
+        *accepted = if retained {
+            c.group_header.activate_retained(session, revision, action)
+        } else {
+            c.group_header.activate(session, revision, action)
+        };
+        ShellStatus::Ok
+    })
 }
 
 #[cfg(test)]
 mod group_header_ffi_tests {
- use super::*;
- #[test] fn editor_edits_wait_for_ack_and_commands_consume_the_opening() {unsafe {
-  let core=shell_core_create(std::ptr::null());let mut session=0;let mut changed=false;
-  assert_eq!(shell_core_group_header_open(core,&mut session),ShellStatus::Ok);
-  assert_eq!(shell_core_group_header_resolve(core,session,1,[1,4].as_ptr(),2,[9].as_ptr(),1,&mut changed),ShellStatus::Ok);assert!(changed);
-  shell_core_group_header_activate(core,session,1,1,true,&mut changed);assert!(!changed);
-  shell_core_group_header_accept(core,session,1,[1,4].as_ptr(),2,[9].as_ptr(),1,&mut changed);assert!(changed);
-  shell_core_tab_groups_menu_dismiss(core);
-  shell_core_group_header_activate(core,session,1,1,true,&mut changed);assert!(changed);
-  shell_core_group_header_activate(core,session,1,1,true,&mut changed);assert!(!changed);
-  shell_core_group_header_accept(core,session,2,[1,4].as_ptr(),2,[10].as_ptr(),1,&mut changed);assert!(changed);
-  shell_core_group_header_activate(core,session,1,4,false,&mut changed);assert!(!changed);
-  shell_core_group_header_activate(core,session,2,4,false,&mut changed);assert!(changed);
-  shell_core_group_header_activate(core,session,2,4,false,&mut changed);assert!(!changed);
-  shell_core_group_header_open(core,&mut session);shell_core_cancel_all(core);
-  shell_core_group_header_accept(core,session,1,[1].as_ptr(),1,[9].as_ptr(),1,&mut changed);assert!(!changed);
-  shell_core_destroy(core);
- }}
+    use super::*;
+    #[test]
+    fn editor_edits_wait_for_ack_and_commands_consume_the_opening() {
+        unsafe {
+            let core = shell_core_create(std::ptr::null());
+            let mut session = 0;
+            let mut changed = false;
+            assert_eq!(
+                shell_core_group_header_open(core, &mut session),
+                ShellStatus::Ok
+            );
+            assert_eq!(
+                shell_core_group_header_resolve(
+                    core,
+                    session,
+                    1,
+                    [1, 4].as_ptr(),
+                    2,
+                    [9].as_ptr(),
+                    1,
+                    &mut changed
+                ),
+                ShellStatus::Ok
+            );
+            assert!(changed);
+            shell_core_group_header_activate(core, session, 1, 1, true, &mut changed);
+            assert!(!changed);
+            shell_core_group_header_accept(
+                core,
+                session,
+                1,
+                [1, 4].as_ptr(),
+                2,
+                [9].as_ptr(),
+                1,
+                &mut changed,
+            );
+            assert!(changed);
+            shell_core_tab_groups_menu_dismiss(core);
+            shell_core_group_header_activate(core, session, 1, 1, true, &mut changed);
+            assert!(changed);
+            shell_core_group_header_activate(core, session, 1, 1, true, &mut changed);
+            assert!(!changed);
+            shell_core_group_header_accept(
+                core,
+                session,
+                2,
+                [1, 4].as_ptr(),
+                2,
+                [10].as_ptr(),
+                1,
+                &mut changed,
+            );
+            assert!(changed);
+            shell_core_group_header_activate(core, session, 1, 4, false, &mut changed);
+            assert!(!changed);
+            shell_core_group_header_activate(core, session, 2, 4, false, &mut changed);
+            assert!(changed);
+            shell_core_group_header_activate(core, session, 2, 4, false, &mut changed);
+            assert!(!changed);
+            shell_core_group_header_open(core, &mut session);
+            shell_core_cancel_all(core);
+            shell_core_group_header_accept(
+                core,
+                session,
+                1,
+                [1].as_ptr(),
+                1,
+                [9].as_ptr(),
+                1,
+                &mut changed,
+            );
+            assert!(!changed);
+            shell_core_destroy(core);
+        }
+    }
 }
 
 /// Resolve a browser-initiated group creation opening once, through Snapshot rules.
 /// # Safety
 /// Live core and writable out.
 #[no_mangle]
-pub unsafe extern "C" fn shell_core_group_header_request(core:*mut ShellCore,request:u32,group:u32,window:u32,out:*mut u32)->ShellStatus {
- let Some(out)=out.as_mut() else{return ShellStatus::InvalidArgument;};*out=0;
- if group==0 || window==0{return ShellStatus::InvalidArgument;}
- let fingerprint=[group as u16,(group>>16) as u16,window as u16,(window>>16) as u16];
- guard(core,|c|{if c.queue.is_closed(){return ShellStatus::Closed;}match c.group_header.request_open(request,&fingerprint){Ok(id)=>{*out=id;ShellStatus::Ok},Err(())=>ShellStatus::InvalidArgument}})
+pub unsafe extern "C" fn shell_core_group_header_request(
+    core: *mut ShellCore,
+    request: u32,
+    group: u32,
+    window: u32,
+    out: *mut u32,
+) -> ShellStatus {
+    let Some(out) = out.as_mut() else {
+        return ShellStatus::InvalidArgument;
+    };
+    *out = 0;
+    if group == 0 || window == 0 {
+        return ShellStatus::InvalidArgument;
+    }
+    let fingerprint = [
+        group as u16,
+        (group >> 16) as u16,
+        window as u16,
+        (window >> 16) as u16,
+    ];
+    guard(core, |c| {
+        if c.queue.is_closed() {
+            return ShellStatus::Closed;
+        }
+        match c.group_header.request_open(request, &fingerprint) {
+            Ok(id) => {
+                *out = id;
+                ShellStatus::Ok
+            }
+            Err(()) => ShellStatus::InvalidArgument,
+        }
+    })
 }
 
 // Independent profiler panel session; shared publication semantics, no widget state.
@@ -4904,16 +10165,34 @@ pub unsafe extern "C" fn shell_core_group_header_request(core:*mut ShellCore,req
 /// # Safety
 /// Live core and writable out.
 #[no_mangle]
-pub unsafe extern "C" fn shell_core_profiler_panel_open(core:*mut ShellCore,out:*mut u32)->ShellStatus {
- let Some(out)=out.as_mut() else{return ShellStatus::InvalidArgument;};*out=0;
- guard(core,|c|{if c.queue.is_closed(){return ShellStatus::Closed;}*out=c.profiler_panel.open();ShellStatus::Ok})
+pub unsafe extern "C" fn shell_core_profiler_panel_open(
+    core: *mut ShellCore,
+    out: *mut u32,
+) -> ShellStatus {
+    let Some(out) = out.as_mut() else {
+        return ShellStatus::InvalidArgument;
+    };
+    *out = 0;
+    guard(core, |c| {
+        if c.queue.is_closed() {
+            return ShellStatus::Closed;
+        }
+        *out = c.profiler_panel.open();
+        ShellStatus::Ok
+    })
 }
 /// Revoke a window-scoped menu, preserving its identity high-water mark.
 /// # Safety
 /// Live core.
 #[no_mangle]
-pub unsafe extern "C" fn shell_core_profiler_panel_dismiss(core:*mut ShellCore)->ShellStatus {
- guard(core,|c|{if c.queue.is_closed(){return ShellStatus::Closed;}c.profiler_panel.dismiss();ShellStatus::Ok})
+pub unsafe extern "C" fn shell_core_profiler_panel_dismiss(core: *mut ShellCore) -> ShellStatus {
+    guard(core, |c| {
+        if c.queue.is_closed() {
+            return ShellStatus::Closed;
+        }
+        c.profiler_panel.dismiss();
+        ShellStatus::Ok
+    })
 }
 /// Resolve a validated session description before mutating the host container.
 /// Accepted work is committed and counted by shell_core_profiler_panel_accept;
@@ -4921,55 +10200,198 @@ pub unsafe extern "C" fn shell_core_profiler_panel_dismiss(core:*mut ShellCore)-
 /// # Safety
 /// Live core, readable arrays (null only for zero length), writable changed.
 #[no_mangle]
-pub unsafe extern "C" fn shell_core_profiler_panel_resolve(core:*mut ShellCore,session:u32,revision:u32,
- actions:*const u32,count:usize,fingerprint:*const u16,units:usize,changed:*mut bool)->ShellStatus {
- let Some(changed)=changed.as_mut() else{return ShellStatus::InvalidArgument;};*changed=false;
- if count>crate::surface_menu::MAX_ACTIONS || units>crate::surface_menu::MAX_DESCRIPTION || (actions.is_null() && count!=0){return ShellStatus::InvalidArgument;}
- let Some(fingerprint)=slice(fingerprint,units) else{return ShellStatus::InvalidArgument;};
- let actions=if count==0{&[]}else{std::slice::from_raw_parts(actions,count)};
- guard(core,|c|if c.queue.is_closed(){ShellStatus::Closed}else{match c.profiler_panel.resolve(session,revision,actions,fingerprint){Ok(v)=>{*changed=v;ShellStatus::Ok},Err(())=>ShellStatus::InvalidArgument}})
+pub unsafe extern "C" fn shell_core_profiler_panel_resolve(
+    core: *mut ShellCore,
+    session: u32,
+    revision: u32,
+    actions: *const u32,
+    count: usize,
+    fingerprint: *const u16,
+    units: usize,
+    changed: *mut bool,
+) -> ShellStatus {
+    let Some(changed) = changed.as_mut() else {
+        return ShellStatus::InvalidArgument;
+    };
+    *changed = false;
+    if count > crate::surface_menu::MAX_ACTIONS
+        || units > crate::surface_menu::MAX_DESCRIPTION
+        || (actions.is_null() && count != 0)
+    {
+        return ShellStatus::InvalidArgument;
+    }
+    let Some(fingerprint) = slice(fingerprint, units) else {
+        return ShellStatus::InvalidArgument;
+    };
+    let actions = if count == 0 {
+        &[]
+    } else {
+        std::slice::from_raw_parts(actions, count)
+    };
+    guard(core, |c| {
+        if c.queue.is_closed() {
+            ShellStatus::Closed
+        } else {
+            match c
+                .profiler_panel
+                .resolve(session, revision, actions, fingerprint)
+            {
+                Ok(v) => {
+                    *changed = v;
+                    ShellStatus::Ok
+                }
+                Err(()) => ShellStatus::InvalidArgument,
+            }
+        }
+    })
 }
 
 /// Accept a complete bounded description atomically; unchanged descriptions do not rebuild controls.
 /// # Safety
 /// Live core, readable arrays (null only for zero length), writable changed.
 #[no_mangle]
-pub unsafe extern "C" fn shell_core_profiler_panel_accept(core:*mut ShellCore,session:u32,revision:u32,
- actions:*const u32,count:usize,fingerprint:*const u16,units:usize,changed:*mut bool)->ShellStatus {
- let Some(changed)=changed.as_mut() else{return ShellStatus::InvalidArgument;};*changed=false;
- if count>crate::surface_menu::MAX_ACTIONS || units>crate::surface_menu::MAX_DESCRIPTION || (actions.is_null() && count!=0){return ShellStatus::InvalidArgument;}
- let Some(fingerprint)=slice(fingerprint,units) else{return ShellStatus::InvalidArgument;};
- let actions=if count==0{&[]}else{std::slice::from_raw_parts(actions,count)};
- guard(core,|c|if c.queue.is_closed(){ShellStatus::Closed}else{match c.profiler_panel.accept(session,revision,actions,fingerprint){Ok(v)=>{*changed=v;ShellStatus::Ok},Err(())=>ShellStatus::InvalidArgument}})
+pub unsafe extern "C" fn shell_core_profiler_panel_accept(
+    core: *mut ShellCore,
+    session: u32,
+    revision: u32,
+    actions: *const u32,
+    count: usize,
+    fingerprint: *const u16,
+    units: usize,
+    changed: *mut bool,
+) -> ShellStatus {
+    let Some(changed) = changed.as_mut() else {
+        return ShellStatus::InvalidArgument;
+    };
+    *changed = false;
+    if count > crate::surface_menu::MAX_ACTIONS
+        || units > crate::surface_menu::MAX_DESCRIPTION
+        || (actions.is_null() && count != 0)
+    {
+        return ShellStatus::InvalidArgument;
+    }
+    let Some(fingerprint) = slice(fingerprint, units) else {
+        return ShellStatus::InvalidArgument;
+    };
+    let actions = if count == 0 {
+        &[]
+    } else {
+        std::slice::from_raw_parts(actions, count)
+    };
+    guard(core, |c| {
+        if c.queue.is_closed() {
+            ShellStatus::Closed
+        } else {
+            match c
+                .profiler_panel
+                .accept(session, revision, actions, fingerprint)
+            {
+                Ok(v) => {
+                    *changed = v;
+                    ShellStatus::Ok
+                }
+                Err(()) => ShellStatus::InvalidArgument,
+            }
+        }
+    })
 }
 /// Consume one current enabled action; dismissal and late updates cannot resurrect it.
 /// # Safety
 /// Live core and writable accepted.
 #[no_mangle]
-pub unsafe extern "C" fn shell_core_profiler_panel_activate(core:*mut ShellCore,session:u32,revision:u32,action:u32,retained:bool,accepted:*mut bool)->ShellStatus {
- let Some(accepted)=accepted.as_mut() else{return ShellStatus::InvalidArgument;};*accepted=false;
- guard(core,|c|{if c.queue.is_closed(){return ShellStatus::Closed;}*accepted=if retained{c.profiler_panel.activate_retained(session,revision,action)}else{c.profiler_panel.activate(session,revision,action)};ShellStatus::Ok})
+pub unsafe extern "C" fn shell_core_profiler_panel_activate(
+    core: *mut ShellCore,
+    session: u32,
+    revision: u32,
+    action: u32,
+    retained: bool,
+    accepted: *mut bool,
+) -> ShellStatus {
+    let Some(accepted) = accepted.as_mut() else {
+        return ShellStatus::InvalidArgument;
+    };
+    *accepted = false;
+    guard(core, |c| {
+        if c.queue.is_closed() {
+            return ShellStatus::Closed;
+        }
+        *accepted = if retained {
+            c.profiler_panel
+                .activate_retained(session, revision, action)
+        } else {
+            c.profiler_panel.activate(session, revision, action)
+        };
+        ShellStatus::Ok
+    })
 }
 
 #[cfg(test)]
 mod profiler_panel_ffi_tests {
- use super::*;
- #[test] fn retained_recording_and_preset_actions_wait_for_ack_and_close_revokes() {unsafe {
-  let core=shell_core_create(std::ptr::null());let mut session=0;let mut accepted=false;
-  assert_eq!(shell_core_profiler_panel_open(core,&mut session),ShellStatus::Ok);
-  shell_core_profiler_panel_accept(core,session,1,[1,100].as_ptr(),2,[9].as_ptr(),1,&mut accepted);assert!(accepted);
-  shell_core_group_header_dismiss(core);
-  shell_core_profiler_panel_activate(core,session,1,100,true,&mut accepted);assert!(accepted);
-  shell_core_profiler_panel_activate(core,session,1,100,true,&mut accepted);assert!(!accepted);
-  shell_core_profiler_panel_accept(core,session,2,[2,3].as_ptr(),2,[10].as_ptr(),1,&mut accepted);assert!(accepted);
-  shell_core_profiler_panel_activate(core,session,1,1,true,&mut accepted);assert!(!accepted);
-  shell_core_profiler_panel_activate(core,session,2,3,false,&mut accepted);assert!(accepted);
-  shell_core_profiler_panel_activate(core,session,2,3,false,&mut accepted);assert!(!accepted);
-  shell_core_profiler_panel_open(core,&mut session);shell_core_cancel_all(core);
-  shell_core_profiler_panel_accept(core,session,1,[1].as_ptr(),1,[9].as_ptr(),1,&mut accepted);assert!(!accepted);
-  shell_core_close(core);assert_eq!(shell_core_profiler_panel_open(core,&mut session),ShellStatus::Closed);
-  shell_core_destroy(core);
- }}
+    use super::*;
+    #[test]
+    fn retained_recording_and_preset_actions_wait_for_ack_and_close_revokes() {
+        unsafe {
+            let core = shell_core_create(std::ptr::null());
+            let mut session = 0;
+            let mut accepted = false;
+            assert_eq!(
+                shell_core_profiler_panel_open(core, &mut session),
+                ShellStatus::Ok
+            );
+            shell_core_profiler_panel_accept(
+                core,
+                session,
+                1,
+                [1, 100].as_ptr(),
+                2,
+                [9].as_ptr(),
+                1,
+                &mut accepted,
+            );
+            assert!(accepted);
+            shell_core_group_header_dismiss(core);
+            shell_core_profiler_panel_activate(core, session, 1, 100, true, &mut accepted);
+            assert!(accepted);
+            shell_core_profiler_panel_activate(core, session, 1, 100, true, &mut accepted);
+            assert!(!accepted);
+            shell_core_profiler_panel_accept(
+                core,
+                session,
+                2,
+                [2, 3].as_ptr(),
+                2,
+                [10].as_ptr(),
+                1,
+                &mut accepted,
+            );
+            assert!(accepted);
+            shell_core_profiler_panel_activate(core, session, 1, 1, true, &mut accepted);
+            assert!(!accepted);
+            shell_core_profiler_panel_activate(core, session, 2, 3, false, &mut accepted);
+            assert!(accepted);
+            shell_core_profiler_panel_activate(core, session, 2, 3, false, &mut accepted);
+            assert!(!accepted);
+            shell_core_profiler_panel_open(core, &mut session);
+            shell_core_cancel_all(core);
+            shell_core_profiler_panel_accept(
+                core,
+                session,
+                1,
+                [1].as_ptr(),
+                1,
+                [9].as_ptr(),
+                1,
+                &mut accepted,
+            );
+            assert!(!accepted);
+            shell_core_close(core);
+            assert_eq!(
+                shell_core_profiler_panel_open(core, &mut session),
+                ShellStatus::Closed
+            );
+            shell_core_destroy(core);
+        }
+    }
 }
 
 // Independent bookmark panel session; shared publication semantics, no widget state.
@@ -4977,16 +10399,34 @@ mod profiler_panel_ffi_tests {
 /// # Safety
 /// Live core and writable out.
 #[no_mangle]
-pub unsafe extern "C" fn shell_core_bookmark_panel_open(core:*mut ShellCore,out:*mut u32)->ShellStatus {
- let Some(out)=out.as_mut() else{return ShellStatus::InvalidArgument;};*out=0;
- guard(core,|c|{if c.queue.is_closed(){return ShellStatus::Closed;}*out=c.bookmark_panel.open();ShellStatus::Ok})
+pub unsafe extern "C" fn shell_core_bookmark_panel_open(
+    core: *mut ShellCore,
+    out: *mut u32,
+) -> ShellStatus {
+    let Some(out) = out.as_mut() else {
+        return ShellStatus::InvalidArgument;
+    };
+    *out = 0;
+    guard(core, |c| {
+        if c.queue.is_closed() {
+            return ShellStatus::Closed;
+        }
+        *out = c.bookmark_panel.open();
+        ShellStatus::Ok
+    })
 }
 /// Revoke a window-scoped menu, preserving its identity high-water mark.
 /// # Safety
 /// Live core.
 #[no_mangle]
-pub unsafe extern "C" fn shell_core_bookmark_panel_dismiss(core:*mut ShellCore)->ShellStatus {
- guard(core,|c|{if c.queue.is_closed(){return ShellStatus::Closed;}c.bookmark_panel.dismiss();ShellStatus::Ok})
+pub unsafe extern "C" fn shell_core_bookmark_panel_dismiss(core: *mut ShellCore) -> ShellStatus {
+    guard(core, |c| {
+        if c.queue.is_closed() {
+            return ShellStatus::Closed;
+        }
+        c.bookmark_panel.dismiss();
+        ShellStatus::Ok
+    })
 }
 /// Resolve a validated session description before mutating the host container.
 /// Accepted work is committed and counted by shell_core_bookmark_panel_accept;
@@ -4994,61 +10434,215 @@ pub unsafe extern "C" fn shell_core_bookmark_panel_dismiss(core:*mut ShellCore)-
 /// # Safety
 /// Live core, readable arrays (null only for zero length), writable changed.
 #[no_mangle]
-pub unsafe extern "C" fn shell_core_bookmark_panel_resolve(core:*mut ShellCore,session:u32,revision:u32,
- actions:*const u32,count:usize,fingerprint:*const u16,units:usize,changed:*mut bool)->ShellStatus {
- let Some(changed)=changed.as_mut() else{return ShellStatus::InvalidArgument;};*changed=false;
- if count>crate::surface_menu::MAX_ACTIONS || units>crate::surface_menu::MAX_DESCRIPTION || (actions.is_null() && count!=0){return ShellStatus::InvalidArgument;}
- let Some(fingerprint)=slice(fingerprint,units) else{return ShellStatus::InvalidArgument;};
- let actions=if count==0{&[]}else{std::slice::from_raw_parts(actions,count)};
- guard(core,|c|if c.queue.is_closed(){ShellStatus::Closed}else{match c.bookmark_panel.resolve(session,revision,actions,fingerprint){Ok(v)=>{*changed=v;ShellStatus::Ok},Err(())=>ShellStatus::InvalidArgument}})
+pub unsafe extern "C" fn shell_core_bookmark_panel_resolve(
+    core: *mut ShellCore,
+    session: u32,
+    revision: u32,
+    actions: *const u32,
+    count: usize,
+    fingerprint: *const u16,
+    units: usize,
+    changed: *mut bool,
+) -> ShellStatus {
+    let Some(changed) = changed.as_mut() else {
+        return ShellStatus::InvalidArgument;
+    };
+    *changed = false;
+    if count > crate::surface_menu::MAX_ACTIONS
+        || units > crate::surface_menu::MAX_DESCRIPTION
+        || (actions.is_null() && count != 0)
+    {
+        return ShellStatus::InvalidArgument;
+    }
+    let Some(fingerprint) = slice(fingerprint, units) else {
+        return ShellStatus::InvalidArgument;
+    };
+    let actions = if count == 0 {
+        &[]
+    } else {
+        std::slice::from_raw_parts(actions, count)
+    };
+    guard(core, |c| {
+        if c.queue.is_closed() {
+            ShellStatus::Closed
+        } else {
+            match c
+                .bookmark_panel
+                .resolve(session, revision, actions, fingerprint)
+            {
+                Ok(v) => {
+                    *changed = v;
+                    ShellStatus::Ok
+                }
+                Err(()) => ShellStatus::InvalidArgument,
+            }
+        }
+    })
 }
 
 /// Accept a complete bounded description atomically; unchanged descriptions do not rebuild controls.
 /// # Safety
 /// Live core, readable arrays (null only for zero length), writable changed.
 #[no_mangle]
-pub unsafe extern "C" fn shell_core_bookmark_panel_accept(core:*mut ShellCore,session:u32,revision:u32,
- actions:*const u32,count:usize,fingerprint:*const u16,units:usize,changed:*mut bool)->ShellStatus {
- let Some(changed)=changed.as_mut() else{return ShellStatus::InvalidArgument;};*changed=false;
- if count>crate::surface_menu::MAX_ACTIONS || units>crate::surface_menu::MAX_DESCRIPTION || (actions.is_null() && count!=0){return ShellStatus::InvalidArgument;}
- let Some(fingerprint)=slice(fingerprint,units) else{return ShellStatus::InvalidArgument;};
- let actions=if count==0{&[]}else{std::slice::from_raw_parts(actions,count)};
- guard(core,|c|if c.queue.is_closed(){ShellStatus::Closed}else{match c.bookmark_panel.accept(session,revision,actions,fingerprint){Ok(v)=>{*changed=v;ShellStatus::Ok},Err(())=>ShellStatus::InvalidArgument}})
+pub unsafe extern "C" fn shell_core_bookmark_panel_accept(
+    core: *mut ShellCore,
+    session: u32,
+    revision: u32,
+    actions: *const u32,
+    count: usize,
+    fingerprint: *const u16,
+    units: usize,
+    changed: *mut bool,
+) -> ShellStatus {
+    let Some(changed) = changed.as_mut() else {
+        return ShellStatus::InvalidArgument;
+    };
+    *changed = false;
+    if count > crate::surface_menu::MAX_ACTIONS
+        || units > crate::surface_menu::MAX_DESCRIPTION
+        || (actions.is_null() && count != 0)
+    {
+        return ShellStatus::InvalidArgument;
+    }
+    let Some(fingerprint) = slice(fingerprint, units) else {
+        return ShellStatus::InvalidArgument;
+    };
+    let actions = if count == 0 {
+        &[]
+    } else {
+        std::slice::from_raw_parts(actions, count)
+    };
+    guard(core, |c| {
+        if c.queue.is_closed() {
+            ShellStatus::Closed
+        } else {
+            match c
+                .bookmark_panel
+                .accept(session, revision, actions, fingerprint)
+            {
+                Ok(v) => {
+                    *changed = v;
+                    ShellStatus::Ok
+                }
+                Err(()) => ShellStatus::InvalidArgument,
+            }
+        }
+    })
 }
 /// Consume one current enabled action; dismissal and late updates cannot resurrect it.
 /// # Safety
 /// Live core and writable accepted.
 #[no_mangle]
-pub unsafe extern "C" fn shell_core_bookmark_panel_activate(core:*mut ShellCore,session:u32,revision:u32,action:u32,retained:bool,accepted:*mut bool)->ShellStatus {
- let Some(accepted)=accepted.as_mut() else{return ShellStatus::InvalidArgument;};*accepted=false;
- guard(core,|c|{if c.queue.is_closed(){return ShellStatus::Closed;}*accepted=if retained{c.bookmark_panel.activate_retained(session,revision,action)}else{c.bookmark_panel.activate(session,revision,action)};ShellStatus::Ok})
+pub unsafe extern "C" fn shell_core_bookmark_panel_activate(
+    core: *mut ShellCore,
+    session: u32,
+    revision: u32,
+    action: u32,
+    retained: bool,
+    accepted: *mut bool,
+) -> ShellStatus {
+    let Some(accepted) = accepted.as_mut() else {
+        return ShellStatus::InvalidArgument;
+    };
+    *accepted = false;
+    guard(core, |c| {
+        if c.queue.is_closed() {
+            return ShellStatus::Closed;
+        }
+        *accepted = if retained {
+            c.bookmark_panel
+                .activate_retained(session, revision, action)
+        } else {
+            c.bookmark_panel.activate(session, revision, action)
+        };
+        ShellStatus::Ok
+    })
 }
-
 
 /// Resolve a browser-owned bookmark editor opening once through Snapshot rules.
 /// # Safety
 /// Live core, readable fingerprint and writable out.
 #[no_mangle]
-pub unsafe extern "C" fn shell_core_bookmark_panel_request(core:*mut ShellCore,request:u32,fingerprint:*const u16,units:usize,out:*mut u32)->ShellStatus {
- let Some(out)=out.as_mut() else{return ShellStatus::InvalidArgument;};*out=0;
- if units>crate::surface_menu::MAX_DESCRIPTION{return ShellStatus::InvalidArgument;}
- let Some(fingerprint)=slice(fingerprint,units) else{return ShellStatus::InvalidArgument;};
- guard(core,|c|{if c.queue.is_closed(){return ShellStatus::Closed;}match c.bookmark_panel.request_open(request,fingerprint){Ok(id)=>{*out=id;ShellStatus::Ok},Err(())=>ShellStatus::InvalidArgument}})
+pub unsafe extern "C" fn shell_core_bookmark_panel_request(
+    core: *mut ShellCore,
+    request: u32,
+    fingerprint: *const u16,
+    units: usize,
+    out: *mut u32,
+) -> ShellStatus {
+    let Some(out) = out.as_mut() else {
+        return ShellStatus::InvalidArgument;
+    };
+    *out = 0;
+    if units > crate::surface_menu::MAX_DESCRIPTION {
+        return ShellStatus::InvalidArgument;
+    }
+    let Some(fingerprint) = slice(fingerprint, units) else {
+        return ShellStatus::InvalidArgument;
+    };
+    guard(core, |c| {
+        if c.queue.is_closed() {
+            return ShellStatus::Closed;
+        }
+        match c.bookmark_panel.request_open(request, fingerprint) {
+            Ok(id) => {
+                *out = id;
+                ShellStatus::Ok
+            }
+            Err(()) => ShellStatus::InvalidArgument,
+        }
+    })
 }
-#[cfg(test)] mod bookmark_panel_ffi_tests {
- use super::*;
- #[test] fn browser_request_and_actions_are_scoped_and_one_use(){unsafe{
-  let core=shell_core_create(std::ptr::null());let mut id=0;let mut changed=false;
-  assert_eq!(shell_core_bookmark_panel_request(core,7,[2].as_ptr(),1,&mut id),ShellStatus::Ok);assert_ne!(id,0);
-  shell_core_bookmark_panel_accept(core,id,1,[1,7].as_ptr(),2,[3].as_ptr(),1,&mut changed);assert!(changed);
-  shell_core_bookmark_panel_activate(core,id,1,7,true,&mut changed);assert!(changed);
-  shell_core_bookmark_panel_activate(core,id,1,7,true,&mut changed);assert!(!changed);
-  shell_core_bookmark_panel_activate(core,id,1,1,false,&mut changed);assert!(changed);
-  shell_core_bookmark_panel_request(core,7,[2].as_ptr(),1,&mut id);assert_eq!(id,0);
-  shell_core_bookmark_panel_request(core,8,[2].as_ptr(),1,&mut id);assert_ne!(id,0);shell_core_cancel_all(core);
-  shell_core_bookmark_panel_accept(core,id,1,[1].as_ptr(),1,[3].as_ptr(),1,&mut changed);assert!(!changed);
-  shell_core_destroy(core);
- }}
+#[cfg(test)]
+mod bookmark_panel_ffi_tests {
+    use super::*;
+    #[test]
+    fn browser_request_and_actions_are_scoped_and_one_use() {
+        unsafe {
+            let core = shell_core_create(std::ptr::null());
+            let mut id = 0;
+            let mut changed = false;
+            assert_eq!(
+                shell_core_bookmark_panel_request(core, 7, [2].as_ptr(), 1, &mut id),
+                ShellStatus::Ok
+            );
+            assert_ne!(id, 0);
+            shell_core_bookmark_panel_accept(
+                core,
+                id,
+                1,
+                [1, 7].as_ptr(),
+                2,
+                [3].as_ptr(),
+                1,
+                &mut changed,
+            );
+            assert!(changed);
+            shell_core_bookmark_panel_activate(core, id, 1, 7, true, &mut changed);
+            assert!(changed);
+            shell_core_bookmark_panel_activate(core, id, 1, 7, true, &mut changed);
+            assert!(!changed);
+            shell_core_bookmark_panel_activate(core, id, 1, 1, false, &mut changed);
+            assert!(changed);
+            shell_core_bookmark_panel_request(core, 7, [2].as_ptr(), 1, &mut id);
+            assert_eq!(id, 0);
+            shell_core_bookmark_panel_request(core, 8, [2].as_ptr(), 1, &mut id);
+            assert_ne!(id, 0);
+            shell_core_cancel_all(core);
+            shell_core_bookmark_panel_accept(
+                core,
+                id,
+                1,
+                [1].as_ptr(),
+                1,
+                [3].as_ptr(),
+                1,
+                &mut changed,
+            );
+            assert!(!changed);
+            shell_core_destroy(core);
+        }
+    }
 }
 
 // Independent permissions panel session; shared publication semantics, no widget state.
@@ -5056,16 +10650,34 @@ pub unsafe extern "C" fn shell_core_bookmark_panel_request(core:*mut ShellCore,r
 /// # Safety
 /// Live core and writable out.
 #[no_mangle]
-pub unsafe extern "C" fn shell_core_permissions_panel_open(core:*mut ShellCore,out:*mut u32)->ShellStatus {
- let Some(out)=out.as_mut() else{return ShellStatus::InvalidArgument;};*out=0;
- guard(core,|c|{if c.queue.is_closed(){return ShellStatus::Closed;}*out=c.permissions_panel.open();ShellStatus::Ok})
+pub unsafe extern "C" fn shell_core_permissions_panel_open(
+    core: *mut ShellCore,
+    out: *mut u32,
+) -> ShellStatus {
+    let Some(out) = out.as_mut() else {
+        return ShellStatus::InvalidArgument;
+    };
+    *out = 0;
+    guard(core, |c| {
+        if c.queue.is_closed() {
+            return ShellStatus::Closed;
+        }
+        *out = c.permissions_panel.open();
+        ShellStatus::Ok
+    })
 }
 /// Revoke a window-scoped menu, preserving its identity high-water mark.
 /// # Safety
 /// Live core.
 #[no_mangle]
-pub unsafe extern "C" fn shell_core_permissions_panel_dismiss(core:*mut ShellCore)->ShellStatus {
- guard(core,|c|{if c.queue.is_closed(){return ShellStatus::Closed;}c.permissions_panel.dismiss();ShellStatus::Ok})
+pub unsafe extern "C" fn shell_core_permissions_panel_dismiss(core: *mut ShellCore) -> ShellStatus {
+    guard(core, |c| {
+        if c.queue.is_closed() {
+            return ShellStatus::Closed;
+        }
+        c.permissions_panel.dismiss();
+        ShellStatus::Ok
+    })
 }
 /// Resolve a validated session description before mutating the host container.
 /// Accepted work is committed and counted by shell_core_permissions_panel_accept;
@@ -5073,61 +10685,215 @@ pub unsafe extern "C" fn shell_core_permissions_panel_dismiss(core:*mut ShellCor
 /// # Safety
 /// Live core, readable arrays (null only for zero length), writable changed.
 #[no_mangle]
-pub unsafe extern "C" fn shell_core_permissions_panel_resolve(core:*mut ShellCore,session:u32,revision:u32,
- actions:*const u32,count:usize,fingerprint:*const u16,units:usize,changed:*mut bool)->ShellStatus {
- let Some(changed)=changed.as_mut() else{return ShellStatus::InvalidArgument;};*changed=false;
- if count>crate::surface_menu::MAX_ACTIONS || units>crate::surface_menu::MAX_DESCRIPTION || (actions.is_null() && count!=0){return ShellStatus::InvalidArgument;}
- let Some(fingerprint)=slice(fingerprint,units) else{return ShellStatus::InvalidArgument;};
- let actions=if count==0{&[]}else{std::slice::from_raw_parts(actions,count)};
- guard(core,|c|if c.queue.is_closed(){ShellStatus::Closed}else{match c.permissions_panel.resolve(session,revision,actions,fingerprint){Ok(v)=>{*changed=v;ShellStatus::Ok},Err(())=>ShellStatus::InvalidArgument}})
+pub unsafe extern "C" fn shell_core_permissions_panel_resolve(
+    core: *mut ShellCore,
+    session: u32,
+    revision: u32,
+    actions: *const u32,
+    count: usize,
+    fingerprint: *const u16,
+    units: usize,
+    changed: *mut bool,
+) -> ShellStatus {
+    let Some(changed) = changed.as_mut() else {
+        return ShellStatus::InvalidArgument;
+    };
+    *changed = false;
+    if count > crate::surface_menu::MAX_ACTIONS
+        || units > crate::surface_menu::MAX_DESCRIPTION
+        || (actions.is_null() && count != 0)
+    {
+        return ShellStatus::InvalidArgument;
+    }
+    let Some(fingerprint) = slice(fingerprint, units) else {
+        return ShellStatus::InvalidArgument;
+    };
+    let actions = if count == 0 {
+        &[]
+    } else {
+        std::slice::from_raw_parts(actions, count)
+    };
+    guard(core, |c| {
+        if c.queue.is_closed() {
+            ShellStatus::Closed
+        } else {
+            match c
+                .permissions_panel
+                .resolve(session, revision, actions, fingerprint)
+            {
+                Ok(v) => {
+                    *changed = v;
+                    ShellStatus::Ok
+                }
+                Err(()) => ShellStatus::InvalidArgument,
+            }
+        }
+    })
 }
 
 /// Accept a complete bounded description atomically; unchanged descriptions do not rebuild controls.
 /// # Safety
 /// Live core, readable arrays (null only for zero length), writable changed.
 #[no_mangle]
-pub unsafe extern "C" fn shell_core_permissions_panel_accept(core:*mut ShellCore,session:u32,revision:u32,
- actions:*const u32,count:usize,fingerprint:*const u16,units:usize,changed:*mut bool)->ShellStatus {
- let Some(changed)=changed.as_mut() else{return ShellStatus::InvalidArgument;};*changed=false;
- if count>crate::surface_menu::MAX_ACTIONS || units>crate::surface_menu::MAX_DESCRIPTION || (actions.is_null() && count!=0){return ShellStatus::InvalidArgument;}
- let Some(fingerprint)=slice(fingerprint,units) else{return ShellStatus::InvalidArgument;};
- let actions=if count==0{&[]}else{std::slice::from_raw_parts(actions,count)};
- guard(core,|c|if c.queue.is_closed(){ShellStatus::Closed}else{match c.permissions_panel.accept(session,revision,actions,fingerprint){Ok(v)=>{*changed=v;ShellStatus::Ok},Err(())=>ShellStatus::InvalidArgument}})
+pub unsafe extern "C" fn shell_core_permissions_panel_accept(
+    core: *mut ShellCore,
+    session: u32,
+    revision: u32,
+    actions: *const u32,
+    count: usize,
+    fingerprint: *const u16,
+    units: usize,
+    changed: *mut bool,
+) -> ShellStatus {
+    let Some(changed) = changed.as_mut() else {
+        return ShellStatus::InvalidArgument;
+    };
+    *changed = false;
+    if count > crate::surface_menu::MAX_ACTIONS
+        || units > crate::surface_menu::MAX_DESCRIPTION
+        || (actions.is_null() && count != 0)
+    {
+        return ShellStatus::InvalidArgument;
+    }
+    let Some(fingerprint) = slice(fingerprint, units) else {
+        return ShellStatus::InvalidArgument;
+    };
+    let actions = if count == 0 {
+        &[]
+    } else {
+        std::slice::from_raw_parts(actions, count)
+    };
+    guard(core, |c| {
+        if c.queue.is_closed() {
+            ShellStatus::Closed
+        } else {
+            match c
+                .permissions_panel
+                .accept(session, revision, actions, fingerprint)
+            {
+                Ok(v) => {
+                    *changed = v;
+                    ShellStatus::Ok
+                }
+                Err(()) => ShellStatus::InvalidArgument,
+            }
+        }
+    })
 }
 /// Consume one current enabled action; dismissal and late updates cannot resurrect it.
 /// # Safety
 /// Live core and writable accepted.
 #[no_mangle]
-pub unsafe extern "C" fn shell_core_permissions_panel_activate(core:*mut ShellCore,session:u32,revision:u32,action:u32,retained:bool,accepted:*mut bool)->ShellStatus {
- let Some(accepted)=accepted.as_mut() else{return ShellStatus::InvalidArgument;};*accepted=false;
- guard(core,|c|{if c.queue.is_closed(){return ShellStatus::Closed;}*accepted=if retained{c.permissions_panel.activate_retained(session,revision,action)}else{c.permissions_panel.activate(session,revision,action)};ShellStatus::Ok})
+pub unsafe extern "C" fn shell_core_permissions_panel_activate(
+    core: *mut ShellCore,
+    session: u32,
+    revision: u32,
+    action: u32,
+    retained: bool,
+    accepted: *mut bool,
+) -> ShellStatus {
+    let Some(accepted) = accepted.as_mut() else {
+        return ShellStatus::InvalidArgument;
+    };
+    *accepted = false;
+    guard(core, |c| {
+        if c.queue.is_closed() {
+            return ShellStatus::Closed;
+        }
+        *accepted = if retained {
+            c.permissions_panel
+                .activate_retained(session, revision, action)
+        } else {
+            c.permissions_panel.activate(session, revision, action)
+        };
+        ShellStatus::Ok
+    })
 }
-
 
 /// Resolve a browser-owned site permissions opening once through Snapshot rules.
 /// # Safety
 /// Live core, readable fingerprint and writable out.
 #[no_mangle]
-pub unsafe extern "C" fn shell_core_permissions_panel_request(core:*mut ShellCore,request:u32,fingerprint:*const u16,units:usize,out:*mut u32)->ShellStatus {
- let Some(out)=out.as_mut() else{return ShellStatus::InvalidArgument;};*out=0;
- if units>crate::surface_menu::MAX_DESCRIPTION{return ShellStatus::InvalidArgument;}
- let Some(fingerprint)=slice(fingerprint,units) else{return ShellStatus::InvalidArgument;};
- guard(core,|c|{if c.queue.is_closed(){return ShellStatus::Closed;}match c.permissions_panel.request_open(request,fingerprint){Ok(id)=>{*out=id;ShellStatus::Ok},Err(())=>ShellStatus::InvalidArgument}})
+pub unsafe extern "C" fn shell_core_permissions_panel_request(
+    core: *mut ShellCore,
+    request: u32,
+    fingerprint: *const u16,
+    units: usize,
+    out: *mut u32,
+) -> ShellStatus {
+    let Some(out) = out.as_mut() else {
+        return ShellStatus::InvalidArgument;
+    };
+    *out = 0;
+    if units > crate::surface_menu::MAX_DESCRIPTION {
+        return ShellStatus::InvalidArgument;
+    }
+    let Some(fingerprint) = slice(fingerprint, units) else {
+        return ShellStatus::InvalidArgument;
+    };
+    guard(core, |c| {
+        if c.queue.is_closed() {
+            return ShellStatus::Closed;
+        }
+        match c.permissions_panel.request_open(request, fingerprint) {
+            Ok(id) => {
+                *out = id;
+                ShellStatus::Ok
+            }
+            Err(()) => ShellStatus::InvalidArgument,
+        }
+    })
 }
-#[cfg(test)] mod permissions_panel_ffi_tests {
- use super::*;
- #[test] fn browser_request_and_actions_are_scoped_and_one_use(){unsafe{
-  let core=shell_core_create(std::ptr::null());let mut id=0;let mut changed=false;
-  assert_eq!(shell_core_permissions_panel_request(core,7,[2].as_ptr(),1,&mut id),ShellStatus::Ok);assert_ne!(id,0);
-  shell_core_permissions_panel_accept(core,id,1,[1,7].as_ptr(),2,[3].as_ptr(),1,&mut changed);assert!(changed);
-  shell_core_permissions_panel_activate(core,id,1,7,true,&mut changed);assert!(changed);
-  shell_core_permissions_panel_activate(core,id,1,7,true,&mut changed);assert!(!changed);
-  shell_core_permissions_panel_activate(core,id,1,1,false,&mut changed);assert!(changed);
-  shell_core_permissions_panel_request(core,7,[2].as_ptr(),1,&mut id);assert_eq!(id,0);
-  shell_core_permissions_panel_request(core,8,[2].as_ptr(),1,&mut id);assert_ne!(id,0);shell_core_cancel_all(core);
-  shell_core_permissions_panel_accept(core,id,1,[1].as_ptr(),1,[3].as_ptr(),1,&mut changed);assert!(!changed);
-  shell_core_destroy(core);
- }}
+#[cfg(test)]
+mod permissions_panel_ffi_tests {
+    use super::*;
+    #[test]
+    fn browser_request_and_actions_are_scoped_and_one_use() {
+        unsafe {
+            let core = shell_core_create(std::ptr::null());
+            let mut id = 0;
+            let mut changed = false;
+            assert_eq!(
+                shell_core_permissions_panel_request(core, 7, [2].as_ptr(), 1, &mut id),
+                ShellStatus::Ok
+            );
+            assert_ne!(id, 0);
+            shell_core_permissions_panel_accept(
+                core,
+                id,
+                1,
+                [1, 7].as_ptr(),
+                2,
+                [3].as_ptr(),
+                1,
+                &mut changed,
+            );
+            assert!(changed);
+            shell_core_permissions_panel_activate(core, id, 1, 7, true, &mut changed);
+            assert!(changed);
+            shell_core_permissions_panel_activate(core, id, 1, 7, true, &mut changed);
+            assert!(!changed);
+            shell_core_permissions_panel_activate(core, id, 1, 1, false, &mut changed);
+            assert!(changed);
+            shell_core_permissions_panel_request(core, 7, [2].as_ptr(), 1, &mut id);
+            assert_eq!(id, 0);
+            shell_core_permissions_panel_request(core, 8, [2].as_ptr(), 1, &mut id);
+            assert_ne!(id, 0);
+            shell_core_cancel_all(core);
+            shell_core_permissions_panel_accept(
+                core,
+                id,
+                1,
+                [1].as_ptr(),
+                1,
+                [3].as_ptr(),
+                1,
+                &mut changed,
+            );
+            assert!(!changed);
+            shell_core_destroy(core);
+        }
+    }
 }
 
 // Independent connection security panel session; shared publication semantics, no widget state.
@@ -5135,16 +10901,34 @@ pub unsafe extern "C" fn shell_core_permissions_panel_request(core:*mut ShellCor
 /// # Safety
 /// Live core and writable out.
 #[no_mangle]
-pub unsafe extern "C" fn shell_core_connection_panel_open(core:*mut ShellCore,out:*mut u32)->ShellStatus {
- let Some(out)=out.as_mut() else{return ShellStatus::InvalidArgument;};*out=0;
- guard(core,|c|{if c.queue.is_closed(){return ShellStatus::Closed;}*out=c.connection_panel.open();ShellStatus::Ok})
+pub unsafe extern "C" fn shell_core_connection_panel_open(
+    core: *mut ShellCore,
+    out: *mut u32,
+) -> ShellStatus {
+    let Some(out) = out.as_mut() else {
+        return ShellStatus::InvalidArgument;
+    };
+    *out = 0;
+    guard(core, |c| {
+        if c.queue.is_closed() {
+            return ShellStatus::Closed;
+        }
+        *out = c.connection_panel.open();
+        ShellStatus::Ok
+    })
 }
 /// Revoke a window-scoped menu, preserving its identity high-water mark.
 /// # Safety
 /// Live core.
 #[no_mangle]
-pub unsafe extern "C" fn shell_core_connection_panel_dismiss(core:*mut ShellCore)->ShellStatus {
- guard(core,|c|{if c.queue.is_closed(){return ShellStatus::Closed;}c.connection_panel.dismiss();ShellStatus::Ok})
+pub unsafe extern "C" fn shell_core_connection_panel_dismiss(core: *mut ShellCore) -> ShellStatus {
+    guard(core, |c| {
+        if c.queue.is_closed() {
+            return ShellStatus::Closed;
+        }
+        c.connection_panel.dismiss();
+        ShellStatus::Ok
+    })
 }
 /// Resolve a validated session description before mutating the host container.
 /// Accepted work is committed and counted by shell_core_connection_panel_accept;
@@ -5152,61 +10936,215 @@ pub unsafe extern "C" fn shell_core_connection_panel_dismiss(core:*mut ShellCore
 /// # Safety
 /// Live core, readable arrays (null only for zero length), writable changed.
 #[no_mangle]
-pub unsafe extern "C" fn shell_core_connection_panel_resolve(core:*mut ShellCore,session:u32,revision:u32,
- actions:*const u32,count:usize,fingerprint:*const u16,units:usize,changed:*mut bool)->ShellStatus {
- let Some(changed)=changed.as_mut() else{return ShellStatus::InvalidArgument;};*changed=false;
- if count>crate::surface_menu::MAX_ACTIONS || units>crate::surface_menu::MAX_DESCRIPTION || (actions.is_null() && count!=0){return ShellStatus::InvalidArgument;}
- let Some(fingerprint)=slice(fingerprint,units) else{return ShellStatus::InvalidArgument;};
- let actions=if count==0{&[]}else{std::slice::from_raw_parts(actions,count)};
- guard(core,|c|if c.queue.is_closed(){ShellStatus::Closed}else{match c.connection_panel.resolve(session,revision,actions,fingerprint){Ok(v)=>{*changed=v;ShellStatus::Ok},Err(())=>ShellStatus::InvalidArgument}})
+pub unsafe extern "C" fn shell_core_connection_panel_resolve(
+    core: *mut ShellCore,
+    session: u32,
+    revision: u32,
+    actions: *const u32,
+    count: usize,
+    fingerprint: *const u16,
+    units: usize,
+    changed: *mut bool,
+) -> ShellStatus {
+    let Some(changed) = changed.as_mut() else {
+        return ShellStatus::InvalidArgument;
+    };
+    *changed = false;
+    if count > crate::surface_menu::MAX_ACTIONS
+        || units > crate::surface_menu::MAX_DESCRIPTION
+        || (actions.is_null() && count != 0)
+    {
+        return ShellStatus::InvalidArgument;
+    }
+    let Some(fingerprint) = slice(fingerprint, units) else {
+        return ShellStatus::InvalidArgument;
+    };
+    let actions = if count == 0 {
+        &[]
+    } else {
+        std::slice::from_raw_parts(actions, count)
+    };
+    guard(core, |c| {
+        if c.queue.is_closed() {
+            ShellStatus::Closed
+        } else {
+            match c
+                .connection_panel
+                .resolve(session, revision, actions, fingerprint)
+            {
+                Ok(v) => {
+                    *changed = v;
+                    ShellStatus::Ok
+                }
+                Err(()) => ShellStatus::InvalidArgument,
+            }
+        }
+    })
 }
 
 /// Accept a complete bounded description atomically; unchanged descriptions do not rebuild controls.
 /// # Safety
 /// Live core, readable arrays (null only for zero length), writable changed.
 #[no_mangle]
-pub unsafe extern "C" fn shell_core_connection_panel_accept(core:*mut ShellCore,session:u32,revision:u32,
- actions:*const u32,count:usize,fingerprint:*const u16,units:usize,changed:*mut bool)->ShellStatus {
- let Some(changed)=changed.as_mut() else{return ShellStatus::InvalidArgument;};*changed=false;
- if count>crate::surface_menu::MAX_ACTIONS || units>crate::surface_menu::MAX_DESCRIPTION || (actions.is_null() && count!=0){return ShellStatus::InvalidArgument;}
- let Some(fingerprint)=slice(fingerprint,units) else{return ShellStatus::InvalidArgument;};
- let actions=if count==0{&[]}else{std::slice::from_raw_parts(actions,count)};
- guard(core,|c|if c.queue.is_closed(){ShellStatus::Closed}else{match c.connection_panel.accept(session,revision,actions,fingerprint){Ok(v)=>{*changed=v;ShellStatus::Ok},Err(())=>ShellStatus::InvalidArgument}})
+pub unsafe extern "C" fn shell_core_connection_panel_accept(
+    core: *mut ShellCore,
+    session: u32,
+    revision: u32,
+    actions: *const u32,
+    count: usize,
+    fingerprint: *const u16,
+    units: usize,
+    changed: *mut bool,
+) -> ShellStatus {
+    let Some(changed) = changed.as_mut() else {
+        return ShellStatus::InvalidArgument;
+    };
+    *changed = false;
+    if count > crate::surface_menu::MAX_ACTIONS
+        || units > crate::surface_menu::MAX_DESCRIPTION
+        || (actions.is_null() && count != 0)
+    {
+        return ShellStatus::InvalidArgument;
+    }
+    let Some(fingerprint) = slice(fingerprint, units) else {
+        return ShellStatus::InvalidArgument;
+    };
+    let actions = if count == 0 {
+        &[]
+    } else {
+        std::slice::from_raw_parts(actions, count)
+    };
+    guard(core, |c| {
+        if c.queue.is_closed() {
+            ShellStatus::Closed
+        } else {
+            match c
+                .connection_panel
+                .accept(session, revision, actions, fingerprint)
+            {
+                Ok(v) => {
+                    *changed = v;
+                    ShellStatus::Ok
+                }
+                Err(()) => ShellStatus::InvalidArgument,
+            }
+        }
+    })
 }
 /// Consume one current enabled action; dismissal and late updates cannot resurrect it.
 /// # Safety
 /// Live core and writable accepted.
 #[no_mangle]
-pub unsafe extern "C" fn shell_core_connection_panel_activate(core:*mut ShellCore,session:u32,revision:u32,action:u32,retained:bool,accepted:*mut bool)->ShellStatus {
- let Some(accepted)=accepted.as_mut() else{return ShellStatus::InvalidArgument;};*accepted=false;
- guard(core,|c|{if c.queue.is_closed(){return ShellStatus::Closed;}*accepted=if retained{c.connection_panel.activate_retained(session,revision,action)}else{c.connection_panel.activate(session,revision,action)};ShellStatus::Ok})
+pub unsafe extern "C" fn shell_core_connection_panel_activate(
+    core: *mut ShellCore,
+    session: u32,
+    revision: u32,
+    action: u32,
+    retained: bool,
+    accepted: *mut bool,
+) -> ShellStatus {
+    let Some(accepted) = accepted.as_mut() else {
+        return ShellStatus::InvalidArgument;
+    };
+    *accepted = false;
+    guard(core, |c| {
+        if c.queue.is_closed() {
+            return ShellStatus::Closed;
+        }
+        *accepted = if retained {
+            c.connection_panel
+                .activate_retained(session, revision, action)
+        } else {
+            c.connection_panel.activate(session, revision, action)
+        };
+        ShellStatus::Ok
+    })
 }
-
 
 /// Resolve a browser-owned connection security opening once through Snapshot rules.
 /// # Safety
 /// Live core, readable fingerprint and writable out.
 #[no_mangle]
-pub unsafe extern "C" fn shell_core_connection_panel_request(core:*mut ShellCore,request:u32,fingerprint:*const u16,units:usize,out:*mut u32)->ShellStatus {
- let Some(out)=out.as_mut() else{return ShellStatus::InvalidArgument;};*out=0;
- if units>crate::surface_menu::MAX_DESCRIPTION{return ShellStatus::InvalidArgument;}
- let Some(fingerprint)=slice(fingerprint,units) else{return ShellStatus::InvalidArgument;};
- guard(core,|c|{if c.queue.is_closed(){return ShellStatus::Closed;}match c.connection_panel.request_open(request,fingerprint){Ok(id)=>{*out=id;ShellStatus::Ok},Err(())=>ShellStatus::InvalidArgument}})
+pub unsafe extern "C" fn shell_core_connection_panel_request(
+    core: *mut ShellCore,
+    request: u32,
+    fingerprint: *const u16,
+    units: usize,
+    out: *mut u32,
+) -> ShellStatus {
+    let Some(out) = out.as_mut() else {
+        return ShellStatus::InvalidArgument;
+    };
+    *out = 0;
+    if units > crate::surface_menu::MAX_DESCRIPTION {
+        return ShellStatus::InvalidArgument;
+    }
+    let Some(fingerprint) = slice(fingerprint, units) else {
+        return ShellStatus::InvalidArgument;
+    };
+    guard(core, |c| {
+        if c.queue.is_closed() {
+            return ShellStatus::Closed;
+        }
+        match c.connection_panel.request_open(request, fingerprint) {
+            Ok(id) => {
+                *out = id;
+                ShellStatus::Ok
+            }
+            Err(()) => ShellStatus::InvalidArgument,
+        }
+    })
 }
-#[cfg(test)] mod connection_panel_ffi_tests {
- use super::*;
- #[test] fn browser_request_and_actions_are_scoped_and_one_use(){unsafe{
-  let core=shell_core_create(std::ptr::null());let mut id=0;let mut changed=false;
-  assert_eq!(shell_core_connection_panel_request(core,7,[2].as_ptr(),1,&mut id),ShellStatus::Ok);assert_ne!(id,0);
-  shell_core_connection_panel_accept(core,id,1,[1,7].as_ptr(),2,[3].as_ptr(),1,&mut changed);assert!(changed);
-  shell_core_connection_panel_activate(core,id,1,7,true,&mut changed);assert!(changed);
-  shell_core_connection_panel_activate(core,id,1,7,true,&mut changed);assert!(!changed);
-  shell_core_connection_panel_activate(core,id,1,1,false,&mut changed);assert!(changed);
-  shell_core_connection_panel_request(core,7,[2].as_ptr(),1,&mut id);assert_eq!(id,0);
-  shell_core_connection_panel_request(core,8,[2].as_ptr(),1,&mut id);assert_ne!(id,0);shell_core_cancel_all(core);
-  shell_core_connection_panel_accept(core,id,1,[1].as_ptr(),1,[3].as_ptr(),1,&mut changed);assert!(!changed);
-  shell_core_destroy(core);
- }}
+#[cfg(test)]
+mod connection_panel_ffi_tests {
+    use super::*;
+    #[test]
+    fn browser_request_and_actions_are_scoped_and_one_use() {
+        unsafe {
+            let core = shell_core_create(std::ptr::null());
+            let mut id = 0;
+            let mut changed = false;
+            assert_eq!(
+                shell_core_connection_panel_request(core, 7, [2].as_ptr(), 1, &mut id),
+                ShellStatus::Ok
+            );
+            assert_ne!(id, 0);
+            shell_core_connection_panel_accept(
+                core,
+                id,
+                1,
+                [1, 7].as_ptr(),
+                2,
+                [3].as_ptr(),
+                1,
+                &mut changed,
+            );
+            assert!(changed);
+            shell_core_connection_panel_activate(core, id, 1, 7, true, &mut changed);
+            assert!(changed);
+            shell_core_connection_panel_activate(core, id, 1, 7, true, &mut changed);
+            assert!(!changed);
+            shell_core_connection_panel_activate(core, id, 1, 1, false, &mut changed);
+            assert!(changed);
+            shell_core_connection_panel_request(core, 7, [2].as_ptr(), 1, &mut id);
+            assert_eq!(id, 0);
+            shell_core_connection_panel_request(core, 8, [2].as_ptr(), 1, &mut id);
+            assert_ne!(id, 0);
+            shell_core_cancel_all(core);
+            shell_core_connection_panel_accept(
+                core,
+                id,
+                1,
+                [1].as_ptr(),
+                1,
+                [3].as_ptr(),
+                1,
+                &mut changed,
+            );
+            assert!(!changed);
+            shell_core_destroy(core);
+        }
+    }
 }
 
 // Independent translations panel session; shared publication semantics, no widget state.
@@ -5214,16 +11152,36 @@ pub unsafe extern "C" fn shell_core_connection_panel_request(core:*mut ShellCore
 /// # Safety
 /// Live core and writable out.
 #[no_mangle]
-pub unsafe extern "C" fn shell_core_translations_panel_open(core:*mut ShellCore,out:*mut u32)->ShellStatus {
- let Some(out)=out.as_mut() else{return ShellStatus::InvalidArgument;};*out=0;
- guard(core,|c|{if c.queue.is_closed(){return ShellStatus::Closed;}*out=c.translations_panel.open();ShellStatus::Ok})
+pub unsafe extern "C" fn shell_core_translations_panel_open(
+    core: *mut ShellCore,
+    out: *mut u32,
+) -> ShellStatus {
+    let Some(out) = out.as_mut() else {
+        return ShellStatus::InvalidArgument;
+    };
+    *out = 0;
+    guard(core, |c| {
+        if c.queue.is_closed() {
+            return ShellStatus::Closed;
+        }
+        *out = c.translations_panel.open();
+        ShellStatus::Ok
+    })
 }
 /// Revoke a window-scoped menu, preserving its identity high-water mark.
 /// # Safety
 /// Live core.
 #[no_mangle]
-pub unsafe extern "C" fn shell_core_translations_panel_dismiss(core:*mut ShellCore)->ShellStatus {
- guard(core,|c|{if c.queue.is_closed(){return ShellStatus::Closed;}c.translations_panel.dismiss();ShellStatus::Ok})
+pub unsafe extern "C" fn shell_core_translations_panel_dismiss(
+    core: *mut ShellCore,
+) -> ShellStatus {
+    guard(core, |c| {
+        if c.queue.is_closed() {
+            return ShellStatus::Closed;
+        }
+        c.translations_panel.dismiss();
+        ShellStatus::Ok
+    })
 }
 /// Resolve a validated session description before mutating the host container.
 /// Accepted work is committed and counted by shell_core_translations_panel_accept;
@@ -5231,61 +11189,215 @@ pub unsafe extern "C" fn shell_core_translations_panel_dismiss(core:*mut ShellCo
 /// # Safety
 /// Live core, readable arrays (null only for zero length), writable changed.
 #[no_mangle]
-pub unsafe extern "C" fn shell_core_translations_panel_resolve(core:*mut ShellCore,session:u32,revision:u32,
- actions:*const u32,count:usize,fingerprint:*const u16,units:usize,changed:*mut bool)->ShellStatus {
- let Some(changed)=changed.as_mut() else{return ShellStatus::InvalidArgument;};*changed=false;
- if count>crate::surface_menu::MAX_ACTIONS || units>crate::surface_menu::MAX_DESCRIPTION || (actions.is_null() && count!=0){return ShellStatus::InvalidArgument;}
- let Some(fingerprint)=slice(fingerprint,units) else{return ShellStatus::InvalidArgument;};
- let actions=if count==0{&[]}else{std::slice::from_raw_parts(actions,count)};
- guard(core,|c|if c.queue.is_closed(){ShellStatus::Closed}else{match c.translations_panel.resolve(session,revision,actions,fingerprint){Ok(v)=>{*changed=v;ShellStatus::Ok},Err(())=>ShellStatus::InvalidArgument}})
+pub unsafe extern "C" fn shell_core_translations_panel_resolve(
+    core: *mut ShellCore,
+    session: u32,
+    revision: u32,
+    actions: *const u32,
+    count: usize,
+    fingerprint: *const u16,
+    units: usize,
+    changed: *mut bool,
+) -> ShellStatus {
+    let Some(changed) = changed.as_mut() else {
+        return ShellStatus::InvalidArgument;
+    };
+    *changed = false;
+    if count > crate::surface_menu::MAX_ACTIONS
+        || units > crate::surface_menu::MAX_DESCRIPTION
+        || (actions.is_null() && count != 0)
+    {
+        return ShellStatus::InvalidArgument;
+    }
+    let Some(fingerprint) = slice(fingerprint, units) else {
+        return ShellStatus::InvalidArgument;
+    };
+    let actions = if count == 0 {
+        &[]
+    } else {
+        std::slice::from_raw_parts(actions, count)
+    };
+    guard(core, |c| {
+        if c.queue.is_closed() {
+            ShellStatus::Closed
+        } else {
+            match c
+                .translations_panel
+                .resolve(session, revision, actions, fingerprint)
+            {
+                Ok(v) => {
+                    *changed = v;
+                    ShellStatus::Ok
+                }
+                Err(()) => ShellStatus::InvalidArgument,
+            }
+        }
+    })
 }
 
 /// Accept a complete bounded description atomically; unchanged descriptions do not rebuild controls.
 /// # Safety
 /// Live core, readable arrays (null only for zero length), writable changed.
 #[no_mangle]
-pub unsafe extern "C" fn shell_core_translations_panel_accept(core:*mut ShellCore,session:u32,revision:u32,
- actions:*const u32,count:usize,fingerprint:*const u16,units:usize,changed:*mut bool)->ShellStatus {
- let Some(changed)=changed.as_mut() else{return ShellStatus::InvalidArgument;};*changed=false;
- if count>crate::surface_menu::MAX_ACTIONS || units>crate::surface_menu::MAX_DESCRIPTION || (actions.is_null() && count!=0){return ShellStatus::InvalidArgument;}
- let Some(fingerprint)=slice(fingerprint,units) else{return ShellStatus::InvalidArgument;};
- let actions=if count==0{&[]}else{std::slice::from_raw_parts(actions,count)};
- guard(core,|c|if c.queue.is_closed(){ShellStatus::Closed}else{match c.translations_panel.accept(session,revision,actions,fingerprint){Ok(v)=>{*changed=v;ShellStatus::Ok},Err(())=>ShellStatus::InvalidArgument}})
+pub unsafe extern "C" fn shell_core_translations_panel_accept(
+    core: *mut ShellCore,
+    session: u32,
+    revision: u32,
+    actions: *const u32,
+    count: usize,
+    fingerprint: *const u16,
+    units: usize,
+    changed: *mut bool,
+) -> ShellStatus {
+    let Some(changed) = changed.as_mut() else {
+        return ShellStatus::InvalidArgument;
+    };
+    *changed = false;
+    if count > crate::surface_menu::MAX_ACTIONS
+        || units > crate::surface_menu::MAX_DESCRIPTION
+        || (actions.is_null() && count != 0)
+    {
+        return ShellStatus::InvalidArgument;
+    }
+    let Some(fingerprint) = slice(fingerprint, units) else {
+        return ShellStatus::InvalidArgument;
+    };
+    let actions = if count == 0 {
+        &[]
+    } else {
+        std::slice::from_raw_parts(actions, count)
+    };
+    guard(core, |c| {
+        if c.queue.is_closed() {
+            ShellStatus::Closed
+        } else {
+            match c
+                .translations_panel
+                .accept(session, revision, actions, fingerprint)
+            {
+                Ok(v) => {
+                    *changed = v;
+                    ShellStatus::Ok
+                }
+                Err(()) => ShellStatus::InvalidArgument,
+            }
+        }
+    })
 }
 /// Consume one current enabled action; dismissal and late updates cannot resurrect it.
 /// # Safety
 /// Live core and writable accepted.
 #[no_mangle]
-pub unsafe extern "C" fn shell_core_translations_panel_activate(core:*mut ShellCore,session:u32,revision:u32,action:u32,retained:bool,accepted:*mut bool)->ShellStatus {
- let Some(accepted)=accepted.as_mut() else{return ShellStatus::InvalidArgument;};*accepted=false;
- guard(core,|c|{if c.queue.is_closed(){return ShellStatus::Closed;}*accepted=if retained{c.translations_panel.activate_retained(session,revision,action)}else{c.translations_panel.activate(session,revision,action)};ShellStatus::Ok})
+pub unsafe extern "C" fn shell_core_translations_panel_activate(
+    core: *mut ShellCore,
+    session: u32,
+    revision: u32,
+    action: u32,
+    retained: bool,
+    accepted: *mut bool,
+) -> ShellStatus {
+    let Some(accepted) = accepted.as_mut() else {
+        return ShellStatus::InvalidArgument;
+    };
+    *accepted = false;
+    guard(core, |c| {
+        if c.queue.is_closed() {
+            return ShellStatus::Closed;
+        }
+        *accepted = if retained {
+            c.translations_panel
+                .activate_retained(session, revision, action)
+        } else {
+            c.translations_panel.activate(session, revision, action)
+        };
+        ShellStatus::Ok
+    })
 }
-
 
 /// Resolve a browser-owned translations opening once through Snapshot rules.
 /// # Safety
 /// Live core, readable fingerprint and writable out.
 #[no_mangle]
-pub unsafe extern "C" fn shell_core_translations_panel_request(core:*mut ShellCore,request:u32,fingerprint:*const u16,units:usize,out:*mut u32)->ShellStatus {
- let Some(out)=out.as_mut() else{return ShellStatus::InvalidArgument;};*out=0;
- if units>crate::surface_menu::MAX_DESCRIPTION{return ShellStatus::InvalidArgument;}
- let Some(fingerprint)=slice(fingerprint,units) else{return ShellStatus::InvalidArgument;};
- guard(core,|c|{if c.queue.is_closed(){return ShellStatus::Closed;}match c.translations_panel.request_open(request,fingerprint){Ok(id)=>{*out=id;ShellStatus::Ok},Err(())=>ShellStatus::InvalidArgument}})
+pub unsafe extern "C" fn shell_core_translations_panel_request(
+    core: *mut ShellCore,
+    request: u32,
+    fingerprint: *const u16,
+    units: usize,
+    out: *mut u32,
+) -> ShellStatus {
+    let Some(out) = out.as_mut() else {
+        return ShellStatus::InvalidArgument;
+    };
+    *out = 0;
+    if units > crate::surface_menu::MAX_DESCRIPTION {
+        return ShellStatus::InvalidArgument;
+    }
+    let Some(fingerprint) = slice(fingerprint, units) else {
+        return ShellStatus::InvalidArgument;
+    };
+    guard(core, |c| {
+        if c.queue.is_closed() {
+            return ShellStatus::Closed;
+        }
+        match c.translations_panel.request_open(request, fingerprint) {
+            Ok(id) => {
+                *out = id;
+                ShellStatus::Ok
+            }
+            Err(()) => ShellStatus::InvalidArgument,
+        }
+    })
 }
-#[cfg(test)] mod translations_panel_ffi_tests {
- use super::*;
- #[test] fn browser_request_and_actions_are_scoped_and_one_use(){unsafe{
-  let core=shell_core_create(std::ptr::null());let mut id=0;let mut changed=false;
-  assert_eq!(shell_core_translations_panel_request(core,7,[2].as_ptr(),1,&mut id),ShellStatus::Ok);assert_ne!(id,0);
-  shell_core_translations_panel_accept(core,id,1,[1,7].as_ptr(),2,[3].as_ptr(),1,&mut changed);assert!(changed);
-  shell_core_translations_panel_activate(core,id,1,7,true,&mut changed);assert!(changed);
-  shell_core_translations_panel_activate(core,id,1,7,true,&mut changed);assert!(!changed);
-  shell_core_translations_panel_activate(core,id,1,1,false,&mut changed);assert!(changed);
-  shell_core_translations_panel_request(core,7,[2].as_ptr(),1,&mut id);assert_eq!(id,0);
-  shell_core_translations_panel_request(core,8,[2].as_ptr(),1,&mut id);assert_ne!(id,0);shell_core_cancel_all(core);
-  shell_core_translations_panel_accept(core,id,1,[1].as_ptr(),1,[3].as_ptr(),1,&mut changed);assert!(!changed);
-  shell_core_destroy(core);
- }}
+#[cfg(test)]
+mod translations_panel_ffi_tests {
+    use super::*;
+    #[test]
+    fn browser_request_and_actions_are_scoped_and_one_use() {
+        unsafe {
+            let core = shell_core_create(std::ptr::null());
+            let mut id = 0;
+            let mut changed = false;
+            assert_eq!(
+                shell_core_translations_panel_request(core, 7, [2].as_ptr(), 1, &mut id),
+                ShellStatus::Ok
+            );
+            assert_ne!(id, 0);
+            shell_core_translations_panel_accept(
+                core,
+                id,
+                1,
+                [1, 7].as_ptr(),
+                2,
+                [3].as_ptr(),
+                1,
+                &mut changed,
+            );
+            assert!(changed);
+            shell_core_translations_panel_activate(core, id, 1, 7, true, &mut changed);
+            assert!(changed);
+            shell_core_translations_panel_activate(core, id, 1, 7, true, &mut changed);
+            assert!(!changed);
+            shell_core_translations_panel_activate(core, id, 1, 1, false, &mut changed);
+            assert!(changed);
+            shell_core_translations_panel_request(core, 7, [2].as_ptr(), 1, &mut id);
+            assert_eq!(id, 0);
+            shell_core_translations_panel_request(core, 8, [2].as_ptr(), 1, &mut id);
+            assert_ne!(id, 0);
+            shell_core_cancel_all(core);
+            shell_core_translations_panel_accept(
+                core,
+                id,
+                1,
+                [1].as_ptr(),
+                1,
+                [3].as_ptr(),
+                1,
+                &mut changed,
+            );
+            assert!(!changed);
+            shell_core_destroy(core);
+        }
+    }
 }
 
 // Independent selected-text translations panel session; shared publication semantics, no widget state.
@@ -5293,16 +11405,36 @@ pub unsafe extern "C" fn shell_core_translations_panel_request(core:*mut ShellCo
 /// # Safety
 /// Live core and writable out.
 #[no_mangle]
-pub unsafe extern "C" fn shell_core_selected_translations_panel_open(core:*mut ShellCore,out:*mut u32)->ShellStatus {
- let Some(out)=out.as_mut() else{return ShellStatus::InvalidArgument;};*out=0;
- guard(core,|c|{if c.queue.is_closed(){return ShellStatus::Closed;}*out=c.selected_translations_panel.open();ShellStatus::Ok})
+pub unsafe extern "C" fn shell_core_selected_translations_panel_open(
+    core: *mut ShellCore,
+    out: *mut u32,
+) -> ShellStatus {
+    let Some(out) = out.as_mut() else {
+        return ShellStatus::InvalidArgument;
+    };
+    *out = 0;
+    guard(core, |c| {
+        if c.queue.is_closed() {
+            return ShellStatus::Closed;
+        }
+        *out = c.selected_translations_panel.open();
+        ShellStatus::Ok
+    })
 }
 /// Revoke a window-scoped menu, preserving its identity high-water mark.
 /// # Safety
 /// Live core.
 #[no_mangle]
-pub unsafe extern "C" fn shell_core_selected_translations_panel_dismiss(core:*mut ShellCore)->ShellStatus {
- guard(core,|c|{if c.queue.is_closed(){return ShellStatus::Closed;}c.selected_translations_panel.dismiss();ShellStatus::Ok})
+pub unsafe extern "C" fn shell_core_selected_translations_panel_dismiss(
+    core: *mut ShellCore,
+) -> ShellStatus {
+    guard(core, |c| {
+        if c.queue.is_closed() {
+            return ShellStatus::Closed;
+        }
+        c.selected_translations_panel.dismiss();
+        ShellStatus::Ok
+    })
 }
 /// Resolve a validated session description before mutating the host container.
 /// Accepted work is committed and counted by shell_core_selected_translations_panel_accept;
@@ -5310,61 +11442,219 @@ pub unsafe extern "C" fn shell_core_selected_translations_panel_dismiss(core:*mu
 /// # Safety
 /// Live core, readable arrays (null only for zero length), writable changed.
 #[no_mangle]
-pub unsafe extern "C" fn shell_core_selected_translations_panel_resolve(core:*mut ShellCore,session:u32,revision:u32,
- actions:*const u32,count:usize,fingerprint:*const u16,units:usize,changed:*mut bool)->ShellStatus {
- let Some(changed)=changed.as_mut() else{return ShellStatus::InvalidArgument;};*changed=false;
- if count>crate::surface_menu::MAX_ACTIONS || units>crate::surface_menu::MAX_DESCRIPTION || (actions.is_null() && count!=0){return ShellStatus::InvalidArgument;}
- let Some(fingerprint)=slice(fingerprint,units) else{return ShellStatus::InvalidArgument;};
- let actions=if count==0{&[]}else{std::slice::from_raw_parts(actions,count)};
- guard(core,|c|if c.queue.is_closed(){ShellStatus::Closed}else{match c.selected_translations_panel.resolve(session,revision,actions,fingerprint){Ok(v)=>{*changed=v;ShellStatus::Ok},Err(())=>ShellStatus::InvalidArgument}})
+pub unsafe extern "C" fn shell_core_selected_translations_panel_resolve(
+    core: *mut ShellCore,
+    session: u32,
+    revision: u32,
+    actions: *const u32,
+    count: usize,
+    fingerprint: *const u16,
+    units: usize,
+    changed: *mut bool,
+) -> ShellStatus {
+    let Some(changed) = changed.as_mut() else {
+        return ShellStatus::InvalidArgument;
+    };
+    *changed = false;
+    if count > crate::surface_menu::MAX_ACTIONS
+        || units > crate::surface_menu::MAX_DESCRIPTION
+        || (actions.is_null() && count != 0)
+    {
+        return ShellStatus::InvalidArgument;
+    }
+    let Some(fingerprint) = slice(fingerprint, units) else {
+        return ShellStatus::InvalidArgument;
+    };
+    let actions = if count == 0 {
+        &[]
+    } else {
+        std::slice::from_raw_parts(actions, count)
+    };
+    guard(core, |c| {
+        if c.queue.is_closed() {
+            ShellStatus::Closed
+        } else {
+            match c
+                .selected_translations_panel
+                .resolve(session, revision, actions, fingerprint)
+            {
+                Ok(v) => {
+                    *changed = v;
+                    ShellStatus::Ok
+                }
+                Err(()) => ShellStatus::InvalidArgument,
+            }
+        }
+    })
 }
 
 /// Accept a complete bounded description atomically; unchanged descriptions do not rebuild controls.
 /// # Safety
 /// Live core, readable arrays (null only for zero length), writable changed.
 #[no_mangle]
-pub unsafe extern "C" fn shell_core_selected_translations_panel_accept(core:*mut ShellCore,session:u32,revision:u32,
- actions:*const u32,count:usize,fingerprint:*const u16,units:usize,changed:*mut bool)->ShellStatus {
- let Some(changed)=changed.as_mut() else{return ShellStatus::InvalidArgument;};*changed=false;
- if count>crate::surface_menu::MAX_ACTIONS || units>crate::surface_menu::MAX_DESCRIPTION || (actions.is_null() && count!=0){return ShellStatus::InvalidArgument;}
- let Some(fingerprint)=slice(fingerprint,units) else{return ShellStatus::InvalidArgument;};
- let actions=if count==0{&[]}else{std::slice::from_raw_parts(actions,count)};
- guard(core,|c|if c.queue.is_closed(){ShellStatus::Closed}else{match c.selected_translations_panel.accept(session,revision,actions,fingerprint){Ok(v)=>{*changed=v;ShellStatus::Ok},Err(())=>ShellStatus::InvalidArgument}})
+pub unsafe extern "C" fn shell_core_selected_translations_panel_accept(
+    core: *mut ShellCore,
+    session: u32,
+    revision: u32,
+    actions: *const u32,
+    count: usize,
+    fingerprint: *const u16,
+    units: usize,
+    changed: *mut bool,
+) -> ShellStatus {
+    let Some(changed) = changed.as_mut() else {
+        return ShellStatus::InvalidArgument;
+    };
+    *changed = false;
+    if count > crate::surface_menu::MAX_ACTIONS
+        || units > crate::surface_menu::MAX_DESCRIPTION
+        || (actions.is_null() && count != 0)
+    {
+        return ShellStatus::InvalidArgument;
+    }
+    let Some(fingerprint) = slice(fingerprint, units) else {
+        return ShellStatus::InvalidArgument;
+    };
+    let actions = if count == 0 {
+        &[]
+    } else {
+        std::slice::from_raw_parts(actions, count)
+    };
+    guard(core, |c| {
+        if c.queue.is_closed() {
+            ShellStatus::Closed
+        } else {
+            match c
+                .selected_translations_panel
+                .accept(session, revision, actions, fingerprint)
+            {
+                Ok(v) => {
+                    *changed = v;
+                    ShellStatus::Ok
+                }
+                Err(()) => ShellStatus::InvalidArgument,
+            }
+        }
+    })
 }
 /// Consume one current enabled action; dismissal and late updates cannot resurrect it.
 /// # Safety
 /// Live core and writable accepted.
 #[no_mangle]
-pub unsafe extern "C" fn shell_core_selected_translations_panel_activate(core:*mut ShellCore,session:u32,revision:u32,action:u32,retained:bool,accepted:*mut bool)->ShellStatus {
- let Some(accepted)=accepted.as_mut() else{return ShellStatus::InvalidArgument;};*accepted=false;
- guard(core,|c|{if c.queue.is_closed(){return ShellStatus::Closed;}*accepted=if retained{c.selected_translations_panel.activate_retained(session,revision,action)}else{c.selected_translations_panel.activate(session,revision,action)};ShellStatus::Ok})
+pub unsafe extern "C" fn shell_core_selected_translations_panel_activate(
+    core: *mut ShellCore,
+    session: u32,
+    revision: u32,
+    action: u32,
+    retained: bool,
+    accepted: *mut bool,
+) -> ShellStatus {
+    let Some(accepted) = accepted.as_mut() else {
+        return ShellStatus::InvalidArgument;
+    };
+    *accepted = false;
+    guard(core, |c| {
+        if c.queue.is_closed() {
+            return ShellStatus::Closed;
+        }
+        *accepted = if retained {
+            c.selected_translations_panel
+                .activate_retained(session, revision, action)
+        } else {
+            c.selected_translations_panel
+                .activate(session, revision, action)
+        };
+        ShellStatus::Ok
+    })
 }
-
 
 /// Resolve a browser-owned translations opening once through Snapshot rules.
 /// # Safety
 /// Live core, readable fingerprint and writable out.
 #[no_mangle]
-pub unsafe extern "C" fn shell_core_selected_translations_panel_request(core:*mut ShellCore,request:u32,fingerprint:*const u16,units:usize,out:*mut u32)->ShellStatus {
- let Some(out)=out.as_mut() else{return ShellStatus::InvalidArgument;};*out=0;
- if units>crate::surface_menu::MAX_DESCRIPTION{return ShellStatus::InvalidArgument;}
- let Some(fingerprint)=slice(fingerprint,units) else{return ShellStatus::InvalidArgument;};
- guard(core,|c|{if c.queue.is_closed(){return ShellStatus::Closed;}match c.selected_translations_panel.request_open(request,fingerprint){Ok(id)=>{*out=id;ShellStatus::Ok},Err(())=>ShellStatus::InvalidArgument}})
+pub unsafe extern "C" fn shell_core_selected_translations_panel_request(
+    core: *mut ShellCore,
+    request: u32,
+    fingerprint: *const u16,
+    units: usize,
+    out: *mut u32,
+) -> ShellStatus {
+    let Some(out) = out.as_mut() else {
+        return ShellStatus::InvalidArgument;
+    };
+    *out = 0;
+    if units > crate::surface_menu::MAX_DESCRIPTION {
+        return ShellStatus::InvalidArgument;
+    }
+    let Some(fingerprint) = slice(fingerprint, units) else {
+        return ShellStatus::InvalidArgument;
+    };
+    guard(core, |c| {
+        if c.queue.is_closed() {
+            return ShellStatus::Closed;
+        }
+        match c
+            .selected_translations_panel
+            .request_open(request, fingerprint)
+        {
+            Ok(id) => {
+                *out = id;
+                ShellStatus::Ok
+            }
+            Err(()) => ShellStatus::InvalidArgument,
+        }
+    })
 }
-#[cfg(test)] mod selected_translations_panel_ffi_tests {
- use super::*;
- #[test] fn browser_request_and_actions_are_scoped_and_one_use(){unsafe{
-  let core=shell_core_create(std::ptr::null());let mut id=0;let mut changed=false;
-  assert_eq!(shell_core_selected_translations_panel_request(core,7,[2].as_ptr(),1,&mut id),ShellStatus::Ok);assert_ne!(id,0);
-  shell_core_selected_translations_panel_accept(core,id,1,[1,7].as_ptr(),2,[3].as_ptr(),1,&mut changed);assert!(changed);
-  shell_core_selected_translations_panel_activate(core,id,1,7,true,&mut changed);assert!(changed);
-  shell_core_selected_translations_panel_activate(core,id,1,7,true,&mut changed);assert!(!changed);
-  shell_core_selected_translations_panel_activate(core,id,1,1,false,&mut changed);assert!(changed);
-  shell_core_selected_translations_panel_request(core,7,[2].as_ptr(),1,&mut id);assert_eq!(id,0);
-  shell_core_selected_translations_panel_request(core,8,[2].as_ptr(),1,&mut id);assert_ne!(id,0);shell_core_cancel_all(core);
-  shell_core_selected_translations_panel_accept(core,id,1,[1].as_ptr(),1,[3].as_ptr(),1,&mut changed);assert!(!changed);
-  shell_core_destroy(core);
- }}
+#[cfg(test)]
+mod selected_translations_panel_ffi_tests {
+    use super::*;
+    #[test]
+    fn browser_request_and_actions_are_scoped_and_one_use() {
+        unsafe {
+            let core = shell_core_create(std::ptr::null());
+            let mut id = 0;
+            let mut changed = false;
+            assert_eq!(
+                shell_core_selected_translations_panel_request(core, 7, [2].as_ptr(), 1, &mut id),
+                ShellStatus::Ok
+            );
+            assert_ne!(id, 0);
+            shell_core_selected_translations_panel_accept(
+                core,
+                id,
+                1,
+                [1, 7].as_ptr(),
+                2,
+                [3].as_ptr(),
+                1,
+                &mut changed,
+            );
+            assert!(changed);
+            shell_core_selected_translations_panel_activate(core, id, 1, 7, true, &mut changed);
+            assert!(changed);
+            shell_core_selected_translations_panel_activate(core, id, 1, 7, true, &mut changed);
+            assert!(!changed);
+            shell_core_selected_translations_panel_activate(core, id, 1, 1, false, &mut changed);
+            assert!(changed);
+            shell_core_selected_translations_panel_request(core, 7, [2].as_ptr(), 1, &mut id);
+            assert_eq!(id, 0);
+            shell_core_selected_translations_panel_request(core, 8, [2].as_ptr(), 1, &mut id);
+            assert_ne!(id, 0);
+            shell_core_cancel_all(core);
+            shell_core_selected_translations_panel_accept(
+                core,
+                id,
+                1,
+                [1].as_ptr(),
+                1,
+                [3].as_ptr(),
+                1,
+                &mut changed,
+            );
+            assert!(!changed);
+            shell_core_destroy(core);
+        }
+    }
 }
 
 // Independent page context menu session; shared publication semantics, no widget state.
@@ -5372,16 +11662,34 @@ pub unsafe extern "C" fn shell_core_selected_translations_panel_request(core:*mu
 /// # Safety
 /// Live core and writable out.
 #[no_mangle]
-pub unsafe extern "C" fn shell_core_page_context_menu_open(core:*mut ShellCore,out:*mut u32)->ShellStatus {
- let Some(out)=out.as_mut() else{return ShellStatus::InvalidArgument;};*out=0;
- guard(core,|c|{if c.queue.is_closed(){return ShellStatus::Closed;}*out=c.page_context_menu.open();ShellStatus::Ok})
+pub unsafe extern "C" fn shell_core_page_context_menu_open(
+    core: *mut ShellCore,
+    out: *mut u32,
+) -> ShellStatus {
+    let Some(out) = out.as_mut() else {
+        return ShellStatus::InvalidArgument;
+    };
+    *out = 0;
+    guard(core, |c| {
+        if c.queue.is_closed() {
+            return ShellStatus::Closed;
+        }
+        *out = c.page_context_menu.open();
+        ShellStatus::Ok
+    })
 }
 /// Revoke a window-scoped menu, preserving its identity high-water mark.
 /// # Safety
 /// Live core.
 #[no_mangle]
-pub unsafe extern "C" fn shell_core_page_context_menu_dismiss(core:*mut ShellCore)->ShellStatus {
- guard(core,|c|{if c.queue.is_closed(){return ShellStatus::Closed;}c.page_context_menu.dismiss();ShellStatus::Ok})
+pub unsafe extern "C" fn shell_core_page_context_menu_dismiss(core: *mut ShellCore) -> ShellStatus {
+    guard(core, |c| {
+        if c.queue.is_closed() {
+            return ShellStatus::Closed;
+        }
+        c.page_context_menu.dismiss();
+        ShellStatus::Ok
+    })
 }
 /// Resolve a validated session description before mutating the host container.
 /// Accepted work is committed and counted by shell_core_page_context_menu_accept;
@@ -5389,61 +11697,215 @@ pub unsafe extern "C" fn shell_core_page_context_menu_dismiss(core:*mut ShellCor
 /// # Safety
 /// Live core, readable arrays (null only for zero length), writable changed.
 #[no_mangle]
-pub unsafe extern "C" fn shell_core_page_context_menu_resolve(core:*mut ShellCore,session:u32,revision:u32,
- actions:*const u32,count:usize,fingerprint:*const u16,units:usize,changed:*mut bool)->ShellStatus {
- let Some(changed)=changed.as_mut() else{return ShellStatus::InvalidArgument;};*changed=false;
- if count>crate::surface_menu::MAX_ACTIONS || units>crate::surface_menu::MAX_DESCRIPTION || (actions.is_null() && count!=0){return ShellStatus::InvalidArgument;}
- let Some(fingerprint)=slice(fingerprint,units) else{return ShellStatus::InvalidArgument;};
- let actions=if count==0{&[]}else{std::slice::from_raw_parts(actions,count)};
- guard(core,|c|if c.queue.is_closed(){ShellStatus::Closed}else{match c.page_context_menu.resolve(session,revision,actions,fingerprint){Ok(v)=>{*changed=v;ShellStatus::Ok},Err(())=>ShellStatus::InvalidArgument}})
+pub unsafe extern "C" fn shell_core_page_context_menu_resolve(
+    core: *mut ShellCore,
+    session: u32,
+    revision: u32,
+    actions: *const u32,
+    count: usize,
+    fingerprint: *const u16,
+    units: usize,
+    changed: *mut bool,
+) -> ShellStatus {
+    let Some(changed) = changed.as_mut() else {
+        return ShellStatus::InvalidArgument;
+    };
+    *changed = false;
+    if count > crate::surface_menu::MAX_ACTIONS
+        || units > crate::surface_menu::MAX_DESCRIPTION
+        || (actions.is_null() && count != 0)
+    {
+        return ShellStatus::InvalidArgument;
+    }
+    let Some(fingerprint) = slice(fingerprint, units) else {
+        return ShellStatus::InvalidArgument;
+    };
+    let actions = if count == 0 {
+        &[]
+    } else {
+        std::slice::from_raw_parts(actions, count)
+    };
+    guard(core, |c| {
+        if c.queue.is_closed() {
+            ShellStatus::Closed
+        } else {
+            match c
+                .page_context_menu
+                .resolve(session, revision, actions, fingerprint)
+            {
+                Ok(v) => {
+                    *changed = v;
+                    ShellStatus::Ok
+                }
+                Err(()) => ShellStatus::InvalidArgument,
+            }
+        }
+    })
 }
 
 /// Accept a complete bounded description atomically; unchanged descriptions do not rebuild controls.
 /// # Safety
 /// Live core, readable arrays (null only for zero length), writable changed.
 #[no_mangle]
-pub unsafe extern "C" fn shell_core_page_context_menu_accept(core:*mut ShellCore,session:u32,revision:u32,
- actions:*const u32,count:usize,fingerprint:*const u16,units:usize,changed:*mut bool)->ShellStatus {
- let Some(changed)=changed.as_mut() else{return ShellStatus::InvalidArgument;};*changed=false;
- if count>crate::surface_menu::MAX_ACTIONS || units>crate::surface_menu::MAX_DESCRIPTION || (actions.is_null() && count!=0){return ShellStatus::InvalidArgument;}
- let Some(fingerprint)=slice(fingerprint,units) else{return ShellStatus::InvalidArgument;};
- let actions=if count==0{&[]}else{std::slice::from_raw_parts(actions,count)};
- guard(core,|c|if c.queue.is_closed(){ShellStatus::Closed}else{match c.page_context_menu.accept(session,revision,actions,fingerprint){Ok(v)=>{*changed=v;ShellStatus::Ok},Err(())=>ShellStatus::InvalidArgument}})
+pub unsafe extern "C" fn shell_core_page_context_menu_accept(
+    core: *mut ShellCore,
+    session: u32,
+    revision: u32,
+    actions: *const u32,
+    count: usize,
+    fingerprint: *const u16,
+    units: usize,
+    changed: *mut bool,
+) -> ShellStatus {
+    let Some(changed) = changed.as_mut() else {
+        return ShellStatus::InvalidArgument;
+    };
+    *changed = false;
+    if count > crate::surface_menu::MAX_ACTIONS
+        || units > crate::surface_menu::MAX_DESCRIPTION
+        || (actions.is_null() && count != 0)
+    {
+        return ShellStatus::InvalidArgument;
+    }
+    let Some(fingerprint) = slice(fingerprint, units) else {
+        return ShellStatus::InvalidArgument;
+    };
+    let actions = if count == 0 {
+        &[]
+    } else {
+        std::slice::from_raw_parts(actions, count)
+    };
+    guard(core, |c| {
+        if c.queue.is_closed() {
+            ShellStatus::Closed
+        } else {
+            match c
+                .page_context_menu
+                .accept(session, revision, actions, fingerprint)
+            {
+                Ok(v) => {
+                    *changed = v;
+                    ShellStatus::Ok
+                }
+                Err(()) => ShellStatus::InvalidArgument,
+            }
+        }
+    })
 }
 /// Consume one current enabled action; dismissal and late updates cannot resurrect it.
 /// # Safety
 /// Live core and writable accepted.
 #[no_mangle]
-pub unsafe extern "C" fn shell_core_page_context_menu_activate(core:*mut ShellCore,session:u32,revision:u32,action:u32,retained:bool,accepted:*mut bool)->ShellStatus {
- let Some(accepted)=accepted.as_mut() else{return ShellStatus::InvalidArgument;};*accepted=false;
- guard(core,|c|{if c.queue.is_closed(){return ShellStatus::Closed;}*accepted=if retained{c.page_context_menu.activate_retained(session,revision,action)}else{c.page_context_menu.activate(session,revision,action)};ShellStatus::Ok})
+pub unsafe extern "C" fn shell_core_page_context_menu_activate(
+    core: *mut ShellCore,
+    session: u32,
+    revision: u32,
+    action: u32,
+    retained: bool,
+    accepted: *mut bool,
+) -> ShellStatus {
+    let Some(accepted) = accepted.as_mut() else {
+        return ShellStatus::InvalidArgument;
+    };
+    *accepted = false;
+    guard(core, |c| {
+        if c.queue.is_closed() {
+            return ShellStatus::Closed;
+        }
+        *accepted = if retained {
+            c.page_context_menu
+                .activate_retained(session, revision, action)
+        } else {
+            c.page_context_menu.activate(session, revision, action)
+        };
+        ShellStatus::Ok
+    })
 }
-
 
 /// Resolve a browser-owned page context opening once through Snapshot rules.
 /// # Safety
 /// Live core, readable fingerprint and writable out.
 #[no_mangle]
-pub unsafe extern "C" fn shell_core_page_context_menu_request(core:*mut ShellCore,request:u32,fingerprint:*const u16,units:usize,out:*mut u32)->ShellStatus {
- let Some(out)=out.as_mut() else{return ShellStatus::InvalidArgument;};*out=0;
- if units>crate::surface_menu::MAX_DESCRIPTION{return ShellStatus::InvalidArgument;}
- let Some(fingerprint)=slice(fingerprint,units) else{return ShellStatus::InvalidArgument;};
- guard(core,|c|{if c.queue.is_closed(){return ShellStatus::Closed;}match c.page_context_menu.request_open(request,fingerprint){Ok(id)=>{*out=id;ShellStatus::Ok},Err(())=>ShellStatus::InvalidArgument}})
+pub unsafe extern "C" fn shell_core_page_context_menu_request(
+    core: *mut ShellCore,
+    request: u32,
+    fingerprint: *const u16,
+    units: usize,
+    out: *mut u32,
+) -> ShellStatus {
+    let Some(out) = out.as_mut() else {
+        return ShellStatus::InvalidArgument;
+    };
+    *out = 0;
+    if units > crate::surface_menu::MAX_DESCRIPTION {
+        return ShellStatus::InvalidArgument;
+    }
+    let Some(fingerprint) = slice(fingerprint, units) else {
+        return ShellStatus::InvalidArgument;
+    };
+    guard(core, |c| {
+        if c.queue.is_closed() {
+            return ShellStatus::Closed;
+        }
+        match c.page_context_menu.request_open(request, fingerprint) {
+            Ok(id) => {
+                *out = id;
+                ShellStatus::Ok
+            }
+            Err(()) => ShellStatus::InvalidArgument,
+        }
+    })
 }
-#[cfg(test)] mod page_context_menu_ffi_tests {
- use super::*;
- #[test] fn browser_request_and_actions_are_scoped_and_one_use(){unsafe{
-  let core=shell_core_create(std::ptr::null());let mut id=0;let mut changed=false;
-  assert_eq!(shell_core_page_context_menu_request(core,7,[2].as_ptr(),1,&mut id),ShellStatus::Ok);assert_ne!(id,0);
-  shell_core_page_context_menu_accept(core,id,1,[1,7].as_ptr(),2,[3].as_ptr(),1,&mut changed);assert!(changed);
-  shell_core_page_context_menu_activate(core,id,1,7,true,&mut changed);assert!(changed);
-  shell_core_page_context_menu_activate(core,id,1,7,true,&mut changed);assert!(!changed);
-  shell_core_page_context_menu_activate(core,id,1,1,false,&mut changed);assert!(changed);
-  shell_core_page_context_menu_request(core,7,[2].as_ptr(),1,&mut id);assert_eq!(id,0);
-  shell_core_page_context_menu_request(core,8,[2].as_ptr(),1,&mut id);assert_ne!(id,0);shell_core_cancel_all(core);
-  shell_core_page_context_menu_accept(core,id,1,[1].as_ptr(),1,[3].as_ptr(),1,&mut changed);assert!(!changed);
-  shell_core_destroy(core);
- }}
+#[cfg(test)]
+mod page_context_menu_ffi_tests {
+    use super::*;
+    #[test]
+    fn browser_request_and_actions_are_scoped_and_one_use() {
+        unsafe {
+            let core = shell_core_create(std::ptr::null());
+            let mut id = 0;
+            let mut changed = false;
+            assert_eq!(
+                shell_core_page_context_menu_request(core, 7, [2].as_ptr(), 1, &mut id),
+                ShellStatus::Ok
+            );
+            assert_ne!(id, 0);
+            shell_core_page_context_menu_accept(
+                core,
+                id,
+                1,
+                [1, 7].as_ptr(),
+                2,
+                [3].as_ptr(),
+                1,
+                &mut changed,
+            );
+            assert!(changed);
+            shell_core_page_context_menu_activate(core, id, 1, 7, true, &mut changed);
+            assert!(changed);
+            shell_core_page_context_menu_activate(core, id, 1, 7, true, &mut changed);
+            assert!(!changed);
+            shell_core_page_context_menu_activate(core, id, 1, 1, false, &mut changed);
+            assert!(changed);
+            shell_core_page_context_menu_request(core, 7, [2].as_ptr(), 1, &mut id);
+            assert_eq!(id, 0);
+            shell_core_page_context_menu_request(core, 8, [2].as_ptr(), 1, &mut id);
+            assert_ne!(id, 0);
+            shell_core_cancel_all(core);
+            shell_core_page_context_menu_accept(
+                core,
+                id,
+                1,
+                [1].as_ptr(),
+                1,
+                [3].as_ptr(),
+                1,
+                &mut changed,
+            );
+            assert!(!changed);
+            shell_core_destroy(core);
+        }
+    }
 }
 
 // Independent Back/Forward session-history menu; shared publication semantics, no widget state.
@@ -5451,16 +11913,34 @@ pub unsafe extern "C" fn shell_core_page_context_menu_request(core:*mut ShellCor
 /// # Safety
 /// Live core and writable out.
 #[no_mangle]
-pub unsafe extern "C" fn shell_core_back_forward_menu_open(core:*mut ShellCore,out:*mut u32)->ShellStatus {
- let Some(out)=out.as_mut() else{return ShellStatus::InvalidArgument;};*out=0;
- guard(core,|c|{if c.queue.is_closed(){return ShellStatus::Closed;}*out=c.back_forward_menu.open();ShellStatus::Ok})
+pub unsafe extern "C" fn shell_core_back_forward_menu_open(
+    core: *mut ShellCore,
+    out: *mut u32,
+) -> ShellStatus {
+    let Some(out) = out.as_mut() else {
+        return ShellStatus::InvalidArgument;
+    };
+    *out = 0;
+    guard(core, |c| {
+        if c.queue.is_closed() {
+            return ShellStatus::Closed;
+        }
+        *out = c.back_forward_menu.open();
+        ShellStatus::Ok
+    })
 }
 /// Revoke a window-scoped menu, preserving its identity high-water mark.
 /// # Safety
 /// Live core.
 #[no_mangle]
-pub unsafe extern "C" fn shell_core_back_forward_menu_dismiss(core:*mut ShellCore)->ShellStatus {
- guard(core,|c|{if c.queue.is_closed(){return ShellStatus::Closed;}c.back_forward_menu.dismiss();ShellStatus::Ok})
+pub unsafe extern "C" fn shell_core_back_forward_menu_dismiss(core: *mut ShellCore) -> ShellStatus {
+    guard(core, |c| {
+        if c.queue.is_closed() {
+            return ShellStatus::Closed;
+        }
+        c.back_forward_menu.dismiss();
+        ShellStatus::Ok
+    })
 }
 /// Resolve a validated session description before mutating the host container.
 /// Accepted work is committed and counted by shell_core_back_forward_menu_accept;
@@ -5468,57 +11948,205 @@ pub unsafe extern "C" fn shell_core_back_forward_menu_dismiss(core:*mut ShellCor
 /// # Safety
 /// Live core, readable arrays (null only for zero length), writable changed.
 #[no_mangle]
-pub unsafe extern "C" fn shell_core_back_forward_menu_resolve(core:*mut ShellCore,session:u32,revision:u32,
- actions:*const u32,count:usize,fingerprint:*const u16,units:usize,changed:*mut bool)->ShellStatus {
- let Some(changed)=changed.as_mut() else{return ShellStatus::InvalidArgument;};*changed=false;
- if count>crate::surface_menu::MAX_ACTIONS || units>crate::surface_menu::MAX_DESCRIPTION || (actions.is_null() && count!=0){return ShellStatus::InvalidArgument;}
- let Some(fingerprint)=slice(fingerprint,units) else{return ShellStatus::InvalidArgument;};
- let actions=if count==0{&[]}else{std::slice::from_raw_parts(actions,count)};
- guard(core,|c|if c.queue.is_closed(){ShellStatus::Closed}else{match c.back_forward_menu.resolve(session,revision,actions,fingerprint){Ok(v)=>{*changed=v;ShellStatus::Ok},Err(())=>ShellStatus::InvalidArgument}})
+pub unsafe extern "C" fn shell_core_back_forward_menu_resolve(
+    core: *mut ShellCore,
+    session: u32,
+    revision: u32,
+    actions: *const u32,
+    count: usize,
+    fingerprint: *const u16,
+    units: usize,
+    changed: *mut bool,
+) -> ShellStatus {
+    let Some(changed) = changed.as_mut() else {
+        return ShellStatus::InvalidArgument;
+    };
+    *changed = false;
+    if count > crate::surface_menu::MAX_ACTIONS
+        || units > crate::surface_menu::MAX_DESCRIPTION
+        || (actions.is_null() && count != 0)
+    {
+        return ShellStatus::InvalidArgument;
+    }
+    let Some(fingerprint) = slice(fingerprint, units) else {
+        return ShellStatus::InvalidArgument;
+    };
+    let actions = if count == 0 {
+        &[]
+    } else {
+        std::slice::from_raw_parts(actions, count)
+    };
+    guard(core, |c| {
+        if c.queue.is_closed() {
+            ShellStatus::Closed
+        } else {
+            match c
+                .back_forward_menu
+                .resolve(session, revision, actions, fingerprint)
+            {
+                Ok(v) => {
+                    *changed = v;
+                    ShellStatus::Ok
+                }
+                Err(()) => ShellStatus::InvalidArgument,
+            }
+        }
+    })
 }
 
 /// Accept a complete bounded description atomically; unchanged descriptions do not rebuild controls.
 /// # Safety
 /// Live core, readable arrays (null only for zero length), writable changed.
 #[no_mangle]
-pub unsafe extern "C" fn shell_core_back_forward_menu_accept(core:*mut ShellCore,session:u32,revision:u32,
- actions:*const u32,count:usize,fingerprint:*const u16,units:usize,changed:*mut bool)->ShellStatus {
- let Some(changed)=changed.as_mut() else{return ShellStatus::InvalidArgument;};*changed=false;
- if count>crate::surface_menu::MAX_ACTIONS || units>crate::surface_menu::MAX_DESCRIPTION || (actions.is_null() && count!=0){return ShellStatus::InvalidArgument;}
- let Some(fingerprint)=slice(fingerprint,units) else{return ShellStatus::InvalidArgument;};
- let actions=if count==0{&[]}else{std::slice::from_raw_parts(actions,count)};
- guard(core,|c|if c.queue.is_closed(){ShellStatus::Closed}else{match c.back_forward_menu.accept(session,revision,actions,fingerprint){Ok(v)=>{*changed=v;ShellStatus::Ok},Err(())=>ShellStatus::InvalidArgument}})
+pub unsafe extern "C" fn shell_core_back_forward_menu_accept(
+    core: *mut ShellCore,
+    session: u32,
+    revision: u32,
+    actions: *const u32,
+    count: usize,
+    fingerprint: *const u16,
+    units: usize,
+    changed: *mut bool,
+) -> ShellStatus {
+    let Some(changed) = changed.as_mut() else {
+        return ShellStatus::InvalidArgument;
+    };
+    *changed = false;
+    if count > crate::surface_menu::MAX_ACTIONS
+        || units > crate::surface_menu::MAX_DESCRIPTION
+        || (actions.is_null() && count != 0)
+    {
+        return ShellStatus::InvalidArgument;
+    }
+    let Some(fingerprint) = slice(fingerprint, units) else {
+        return ShellStatus::InvalidArgument;
+    };
+    let actions = if count == 0 {
+        &[]
+    } else {
+        std::slice::from_raw_parts(actions, count)
+    };
+    guard(core, |c| {
+        if c.queue.is_closed() {
+            ShellStatus::Closed
+        } else {
+            match c
+                .back_forward_menu
+                .accept(session, revision, actions, fingerprint)
+            {
+                Ok(v) => {
+                    *changed = v;
+                    ShellStatus::Ok
+                }
+                Err(()) => ShellStatus::InvalidArgument,
+            }
+        }
+    })
 }
 /// Consume one current enabled action; dismissal and late updates cannot resurrect it.
 /// # Safety
 /// Live core and writable accepted.
 #[no_mangle]
-pub unsafe extern "C" fn shell_core_back_forward_menu_activate(core:*mut ShellCore,session:u32,revision:u32,action:u32,accepted:*mut bool)->ShellStatus {
- let Some(accepted)=accepted.as_mut() else{return ShellStatus::InvalidArgument;};*accepted=false;
- guard(core,|c|{if c.queue.is_closed(){return ShellStatus::Closed;}*accepted=c.back_forward_menu.activate(session,revision,action);ShellStatus::Ok})
+pub unsafe extern "C" fn shell_core_back_forward_menu_activate(
+    core: *mut ShellCore,
+    session: u32,
+    revision: u32,
+    action: u32,
+    accepted: *mut bool,
+) -> ShellStatus {
+    let Some(accepted) = accepted.as_mut() else {
+        return ShellStatus::InvalidArgument;
+    };
+    *accepted = false;
+    guard(core, |c| {
+        if c.queue.is_closed() {
+            return ShellStatus::Closed;
+        }
+        *accepted = c.back_forward_menu.activate(session, revision, action);
+        ShellStatus::Ok
+    })
 }
-
 
 #[cfg(test)]
 mod back_forward_menu_ffi_tests {
- use super::*;
- #[test] fn back_forward_openings_are_independent_and_consumed_once() {unsafe {
-  let core=shell_core_create(std::ptr::null());let(mut back_forward,mut profile)=(0,0);let mut changed=false;
-  assert_eq!(shell_core_back_forward_menu_open(core,&mut back_forward),ShellStatus::Ok);
-  shell_core_profile_menu_open(core,&mut profile);
-  shell_core_back_forward_menu_resolve(core,back_forward,1,[3].as_ptr(),1,[9].as_ptr(),1,&mut changed);assert!(changed);
-  shell_core_back_forward_menu_activate(core,back_forward,1,3,&mut changed);assert!(!changed);
-  shell_core_back_forward_menu_accept(core,back_forward,1,[3].as_ptr(),1,[9].as_ptr(),1,&mut changed);assert!(changed);
-  shell_core_profile_menu_dismiss(core);shell_core_surface_menu_dismiss(core);
-  shell_core_back_forward_menu_activate(core,back_forward,2,3,&mut changed);assert!(!changed);
-  shell_core_back_forward_menu_activate(core,back_forward,1,3,&mut changed);assert!(changed);
-  shell_core_back_forward_menu_activate(core,back_forward,1,3,&mut changed);assert!(!changed);
-  shell_core_back_forward_menu_open(core,&mut back_forward);shell_core_cancel_all(core);
-  shell_core_back_forward_menu_accept(core,back_forward,1,[3].as_ptr(),1,[9].as_ptr(),1,&mut changed);assert!(!changed);
-  assert_eq!(shell_core_back_forward_menu_resolve(core,back_forward,1,std::ptr::null(),257,std::ptr::null(),0,&mut changed),ShellStatus::InvalidArgument);
-  shell_core_close(core);assert_eq!(shell_core_back_forward_menu_open(core,&mut back_forward),ShellStatus::Closed);
-  shell_core_destroy(core);
- }}
+    use super::*;
+    #[test]
+    fn back_forward_openings_are_independent_and_consumed_once() {
+        unsafe {
+            let core = shell_core_create(std::ptr::null());
+            let (mut back_forward, mut profile) = (0, 0);
+            let mut changed = false;
+            assert_eq!(
+                shell_core_back_forward_menu_open(core, &mut back_forward),
+                ShellStatus::Ok
+            );
+            shell_core_profile_menu_open(core, &mut profile);
+            shell_core_back_forward_menu_resolve(
+                core,
+                back_forward,
+                1,
+                [3].as_ptr(),
+                1,
+                [9].as_ptr(),
+                1,
+                &mut changed,
+            );
+            assert!(changed);
+            shell_core_back_forward_menu_activate(core, back_forward, 1, 3, &mut changed);
+            assert!(!changed);
+            shell_core_back_forward_menu_accept(
+                core,
+                back_forward,
+                1,
+                [3].as_ptr(),
+                1,
+                [9].as_ptr(),
+                1,
+                &mut changed,
+            );
+            assert!(changed);
+            shell_core_profile_menu_dismiss(core);
+            shell_core_surface_menu_dismiss(core);
+            shell_core_back_forward_menu_activate(core, back_forward, 2, 3, &mut changed);
+            assert!(!changed);
+            shell_core_back_forward_menu_activate(core, back_forward, 1, 3, &mut changed);
+            assert!(changed);
+            shell_core_back_forward_menu_activate(core, back_forward, 1, 3, &mut changed);
+            assert!(!changed);
+            shell_core_back_forward_menu_open(core, &mut back_forward);
+            shell_core_cancel_all(core);
+            shell_core_back_forward_menu_accept(
+                core,
+                back_forward,
+                1,
+                [3].as_ptr(),
+                1,
+                [9].as_ptr(),
+                1,
+                &mut changed,
+            );
+            assert!(!changed);
+            assert_eq!(
+                shell_core_back_forward_menu_resolve(
+                    core,
+                    back_forward,
+                    1,
+                    std::ptr::null(),
+                    257,
+                    std::ptr::null(),
+                    0,
+                    &mut changed
+                ),
+                ShellStatus::InvalidArgument
+            );
+            shell_core_close(core);
+            assert_eq!(
+                shell_core_back_forward_menu_open(core, &mut back_forward),
+                ShellStatus::Closed
+            );
+            shell_core_destroy(core);
+        }
+    }
 }
 
 // Independent All Tabs list; retained actions and shared session publication.
@@ -5526,16 +12154,34 @@ mod back_forward_menu_ffi_tests {
 /// # Safety
 /// Live core and writable out.
 #[no_mangle]
-pub unsafe extern "C" fn shell_core_all_tabs_panel_open(core:*mut ShellCore,out:*mut u32)->ShellStatus {
- let Some(out)=out.as_mut() else{return ShellStatus::InvalidArgument;};*out=0;
- guard(core,|c|{if c.queue.is_closed(){return ShellStatus::Closed;}*out=c.all_tabs_panel.open();ShellStatus::Ok})
+pub unsafe extern "C" fn shell_core_all_tabs_panel_open(
+    core: *mut ShellCore,
+    out: *mut u32,
+) -> ShellStatus {
+    let Some(out) = out.as_mut() else {
+        return ShellStatus::InvalidArgument;
+    };
+    *out = 0;
+    guard(core, |c| {
+        if c.queue.is_closed() {
+            return ShellStatus::Closed;
+        }
+        *out = c.all_tabs_panel.open();
+        ShellStatus::Ok
+    })
 }
 /// Revoke a window-scoped menu, preserving its identity high-water mark.
 /// # Safety
 /// Live core.
 #[no_mangle]
-pub unsafe extern "C" fn shell_core_all_tabs_panel_dismiss(core:*mut ShellCore)->ShellStatus {
- guard(core,|c|{if c.queue.is_closed(){return ShellStatus::Closed;}c.all_tabs_panel.dismiss();ShellStatus::Ok})
+pub unsafe extern "C" fn shell_core_all_tabs_panel_dismiss(core: *mut ShellCore) -> ShellStatus {
+    guard(core, |c| {
+        if c.queue.is_closed() {
+            return ShellStatus::Closed;
+        }
+        c.all_tabs_panel.dismiss();
+        ShellStatus::Ok
+    })
 }
 /// Resolve a validated session description before mutating the host container.
 /// Accepted work is committed and counted by shell_core_all_tabs_panel_accept;
@@ -5543,79 +12189,277 @@ pub unsafe extern "C" fn shell_core_all_tabs_panel_dismiss(core:*mut ShellCore)-
 /// # Safety
 /// Live core, readable arrays (null only for zero length), writable changed.
 #[no_mangle]
-pub unsafe extern "C" fn shell_core_all_tabs_panel_resolve(core:*mut ShellCore,session:u32,revision:u32,
- actions:*const u32,count:usize,fingerprint:*const u16,units:usize,changed:*mut bool)->ShellStatus {
- let Some(changed)=changed.as_mut() else{return ShellStatus::InvalidArgument;};*changed=false;
- if count>crate::surface_menu::MAX_ACTIONS || units>1048576 || (actions.is_null() && count!=0){return ShellStatus::InvalidArgument;}
- let Some(fingerprint)=slice(fingerprint,units) else{return ShellStatus::InvalidArgument;};
- let actions=if count==0{&[]}else{std::slice::from_raw_parts(actions,count)};
- guard(core,|c|if c.queue.is_closed(){ShellStatus::Closed}else{match c.all_tabs_panel.resolve(session,revision,actions,fingerprint){Ok(v)=>{*changed=v;ShellStatus::Ok},Err(())=>ShellStatus::InvalidArgument}})
+pub unsafe extern "C" fn shell_core_all_tabs_panel_resolve(
+    core: *mut ShellCore,
+    session: u32,
+    revision: u32,
+    actions: *const u32,
+    count: usize,
+    fingerprint: *const u16,
+    units: usize,
+    changed: *mut bool,
+) -> ShellStatus {
+    let Some(changed) = changed.as_mut() else {
+        return ShellStatus::InvalidArgument;
+    };
+    *changed = false;
+    if count > crate::surface_menu::MAX_ACTIONS
+        || units > 1048576
+        || (actions.is_null() && count != 0)
+    {
+        return ShellStatus::InvalidArgument;
+    }
+    let Some(fingerprint) = slice(fingerprint, units) else {
+        return ShellStatus::InvalidArgument;
+    };
+    let actions = if count == 0 {
+        &[]
+    } else {
+        std::slice::from_raw_parts(actions, count)
+    };
+    guard(core, |c| {
+        if c.queue.is_closed() {
+            ShellStatus::Closed
+        } else {
+            match c
+                .all_tabs_panel
+                .resolve(session, revision, actions, fingerprint)
+            {
+                Ok(v) => {
+                    *changed = v;
+                    ShellStatus::Ok
+                }
+                Err(()) => ShellStatus::InvalidArgument,
+            }
+        }
+    })
 }
 
 /// Accept a complete bounded description atomically; unchanged descriptions do not rebuild controls.
 /// # Safety
 /// Live core, readable arrays (null only for zero length), writable changed.
 #[no_mangle]
-pub unsafe extern "C" fn shell_core_all_tabs_panel_accept(core:*mut ShellCore,session:u32,revision:u32,
- actions:*const u32,count:usize,fingerprint:*const u16,units:usize,changed:*mut bool)->ShellStatus {
- let Some(changed)=changed.as_mut() else{return ShellStatus::InvalidArgument;};*changed=false;
- if count>crate::surface_menu::MAX_ACTIONS || units>1048576 || (actions.is_null() && count!=0){return ShellStatus::InvalidArgument;}
- let Some(fingerprint)=slice(fingerprint,units) else{return ShellStatus::InvalidArgument;};
- let actions=if count==0{&[]}else{std::slice::from_raw_parts(actions,count)};
- guard(core,|c|if c.queue.is_closed(){ShellStatus::Closed}else{match c.all_tabs_panel.accept(session,revision,actions,fingerprint){Ok(v)=>{*changed=v;ShellStatus::Ok},Err(())=>ShellStatus::InvalidArgument}})
+pub unsafe extern "C" fn shell_core_all_tabs_panel_accept(
+    core: *mut ShellCore,
+    session: u32,
+    revision: u32,
+    actions: *const u32,
+    count: usize,
+    fingerprint: *const u16,
+    units: usize,
+    changed: *mut bool,
+) -> ShellStatus {
+    let Some(changed) = changed.as_mut() else {
+        return ShellStatus::InvalidArgument;
+    };
+    *changed = false;
+    if count > crate::surface_menu::MAX_ACTIONS
+        || units > 1048576
+        || (actions.is_null() && count != 0)
+    {
+        return ShellStatus::InvalidArgument;
+    }
+    let Some(fingerprint) = slice(fingerprint, units) else {
+        return ShellStatus::InvalidArgument;
+    };
+    let actions = if count == 0 {
+        &[]
+    } else {
+        std::slice::from_raw_parts(actions, count)
+    };
+    guard(core, |c| {
+        if c.queue.is_closed() {
+            ShellStatus::Closed
+        } else {
+            match c
+                .all_tabs_panel
+                .accept(session, revision, actions, fingerprint)
+            {
+                Ok(v) => {
+                    *changed = v;
+                    ShellStatus::Ok
+                }
+                Err(()) => ShellStatus::InvalidArgument,
+            }
+        }
+    })
 }
 /// Consume one current enabled action; dismissal and late updates cannot resurrect it.
 /// # Safety
 /// Live core and writable accepted.
 #[no_mangle]
-pub unsafe extern "C" fn shell_core_all_tabs_panel_activate(core:*mut ShellCore,session:u32,revision:u32,action:u32,retained:bool,accepted:*mut bool)->ShellStatus {
- let Some(accepted)=accepted.as_mut() else{return ShellStatus::InvalidArgument;};*accepted=false;
- guard(core,|c|{if c.queue.is_closed(){return ShellStatus::Closed;}*accepted=if retained{c.all_tabs_panel.activate_retained(session,revision,action)}else{c.all_tabs_panel.activate(session,revision,action)};ShellStatus::Ok})
+pub unsafe extern "C" fn shell_core_all_tabs_panel_activate(
+    core: *mut ShellCore,
+    session: u32,
+    revision: u32,
+    action: u32,
+    retained: bool,
+    accepted: *mut bool,
+) -> ShellStatus {
+    let Some(accepted) = accepted.as_mut() else {
+        return ShellStatus::InvalidArgument;
+    };
+    *accepted = false;
+    guard(core, |c| {
+        if c.queue.is_closed() {
+            return ShellStatus::Closed;
+        }
+        *accepted = if retained {
+            c.all_tabs_panel
+                .activate_retained(session, revision, action)
+        } else {
+            c.all_tabs_panel.activate(session, revision, action)
+        };
+        ShellStatus::Ok
+    })
 }
-
 
 /// Project a bounded realized list onto a stable opaque row ID.
 /// # Safety
 /// Live core, readable rows (null only for zero count), writable outputs.
 #[no_mangle]
-pub unsafe extern "C" fn shell_core_all_tabs_panel_project(core:*mut ShellCore,rows:*const crate::all_tabs::ShellAllTabsRow,count:usize,
- y:f64,top:f64,bottom:f64,out:*mut u32,before:*mut bool)->ShellStatus {
- let (Some(out),Some(before))=(out.as_mut(),before.as_mut()) else{return ShellStatus::InvalidArgument;};*out=0;*before=false;
- if count>crate::all_tabs::MAX_ROWS || (rows.is_null() && count!=0){return ShellStatus::InvalidArgument;}
- let rows=if count==0{&[]}else{std::slice::from_raw_parts(rows,count)};
- guard(core,|c|{if c.queue.is_closed(){return ShellStatus::Closed;}match crate::all_tabs::project(rows,y,top,bottom){
-  Ok(Some((id,at)))=>{*out=id;*before=at;ShellStatus::Ok},Ok(None)=>ShellStatus::Ok,Err(())=>ShellStatus::InvalidArgument,
- }})
+pub unsafe extern "C" fn shell_core_all_tabs_panel_project(
+    core: *mut ShellCore,
+    rows: *const crate::all_tabs::ShellAllTabsRow,
+    count: usize,
+    y: f64,
+    top: f64,
+    bottom: f64,
+    out: *mut u32,
+    before: *mut bool,
+) -> ShellStatus {
+    let (Some(out), Some(before)) = (out.as_mut(), before.as_mut()) else {
+        return ShellStatus::InvalidArgument;
+    };
+    *out = 0;
+    *before = false;
+    if count > crate::all_tabs::MAX_ROWS || (rows.is_null() && count != 0) {
+        return ShellStatus::InvalidArgument;
+    }
+    let rows = if count == 0 {
+        &[]
+    } else {
+        std::slice::from_raw_parts(rows, count)
+    };
+    guard(core, |c| {
+        if c.queue.is_closed() {
+            return ShellStatus::Closed;
+        }
+        match crate::all_tabs::project(rows, y, top, bottom) {
+            Ok(Some((id, at))) => {
+                *out = id;
+                *before = at;
+                ShellStatus::Ok
+            }
+            Ok(None) => ShellStatus::Ok,
+            Err(()) => ShellStatus::InvalidArgument,
+        }
+    })
 }
 
 #[cfg(test)]
 mod all_tabs_panel_ffi_tests {
- use super::*;
- #[test] fn independent_retained_actions_bounds_cancellation_and_shutdown(){unsafe{
-  let core=shell_core_create(std::ptr::null());assert!(!core.is_null());
-  let(mut s,mut other,mut changed)=(0,0,false);shell_core_all_tabs_panel_open(core,&mut s);shell_core_back_forward_menu_open(core,&mut other);
-  shell_core_all_tabs_panel_resolve(core,s,1,[1,2].as_ptr(),2,[7].as_ptr(),1,&mut changed);assert!(changed);
-  shell_core_all_tabs_panel_activate(core,s,1,2,true,&mut changed);assert!(!changed);
-  shell_core_all_tabs_panel_accept(core,s,1,[1,2].as_ptr(),2,[7].as_ptr(),1,&mut changed);assert!(changed);
-  shell_core_back_forward_menu_dismiss(core);
-  shell_core_all_tabs_panel_activate(core,s,1,2,true,&mut changed);assert!(changed);
-  shell_core_all_tabs_panel_activate(core,s,1,2,true,&mut changed);assert!(!changed);
-  shell_core_all_tabs_panel_accept(core,s,2,[1,2].as_ptr(),2,[8].as_ptr(),1,&mut changed);assert!(changed);
-  shell_core_all_tabs_panel_activate(core,s,1,1,false,&mut changed);assert!(!changed);
-  shell_core_all_tabs_panel_activate(core,s,2,1,false,&mut changed);assert!(changed);
-  shell_core_all_tabs_panel_open(core,&mut s);shell_core_cancel_all(core);
-  shell_core_all_tabs_panel_accept(core,s,1,[1].as_ptr(),1,[7].as_ptr(),1,&mut changed);assert!(!changed);
-  assert_eq!(shell_core_all_tabs_panel_resolve(core,s,1,std::ptr::null(),0,std::ptr::null(),1048577,&mut changed),ShellStatus::InvalidArgument);
-  shell_core_close(core);assert_eq!(shell_core_all_tabs_panel_open(core,&mut s),ShellStatus::Closed);shell_core_destroy(core);
- }}
+    use super::*;
+    #[test]
+    fn independent_retained_actions_bounds_cancellation_and_shutdown() {
+        unsafe {
+            let core = shell_core_create(std::ptr::null());
+            assert!(!core.is_null());
+            let (mut s, mut other, mut changed) = (0, 0, false);
+            shell_core_all_tabs_panel_open(core, &mut s);
+            shell_core_back_forward_menu_open(core, &mut other);
+            shell_core_all_tabs_panel_resolve(
+                core,
+                s,
+                1,
+                [1, 2].as_ptr(),
+                2,
+                [7].as_ptr(),
+                1,
+                &mut changed,
+            );
+            assert!(changed);
+            shell_core_all_tabs_panel_activate(core, s, 1, 2, true, &mut changed);
+            assert!(!changed);
+            shell_core_all_tabs_panel_accept(
+                core,
+                s,
+                1,
+                [1, 2].as_ptr(),
+                2,
+                [7].as_ptr(),
+                1,
+                &mut changed,
+            );
+            assert!(changed);
+            shell_core_back_forward_menu_dismiss(core);
+            shell_core_all_tabs_panel_activate(core, s, 1, 2, true, &mut changed);
+            assert!(changed);
+            shell_core_all_tabs_panel_activate(core, s, 1, 2, true, &mut changed);
+            assert!(!changed);
+            shell_core_all_tabs_panel_accept(
+                core,
+                s,
+                2,
+                [1, 2].as_ptr(),
+                2,
+                [8].as_ptr(),
+                1,
+                &mut changed,
+            );
+            assert!(changed);
+            shell_core_all_tabs_panel_activate(core, s, 1, 1, false, &mut changed);
+            assert!(!changed);
+            shell_core_all_tabs_panel_activate(core, s, 2, 1, false, &mut changed);
+            assert!(changed);
+            shell_core_all_tabs_panel_open(core, &mut s);
+            shell_core_cancel_all(core);
+            shell_core_all_tabs_panel_accept(
+                core,
+                s,
+                1,
+                [1].as_ptr(),
+                1,
+                [7].as_ptr(),
+                1,
+                &mut changed,
+            );
+            assert!(!changed);
+            assert_eq!(
+                shell_core_all_tabs_panel_resolve(
+                    core,
+                    s,
+                    1,
+                    std::ptr::null(),
+                    0,
+                    std::ptr::null(),
+                    1048577,
+                    &mut changed
+                ),
+                ShellStatus::InvalidArgument
+            );
+            shell_core_close(core);
+            assert_eq!(
+                shell_core_all_tabs_panel_open(core, &mut s),
+                ShellStatus::Closed
+            );
+            shell_core_destroy(core);
+        }
+    }
 }
 
 /// Center a promoted secondary-list drag in the strip's measured row geometry.
 /// # Safety
 /// Live core on its owner thread.
 #[no_mangle]
-pub unsafe extern "C" fn shell_core_tab_drag_list_origin(core:*mut ShellCore)->ShellStatus {
- queue_guard(core,|q|if q.tab_drag.list_origin(){ShellStatus::Ok}else{ShellStatus::InvalidArgument})
+pub unsafe extern "C" fn shell_core_tab_drag_list_origin(core: *mut ShellCore) -> ShellStatus {
+    queue_guard(core, |q| {
+        if q.tab_drag.list_origin() {
+            ShellStatus::Ok
+        } else {
+            ShellStatus::InvalidArgument
+        }
+    })
 }
 
 // Independent notification panel session; shared publication semantics, no widget state.
@@ -5623,16 +12467,36 @@ pub unsafe extern "C" fn shell_core_tab_drag_list_origin(core:*mut ShellCore)->S
 /// # Safety
 /// Live core and writable out.
 #[no_mangle]
-pub unsafe extern "C" fn shell_core_notification_panel_open(core:*mut ShellCore,out:*mut u32)->ShellStatus {
- let Some(out)=out.as_mut() else{return ShellStatus::InvalidArgument;};*out=0;
- guard(core,|c|{if c.queue.is_closed(){return ShellStatus::Closed;}*out=c.notification_panel.open();ShellStatus::Ok})
+pub unsafe extern "C" fn shell_core_notification_panel_open(
+    core: *mut ShellCore,
+    out: *mut u32,
+) -> ShellStatus {
+    let Some(out) = out.as_mut() else {
+        return ShellStatus::InvalidArgument;
+    };
+    *out = 0;
+    guard(core, |c| {
+        if c.queue.is_closed() {
+            return ShellStatus::Closed;
+        }
+        *out = c.notification_panel.open();
+        ShellStatus::Ok
+    })
 }
 /// Revoke a window-scoped menu, preserving its identity high-water mark.
 /// # Safety
 /// Live core.
 #[no_mangle]
-pub unsafe extern "C" fn shell_core_notification_panel_dismiss(core:*mut ShellCore)->ShellStatus {
- guard(core,|c|{if c.queue.is_closed(){return ShellStatus::Closed;}c.notification_panel.dismiss();ShellStatus::Ok})
+pub unsafe extern "C" fn shell_core_notification_panel_dismiss(
+    core: *mut ShellCore,
+) -> ShellStatus {
+    guard(core, |c| {
+        if c.queue.is_closed() {
+            return ShellStatus::Closed;
+        }
+        c.notification_panel.dismiss();
+        ShellStatus::Ok
+    })
 }
 /// Resolve a validated session description before mutating the host container.
 /// Accepted work is committed and counted by shell_core_notification_panel_accept;
@@ -5640,61 +12504,215 @@ pub unsafe extern "C" fn shell_core_notification_panel_dismiss(core:*mut ShellCo
 /// # Safety
 /// Live core, readable arrays (null only for zero length), writable changed.
 #[no_mangle]
-pub unsafe extern "C" fn shell_core_notification_panel_resolve(core:*mut ShellCore,session:u32,revision:u32,
- actions:*const u32,count:usize,fingerprint:*const u16,units:usize,changed:*mut bool)->ShellStatus {
- let Some(changed)=changed.as_mut() else{return ShellStatus::InvalidArgument;};*changed=false;
- if count>crate::surface_menu::MAX_ACTIONS || units>crate::surface_menu::MAX_DESCRIPTION || (actions.is_null() && count!=0){return ShellStatus::InvalidArgument;}
- let Some(fingerprint)=slice(fingerprint,units) else{return ShellStatus::InvalidArgument;};
- let actions=if count==0{&[]}else{std::slice::from_raw_parts(actions,count)};
- guard(core,|c|if c.queue.is_closed(){ShellStatus::Closed}else{match c.notification_panel.resolve(session,revision,actions,fingerprint){Ok(v)=>{*changed=v;ShellStatus::Ok},Err(())=>ShellStatus::InvalidArgument}})
+pub unsafe extern "C" fn shell_core_notification_panel_resolve(
+    core: *mut ShellCore,
+    session: u32,
+    revision: u32,
+    actions: *const u32,
+    count: usize,
+    fingerprint: *const u16,
+    units: usize,
+    changed: *mut bool,
+) -> ShellStatus {
+    let Some(changed) = changed.as_mut() else {
+        return ShellStatus::InvalidArgument;
+    };
+    *changed = false;
+    if count > crate::surface_menu::MAX_ACTIONS
+        || units > crate::surface_menu::MAX_DESCRIPTION
+        || (actions.is_null() && count != 0)
+    {
+        return ShellStatus::InvalidArgument;
+    }
+    let Some(fingerprint) = slice(fingerprint, units) else {
+        return ShellStatus::InvalidArgument;
+    };
+    let actions = if count == 0 {
+        &[]
+    } else {
+        std::slice::from_raw_parts(actions, count)
+    };
+    guard(core, |c| {
+        if c.queue.is_closed() {
+            ShellStatus::Closed
+        } else {
+            match c
+                .notification_panel
+                .resolve(session, revision, actions, fingerprint)
+            {
+                Ok(v) => {
+                    *changed = v;
+                    ShellStatus::Ok
+                }
+                Err(()) => ShellStatus::InvalidArgument,
+            }
+        }
+    })
 }
 
 /// Accept a complete bounded description atomically; unchanged descriptions do not rebuild controls.
 /// # Safety
 /// Live core, readable arrays (null only for zero length), writable changed.
 #[no_mangle]
-pub unsafe extern "C" fn shell_core_notification_panel_accept(core:*mut ShellCore,session:u32,revision:u32,
- actions:*const u32,count:usize,fingerprint:*const u16,units:usize,changed:*mut bool)->ShellStatus {
- let Some(changed)=changed.as_mut() else{return ShellStatus::InvalidArgument;};*changed=false;
- if count>crate::surface_menu::MAX_ACTIONS || units>crate::surface_menu::MAX_DESCRIPTION || (actions.is_null() && count!=0){return ShellStatus::InvalidArgument;}
- let Some(fingerprint)=slice(fingerprint,units) else{return ShellStatus::InvalidArgument;};
- let actions=if count==0{&[]}else{std::slice::from_raw_parts(actions,count)};
- guard(core,|c|if c.queue.is_closed(){ShellStatus::Closed}else{match c.notification_panel.accept(session,revision,actions,fingerprint){Ok(v)=>{*changed=v;ShellStatus::Ok},Err(())=>ShellStatus::InvalidArgument}})
+pub unsafe extern "C" fn shell_core_notification_panel_accept(
+    core: *mut ShellCore,
+    session: u32,
+    revision: u32,
+    actions: *const u32,
+    count: usize,
+    fingerprint: *const u16,
+    units: usize,
+    changed: *mut bool,
+) -> ShellStatus {
+    let Some(changed) = changed.as_mut() else {
+        return ShellStatus::InvalidArgument;
+    };
+    *changed = false;
+    if count > crate::surface_menu::MAX_ACTIONS
+        || units > crate::surface_menu::MAX_DESCRIPTION
+        || (actions.is_null() && count != 0)
+    {
+        return ShellStatus::InvalidArgument;
+    }
+    let Some(fingerprint) = slice(fingerprint, units) else {
+        return ShellStatus::InvalidArgument;
+    };
+    let actions = if count == 0 {
+        &[]
+    } else {
+        std::slice::from_raw_parts(actions, count)
+    };
+    guard(core, |c| {
+        if c.queue.is_closed() {
+            ShellStatus::Closed
+        } else {
+            match c
+                .notification_panel
+                .accept(session, revision, actions, fingerprint)
+            {
+                Ok(v) => {
+                    *changed = v;
+                    ShellStatus::Ok
+                }
+                Err(()) => ShellStatus::InvalidArgument,
+            }
+        }
+    })
 }
 /// Consume one current enabled action; dismissal and late updates cannot resurrect it.
 /// # Safety
 /// Live core and writable accepted.
 #[no_mangle]
-pub unsafe extern "C" fn shell_core_notification_panel_activate(core:*mut ShellCore,session:u32,revision:u32,action:u32,retained:bool,accepted:*mut bool)->ShellStatus {
- let Some(accepted)=accepted.as_mut() else{return ShellStatus::InvalidArgument;};*accepted=false;
- guard(core,|c|{if c.queue.is_closed(){return ShellStatus::Closed;}*accepted=if retained{c.notification_panel.activate_retained(session,revision,action)}else{c.notification_panel.activate(session,revision,action)};ShellStatus::Ok})
+pub unsafe extern "C" fn shell_core_notification_panel_activate(
+    core: *mut ShellCore,
+    session: u32,
+    revision: u32,
+    action: u32,
+    retained: bool,
+    accepted: *mut bool,
+) -> ShellStatus {
+    let Some(accepted) = accepted.as_mut() else {
+        return ShellStatus::InvalidArgument;
+    };
+    *accepted = false;
+    guard(core, |c| {
+        if c.queue.is_closed() {
+            return ShellStatus::Closed;
+        }
+        *accepted = if retained {
+            c.notification_panel
+                .activate_retained(session, revision, action)
+        } else {
+            c.notification_panel.activate(session, revision, action)
+        };
+        ShellStatus::Ok
+    })
 }
-
 
 /// Resolve a browser-owned notification opening once through Snapshot rules.
 /// # Safety
 /// Live core, readable fingerprint and writable out.
 #[no_mangle]
-pub unsafe extern "C" fn shell_core_notification_panel_request(core:*mut ShellCore,request:u32,fingerprint:*const u16,units:usize,out:*mut u32)->ShellStatus {
- let Some(out)=out.as_mut() else{return ShellStatus::InvalidArgument;};*out=0;
- if units>crate::surface_menu::MAX_DESCRIPTION{return ShellStatus::InvalidArgument;}
- let Some(fingerprint)=slice(fingerprint,units) else{return ShellStatus::InvalidArgument;};
- guard(core,|c|{if c.queue.is_closed(){return ShellStatus::Closed;}match c.notification_panel.request_open(request,fingerprint){Ok(id)=>{*out=id;ShellStatus::Ok},Err(())=>ShellStatus::InvalidArgument}})
+pub unsafe extern "C" fn shell_core_notification_panel_request(
+    core: *mut ShellCore,
+    request: u32,
+    fingerprint: *const u16,
+    units: usize,
+    out: *mut u32,
+) -> ShellStatus {
+    let Some(out) = out.as_mut() else {
+        return ShellStatus::InvalidArgument;
+    };
+    *out = 0;
+    if units > crate::surface_menu::MAX_DESCRIPTION {
+        return ShellStatus::InvalidArgument;
+    }
+    let Some(fingerprint) = slice(fingerprint, units) else {
+        return ShellStatus::InvalidArgument;
+    };
+    guard(core, |c| {
+        if c.queue.is_closed() {
+            return ShellStatus::Closed;
+        }
+        match c.notification_panel.request_open(request, fingerprint) {
+            Ok(id) => {
+                *out = id;
+                ShellStatus::Ok
+            }
+            Err(()) => ShellStatus::InvalidArgument,
+        }
+    })
 }
-#[cfg(test)] mod notification_panel_ffi_tests {
- use super::*;
- #[test] fn browser_request_and_actions_are_scoped_and_one_use(){unsafe{
-  let core=shell_core_create(std::ptr::null());let mut id=0;let mut changed=false;
-  assert_eq!(shell_core_notification_panel_request(core,7,[2].as_ptr(),1,&mut id),ShellStatus::Ok);assert_ne!(id,0);
-  shell_core_notification_panel_accept(core,id,1,[1,7].as_ptr(),2,[3].as_ptr(),1,&mut changed);assert!(changed);
-  shell_core_notification_panel_activate(core,id,1,7,true,&mut changed);assert!(changed);
-  shell_core_notification_panel_activate(core,id,1,7,true,&mut changed);assert!(!changed);
-  shell_core_notification_panel_activate(core,id,1,1,false,&mut changed);assert!(changed);
-  shell_core_notification_panel_request(core,7,[2].as_ptr(),1,&mut id);assert_eq!(id,0);
-  shell_core_notification_panel_request(core,8,[2].as_ptr(),1,&mut id);assert_ne!(id,0);shell_core_cancel_all(core);
-  shell_core_notification_panel_accept(core,id,1,[1].as_ptr(),1,[3].as_ptr(),1,&mut changed);assert!(!changed);
-  shell_core_destroy(core);
- }}
+#[cfg(test)]
+mod notification_panel_ffi_tests {
+    use super::*;
+    #[test]
+    fn browser_request_and_actions_are_scoped_and_one_use() {
+        unsafe {
+            let core = shell_core_create(std::ptr::null());
+            let mut id = 0;
+            let mut changed = false;
+            assert_eq!(
+                shell_core_notification_panel_request(core, 7, [2].as_ptr(), 1, &mut id),
+                ShellStatus::Ok
+            );
+            assert_ne!(id, 0);
+            shell_core_notification_panel_accept(
+                core,
+                id,
+                1,
+                [1, 7].as_ptr(),
+                2,
+                [3].as_ptr(),
+                1,
+                &mut changed,
+            );
+            assert!(changed);
+            shell_core_notification_panel_activate(core, id, 1, 7, true, &mut changed);
+            assert!(changed);
+            shell_core_notification_panel_activate(core, id, 1, 7, true, &mut changed);
+            assert!(!changed);
+            shell_core_notification_panel_activate(core, id, 1, 1, false, &mut changed);
+            assert!(changed);
+            shell_core_notification_panel_request(core, 7, [2].as_ptr(), 1, &mut id);
+            assert_eq!(id, 0);
+            shell_core_notification_panel_request(core, 8, [2].as_ptr(), 1, &mut id);
+            assert_ne!(id, 0);
+            shell_core_cancel_all(core);
+            shell_core_notification_panel_accept(
+                core,
+                id,
+                1,
+                [1].as_ptr(),
+                1,
+                [3].as_ptr(),
+                1,
+                &mut changed,
+            );
+            assert!(!changed);
+            shell_core_destroy(core);
+        }
+    }
 }
 
 /// Native gesture/focus observations. kind is ShellAddressInteractionKind;
@@ -5702,58 +12720,102 @@ pub unsafe extern "C" fn shell_core_notification_panel_request(core:*mut ShellCo
 /// # Safety
 /// core is live; out is writable. Invalid observations never mutate state.
 #[no_mangle]
-pub unsafe extern "C" fn shell_core_address_interaction(core: *mut ShellCore,
-    kind: u32, pointer: u32, token: u64, value: u32,
-    out: *mut crate::address_interaction::ShellAddressInteractionState) -> ShellStatus {
-    let Some(out) = out.as_mut() else { return ShellStatus::InvalidArgument; };
+pub unsafe extern "C" fn shell_core_address_interaction(
+    core: *mut ShellCore,
+    kind: u32,
+    pointer: u32,
+    token: u64,
+    value: u32,
+    out: *mut crate::address_interaction::ShellAddressInteractionState,
+) -> ShellStatus {
+    let Some(out) = out.as_mut() else {
+        return ShellStatus::InvalidArgument;
+    };
     *out = Default::default();
     guard(core, |core| {
-        if core.queue.is_closed() { return ShellStatus::Closed; }
-        match core.address_interaction.event(kind,pointer,token,value) {
-        Some(state) => {
-            if kind == crate::address_interaction::ShellAddressInteractionKind::PrepareSubmit as u32 &&
-                state.effects & crate::address_interaction::ShellAddressInteractionEffect::Focus as u32 != 0 {
-                core.queue.address.await_focus_query();
+        if core.queue.is_closed() {
+            return ShellStatus::Closed;
+        }
+        match core.address_interaction.event(kind, pointer, token, value) {
+            Some(state) => {
+                if kind
+                    == crate::address_interaction::ShellAddressInteractionKind::PrepareSubmit as u32
+                    && state.effects
+                        & crate::address_interaction::ShellAddressInteractionEffect::Focus as u32
+                        != 0
+                {
+                    core.queue.address.await_focus_query();
+                }
+                *out = state;
+                ShellStatus::Ok
             }
-            *out = state;
-            ShellStatus::Ok
-        },
-        None => ShellStatus::InvalidArgument,
-    }})
+            None => ShellStatus::InvalidArgument,
+        }
+    })
 }
 
 #[cfg(test)]
 mod interaction_ffi_tests {
     use super::*;
     use crate::address_interaction::ShellAddressInteractionState;
-    #[test] fn interaction_boundary_and_session_reset_reject_old_completion() { unsafe {
-        let core=shell_core_create(std::ptr::null());
-        let mut out=ShellAddressInteractionState::default();
-        assert_eq!(shell_core_address_interaction(core,3,1,0,1,std::ptr::null_mut()),ShellStatus::InvalidArgument);
-        assert_eq!(shell_core_address_interaction(core,3,1,0,1,&mut out),ShellStatus::Ok);
-        let old=out.token;
-        assert_eq!(shell_core_address_interaction(core,99,0,0,0,&mut out),ShellStatus::InvalidArgument);
-        assert_eq!(shell_core_address_interaction(core,0,0,0,2,&mut out),ShellStatus::InvalidArgument);
-        assert_eq!(shell_core_address_interaction(core,0,0,0,0,&mut out),ShellStatus::Ok);
-        assert_eq!(out.holding,1);
-        assert_eq!(shell_core_address_reset(core),ShellStatus::Ok);
-        assert_eq!(shell_core_address_interaction(core,5,1,old,1,&mut out),ShellStatus::Ok);
-        assert_eq!(out.effects,0);
-        shell_core_address_interaction(core,1,0,0,0,&mut out);
-        shell_core_address_publish(core,0,true);
-        shell_core_address_interaction(core,3,1,0,1,&mut out);
-        shell_core_address_interaction(core,9,0,0,1,&mut out);
-        let mut address=crate::address::ShellAddressState::default();
-        shell_core_address_state(core,&mut address);
-        assert_eq!(address.query_settled,0,"first-entry submit waits for a focus query");
-        shell_core_address_publish(core,0,true);
-        shell_core_address_interaction(core,9,0,0,1,&mut out);
-        shell_core_address_state(core,&mut address);
-        assert_eq!(address.query_settled,1,"ordinary submission keeps current readiness");
-        assert_eq!(shell_core_close(core),ShellStatus::Ok);
-        assert_eq!(shell_core_address_interaction(core,0,0,0,0,&mut out),ShellStatus::Closed);
-        shell_core_destroy(core);
-    }}
+    #[test]
+    fn interaction_boundary_and_session_reset_reject_old_completion() {
+        unsafe {
+            let core = shell_core_create(std::ptr::null());
+            let mut out = ShellAddressInteractionState::default();
+            assert_eq!(
+                shell_core_address_interaction(core, 3, 1, 0, 1, std::ptr::null_mut()),
+                ShellStatus::InvalidArgument
+            );
+            assert_eq!(
+                shell_core_address_interaction(core, 3, 1, 0, 1, &mut out),
+                ShellStatus::Ok
+            );
+            let old = out.token;
+            assert_eq!(
+                shell_core_address_interaction(core, 99, 0, 0, 0, &mut out),
+                ShellStatus::InvalidArgument
+            );
+            assert_eq!(
+                shell_core_address_interaction(core, 0, 0, 0, 2, &mut out),
+                ShellStatus::InvalidArgument
+            );
+            assert_eq!(
+                shell_core_address_interaction(core, 0, 0, 0, 0, &mut out),
+                ShellStatus::Ok
+            );
+            assert_eq!(out.holding, 1);
+            assert_eq!(shell_core_address_reset(core), ShellStatus::Ok);
+            assert_eq!(
+                shell_core_address_interaction(core, 5, 1, old, 1, &mut out),
+                ShellStatus::Ok
+            );
+            assert_eq!(out.effects, 0);
+            shell_core_address_interaction(core, 1, 0, 0, 0, &mut out);
+            shell_core_address_publish(core, 0, true);
+            shell_core_address_interaction(core, 3, 1, 0, 1, &mut out);
+            shell_core_address_interaction(core, 9, 0, 0, 1, &mut out);
+            let mut address = crate::address::ShellAddressState::default();
+            shell_core_address_state(core, &mut address);
+            assert_eq!(
+                address.query_settled, 0,
+                "first-entry submit waits for a focus query"
+            );
+            shell_core_address_publish(core, 0, true);
+            shell_core_address_interaction(core, 9, 0, 0, 1, &mut out);
+            shell_core_address_state(core, &mut address);
+            assert_eq!(
+                address.query_settled, 1,
+                "ordinary submission keeps current readiness"
+            );
+            assert_eq!(shell_core_close(core), ShellStatus::Ok);
+            assert_eq!(
+                shell_core_address_interaction(core, 0, 0, 0, 0, &mut out),
+                ShellStatus::Closed
+            );
+            shell_core_destroy(core);
+        }
+    }
 }
 
 /// Allocate native chrome and content in physical client pixels, without
@@ -5766,9 +12828,14 @@ pub unsafe extern "C" fn shell_core_chrome_layout(
     input: *const crate::chrome_layout::ShellChromeLayoutInput,
     output: *mut crate::chrome_layout::ShellChromeLayout,
 ) -> ShellStatus {
-    if input.is_null() || output.is_null() { return ShellStatus::InvalidArgument; }
+    if input.is_null() || output.is_null() {
+        return ShellStatus::InvalidArgument;
+    }
     match catch_unwind(AssertUnwindSafe(|| crate::chrome_layout::layout(*input))) {
-        Ok(Some(plan)) => { *output = plan; ShellStatus::Ok }
+        Ok(Some(plan)) => {
+            *output = plan;
+            ShellStatus::Ok
+        }
         Ok(None) => ShellStatus::InvalidArgument,
         Err(_) => ShellStatus::Panic,
     }
@@ -5781,15 +12848,40 @@ mod chrome_layout_ffi_tests {
     #[test]
     fn invalid_ffi_calls_leave_output_untouched() {
         unsafe {
-            let input = ShellChromeLayoutInput { width: 1000, height: 800, dpi: 96, strip_height: 40, navigation: true, content_inset: 4 };
+            let input = ShellChromeLayoutInput {
+                width: 1000,
+                height: 800,
+                dpi: 96,
+                strip_height: 40,
+                navigation: true,
+                content_inset: 4,
+            };
             let mut output = ShellChromeLayout::default();
-            assert_eq!(shell_core_chrome_layout(&input, &mut output), ShellStatus::Ok);
+            assert_eq!(
+                shell_core_chrome_layout(&input, &mut output),
+                ShellStatus::Ok
+            );
             let previous = output;
-            assert_eq!(shell_core_chrome_layout(std::ptr::null(), &mut output), ShellStatus::InvalidArgument);
-            assert_eq!(shell_core_chrome_layout(&input, std::ptr::null_mut()), ShellStatus::InvalidArgument);
-            assert_eq!(shell_core_chrome_layout(&ShellChromeLayoutInput { dpi: 0, ..input }, &mut output), ShellStatus::InvalidArgument);
+            assert_eq!(
+                shell_core_chrome_layout(std::ptr::null(), &mut output),
+                ShellStatus::InvalidArgument
+            );
+            assert_eq!(
+                shell_core_chrome_layout(&input, std::ptr::null_mut()),
+                ShellStatus::InvalidArgument
+            );
+            assert_eq!(
+                shell_core_chrome_layout(&ShellChromeLayoutInput { dpi: 0, ..input }, &mut output),
+                ShellStatus::InvalidArgument
+            );
             assert_eq!(output, previous);
-            assert_eq!(shell_core_chrome_layout(&ShellChromeLayoutInput { width: 0, ..input }, &mut output), ShellStatus::Ok);
+            assert_eq!(
+                shell_core_chrome_layout(
+                    &ShellChromeLayoutInput { width: 0, ..input },
+                    &mut output
+                ),
+                ShellStatus::Ok
+            );
             assert!(!output.fits);
         }
     }
@@ -5802,12 +12894,19 @@ mod chrome_layout_ffi_tests {
 /// See [`guard`]. `inputs` and `changed` point to valid values.
 #[no_mangle]
 pub unsafe extern "C" fn shell_core_layout_observe(
-    core: *mut ShellCore, consumer: u32, inputs: *const crate::layout_work::ShellLayoutInputs,
-    force: bool, changed: *mut bool,
+    core: *mut ShellCore,
+    consumer: u32,
+    inputs: *const crate::layout_work::ShellLayoutInputs,
+    force: bool,
+    changed: *mut bool,
 ) -> ShellStatus {
     guard(core, |core| {
-        let (Some(inputs), Some(changed)) = (inputs.as_ref(), changed.as_mut()) else { return ShellStatus::InvalidArgument; };
-        let Some(value) = core.layout_work.observe(consumer, *inputs, force) else { return ShellStatus::InvalidArgument; };
+        let (Some(inputs), Some(changed)) = (inputs.as_ref(), changed.as_mut()) else {
+            return ShellStatus::InvalidArgument;
+        };
+        let Some(value) = core.layout_work.observe(consumer, *inputs, force) else {
+            return ShellStatus::InvalidArgument;
+        };
         *changed = value;
         ShellStatus::Ok
     })
@@ -5817,9 +12916,16 @@ pub unsafe extern "C" fn shell_core_layout_observe(
 /// # Safety
 /// See [`guard`].
 #[no_mangle]
-pub unsafe extern "C" fn shell_core_layout_invalidate(core: *mut ShellCore, consumer: u32) -> ShellStatus {
+pub unsafe extern "C" fn shell_core_layout_invalidate(
+    core: *mut ShellCore,
+    consumer: u32,
+) -> ShellStatus {
     guard(core, |core| {
-        if core.layout_work.invalidate(consumer).is_some() { ShellStatus::Ok } else { ShellStatus::InvalidArgument }
+        if core.layout_work.invalidate(consumer).is_some() {
+            ShellStatus::Ok
+        } else {
+            ShellStatus::InvalidArgument
+        }
     })
 }
 
@@ -5832,15 +12938,33 @@ mod layout_work_tests {
             let core = shell_core_create(std::ptr::null());
             let sample = crate::layout_work::ShellLayoutInputs { values: [0.0; 16] };
             let mut changed = false;
-            assert_eq!(shell_core_layout_observe(core, 0, &sample, false, &mut changed), ShellStatus::Ok);
+            assert_eq!(
+                shell_core_layout_observe(core, 0, &sample, false, &mut changed),
+                ShellStatus::Ok
+            );
             assert!(changed);
-            assert_eq!(shell_core_layout_observe(core, 0, &sample, false, &mut changed), ShellStatus::Ok);
+            assert_eq!(
+                shell_core_layout_observe(core, 0, &sample, false, &mut changed),
+                ShellStatus::Ok
+            );
             assert!(!changed);
             assert_eq!(shell_core_layout_invalidate(core, 0), ShellStatus::Ok);
-            assert_eq!(shell_core_layout_observe(core, 0, std::ptr::null(), false, &mut changed), ShellStatus::InvalidArgument);
-            assert_eq!(shell_core_layout_observe(core, 0, &sample, false, std::ptr::null_mut()), ShellStatus::InvalidArgument);
-            assert_eq!(shell_core_layout_invalidate(core, 3), ShellStatus::InvalidArgument);
-            assert_eq!(shell_core_layout_observe(core, 0, &sample, false, &mut changed), ShellStatus::Ok);
+            assert_eq!(
+                shell_core_layout_observe(core, 0, std::ptr::null(), false, &mut changed),
+                ShellStatus::InvalidArgument
+            );
+            assert_eq!(
+                shell_core_layout_observe(core, 0, &sample, false, std::ptr::null_mut()),
+                ShellStatus::InvalidArgument
+            );
+            assert_eq!(
+                shell_core_layout_invalidate(core, 3),
+                ShellStatus::InvalidArgument
+            );
+            assert_eq!(
+                shell_core_layout_observe(core, 0, &sample, false, &mut changed),
+                ShellStatus::Ok
+            );
             assert!(changed);
             shell_core_destroy(core);
         }
@@ -5853,106 +12977,255 @@ mod layout_work_tests {
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct ShellPageInputCommand {
-    pub operation:u32, pub kind:u32, pub session:u64, pub revision:u64, pub ack:u64,
-    pub start:u32, pub end:u32, pub caret:u32, pub text:*const u16, pub length:usize,
-    pub clauses:*const crate::page_input::ShellPageClause, pub clause_count:usize,
+    pub operation: u32,
+    pub kind: u32,
+    pub session: u64,
+    pub revision: u64,
+    pub ack: u64,
+    pub start: u32,
+    pub end: u32,
+    pub caret: u32,
+    pub text: *const u16,
+    pub length: usize,
+    pub clauses: *const crate::page_input::ShellPageClause,
+    pub clause_count: usize,
 }
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct ShellPageInputEvent {
-    pub session:u64, pub edit:u64, pub revision:u64, pub request:u64, pub kind:u32, pub start:u32, pub end:u32,
-    pub caret:u32, pub text:*const u16, pub length:usize,
-    pub clauses:*const crate::page_input::ShellPageClause, pub clause_count:usize,
+    pub session: u64,
+    pub edit: u64,
+    pub revision: u64,
+    pub request: u64,
+    pub kind: u32,
+    pub start: u32,
+    pub end: u32,
+    pub caret: u32,
+    pub text: *const u16,
+    pub length: usize,
+    pub clauses: *const crate::page_input::ShellPageClause,
+    pub clause_count: usize,
 }
 /// # Safety
 /// Valid non-overlapping pointers; text readable for length units during call.
 #[no_mangle]
-pub unsafe extern "C" fn shell_core_page_input_apply(core:*mut ShellCore,input:*const ShellPageInputCommand)->ShellStatus {
- guard(core,|core| {
-  let Some(c)=input.as_ref() else {return ShellStatus::InvalidArgument;};
-  if c.length>crate::page_input::PAGE_INPUT_MAX_TEXT {return ShellStatus::TooLarge;}
-  let Some(text)=slice(c.text,c.length) else {return ShellStatus::InvalidArgument;};
-  let p=&mut core.page_input;
-  let ok=match c.operation {
-   0=>true,
-   1=>return match p.publish(c.session,c.revision,c.ack,c.start,c.end,text) {Ok(true)=>ShellStatus::Ok,Ok(false)=>ShellStatus::Busy,Err(())=>ShellStatus::Rejected},
-   2=>p.select(c.start,c.end),
-   3=>p.replace(c.start,c.end,text),
-   4=>p.enqueue(c.kind,c.start,c.end,c.caret,text),
-   5=>{p.pop();true},
-   6=>p.direct_replace(c.start,c.end,text),
-   7=>p.direct_select(c.start,c.end,c.caret),
-   8=>{
-    if c.clause_count>64 {return ShellStatus::TooLarge;}
-    let clauses=if c.clause_count==0 {&[]} else {if c.clauses.is_null() {return ShellStatus::InvalidArgument;} std::slice::from_raw_parts(c.clauses,c.clause_count)};
-    p.composition(c.start,c.end,c.caret,text,clauses)
-   },
-   _=>return ShellStatus::InvalidArgument,
-  };
-  if ok {ShellStatus::Ok} else {ShellStatus::Rejected}
- })
+pub unsafe extern "C" fn shell_core_page_input_apply(
+    core: *mut ShellCore,
+    input: *const ShellPageInputCommand,
+) -> ShellStatus {
+    guard(core, |core| {
+        let Some(c) = input.as_ref() else {
+            return ShellStatus::InvalidArgument;
+        };
+        if c.length > crate::page_input::PAGE_INPUT_MAX_TEXT {
+            return ShellStatus::TooLarge;
+        }
+        let Some(text) = slice(c.text, c.length) else {
+            return ShellStatus::InvalidArgument;
+        };
+        let p = &mut core.page_input;
+        let ok = match c.operation {
+            0 => true,
+            1 => {
+                return match p.publish(c.session, c.revision, c.ack, c.start, c.end, text) {
+                    Ok(true) => ShellStatus::Ok,
+                    Ok(false) => ShellStatus::Busy,
+                    Err(()) => ShellStatus::Rejected,
+                }
+            }
+            2 => p.select(c.start, c.end),
+            3 => p.replace(c.start, c.end, text),
+            4 => p.enqueue(c.kind, c.start, c.end, c.caret, text),
+            5 => {
+                p.pop();
+                true
+            }
+            6 => p.direct_replace(c.start, c.end, text),
+            7 => p.direct_select(c.start, c.end, c.caret),
+            8 => {
+                if c.clause_count > 64 {
+                    return ShellStatus::TooLarge;
+                }
+                let clauses = if c.clause_count == 0 {
+                    &[]
+                } else {
+                    if c.clauses.is_null() {
+                        return ShellStatus::InvalidArgument;
+                    }
+                    std::slice::from_raw_parts(c.clauses, c.clause_count)
+                };
+                p.composition(c.start, c.end, c.caret, text, clauses)
+            }
+            _ => return ShellStatus::InvalidArgument,
+        };
+        if ok {
+            ShellStatus::Ok
+        } else {
+            ShellStatus::Rejected
+        }
+    })
 }
 /// # Safety
 /// core is live and exclusively accessed by its native owner. Ok when a geometry request is
 /// still waiting to be read, Busy otherwise.
 #[no_mangle]
-pub unsafe extern "C" fn shell_core_page_geometry_pending(core:*mut ShellCore)->ShellStatus {
- guard(core,|core| if core.page_input.geometry_pending() {ShellStatus::Ok} else {ShellStatus::Busy})
+pub unsafe extern "C" fn shell_core_page_geometry_pending(core: *mut ShellCore) -> ShellStatus {
+    guard(core, |core| {
+        if core.page_input.geometry_pending() {
+            ShellStatus::Ok
+        } else {
+            ShellStatus::Busy
+        }
+    })
 }
 /// # Safety
 /// Valid output pointers. Returned text is borrowed until next core mutation.
 #[no_mangle]
-pub unsafe extern "C" fn shell_core_page_input_read(core:*mut ShellCore,state:*mut crate::page_input::ShellPageInputState,text:*mut *const u16)->ShellStatus {
- guard(core,|core| {
-  let (Some(state),Some(text))=(state.as_mut(),text.as_mut()) else {return ShellStatus::InvalidArgument;};
-  *state=core.page_input.state;*text=core.page_input.text.as_ptr();ShellStatus::Ok
- })
+pub unsafe extern "C" fn shell_core_page_input_read(
+    core: *mut ShellCore,
+    state: *mut crate::page_input::ShellPageInputState,
+    text: *mut *const u16,
+) -> ShellStatus {
+    guard(core, |core| {
+        let (Some(state), Some(text)) = (state.as_mut(), text.as_mut()) else {
+            return ShellStatus::InvalidArgument;
+        };
+        *state = core.page_input.state;
+        *text = core.page_input.text.as_ptr();
+        ShellStatus::Ok
+    })
 }
 /// # Safety
 /// Valid output pointer. Busy means empty; returned text is borrowed until mutation.
 #[no_mangle]
-pub unsafe extern "C" fn shell_core_page_input_event(core:*mut ShellCore,out:*mut ShellPageInputEvent)->ShellStatus {
- guard(core,|core| {
-  let Some(out)=out.as_mut() else {return ShellStatus::InvalidArgument;};
-  let Some(e)=core.page_input.front() else {return ShellStatus::Busy;};
-  *out=ShellPageInputEvent{session:e.session,edit:e.edit,revision:e.revision,request:e.request,kind:e.kind,start:e.start,end:e.end,caret:e.caret,text:e.text.as_ptr(),length:e.text.len(),clauses:e.clauses.as_ptr(),clause_count:e.clauses.len()};ShellStatus::Ok
- })
+pub unsafe extern "C" fn shell_core_page_input_event(
+    core: *mut ShellCore,
+    out: *mut ShellPageInputEvent,
+) -> ShellStatus {
+    guard(core, |core| {
+        let Some(out) = out.as_mut() else {
+            return ShellStatus::InvalidArgument;
+        };
+        let Some(e) = core.page_input.front() else {
+            return ShellStatus::Busy;
+        };
+        *out = ShellPageInputEvent {
+            session: e.session,
+            edit: e.edit,
+            revision: e.revision,
+            request: e.request,
+            kind: e.kind,
+            start: e.start,
+            end: e.end,
+            caret: e.caret,
+            text: e.text.as_ptr(),
+            length: e.text.len(),
+            clauses: e.clauses.as_ptr(),
+            clause_count: e.clauses.len(),
+        };
+        ShellStatus::Ok
+    })
 }
 
 /// # Safety
 /// core is live and exclusively accessed by its native owner.
 #[no_mangle]
-pub unsafe extern "C" fn shell_core_page_geometry_context(core:*mut ShellCore,session:u64,revision:u64)->ShellStatus {
- guard(core,|core|match core.page_input.geometry_context(session,revision){Ok(true)=>ShellStatus::Ok,Ok(false)=>ShellStatus::Busy,Err(())=>ShellStatus::Rejected})
+pub unsafe extern "C" fn shell_core_page_geometry_context(
+    core: *mut ShellCore,
+    session: u64,
+    revision: u64,
+) -> ShellStatus {
+    guard(core, |core| {
+        match core.page_input.geometry_context(session, revision) {
+            Ok(true) => ShellStatus::Ok,
+            Ok(false) => ShellStatus::Busy,
+            Err(()) => ShellStatus::Rejected,
+        }
+    })
 }
 /// # Safety
 /// out is writable; core is live and exclusively accessed.
 #[no_mangle]
-pub unsafe extern "C" fn shell_core_page_geometry_read(core:*mut ShellCore,start:u32,end:u32,out:*mut crate::page_input::ShellPageGeometry)->ShellStatus {
- guard(core,|core|{let Some(out)=out.as_mut() else{return ShellStatus::InvalidArgument;};
- match core.page_input.geometry_read(start,end){Ok(Some(value))=>{*out=value;ShellStatus::Ok},Ok(None)=>ShellStatus::Busy,Err(())=>ShellStatus::Rejected}})
+pub unsafe extern "C" fn shell_core_page_geometry_read(
+    core: *mut ShellCore,
+    start: u32,
+    end: u32,
+    out: *mut crate::page_input::ShellPageGeometry,
+) -> ShellStatus {
+    guard(core, |core| {
+        let Some(out) = out.as_mut() else {
+            return ShellStatus::InvalidArgument;
+        };
+        match core.page_input.geometry_read(start, end) {
+            Ok(Some(value)) => {
+                *out = value;
+                ShellStatus::Ok
+            }
+            Ok(None) => ShellStatus::Busy,
+            Err(()) => ShellStatus::Rejected,
+        }
+    })
 }
 /// # Safety
 /// input is readable; core is live and exclusively accessed.
 #[no_mangle]
-pub unsafe extern "C" fn shell_core_page_geometry_reply(core:*mut ShellCore,input:*const crate::page_input::ShellPageGeometry)->ShellStatus {
- guard(core,|core|{let Some(input)=input.as_ref() else{return ShellStatus::InvalidArgument;};
- if core.page_input.geometry_reply(*input){ShellStatus::Ok}else{ShellStatus::Rejected}})
+pub unsafe extern "C" fn shell_core_page_geometry_reply(
+    core: *mut ShellCore,
+    input: *const crate::page_input::ShellPageGeometry,
+) -> ShellStatus {
+    guard(core, |core| {
+        let Some(input) = input.as_ref() else {
+            return ShellStatus::InvalidArgument;
+        };
+        if core.page_input.geometry_reply(*input) {
+            ShellStatus::Ok
+        } else {
+            ShellStatus::Rejected
+        }
+    })
 }
 
 #[cfg(test)]
 mod startup_presentation_tests {
     use super::*;
     #[test]
-    fn startup_labels_are_endpoint_scoped_snapshots() { unsafe {
-        let core=shell_core_create(std::ptr::null());assert!(!core.is_null());
-        let session=(*core).endpoint;let one=[1u16,2];let two=[3u16,4];let mut apply=false;
-        assert_eq!(shell_core_startup_presentation(core,session,2,one.as_ptr(),2,&mut apply),ShellStatus::Ok);assert!(apply);
-        assert_eq!(shell_core_startup_presentation(core,session,2,one.as_ptr(),2,&mut apply),ShellStatus::Ok);assert!(!apply);
-        assert_eq!(shell_core_startup_presentation(core,session,1,two.as_ptr(),2,&mut apply),ShellStatus::Ok);assert!(!apply);
-        assert_eq!(shell_core_startup_presentation(core,session,2,two.as_ptr(),2,&mut apply),ShellStatus::Rejected);
-        assert_eq!(shell_core_startup_presentation(core,session+1,3,two.as_ptr(),2,&mut apply),ShellStatus::Rejected);
-        assert_eq!(shell_core_startup_presentation(core,session,3,two.as_ptr(),2,&mut apply),ShellStatus::Ok);assert!(apply);
-        shell_core_destroy(core);
-    }}
+    fn startup_labels_are_endpoint_scoped_snapshots() {
+        unsafe {
+            let core = shell_core_create(std::ptr::null());
+            assert!(!core.is_null());
+            let session = (*core).endpoint;
+            let one = [1u16, 2];
+            let two = [3u16, 4];
+            let mut apply = false;
+            assert_eq!(
+                shell_core_startup_presentation(core, session, 2, one.as_ptr(), 2, &mut apply),
+                ShellStatus::Ok
+            );
+            assert!(apply);
+            assert_eq!(
+                shell_core_startup_presentation(core, session, 2, one.as_ptr(), 2, &mut apply),
+                ShellStatus::Ok
+            );
+            assert!(!apply);
+            assert_eq!(
+                shell_core_startup_presentation(core, session, 1, two.as_ptr(), 2, &mut apply),
+                ShellStatus::Ok
+            );
+            assert!(!apply);
+            assert_eq!(
+                shell_core_startup_presentation(core, session, 2, two.as_ptr(), 2, &mut apply),
+                ShellStatus::Rejected
+            );
+            assert_eq!(
+                shell_core_startup_presentation(core, session + 1, 3, two.as_ptr(), 2, &mut apply),
+                ShellStatus::Rejected
+            );
+            assert_eq!(
+                shell_core_startup_presentation(core, session, 3, two.as_ptr(), 2, &mut apply),
+                ShellStatus::Ok
+            );
+            assert!(apply);
+            shell_core_destroy(core);
+        }
+    }
 }

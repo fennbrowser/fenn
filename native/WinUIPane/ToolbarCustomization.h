@@ -8,16 +8,32 @@
 
 struct NativeToolbarCustomization {
     using JObject = winrt::Windows::Data::Json::JsonObject;
-    using Map = winrt::Windows::Foundation::Collections::IObservableMap<winrt::hstring,winrt::Windows::Foundation::IInspectable>;
+    using Map = winrt::Windows::Foundation::Collections::IObservableMap<winrt::hstring,
+                                                                        winrt::Windows::Foundation::IInspectable>;
     using Button = Microsoft::UI::Xaml::Controls::Button;
-    struct StockPart { winrt::hstring id, label, tooltip, text; bool enabled{}, checked{}, checkable{}, shown{true}, address{}, menu{}; };
-    struct Item { winrt::hstring id, control, label; bool placed{}, movable{}, removable{}, spring{}, canOverflow{}, canAutoOverflow{}, extension{}; winrt::hstring palette; std::vector<StockPart> stock; };
-    struct State { winrt::hstring fingerprint; uint64_t revision{}; bool canReset{}, canUndoReset{}; std::vector<Item> items; std::map<winrt::hstring,winrt::hstring> labels; };
+    struct StockPart {
+        winrt::hstring id, label, tooltip, text;
+        bool enabled{}, checked{}, checkable{}, shown{true}, address{}, menu{};
+    };
+    struct Item {
+        winrt::hstring id, control, label;
+        bool placed{}, movable{}, removable{}, spring{}, canOverflow{}, canAutoOverflow{}, extension{};
+        winrt::hstring palette;
+        std::vector<StockPart> stock;
+    };
+    struct State {
+        winrt::hstring fingerprint;
+        uint64_t revision{};
+        bool canReset{}, canUndoReset{};
+        std::vector<Item> items;
+        std::map<winrt::hstring, winrt::hstring> labels;
+    };
     State state;
-    winrt::Windows::Foundation::Collections::IObservableVector<winrt::Windows::Foundation::IInspectable> availableItems = winrt::single_threaded_observable_vector<winrt::Windows::Foundation::IInspectable>();
+    winrt::Windows::Foundation::Collections::IObservableVector<winrt::Windows::Foundation::IInspectable>
+        availableItems = winrt::single_threaded_observable_vector<winrt::Windows::Foundation::IInspectable>();
     Microsoft::UI::Xaml::Controls::Primitives::Popup popup{nullptr};
     Microsoft::UI::Xaml::Controls::ListViewBase available{nullptr};
-    std::map<winrt::hstring,Microsoft::UI::Xaml::Controls::TextBlock> textBlocks;
+    std::map<winrt::hstring, Microsoft::UI::Xaml::Controls::TextBlock> textBlocks;
     Button reset{nullptr}, undoReset{nullptr};
     Button anchor{nullptr};
     Microsoft::UI::Xaml::FrameworkElement toolbar{nullptr};
@@ -26,14 +42,14 @@ struct NativeToolbarCustomization {
     bool placingPopup{};
     Microsoft::UI::Xaml::Controls::MenuFlyout itemMenu{nullptr};
     bool itemMenuOpen{};
-    std::map<winrt::hstring,Microsoft::UI::Xaml::FrameworkElement> placedControls;
+    std::map<winrt::hstring, Microsoft::UI::Xaml::FrameworkElement> placedControls;
     winrt::hstring focusAfterChange;
     uint64_t focusRevision{};
 
-    std::function<void()> editorChanged,dragEnded,clearPreviews;
+    std::function<void()> editorChanged, dragEnded, clearPreviews;
     std::function<bool()> presentationMoving;
     std::function<Microsoft::UI::Xaml::FrameworkElement(Item const&)> createPreview;
-    std::map<winrt::hstring,Microsoft::UI::Xaml::FrameworkElement> previews;
+    std::map<winrt::hstring, Microsoft::UI::Xaml::FrameworkElement> previews;
     winrt::Windows::Graphics::Imaging::SoftwareBitmap dragBitmap{nullptr};
     bool editing{}, externalDrop{};
     winrt::hstring dragToken;
@@ -41,436 +57,703 @@ struct NativeToolbarCustomization {
     uint64_t dragRevision{};
     winrt::hstring dragId;
     std::function<void(wchar_t const*, uint32_t, Button const&)> activate;
-    std::shared_ptr<int> lifetime=std::make_shared<int>(0);
-    ~NativeToolbarCustomization() { lifetime.reset(); if(itemMenu)itemMenu.Hide(); if(popup) popup.IsOpen(false); }
+    std::shared_ptr<int> lifetime = std::make_shared<int>(0);
+    ~NativeToolbarCustomization() {
+        lifetime.reset();
+        if (itemMenu) itemMenu.Hide();
+        if (popup) popup.IsOpen(false);
+    }
     static State Read(JObject const& snapshot) {
         State state;
         if (!snapshot.HasKey(L"navigation")) return state;
-        auto nav=snapshot.GetNamedObject(L"navigation");
+        auto nav = snapshot.GetNamedObject(L"navigation");
         if (!nav.HasKey(L"customization")) return state;
-        auto obj=nav.GetNamedObject(L"customization");
-        state.revision=uint64_t(NativeJson::RequireRevision(obj,L"revision"));
-        state.canReset=obj.GetNamedBoolean(L"canReset",false);state.canUndoReset=obj.GetNamedBoolean(L"canUndoReset",false);
-        auto items=obj.GetNamedArray(L"items");
-        if(items.Size()>59) throw winrt::hresult_invalid_argument();
-        std::set<winrt::hstring> ids,controls;
-        bool address=false;size_t springs=0;
-        for(auto value:items) {
-            auto row=value.GetObject();
-            Item item{row.GetNamedString(L"id"),row.GetNamedString(L"control"),row.GetNamedString(L"displayLabel",row.GetNamedString(L"label")),
-                row.GetNamedBoolean(L"placed"),row.GetNamedBoolean(L"movable"),row.GetNamedBoolean(L"removable"),row.GetNamedString(L"kind",L"button")==L"spring",row.GetNamedBoolean(L"canOverflow",false),row.GetNamedBoolean(L"canAutoOverflow",false),row.GetNamedBoolean(L"extension",false)};
-            item.palette=row.GetNamedString(L"palette",L"");NativeJson::RequireLength(item.palette,64);
-            if(row.HasKey(L"stock")) {
-                auto parts=row.GetNamedArray(L"stock");
-                if(parts.Size()!=1 && parts.Size()!=3)throw winrt::hresult_invalid_argument();
+        auto obj = nav.GetNamedObject(L"customization");
+        state.revision = uint64_t(NativeJson::RequireRevision(obj, L"revision"));
+        state.canReset = obj.GetNamedBoolean(L"canReset", false);
+        state.canUndoReset = obj.GetNamedBoolean(L"canUndoReset", false);
+        auto items = obj.GetNamedArray(L"items");
+        if (items.Size() > 59) throw winrt::hresult_invalid_argument();
+        std::set<winrt::hstring> ids, controls;
+        bool address = false;
+        size_t springs = 0;
+        for (auto value : items) {
+            auto row = value.GetObject();
+            Item item{row.GetNamedString(L"id"),
+                      row.GetNamedString(L"control"),
+                      row.GetNamedString(L"displayLabel", row.GetNamedString(L"label")),
+                      row.GetNamedBoolean(L"placed"),
+                      row.GetNamedBoolean(L"movable"),
+                      row.GetNamedBoolean(L"removable"),
+                      row.GetNamedString(L"kind", L"button") == L"spring",
+                      row.GetNamedBoolean(L"canOverflow", false),
+                      row.GetNamedBoolean(L"canAutoOverflow", false),
+                      row.GetNamedBoolean(L"extension", false)};
+            item.palette = row.GetNamedString(L"palette", L"");
+            NativeJson::RequireLength(item.palette, 64);
+            if (row.HasKey(L"stock")) {
+                auto parts = row.GetNamedArray(L"stock");
+                if (parts.Size() != 1 && parts.Size() != 3) throw winrt::hresult_invalid_argument();
                 std::set<winrt::hstring> partIds;
-                for(auto part:parts) {
-                    auto partObj=part.GetObject();
-                    StockPart p{partObj.GetNamedString(L"id"),partObj.GetNamedString(L"label"),partObj.GetNamedString(L"tooltip",L""),partObj.GetNamedString(L"text",L""),partObj.GetNamedBoolean(L"enabled"),partObj.GetNamedBoolean(L"checked")};
-                    p.checkable=partObj.GetNamedBoolean(L"checkable",false);p.shown=partObj.GetNamedBoolean(L"shown",true);
-                    p.address=partObj.GetNamedBoolean(L"address",false);
-                    p.menu=partObj.GetNamedBoolean(L"menu",false);
-                    if(p.id.empty() || !partIds.insert(p.id).second)throw winrt::hresult_invalid_argument();
-                    NativeJson::RequireLength(p.id,48);NativeJson::RequireLength(p.label,4096);NativeJson::RequireLength(p.tooltip,4096);NativeJson::RequireLength(p.text,32);
+                for (auto part : parts) {
+                    auto partObj = part.GetObject();
+                    StockPart p{partObj.GetNamedString(L"id"),           partObj.GetNamedString(L"label"),
+                                partObj.GetNamedString(L"tooltip", L""), partObj.GetNamedString(L"text", L""),
+                                partObj.GetNamedBoolean(L"enabled"),     partObj.GetNamedBoolean(L"checked")};
+                    p.checkable = partObj.GetNamedBoolean(L"checkable", false);
+                    p.shown = partObj.GetNamedBoolean(L"shown", true);
+                    p.address = partObj.GetNamedBoolean(L"address", false);
+                    p.menu = partObj.GetNamedBoolean(L"menu", false);
+                    if (p.id.empty() || !partIds.insert(p.id).second) throw winrt::hresult_invalid_argument();
+                    NativeJson::RequireLength(p.id, 48);
+                    NativeJson::RequireLength(p.label, 4096);
+                    NativeJson::RequireLength(p.tooltip, 4096);
+                    NativeJson::RequireLength(p.text, 32);
                     item.stock.push_back(std::move(p));
                 }
             }
-            if(item.id.empty() || item.id.size()>64 || item.control.size()>64 || item.label.size()>4096 || !ids.insert(item.id).second ||
-                (item.placed && (item.control.empty() || !controls.insert(item.control).second))) throw winrt::hresult_invalid_argument();
-            if(item.spring && item.placed && ++springs>16) throw winrt::hresult_invalid_argument();
-            address |= item.placed && item.control==L"address";
+            if (item.id.empty() || item.id.size() > 64 || item.control.size() > 64 || item.label.size() > 4096 ||
+                !ids.insert(item.id).second ||
+                (item.placed && (item.control.empty() || !controls.insert(item.control).second)))
+                throw winrt::hresult_invalid_argument();
+            if (item.spring && item.placed && ++springs > 16) throw winrt::hresult_invalid_argument();
+            address |= item.placed && item.control == L"address";
             state.items.push_back(std::move(item));
         }
-        if(address && !state.revision) throw winrt::hresult_invalid_argument();
-        auto labels=obj.GetNamedObject(L"labels");
-        for(auto key:{L"title",L"available",L"earlier",L"later",L"add",L"remove",L"done",L"hint",L"reset",L"undo-reset",L"reset-hint",L"overflow",L"drop",L"open"}) {
-            auto value=labels.GetNamedString(key);NativeJson::RequireLength(value,4096);state.labels[key]=value;
+        if (address && !state.revision) throw winrt::hresult_invalid_argument();
+        auto labels = obj.GetNamedObject(L"labels");
+        for (auto key : {L"title", L"available", L"earlier", L"later", L"add", L"remove", L"done", L"hint", L"reset",
+                         L"undo-reset", L"reset-hint", L"overflow", L"drop", L"open"}) {
+            auto value = labels.GetNamedString(key);
+            NativeJson::RequireLength(value, 4096);
+            state.labels[key] = value;
         }
-        if(!address) return {};
+        if (!address) return {};
         // Palette labels are presentation-only: Firefox does not revise them.
         JObject identity;
-        for(auto const& entry:obj) if(entry.Key()!=L"labels") identity.SetNamedValue(entry.Key(),entry.Value());
-        state.fingerprint=identity.Stringify();
-        if(state.fingerprint.size()>MAX_TOOLBAR_FINGERPRINT) throw winrt::hresult_invalid_argument();
+        for (auto const& entry : obj)
+            if (entry.Key() != L"labels") identity.SetNamedValue(entry.Key(), entry.Value());
+        state.fingerprint = identity.Stringify();
+        if (state.fingerprint.size() > MAX_TOOLBAR_FINGERPRINT) throw winrt::hresult_invalid_argument();
         return state;
     }
     static winrt::hstring Id(winrt::Windows::Foundation::IInspectable const& item) {
         return item ? winrt::unbox_value<winrt::hstring>(item.as<Map>().Lookup(L"Id")) : winrt::hstring{};
     }
-    void Hide() { focusAfterChange=L"";if(itemMenu)itemMenu.Hide();if(dragEnded)dragEnded();dragCancelled=true;if(popup)popup.IsOpen(false); }
+    void Hide() {
+        focusAfterChange = L"";
+        if (itemMenu) itemMenu.Hide();
+        if (dragEnded) dragEnded();
+        dragCancelled = true;
+        if (popup) popup.IsOpen(false);
+    }
     bool BeginDrag(winrt::hstring const& id, winrt::Windows::ApplicationModel::DataTransfer::DataPackage const& data) {
-        auto item=std::find_if(state.items.begin(),state.items.end(),[&](auto const& row){return row.id==id;});
-        if(!editing || item==state.items.end() || !item->movable)return false;
-        dragBitmap=nullptr;dragId=id;dragRevision=state.revision;dragging=true;dragCancelled=false;externalDrop=false;
-        GUID token;winrt::check_hresult(CoCreateGuid(&token));dragToken=winrt::to_hstring(winrt::guid(token));
-        data.Properties().Insert(L"FennToolbarDrag",winrt::box_value(dragToken));
+        auto item = std::find_if(state.items.begin(), state.items.end(), [&](auto const& row) { return row.id == id; });
+        if (!editing || item == state.items.end() || !item->movable) return false;
+        dragBitmap = nullptr;
+        dragId = id;
+        dragRevision = state.revision;
+        dragging = true;
+        dragCancelled = false;
+        externalDrop = false;
+        GUID token;
+        winrt::check_hresult(CoCreateGuid(&token));
+        dragToken = winrt::to_hstring(winrt::guid(token));
+        data.Properties().Insert(L"FennToolbarDrag", winrt::box_value(dragToken));
         data.RequestedOperation(winrt::Windows::ApplicationModel::DataTransfer::DataPackageOperation::Move);
         return true;
     }
     // This editor's own drag, carrying the token it put in the data, onto an item it may move there.
-    bool Droppable(winrt::Windows::ApplicationModel::DataTransfer::DataPackageView const& data, bool removing=false) {
-        if(!editing || !dragging || dragCancelled || externalDrop || dragRevision!=state.revision)return false;
-        auto values=data.Properties();
-        if(!values.HasKey(L"FennToolbarDrag") || winrt::unbox_value_or<winrt::hstring>(values.Lookup(L"FennToolbarDrag"),L"")!=dragToken)return false;
-        auto row=std::find_if(state.items.begin(),state.items.end(),[&](auto const& item){return item.id==dragId;});
-        return row!=state.items.end() && !(removing && (!row->placed || !row->removable));
+    bool Droppable(winrt::Windows::ApplicationModel::DataTransfer::DataPackageView const& data, bool removing = false) {
+        if (!editing || !dragging || dragCancelled || externalDrop || dragRevision != state.revision) return false;
+        auto values = data.Properties();
+        if (!values.HasKey(L"FennToolbarDrag") ||
+            winrt::unbox_value_or<winrt::hstring>(values.Lookup(L"FennToolbarDrag"), L"") != dragToken)
+            return false;
+        auto row =
+            std::find_if(state.items.begin(), state.items.end(), [&](auto const& item) { return item.id == dragId; });
+        return row != state.items.end() && !(removing && (!row->placed || !row->removable));
     }
     // XAML's drag override and the island drop target's are different types with the same members.
-    template<typename Override> void ShowDrag(Override const& ui) const {
-        ui.IsContentVisible(bool(dragBitmap));ui.IsCaptionVisible(false);ui.IsGlyphVisible(false);
-        if(dragBitmap)ui.SetContentFromSoftwareBitmap(dragBitmap,{float(dragBitmap.PixelWidth())/2,float(dragBitmap.PixelHeight())/2});
+    template <typename Override>
+    void ShowDrag(Override const& ui) const {
+        ui.IsContentVisible(bool(dragBitmap));
+        ui.IsCaptionVisible(false);
+        ui.IsGlyphVisible(false);
+        if (dragBitmap)
+            ui.SetContentFromSoftwareBitmap(dragBitmap,
+                                            {float(dragBitmap.PixelWidth()) / 2, float(dragBitmap.PixelHeight()) / 2});
     }
-    bool Accept(Microsoft::UI::Xaml::DragEventArgs const& args, bool removing=false) {
-        if(!Droppable(args.DataView(),removing))return false;
+    bool Accept(Microsoft::UI::Xaml::DragEventArgs const& args, bool removing = false) {
+        if (!Droppable(args.DataView(), removing)) return false;
         args.AcceptedOperation(winrt::Windows::ApplicationModel::DataTransfer::DataPackageOperation::Move);
         ShowDrag(args.DragUIOverride());
         return true;
     }
-    void DropAt(Microsoft::UI::Xaml::DragEventArgs const& args,winrt::hstring const& target={},bool removing=false) {
-        if(!Accept(args,removing))return;
+    void DropAt(Microsoft::UI::Xaml::DragEventArgs const& args, winrt::hstring const& target = {},
+                bool removing = false) {
+        if (!Accept(args, removing)) return;
         args.Handled(true);
-        DropData(args.DataView(),target,removing);
+        DropData(args.DataView(), target, removing);
     }
-    bool DropData(winrt::Windows::ApplicationModel::DataTransfer::DataPackageView const& data,winrt::hstring const& target={},bool removing=false) {
-        if(!Droppable(data,removing))return false;
-        externalDrop=true;
-        if(target==dragId)return true;
-        auto row=std::find_if(state.items.begin(),state.items.end(),[&](auto const& item){return item.id==dragId;});
-        Send(dragId,removing?L"remove":!row->placed?L"insert":target.empty()?L"end":L"before",target,dragRevision);
+    bool DropData(winrt::Windows::ApplicationModel::DataTransfer::DataPackageView const& data,
+                  winrt::hstring const& target = {}, bool removing = false) {
+        if (!Droppable(data, removing)) return false;
+        externalDrop = true;
+        if (target == dragId) return true;
+        auto row =
+            std::find_if(state.items.begin(), state.items.end(), [&](auto const& item) { return item.id == dragId; });
+        Send(dragId,
+             removing         ? L"remove"
+             : !row->placed   ? L"insert"
+             : target.empty() ? L"end"
+                              : L"before",
+             target, dragRevision);
         // Firefox can remove the source control before WinUI raises DropCompleted.
         // Let the acknowledged layout refresh the palette even in that case.
-        dragging=false;
+        dragging = false;
         return true;
     }
-    void EndDrag() {if(dragEnded)dragEnded();dragging=false;dragToken=L"";Refresh();}
+    void EndDrag() {
+        if (dragEnded) dragEnded();
+        dragging = false;
+        dragToken = L"";
+        Refresh();
+    }
     winrt::fire_and_forget CaptureDrag(Microsoft::UI::Xaml::DragStartingEventArgs args,
-        Microsoft::UI::Xaml::FrameworkElement element,winrt::hstring id) {
-        auto deferral=args.GetDeferral();auto alive=std::weak_ptr<int>(lifetime);auto revision=state.revision;auto token=dragToken;
+                                       Microsoft::UI::Xaml::FrameworkElement element, winrt::hstring id) {
+        auto deferral = args.GetDeferral();
+        auto alive = std::weak_ptr<int>(lifetime);
+        auto revision = state.revision;
+        auto token = dragToken;
         try {
             Microsoft::UI::Xaml::Media::Imaging::RenderTargetBitmap bitmap;
             co_await bitmap.RenderAsync(element);
-            auto pixels=co_await bitmap.GetPixelsAsync();
-            if(alive.expired() || !editing || !dragging || dragCancelled || dragId!=id || dragToken!=token || state.revision!=revision){args.Cancel(true);}
-            else if(bitmap.PixelWidth()>0 && bitmap.PixelHeight()>0 && bitmap.PixelWidth()<=1024 && bitmap.PixelHeight()<=256) {
-                dragBitmap=winrt::Windows::Graphics::Imaging::SoftwareBitmap::CreateCopyFromBuffer(pixels,
-                    winrt::Windows::Graphics::Imaging::BitmapPixelFormat::Bgra8,bitmap.PixelWidth(),bitmap.PixelHeight(),
-                    winrt::Windows::Graphics::Imaging::BitmapAlphaMode::Premultiplied);
-                args.DragUI().SetContentFromSoftwareBitmap(dragBitmap,{float(bitmap.PixelWidth())/2,float(bitmap.PixelHeight())/2});
-            } else args.Cancel(true);
-        } catch (...) {args.Cancel(true);}
+            auto pixels = co_await bitmap.GetPixelsAsync();
+            if (alive.expired() || !editing || !dragging || dragCancelled || dragId != id || dragToken != token ||
+                state.revision != revision) {
+                args.Cancel(true);
+            } else if (bitmap.PixelWidth() > 0 && bitmap.PixelHeight() > 0 && bitmap.PixelWidth() <= 1024 &&
+                       bitmap.PixelHeight() <= 256) {
+                dragBitmap = winrt::Windows::Graphics::Imaging::SoftwareBitmap::CreateCopyFromBuffer(
+                    pixels, winrt::Windows::Graphics::Imaging::BitmapPixelFormat::Bgra8, bitmap.PixelWidth(),
+                    bitmap.PixelHeight(), winrt::Windows::Graphics::Imaging::BitmapAlphaMode::Premultiplied);
+                args.DragUI().SetContentFromSoftwareBitmap(
+                    dragBitmap, {float(bitmap.PixelWidth()) / 2, float(bitmap.PixelHeight()) / 2});
+            } else
+                args.Cancel(true);
+        } catch (...) {
+            args.Cancel(true);
+        }
         deferral.Complete();
     }
     static Microsoft::UI::Xaml::Controls::Control FocusControl(Microsoft::UI::Xaml::FrameworkElement const& element) {
         using namespace Microsoft::UI::Xaml::Controls;
-        if(auto control=element.try_as<Control>())return control;
-        if(auto panel=element.try_as<Panel>())for(auto child:panel.Children())if(auto control=child.try_as<Control>())return control;
+        if (auto control = element.try_as<Control>()) return control;
+        if (auto panel = element.try_as<Panel>())
+            for (auto child : panel.Children())
+                if (auto control = child.try_as<Control>()) return control;
         return nullptr;
     }
     bool FocusFirstPlaced() {
-        for(auto const& item:state.items)if(item.placed) {
-            auto found=placedControls.find(item.id);if(found==placedControls.end())continue;
-            if(auto control=FocusControl(found->second);control && control.IsEnabled())return control.Focus(Microsoft::UI::Xaml::FocusState::Keyboard);
-        }
+        for (auto const& item : state.items)
+            if (item.placed) {
+                auto found = placedControls.find(item.id);
+                if (found == placedControls.end()) continue;
+                if (auto control = FocusControl(found->second); control && control.IsEnabled())
+                    return control.Focus(Microsoft::UI::Xaml::FocusState::Keyboard);
+            }
         return false;
     }
     void RestoreKeyboardFocus() {
         // Wait for both MenuFlyout's anchor restoration and the refreshed palette
         // containers. A removed toolbar item cannot receive palette focus before
         // realization, even when its new collection entry is already present.
-        if(itemMenuOpen || palettePending || focusAfterChange.empty() || state.revision==focusRevision ||
-            (presentationMoving && presentationMoving()))return;
-        auto id=focusAfterChange;focusAfterChange=L"";auto revision=state.revision;auto alive=std::weak_ptr<int>(lifetime);
-        anchor.DispatcherQueue().TryEnqueue([this,alive,id,revision]{
-            if(alive.expired() || !editing || state.revision!=revision)return;
-            if(auto found=placedControls.find(id);found!=placedControls.end()) {
-                if(auto control=FocusControl(found->second))control.Focus(Microsoft::UI::Xaml::FocusState::Keyboard);
-            } else if(available) {
-                for(auto value:availableItems)if(Id(value)==id){available.SelectedItem(value);available.ScrollIntoView(value);break;}
-                if(!available.SelectedItem())for(auto const& item:state.items)if(item.control==L"new-spring") {
-                    for(auto value:availableItems)if(Id(value)==item.id){available.SelectedItem(value);available.ScrollIntoView(value);break;}
-                    break;
-                }
+        if (itemMenuOpen || palettePending || focusAfterChange.empty() || state.revision == focusRevision ||
+            (presentationMoving && presentationMoving()))
+            return;
+        auto id = focusAfterChange;
+        focusAfterChange = L"";
+        auto revision = state.revision;
+        auto alive = std::weak_ptr<int>(lifetime);
+        anchor.DispatcherQueue().TryEnqueue([this, alive, id, revision] {
+            if (alive.expired() || !editing || state.revision != revision) return;
+            if (auto found = placedControls.find(id); found != placedControls.end()) {
+                if (auto control = FocusControl(found->second))
+                    control.Focus(Microsoft::UI::Xaml::FocusState::Keyboard);
+            } else if (available) {
+                for (auto value : availableItems)
+                    if (Id(value) == id) {
+                        available.SelectedItem(value);
+                        available.ScrollIntoView(value);
+                        break;
+                    }
+                if (!available.SelectedItem())
+                    for (auto const& item : state.items)
+                        if (item.control == L"new-spring") {
+                            for (auto value : availableItems)
+                                if (Id(value) == item.id) {
+                                    available.SelectedItem(value);
+                                    available.ScrollIntoView(value);
+                                    break;
+                                }
+                            break;
+                        }
                 available.Focus(Microsoft::UI::Xaml::FocusState::Keyboard);
-                if(auto selected=available.SelectedItem())if(auto row=available.ContainerFromItem(selected).try_as<Microsoft::UI::Xaml::Controls::Control>())row.Focus(Microsoft::UI::Xaml::FocusState::Keyboard);
+                if (auto selected = available.SelectedItem())
+                    if (auto row =
+                            available.ContainerFromItem(selected).try_as<Microsoft::UI::Xaml::Controls::Control>())
+                        row.Focus(Microsoft::UI::Xaml::FocusState::Keyboard);
             }
         });
     }
     void OpenItemMenu(Microsoft::UI::Xaml::FrameworkElement const& control) {
-        using namespace Microsoft::UI::Xaml;using namespace Microsoft::UI::Xaml::Controls;
-        if(!editing || dragging || !control.Tag())return;
-        auto id=winrt::unbox_value<winrt::hstring>(control.Tag());
-        std::vector<Item> placed;for(auto const& item:state.items)if(item.placed)placed.push_back(item);
-        auto found=std::find_if(placed.begin(),placed.end(),[&](auto const& item){return item.id==id;});
-        if(found==placed.end() || !found->movable || found->control==L"address")return;
-        const auto index=size_t(found-placed.begin());auto revision=state.revision;auto alive=std::weak_ptr<int>(lifetime);
-        if(itemMenu)itemMenu.Hide();itemMenu=MenuFlyout();auto menu=itemMenu;
-        menu.Opened([this,alive](auto const&,auto const&){if(!alive.expired())itemMenuOpen=true;});
-        menu.Closed([this,alive,weak=winrt::make_weak(menu)](auto const&,auto const&){
-            if(!alive.expired() && itemMenu==weak.get()) {
-                itemMenuOpen=false;
+        using namespace Microsoft::UI::Xaml;
+        using namespace Microsoft::UI::Xaml::Controls;
+        if (!editing || dragging || !control.Tag()) return;
+        auto id = winrt::unbox_value<winrt::hstring>(control.Tag());
+        std::vector<Item> placed;
+        for (auto const& item : state.items)
+            if (item.placed) placed.push_back(item);
+        auto found = std::find_if(placed.begin(), placed.end(), [&](auto const& item) { return item.id == id; });
+        if (found == placed.end() || !found->movable || found->control == L"address") return;
+        const auto index = size_t(found - placed.begin());
+        auto revision = state.revision;
+        auto alive = std::weak_ptr<int>(lifetime);
+        if (itemMenu) itemMenu.Hide();
+        itemMenu = MenuFlyout();
+        auto menu = itemMenu;
+        menu.Opened([this, alive](auto const&, auto const&) {
+            if (!alive.expired()) itemMenuOpen = true;
+        });
+        menu.Closed([this, alive, weak = winrt::make_weak(menu)](auto const&, auto const&) {
+            if (!alive.expired() && itemMenu == weak.get()) {
+                itemMenuOpen = false;
                 RestoreKeyboardFocus();
             }
         });
-        auto add=[&](wchar_t const* label,wchar_t const* verb,winrt::hstring const& target,bool enabled) {
-            MenuFlyoutItem action;action.Text(state.labels.at(label));action.IsEnabled(enabled);
-            Automation::AutomationProperties::SetAutomationId(action,winrt::hstring(L"FennCustomizeAction-")+label);
-            action.Click([this,alive,id,revision,verb=std::wstring(verb),target](auto const&,auto const&){
-                if(alive.expired() || !editing || revision!=state.revision)return;
-                focusAfterChange=id;focusRevision=revision;Send(id,verb.c_str(),target,revision);
+        auto add = [&](wchar_t const* label, wchar_t const* verb, winrt::hstring const& target, bool enabled) {
+            MenuFlyoutItem action;
+            action.Text(state.labels.at(label));
+            action.IsEnabled(enabled);
+            Automation::AutomationProperties::SetAutomationId(action, winrt::hstring(L"FennCustomizeAction-") + label);
+            action.Click([this, alive, id, revision, verb = std::wstring(verb), target](auto const&, auto const&) {
+                if (alive.expired() || !editing || revision != state.revision) return;
+                focusAfterChange = id;
+                focusRevision = revision;
+                Send(id, verb.c_str(), target, revision);
             });
             menu.Items().Append(action);
         };
-        add(L"earlier",L"before",index?placed[index-1].id:winrt::hstring{},index>0);
-        add(L"later",index+2<placed.size()?L"before":L"end",index+2<placed.size()?placed[index+2].id:winrt::hstring{},index+1<placed.size());
-        add(L"remove",L"remove",{},found->removable);
-        add(L"overflow",L"overflow",{},found->canOverflow);
+        add(L"earlier", L"before", index ? placed[index - 1].id : winrt::hstring{}, index > 0);
+        add(L"later", index + 2 < placed.size() ? L"before" : L"end",
+            index + 2 < placed.size() ? placed[index + 2].id : winrt::hstring{}, index + 1 < placed.size());
+        add(L"remove", L"remove", {}, found->removable);
+        add(L"overflow", L"overflow", {}, found->canOverflow);
         menu.ShowAt(control);
     }
-    void BindToolbarControl(Microsoft::UI::Xaml::FrameworkElement const& control,Item const& item) {
-        if(item.control==L"address")return;
-        placedControls.insert_or_assign(item.id,control);
-        if(!control.Tag()) {
-            auto alive=std::weak_ptr<int>(lifetime);
-            control.DragStarting([this,alive](auto const& sender,auto const& args){
-                if(alive.expired()){args.Cancel(true);return;}
-                auto element=sender.template as<Microsoft::UI::Xaml::FrameworkElement>();auto id=winrt::unbox_value<winrt::hstring>(element.Tag());
-                if(!BeginDrag(id,args.Data())){args.Cancel(true);return;}CaptureDrag(args,element,id);
+    void BindToolbarControl(Microsoft::UI::Xaml::FrameworkElement const& control, Item const& item) {
+        if (item.control == L"address") return;
+        placedControls.insert_or_assign(item.id, control);
+        if (!control.Tag()) {
+            auto alive = std::weak_ptr<int>(lifetime);
+            control.DragStarting([this, alive](auto const& sender, auto const& args) {
+                if (alive.expired()) {
+                    args.Cancel(true);
+                    return;
+                }
+                auto element = sender.template as<Microsoft::UI::Xaml::FrameworkElement>();
+                auto id = winrt::unbox_value<winrt::hstring>(element.Tag());
+                if (!BeginDrag(id, args.Data())) {
+                    args.Cancel(true);
+                    return;
+                }
+                CaptureDrag(args, element, id);
             });
-            control.PreviewKeyDown([this,alive](auto const& sender,auto const& args){
-                if(alive.expired() || !editing)return;
-                if(args.Key()==winrt::Windows::System::VirtualKey::Tab && (GetKeyState(VK_SHIFT)&0x8000)) {
-                    auto id=winrt::unbox_value<winrt::hstring>(sender.template as<Microsoft::UI::Xaml::FrameworkElement>().Tag());
-                    auto first=std::find_if(state.items.begin(),state.items.end(),[](auto const& item){return item.placed;});
-                    if(first!=state.items.end() && first->id==id) {
-                        if(undoReset.IsEnabled())undoReset.Focus(Microsoft::UI::Xaml::FocusState::Keyboard);
-                        else if(reset.IsEnabled())reset.Focus(Microsoft::UI::Xaml::FocusState::Keyboard);
-                        else available.Focus(Microsoft::UI::Xaml::FocusState::Keyboard);
-                        args.Handled(true);return;
+            control.PreviewKeyDown([this, alive](auto const& sender, auto const& args) {
+                if (alive.expired() || !editing) return;
+                if (args.Key() == winrt::Windows::System::VirtualKey::Tab && (GetKeyState(VK_SHIFT) & 0x8000)) {
+                    auto id = winrt::unbox_value<winrt::hstring>(
+                        sender.template as<Microsoft::UI::Xaml::FrameworkElement>().Tag());
+                    auto first = std::find_if(state.items.begin(), state.items.end(),
+                                              [](auto const& item) { return item.placed; });
+                    if (first != state.items.end() && first->id == id) {
+                        if (undoReset.IsEnabled())
+                            undoReset.Focus(Microsoft::UI::Xaml::FocusState::Keyboard);
+                        else if (reset.IsEnabled())
+                            reset.Focus(Microsoft::UI::Xaml::FocusState::Keyboard);
+                        else
+                            available.Focus(Microsoft::UI::Xaml::FocusState::Keyboard);
+                        args.Handled(true);
+                        return;
                     }
                 }
-                if(args.Key()==winrt::Windows::System::VirtualKey::Application ||
-                    (args.Key()==winrt::Windows::System::VirtualKey::F10 && (GetKeyState(VK_SHIFT)&0x8000))) {
-                    args.Handled(true);OpenItemMenu(sender.template as<Microsoft::UI::Xaml::FrameworkElement>());
+                if (args.Key() == winrt::Windows::System::VirtualKey::Application ||
+                    (args.Key() == winrt::Windows::System::VirtualKey::F10 && (GetKeyState(VK_SHIFT) & 0x8000))) {
+                    args.Handled(true);
+                    OpenItemMenu(sender.template as<Microsoft::UI::Xaml::FrameworkElement>());
                 }
             });
-            control.ContextRequested([this,alive](auto const& sender,auto const& args){
-                if(alive.expired() || !editing)return;args.Handled(true);OpenItemMenu(sender.template as<Microsoft::UI::Xaml::FrameworkElement>());
+            control.ContextRequested([this, alive](auto const& sender, auto const& args) {
+                if (alive.expired() || !editing) return;
+                args.Handled(true);
+                OpenItemMenu(sender.template as<Microsoft::UI::Xaml::FrameworkElement>());
             });
-            control.DropCompleted([this,alive](auto const&,auto const&){if(!alive.expired())EndDrag();});
+            control.DropCompleted([this, alive](auto const&, auto const&) {
+                if (!alive.expired()) EndDrag();
+            });
         }
-        control.Tag(winrt::box_value(item.id));control.CanDrag(editing && item.movable);
-        if(item.spring){control.IsHitTestVisible(editing);control.as<Microsoft::UI::Xaml::Controls::Grid>().Background(winrt::Microsoft::UI::Xaml::Media::SolidColorBrush(winrt::Windows::UI::Colors::Transparent()));}
+        control.Tag(winrt::box_value(item.id));
+        control.CanDrag(editing && item.movable);
+        if (item.spring) {
+            control.IsHitTestVisible(editing);
+            control.as<Microsoft::UI::Xaml::Controls::Grid>().Background(
+                winrt::Microsoft::UI::Xaml::Media::SolidColorBrush(winrt::Windows::UI::Colors::Transparent()));
+        }
     }
     bool DismissOnEscape() {
-        if(itemMenuOpen){itemMenu.Hide();return true;}
-        if(!dragging && !editing)return false;
-        dragCancelled=true;Hide();return true;
+        if (itemMenuOpen) {
+            itemMenu.Hide();
+            return true;
+        }
+        if (!dragging && !editing) return false;
+        dragCancelled = true;
+        Hide();
+        return true;
     }
-    void Send(winrt::hstring const& id,wchar_t const* verb,winrt::hstring const& target={},uint64_t revision=0) {
-        if(!activate || id.empty() || !state.revision) return;
-        auto command=std::wstring(L"customize:")+std::to_wstring(revision?revision:state.revision)+L":"+id.c_str()+L":"+verb;
-        if(!target.empty()) command+=std::wstring(L":")+target.c_str();
-        activate(command.c_str(),0,anchor);
+    void Send(winrt::hstring const& id, wchar_t const* verb, winrt::hstring const& target = {}, uint64_t revision = 0) {
+        if (!activate || id.empty() || !state.revision) return;
+        auto command = std::wstring(L"customize:") + std::to_wstring(revision ? revision : state.revision) + L":" +
+                       id.c_str() + L":" + verb;
+        if (!target.empty()) command += std::wstring(L":") + target.c_str();
+        activate(command.c_str(), 0, anchor);
     }
-    void SendGlobal(wchar_t const* verb, bool editor=false) {
-        if(!activate || !state.revision)return;
-        auto command=std::wstring(L"customize:")+(editor?std::wstring(L"editor"):std::to_wstring(state.revision))+L":"+verb;
-        activate(command.c_str(),0,anchor);
+    void SendGlobal(wchar_t const* verb, bool editor = false) {
+        if (!activate || !state.revision) return;
+        auto command = std::wstring(L"customize:") +
+                       (editor ? std::wstring(L"editor") : std::to_wstring(state.revision)) + L":" + verb;
+        activate(command.c_str(), 0, anchor);
     }
-    void Buttons() {reset.IsEnabled(state.canReset);undoReset.IsEnabled(state.canUndoReset);}
-    bool PlacePopup(bool capture=false) {
-        if(placingPopup || !popup || !popup.Child() || !anchor || !toolbar || !anchor.XamlRoot())return false;
-        const auto xamlRoot=toolbar.XamlRoot();
-        const auto size=xamlRoot.Size();
-        auto row=toolbar.TransformToVisual(nullptr).TransformBounds({0,0,float(toolbar.ActualWidth()),float(toolbar.ActualHeight())});
-        if(capture) {
+    void Buttons() {
+        reset.IsEnabled(state.canReset);
+        undoReset.IsEnabled(state.canUndoReset);
+    }
+    bool PlacePopup(bool capture = false) {
+        if (placingPopup || !popup || !popup.Child() || !anchor || !toolbar || !anchor.XamlRoot()) return false;
+        const auto xamlRoot = toolbar.XamlRoot();
+        const auto size = xamlRoot.Size();
+        auto row = toolbar.TransformToVisual(nullptr).TransformBounds(
+            {0, 0, float(toolbar.ActualWidth()), float(toolbar.ActualHeight())});
+        if (capture) {
             POINT cursor{};
-            popupAnchorX=anchor.TransformToVisual(nullptr).TransformPoint({0,0}).X;
-            if(GetCursorPos(&cursor)) {
-                const auto point=xamlRoot.ContentIsland().CoordinateConverter().ConvertScreenToLocal(
-                    winrt::Windows::Graphics::PointInt32{cursor.x,cursor.y});
-                if(popupFromPointer || (point.X>=0 && point.Y>=0 && point.X<size.Width && point.Y<size.Height))popupAnchorX=point.X;
+            popupAnchorX = anchor.TransformToVisual(nullptr).TransformPoint({0, 0}).X;
+            if (GetCursorPos(&cursor)) {
+                const auto point = xamlRoot.ContentIsland().CoordinateConverter().ConvertScreenToLocal(
+                    winrt::Windows::Graphics::PointInt32{cursor.x, cursor.y});
+                if (popupFromPointer || (point.X >= 0 && point.Y >= 0 && point.X < size.Width && point.Y < size.Height))
+                    popupAnchorX = point.X;
             }
         }
-        placingPopup=true;
-        struct Reset { bool& flag; ~Reset(){flag=false;} } placingGuard{placingPopup};
-        const double left=8,right=std::max(left,double(size.Width)-8);
-        const double top=std::max(8.0,double(row.Y+row.Height)+4);
-        const double height=std::max(0.0,double(size.Height)-8-top);
-        auto child=popup.Child().as<Microsoft::UI::Xaml::FrameworkElement>();
-        if(child.MaxWidth()!=right-left)child.MaxWidth(right-left);
-        if(child.MaxHeight()!=height)child.MaxHeight(height);
-        auto presenter=child.as<Microsoft::UI::Xaml::Controls::FlyoutPresenter>();
+        placingPopup = true;
+        struct Reset {
+            bool& flag;
+            ~Reset() { flag = false; }
+        } placingGuard{placingPopup};
+        const double left = 8, right = std::max(left, double(size.Width) - 8);
+        const double top = std::max(8.0, double(row.Y + row.Height) + 4);
+        const double height = std::max(0.0, double(size.Height) - 8 - top);
+        auto child = popup.Child().as<Microsoft::UI::Xaml::FrameworkElement>();
+        if (child.MaxWidth() != right - left) child.MaxWidth(right - left);
+        if (child.MaxHeight() != height) child.MaxHeight(height);
+        auto presenter = child.as<Microsoft::UI::Xaml::Controls::FlyoutPresenter>();
         presenter.ApplyTemplate();
-        auto padding=presenter.Padding(),border=presenter.BorderThickness();
-        auto content=presenter.Content().as<Microsoft::UI::Xaml::FrameworkElement>();
-        content.MaxHeight(std::max(0.0,height-padding.Top-padding.Bottom-border.Top-border.Bottom));
-        child.Measure({float(right-left),float(height)});
-        const double width=child.DesiredSize().Width;
-        const bool rtl=child.FlowDirection()==Microsoft::UI::Xaml::FlowDirection::RightToLeft;
-        const double x=std::clamp(popupAnchorX-(rtl?width:0),left,std::max(left,right-width));
+        auto padding = presenter.Padding(), border = presenter.BorderThickness();
+        auto content = presenter.Content().as<Microsoft::UI::Xaml::FrameworkElement>();
+        content.MaxHeight(std::max(0.0, height - padding.Top - padding.Bottom - border.Top - border.Bottom));
+        child.Measure({float(right - left), float(height)});
+        const double width = child.DesiredSize().Width;
+        const bool rtl = child.FlowDirection() == Microsoft::UI::Xaml::FlowDirection::RightToLeft;
+        const double x = std::clamp(popupAnchorX - (rtl ? width : 0), left, std::max(left, right - width));
         // Keep a windowed, nonmodal Popup above the engine's page HWND. The
         // root-constrained placement trial failed toolbar-to-palette dragging.
         // Clamp the measured surface within the shared Window tree instead.
         popup.PlacementTarget(nullptr);
         popup.DesiredPlacement(Microsoft::UI::Xaml::Controls::Primitives::PopupPlacementMode::Auto);
         // A windowed RTL child extends left from its offset, not right.
-        const double offset=x+(rtl?width:0);
-        if(popup.HorizontalOffset()!=offset)popup.HorizontalOffset(offset);
-        if(popup.VerticalOffset()!=top)popup.VerticalOffset(top);
-        return height>0;
+        const double offset = x + (rtl ? width : 0);
+        if (popup.HorizontalOffset() != offset) popup.HorizontalOffset(offset);
+        if (popup.VerticalOffset() != top) popup.VerticalOffset(top);
+        return height > 0;
     }
     void PopulatePalette() {
         using namespace Microsoft::UI::Xaml;
         using namespace Microsoft::UI::Xaml::Controls;
         // VariableSizedWrapGrid realizes this bounded collection without phased
         // container callbacks. Visit it once after each collection refresh.
-        if(!palettePending || !createPreview)return;
-        palettePending=false;
-        for(auto value:availableItems) {
-            auto row=available.ContainerFromItem(value).try_as<GridViewItem>();
-            if(!row)continue;
-            auto id=Id(value);
-            auto found=std::find_if(state.items.begin(),state.items.end(),[&](auto const& item){return item.id==id;});
-            if(found==state.items.end())continue;
-            auto const& item=*found;
-            auto presenter=row.ContentTemplateRoot().try_as<ContentPresenter>();
-            if(!presenter)continue;
-            Automation::AutomationProperties::SetAutomationId(row,L"FennCustomize-"+(item.control.empty()?item.id:item.control));
-            Automation::AutomationProperties::SetName(row,item.label);
-            ToolTipService::SetToolTip(row,winrt::box_value(item.label));
-            row.Padding({0,0,0,0});row.Margin({2,2,2,2});row.MinWidth(32);row.MinHeight(32);
-            VariableSizedWrapGrid::SetColumnSpan(row,item.stock.size()==3?3:1);
-            row.Width(item.stock.size()==3?104:32);
-            auto alive=std::weak_ptr<int>(lifetime);
-            if(!row.Tag())row.DragStarting([this,alive](auto const& sender,auto const& args){
-                if(alive.expired())return;
-                auto id=winrt::unbox_value<winrt::hstring>(sender.template as<FrameworkElement>().Tag());
-                if(previews.contains(id))CaptureDrag(args,previews.at(id),id);
-            });
+        if (!palettePending || !createPreview) return;
+        palettePending = false;
+        for (auto value : availableItems) {
+            auto row = available.ContainerFromItem(value).try_as<GridViewItem>();
+            if (!row) continue;
+            auto id = Id(value);
+            auto found =
+                std::find_if(state.items.begin(), state.items.end(), [&](auto const& item) { return item.id == id; });
+            if (found == state.items.end()) continue;
+            auto const& item = *found;
+            auto presenter = row.ContentTemplateRoot().try_as<ContentPresenter>();
+            if (!presenter) continue;
+            Automation::AutomationProperties::SetAutomationId(
+                row, L"FennCustomize-" + (item.control.empty() ? item.id : item.control));
+            Automation::AutomationProperties::SetName(row, item.label);
+            ToolTipService::SetToolTip(row, winrt::box_value(item.label));
+            row.Padding({0, 0, 0, 0});
+            row.Margin({2, 2, 2, 2});
+            row.MinWidth(32);
+            row.MinHeight(32);
+            VariableSizedWrapGrid::SetColumnSpan(row, item.stock.size() == 3 ? 3 : 1);
+            row.Width(item.stock.size() == 3 ? 104 : 32);
+            auto alive = std::weak_ptr<int>(lifetime);
+            if (!row.Tag())
+                row.DragStarting([this, alive](auto const& sender, auto const& args) {
+                    if (alive.expired()) return;
+                    auto id = winrt::unbox_value<winrt::hstring>(sender.template as<FrameworkElement>().Tag());
+                    if (previews.contains(id)) CaptureDrag(args, previews.at(id), id);
+                });
             row.Tag(winrt::box_value(item.id));
-            auto preview=createPreview(item);preview.IsHitTestVisible(false);
-            if(auto control=preview.try_as<Microsoft::UI::Xaml::Controls::Control>())control.IsTabStop(false);
-            Microsoft::UI::Xaml::Automation::AutomationProperties::SetName(preview,item.label);
-            Microsoft::UI::Xaml::Automation::AutomationProperties::SetAutomationId(preview,L"FennCustomizePreview-"+(item.control.empty()?item.id:item.control));
-            Microsoft::UI::Xaml::Automation::AutomationProperties::SetAccessibilityView(preview,Microsoft::UI::Xaml::Automation::Peers::AccessibilityView::Content);
-            Microsoft::UI::Xaml::Controls::ToolTipService::SetToolTip(preview,winrt::box_value(item.label));
-            previews.insert_or_assign(item.id,preview);presenter.Content(preview);
+            auto preview = createPreview(item);
+            preview.IsHitTestVisible(false);
+            if (auto control = preview.try_as<Microsoft::UI::Xaml::Controls::Control>()) control.IsTabStop(false);
+            Microsoft::UI::Xaml::Automation::AutomationProperties::SetName(preview, item.label);
+            Microsoft::UI::Xaml::Automation::AutomationProperties::SetAutomationId(
+                preview, L"FennCustomizePreview-" + (item.control.empty() ? item.id : item.control));
+            Microsoft::UI::Xaml::Automation::AutomationProperties::SetAccessibilityView(
+                preview, Microsoft::UI::Xaml::Automation::Peers::AccessibilityView::Content);
+            Microsoft::UI::Xaml::Controls::ToolTipService::SetToolTip(preview, winrt::box_value(item.label));
+            previews.insert_or_assign(item.id, preview);
+            presenter.Content(preview);
         }
         // Span changes occur after container realization; invalidate the panel's
         // cached cell assignment so the next measure uses composite widths.
-        if(auto panel=available.ItemsPanelRoot())panel.InvalidateMeasure();
+        if (auto panel = available.ItemsPanelRoot()) panel.InvalidateMeasure();
         RestoreKeyboardFocus();
     }
     void Refresh() {
-        if(!available) return;
+        if (!available) return;
         // ShellCore supplies only a visual permutation. Firefox's original
         // widget order, identities and persisted toolbar placement stay intact.
         std::vector<Item const*> items;
         std::vector<uint32_t> spans;
-        for(auto const& item:state.items)if(!item.placed && item.control!=L"address") {
-            items.push_back(&item);spans.push_back(item.stock.size()==3?3u:1u);
-        }
+        for (auto const& item : state.items)
+            if (!item.placed && item.control != L"address") {
+                items.push_back(&item);
+                spans.push_back(item.stock.size() == 3 ? 3u : 1u);
+            }
         ShellToolbarPaletteOrder packed{};
-        if(shell_core_toolbar_palette_order(spans.data(),spans.size(),7,&packed)!=SHELL_STATUS_OK)return;
-        updating=true;availableItems.Clear();previews.clear();if(clearPreviews)clearPreviews();
-        for(uint32_t index=0;index<packed.len;index++) {
-            auto const& item=*items[packed.order[index]];
-            auto value=winrt::single_threaded_observable_map<winrt::hstring,winrt::Windows::Foundation::IInspectable>();
-            value.Insert(L"Id",winrt::box_value(item.id));value.Insert(L"Label",winrt::box_value(item.label));
+        if (shell_core_toolbar_palette_order(spans.data(), spans.size(), 7, &packed) != SHELL_STATUS_OK) return;
+        updating = true;
+        availableItems.Clear();
+        previews.clear();
+        if (clearPreviews) clearPreviews();
+        for (uint32_t index = 0; index < packed.len; index++) {
+            auto const& item = *items[packed.order[index]];
+            auto value =
+                winrt::single_threaded_observable_map<winrt::hstring, winrt::Windows::Foundation::IInspectable>();
+            value.Insert(L"Id", winrt::box_value(item.id));
+            value.Insert(L"Label", winrt::box_value(item.label));
             availableItems.Append(value);
         }
-        palettePending=true;updating=false;Buttons();
+        palettePending = true;
+        updating = false;
+        Buttons();
     }
-    void Apply(State next,bool visible) {
-        bool changed=next.revision!=state.revision;
-        state=std::move(next);
-        if(!visible || !state.revision) {Hide();return;}
-        if(available) {
-            if(popup && popup.Child())Microsoft::UI::Xaml::Automation::AutomationProperties::SetName(popup.Child(),state.labels.at(L"title"));
-            for(auto const& [key,block]:textBlocks) block.Text(state.labels.at(key));
-            for(auto const& [key,control]:std::initializer_list<std::pair<wchar_t const*,Button>>{{L"reset",reset},{L"undo-reset",undoReset}}) control.Content(winrt::box_value(state.labels.at(key)));
+    void Apply(State next, bool visible) {
+        bool changed = next.revision != state.revision;
+        state = std::move(next);
+        if (!visible || !state.revision) {
+            Hide();
+            return;
         }
-        int position=0,total=0;for(auto const& item:state.items)if(item.placed)total++;
-        for(auto const& item:state.items)if(item.placed) {
-            position++;auto entry=placedControls.find(item.id);if(entry==placedControls.end())continue;
-            if(auto control=FocusControl(entry->second)) {
-                Microsoft::UI::Xaml::Automation::AutomationProperties::SetPositionInSet(control,position);
-                Microsoft::UI::Xaml::Automation::AutomationProperties::SetSizeOfSet(control,total);
+        if (available) {
+            if (popup && popup.Child())
+                Microsoft::UI::Xaml::Automation::AutomationProperties::SetName(popup.Child(),
+                                                                               state.labels.at(L"title"));
+            for (auto const& [key, block] : textBlocks) block.Text(state.labels.at(key));
+            for (auto const& [key, control] : std::initializer_list<std::pair<wchar_t const*, Button>>{
+                     {L"reset", reset}, {L"undo-reset", undoReset}})
+                control.Content(winrt::box_value(state.labels.at(key)));
+        }
+        int position = 0, total = 0;
+        for (auto const& item : state.items)
+            if (item.placed) total++;
+        for (auto const& item : state.items)
+            if (item.placed) {
+                position++;
+                auto entry = placedControls.find(item.id);
+                if (entry == placedControls.end()) continue;
+                if (auto control = FocusControl(entry->second)) {
+                    Microsoft::UI::Xaml::Automation::AutomationProperties::SetPositionInSet(control, position);
+                    Microsoft::UI::Xaml::Automation::AutomationProperties::SetSizeOfSet(control, total);
+                }
             }
+        if (changed && !dragging) {
+            if (itemMenu) itemMenu.Hide();
+            Refresh();
         }
-        if(changed && !dragging) {if(itemMenu)itemMenu.Hide();Refresh();}
         RestoreKeyboardFocus();
     }
     void Open(Button const& button) {
         using namespace Microsoft::UI::Xaml;
         using namespace Microsoft::UI::Xaml::Controls;
-        if(!state.revision) return;
-        anchor=button;
-        if(!popup) {
-            popup=Primitives::Popup();popup.ShouldConstrainToRootBounds(false);popup.IsLightDismissEnabled(false);Grid content;content.Width(280);content.RowSpacing(8);
-            for(auto height:{GridLengthHelper::Auto(),GridLengthHelper::FromValueAndType(1,GridUnitType::Star),GridLengthHelper::Auto()}){RowDefinition row;row.Height(height);content.RowDefinitions().Append(row);}
-            auto text=[&](wchar_t const* key){TextBlock t;textBlocks[key]=t;t.Text(state.labels.at(key));t.TextWrapping(TextWrapping::Wrap);content.Children().Append(t);};
+        if (!state.revision) return;
+        anchor = button;
+        if (!popup) {
+            popup = Primitives::Popup();
+            popup.ShouldConstrainToRootBounds(false);
+            popup.IsLightDismissEnabled(false);
+            Grid content;
+            content.Width(280);
+            content.RowSpacing(8);
+            for (auto height : {GridLengthHelper::Auto(), GridLengthHelper::FromValueAndType(1, GridUnitType::Star),
+                                GridLengthHelper::Auto()}) {
+                RowDefinition row;
+                row.Height(height);
+                content.RowDefinitions().Append(row);
+            }
+            auto text = [&](wchar_t const* key) {
+                TextBlock t;
+                textBlocks[key] = t;
+                t.Text(state.labels.at(key));
+                t.TextWrapping(TextWrapping::Wrap);
+                content.Children().Append(t);
+            };
             text(L"title");
-            available=GridView();available.ItemsSource(availableItems);available.MaxHeight(240);available.MinHeight(40);available.CanDragItems(true);available.AllowDrop(true);
+            available = GridView();
+            available.ItemsSource(availableItems);
+            available.MaxHeight(240);
+            available.MinHeight(40);
+            available.CanDragItems(true);
+            available.AllowDrop(true);
             // Stock composites occupy three normal button cells; retain the
             // built-in GridView keyboard, selection and drag behavior.
-            available.ItemsPanel(Markup::XamlReader::Load(LR"(<ItemsPanelTemplate xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"><VariableSizedWrapGrid Orientation="Horizontal" ItemWidth="36" ItemHeight="36" MaximumRowsOrColumns="7"/></ItemsPanelTemplate>)").as<ItemsPanelTemplate>());
-            Automation::AutomationProperties::SetAutomationId(available,L"FennCustomizeAvailable");
-            Automation::AutomationProperties::SetName(available,state.labels.at(L"available"));Grid::SetRow(available,1);content.Children().Append(available);
-            StackPanel defaults;defaults.Orientation(Orientation::Horizontal);defaults.Spacing(8);Grid::SetRow(defaults,2);content.Children().Append(defaults);
-            auto make=[&](wchar_t const* key){Button b;b.Content(winrt::box_value(state.labels.at(key)));Automation::AutomationProperties::SetAutomationId(b,winrt::hstring(L"FennCustomize-")+key);defaults.Children().Append(b);return b;};
-            reset=make(L"reset");undoReset=make(L"undo-reset");
-            auto alive=std::weak_ptr<int>(lifetime);
-            for(auto button:{reset,undoReset})button.PreviewKeyDown([this,alive](auto const& sender,auto const& args){
-                if(alive.expired() || args.Key()!=winrt::Windows::System::VirtualKey::Tab || (GetKeyState(VK_SHIFT)&0x8000))return;
-                if(sender==undoReset || !undoReset.IsEnabled())args.Handled(FocusFirstPlaced());
+            available.ItemsPanel(
+                Markup::XamlReader::Load(
+                    LR"(<ItemsPanelTemplate xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"><VariableSizedWrapGrid Orientation="Horizontal" ItemWidth="36" ItemHeight="36" MaximumRowsOrColumns="7"/></ItemsPanelTemplate>)")
+                    .as<ItemsPanelTemplate>());
+            Automation::AutomationProperties::SetAutomationId(available, L"FennCustomizeAvailable");
+            Automation::AutomationProperties::SetName(available, state.labels.at(L"available"));
+            Grid::SetRow(available, 1);
+            content.Children().Append(available);
+            StackPanel defaults;
+            defaults.Orientation(Orientation::Horizontal);
+            defaults.Spacing(8);
+            Grid::SetRow(defaults, 2);
+            content.Children().Append(defaults);
+            auto make = [&](wchar_t const* key) {
+                Button b;
+                b.Content(winrt::box_value(state.labels.at(key)));
+                Automation::AutomationProperties::SetAutomationId(b, winrt::hstring(L"FennCustomize-") + key);
+                defaults.Children().Append(b);
+                return b;
+            };
+            reset = make(L"reset");
+            undoReset = make(L"undo-reset");
+            auto alive = std::weak_ptr<int>(lifetime);
+            for (auto button : {reset, undoReset})
+                button.PreviewKeyDown([this, alive](auto const& sender, auto const& args) {
+                    if (alive.expired() || args.Key() != winrt::Windows::System::VirtualKey::Tab ||
+                        (GetKeyState(VK_SHIFT) & 0x8000))
+                        return;
+                    if (sender == undoReset || !undoReset.IsEnabled()) args.Handled(FocusFirstPlaced());
+                });
+            popup.Opened([this, alive](auto const&, auto const&) {
+                if (!alive.expired()) {
+                    editing = true;
+                    SendGlobal(L"open", true);
+                    if (editorChanged) editorChanged();
+                    available.SelectedIndex(-1);
+                    // Give the popup input ownership without focusing/highlighting
+                    // an available button. Tab enters the stock GridView normally.
+                    popup.Child().as<FlyoutPresenter>().Focus(FocusState::Programmatic);
+                }
             });
-            popup.Opened([this,alive](auto const&,auto const&){if(!alive.expired()){
-                editing=true;SendGlobal(L"open",true);if(editorChanged)editorChanged();
-                available.SelectedIndex(-1);
-                // Give the popup input ownership without focusing/highlighting
-                // an available button. Tab enters the stock GridView normally.
-                popup.Child().as<FlyoutPresenter>().Focus(FocusState::Programmatic);
-            }});
-            popup.Closed([this,alive](auto const&,auto const&){if(!alive.expired()){editing=false;dragCancelled=true;SendGlobal(L"close",true);if(editorChanged)editorChanged();}});
-            reset.Click([this,alive](auto const&,auto const&){if(!alive.expired())SendGlobal(L"reset");});
-            undoReset.Click([this,alive](auto const&,auto const&){if(!alive.expired())SendGlobal(L"undo-reset");});
-            auto itemTemplate=Markup::XamlReader::Load(LR"(<DataTemplate xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"><ContentPresenter/></DataTemplate>)").as<DataTemplate>();
+            popup.Closed([this, alive](auto const&, auto const&) {
+                if (!alive.expired()) {
+                    editing = false;
+                    dragCancelled = true;
+                    SendGlobal(L"close", true);
+                    if (editorChanged) editorChanged();
+                }
+            });
+            reset.Click([this, alive](auto const&, auto const&) {
+                if (!alive.expired()) SendGlobal(L"reset");
+            });
+            undoReset.Click([this, alive](auto const&, auto const&) {
+                if (!alive.expired()) SendGlobal(L"undo-reset");
+            });
+            auto itemTemplate =
+                Markup::XamlReader::Load(
+                    LR"(<DataTemplate xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"><ContentPresenter/></DataTemplate>)")
+                    .as<DataTemplate>();
             available.ItemTemplate(itemTemplate);
-            available.LayoutUpdated([this,alive](auto const&,auto const&){if(!alive.expired())PopulatePalette();});
-            available.PreviewKeyDown([this,alive](auto const&,auto const& args){
-                if(alive.expired())return;
-                if(args.Key()==winrt::Windows::System::VirtualKey::Tab) {
-                    if(GetKeyState(VK_SHIFT)&0x8000){anchor.Focus(FocusState::Keyboard);args.Handled(true);}
-                    else if(!reset.IsEnabled() && !undoReset.IsEnabled())args.Handled(FocusFirstPlaced());
+            available.LayoutUpdated([this, alive](auto const&, auto const&) {
+                if (!alive.expired()) PopulatePalette();
+            });
+            available.PreviewKeyDown([this, alive](auto const&, auto const& args) {
+                if (alive.expired()) return;
+                if (args.Key() == winrt::Windows::System::VirtualKey::Tab) {
+                    if (GetKeyState(VK_SHIFT) & 0x8000) {
+                        anchor.Focus(FocusState::Keyboard);
+                        args.Handled(true);
+                    } else if (!reset.IsEnabled() && !undoReset.IsEnabled())
+                        args.Handled(FocusFirstPlaced());
                     return;
                 }
-                if(args.Key()!=winrt::Windows::System::VirtualKey::Enter)return;
+                if (args.Key() != winrt::Windows::System::VirtualKey::Enter) return;
                 // Tab can focus a row without selecting it. Activate that exact
                 // container rather than requiring a preselected palette item.
-                auto focused=Microsoft::UI::Xaml::Input::FocusManager::GetFocusedElement(available.XamlRoot()).try_as<GridViewItem>();
-                auto id=Id(focused?available.ItemFromContainer(focused):available.SelectedItem());
-                if(!id.empty()){Send(id,L"add");args.Handled(true);}
+                auto focused = Microsoft::UI::Xaml::Input::FocusManager::GetFocusedElement(available.XamlRoot())
+                                   .try_as<GridViewItem>();
+                auto id = Id(focused ? available.ItemFromContainer(focused) : available.SelectedItem());
+                if (!id.empty()) {
+                    Send(id, L"add");
+                    args.Handled(true);
+                }
             });
-            available.DragItemsStarting([this,alive](auto const&,auto const& args){
-                if(alive.expired())return;
-                if(args.Items().Size()!=1 || !BeginDrag(Id(args.Items().GetAt(0)),args.Data()))args.Cancel(true);
+            available.DragItemsStarting([this, alive](auto const&, auto const& args) {
+                if (alive.expired()) return;
+                if (args.Items().Size() != 1 || !BeginDrag(Id(args.Items().GetAt(0)), args.Data())) args.Cancel(true);
             });
-            available.DragItemsCompleted([this,alive](auto const&,auto const&){if(!alive.expired())EndDrag();});
-            available.DragOver([this,alive](auto const&,auto const& args){if(!alive.expired() && Accept(args,true))args.Handled(true);});
-            available.Drop([this,alive](auto const&,auto const& args){if(!alive.expired())DropAt(args,{},true);});
-            FlyoutPresenter presenter;presenter.Content(content);presenter.IsTabStop(true);presenter.UseSystemFocusVisuals(false);
-            presenter.SizeChanged([this,alive](auto const&,auto const&){if(!alive.expired() && popup.IsOpen() && !dragging)PlacePopup();});
-            Automation::AutomationProperties::SetAutomationId(presenter,L"FennCustomizePopup");
-            Automation::AutomationProperties::SetName(presenter,state.labels.at(L"title"));
-            presenter.PreviewKeyDown([this,alive](auto const&,auto const& args){
-                if(!alive.expired() && args.Key()==winrt::Windows::System::VirtualKey::Escape){dragCancelled=true;Hide();anchor.Focus(FocusState::Keyboard);args.Handled(true);}
+            available.DragItemsCompleted([this, alive](auto const&, auto const&) {
+                if (!alive.expired()) EndDrag();
+            });
+            available.DragOver([this, alive](auto const&, auto const& args) {
+                if (!alive.expired() && Accept(args, true)) args.Handled(true);
+            });
+            available.Drop([this, alive](auto const&, auto const& args) {
+                if (!alive.expired()) DropAt(args, {}, true);
+            });
+            FlyoutPresenter presenter;
+            presenter.Content(content);
+            presenter.IsTabStop(true);
+            presenter.UseSystemFocusVisuals(false);
+            presenter.SizeChanged([this, alive](auto const&, auto const&) {
+                if (!alive.expired() && popup.IsOpen() && !dragging) PlacePopup();
+            });
+            Automation::AutomationProperties::SetAutomationId(presenter, L"FennCustomizePopup");
+            Automation::AutomationProperties::SetName(presenter, state.labels.at(L"title"));
+            presenter.PreviewKeyDown([this, alive](auto const&, auto const& args) {
+                if (!alive.expired() && args.Key() == winrt::Windows::System::VirtualKey::Escape) {
+                    dragCancelled = true;
+                    Hide();
+                    anchor.Focus(FocusState::Keyboard);
+                    args.Handled(true);
+                }
             });
             popup.Child(presenter);
         }
         popup.Child().as<FrameworkElement>().FlowDirection(button.FlowDirection());
         popup.XamlRoot(button.XamlRoot());
-        Refresh();if(PlacePopup(true))popup.IsOpen(true);
+        Refresh();
+        if (PlacePopup(true)) popup.IsOpen(true);
     }
 };

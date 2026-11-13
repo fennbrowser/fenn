@@ -4,7 +4,7 @@ import vm from "node:vm";
 import test from "node:test";
 
 const source = readFileSync(new URL("../upstream/firefox/browser/components/urlbar/UrlbarValueFormatter.sys.mjs", import.meta.url), "utf8")
-  .replace(/^import .*;$/m, "")
+  .replace(/^import\b[^;]*;$/m, "")
   .replace("export class UrlbarValueFormatter", "this.Formatter = class UrlbarValueFormatter");
 function fixture(text, host, base = host) {
   const metadata = {domain:host, origin:host, preDomain:"https://", trimmedLength:8, url:"https://" + text};

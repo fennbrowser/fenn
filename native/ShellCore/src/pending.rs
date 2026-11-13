@@ -14,7 +14,9 @@ pub struct PendingCommands {
 }
 
 impl PendingCommands {
-    pub fn closing(&self, tab: u32) -> bool { self.closes.contains_key(&tab) }
+    pub fn closing(&self, tab: u32) -> bool {
+        self.closes.contains_key(&tab)
+    }
 
     pub fn close(&mut self, tab: u32, request: u64) {
         self.closes.insert(tab, request);
@@ -24,12 +26,17 @@ impl PendingCommands {
         self.selection = (request != 0).then_some((request, revision));
     }
 
-    pub fn clear_selection(&mut self) { self.selection = None; }
+    pub fn clear_selection(&mut self) {
+        self.selection = None;
+    }
 
     /// A context change permanently revokes optimistic feedback, even if an
     /// older revision is subsequently observed. It does not cancel execution.
     pub fn selection_pending(&mut self, revision: u32) -> bool {
-        if self.selection.is_some_and(|(_, context)| context != revision) {
+        if self
+            .selection
+            .is_some_and(|(_, context)| context != revision)
+        {
             self.clear_selection();
         }
         self.selection.is_some()
@@ -59,16 +66,33 @@ mod tests {
 
     #[test]
     fn closes_stay_suppressed_through_drain_until_each_outcome() {
-        for outcome in [Outcome::Completed, Outcome::Rejected, Outcome::Cancelled, Outcome::Superseded] {
+        for outcome in [
+            Outcome::Completed,
+            Outcome::Rejected,
+            Outcome::Cancelled,
+            Outcome::Superseded,
+        ] {
             let mut q = RequestQueue::new(Limits::default());
             let first = q.enqueue(CloseTab, 7, 1, &[]);
             let second = q.enqueue(CloseTab, 8, 1, &[]);
-            assert_eq!(q.enqueue(CloseTab, 7, 1, &[]).status, EnqueueStatus::RejectedPendingClose);
+            assert_eq!(
+                q.enqueue(CloseTab, 7, 1, &[]).status,
+                EnqueueStatus::RejectedPendingClose
+            );
             drain(&mut q);
-            assert_eq!(q.enqueue(CloseTab, 7, 2, &[]).status, EnqueueStatus::RejectedPendingClose);
+            assert_eq!(
+                q.enqueue(CloseTab, 7, 2, &[]).status,
+                EnqueueStatus::RejectedPendingClose
+            );
             q.complete(first.id, outcome).unwrap();
-            assert_eq!(q.enqueue(CloseTab, 7, 2, &[]).status, EnqueueStatus::Accepted);
-            assert_eq!(q.enqueue(CloseTab, 8, 2, &[]).status, EnqueueStatus::RejectedPendingClose);
+            assert_eq!(
+                q.enqueue(CloseTab, 7, 2, &[]).status,
+                EnqueueStatus::Accepted
+            );
+            assert_eq!(
+                q.enqueue(CloseTab, 8, 2, &[]).status,
+                EnqueueStatus::RejectedPendingClose
+            );
             q.complete(second.id, outcome).unwrap();
         }
     }
@@ -102,13 +126,26 @@ mod tests {
 
     #[test]
     fn rejected_admissions_do_not_latch_and_restore_browser_selection() {
-        let mut q = RequestQueue::new(Limits { max_entries: 1, max_request_bytes: 2, ..Limits::default() });
+        let mut q = RequestQueue::new(Limits {
+            max_entries: 1,
+            max_request_bytes: 2,
+            ..Limits::default()
+        });
         q.enqueue(SelectTab, 1, 10, &[]);
-        assert_eq!(q.enqueue(SelectTab, 2, 10, &[1, 2]).status, EnqueueStatus::RejectedTooLarge);
+        assert_eq!(
+            q.enqueue(SelectTab, 2, 10, &[1, 2]).status,
+            EnqueueStatus::RejectedTooLarge
+        );
         assert!(!q.selection_pending(10));
-        assert_eq!(q.enqueue(CloseTab, 7, 10, &[]).status, EnqueueStatus::RejectedQueueFull);
+        assert_eq!(
+            q.enqueue(CloseTab, 7, 10, &[]).status,
+            EnqueueStatus::RejectedQueueFull
+        );
         drain(&mut q);
-        assert_eq!(q.enqueue(CloseTab, 7, 10, &[]).status, EnqueueStatus::Accepted);
+        assert_eq!(
+            q.enqueue(CloseTab, 7, 10, &[]).status,
+            EnqueueStatus::Accepted
+        );
     }
 
     #[test]
@@ -130,14 +167,23 @@ mod tests {
         let old = q.enqueue(CloseTab, 7, 10, &[]);
         drain(&mut q);
         q.retain_tabs(|tab| tab != 7);
-        assert_eq!(q.enqueue(CloseTab, 7, 11, &[]).status, EnqueueStatus::Accepted);
+        assert_eq!(
+            q.enqueue(CloseTab, 7, 11, &[]).status,
+            EnqueueStatus::Accepted
+        );
         q.complete(old.id, Outcome::Rejected).unwrap();
-        assert_eq!(q.enqueue(CloseTab, 7, 11, &[]).status, EnqueueStatus::RejectedPendingClose);
+        assert_eq!(
+            q.enqueue(CloseTab, 7, 11, &[]).status,
+            EnqueueStatus::RejectedPendingClose
+        );
     }
 
     #[test]
     fn outcome_overflow_and_session_cancellation_cannot_leave_latches() {
-        let mut q = RequestQueue::new(Limits { max_pending_outcomes: 1, ..Limits::default() });
+        let mut q = RequestQueue::new(Limits {
+            max_pending_outcomes: 1,
+            ..Limits::default()
+        });
         let close = q.enqueue(CloseTab, 7, 10, &[]);
         let select = q.enqueue(SelectTab, 1, 10, &[]);
         drain(&mut q);
@@ -145,13 +191,21 @@ mod tests {
         q.complete(select.id, Outcome::Completed).unwrap();
         assert_eq!(q.dropped_outcomes(), 1);
         assert!(!q.selection_pending(10));
-        assert_eq!(q.enqueue(CloseTab, 7, 10, &[]).status, EnqueueStatus::Accepted);
+        assert_eq!(
+            q.enqueue(CloseTab, 7, 10, &[]).status,
+            EnqueueStatus::Accepted
+        );
         q.enqueue(SelectTab, 1, 10, &[]);
         q.cancel_all();
         assert!(!q.selection_pending(10));
-        assert_eq!(q.enqueue(CloseTab, 7, 10, &[]).status, EnqueueStatus::Accepted);
+        assert_eq!(
+            q.enqueue(CloseTab, 7, 10, &[]).status,
+            EnqueueStatus::Accepted
+        );
         q.close();
-        assert_eq!(q.enqueue(CloseTab, 7, 10, &[]).status, EnqueueStatus::RejectedClosed);
+        assert_eq!(
+            q.enqueue(CloseTab, 7, 10, &[]).status,
+            EnqueueStatus::RejectedClosed
+        );
     }
 }
-

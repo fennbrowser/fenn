@@ -14,6 +14,6 @@ struct Payload {
 // The ordered window-title frame borrows UTF-16 text without its terminator.
 // The caller chooses its scan bound and keeps its own refusal policy.
 inline Payload Encode(const wchar_t* title, size_t scanLimit) noexcept {
-    return {title, wcsnlen(title,scanLimit)*sizeof(wchar_t)};
+    return {title, wcsnlen(title, scanLimit) * sizeof(wchar_t)};
 }
-}
+}  // namespace WindowTitleFrame

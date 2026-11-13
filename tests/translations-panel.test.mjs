@@ -3,7 +3,7 @@ import test from 'node:test';
 import vm from 'node:vm';
 import {readFileSync} from 'node:fs';
 const controller=readFileSync(new URL('../upstream/firefox/browser/components/translations/content/fullPageTranslationsPanel.js',import.meta.url),'utf8');
-const adapter=readFileSync(new URL('../upstream/firefox/browser/base/content/WinUITranslationsPanel.sys.mjs',import.meta.url),'utf8').replace(/^import .*;$/gm,'').replace('export class WinUITranslationsPanel','this.Panel=class WinUITranslationsPanel');
+const adapter=readFileSync(new URL('../upstream/firefox/browser/base/content/WinUITranslationsPanel.sys.mjs',import.meta.url),'utf8').replace(/^import\b[^;]*;$/gm,'').replace('export class WinUITranslationsPanel','this.Panel=class WinUITranslationsPanel');
 const settle=()=>new Promise(resolve=>setTimeout(resolve,0));
 function fixture(){
  const calls=[],observers=new Map();let restricted=false,fail=false,always=false,never=false,site=false,offer=true;

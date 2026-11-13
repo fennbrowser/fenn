@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import vm from "node:vm";
 import {readFileSync} from "node:fs";
 import {readActionStamp,actionStampMatches} from "../upstream/firefox/browser/base/content/WinUIActionStamp.sys.mjs";
-const source=readFileSync(new URL("../upstream/firefox/browser/base/content/WinUIHistoryMenu.sys.mjs",import.meta.url),"utf8").replace(/^import .*;$/m,"").replace("export class WinUIHistoryMenu","this.HistoryMenu=class WinUIHistoryMenu");
+const source=readFileSync(new URL("../upstream/firefox/browser/base/content/WinUIHistoryMenu.sys.mjs",import.meta.url),"utf8").replace(/^import\b[^;]*;$/m,"").replace("export class WinUIHistoryMenu","this.HistoryMenu=class WinUIHistoryMenu");
 function fixture(){
  const calls=[];let enabled=true,options;
  const root={containerOpen:false,childCount:1,getChild:()=>node};const node={title:"Example",uri:"https://example.test",parent:root};

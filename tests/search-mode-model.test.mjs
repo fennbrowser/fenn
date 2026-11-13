@@ -29,7 +29,7 @@ function fixture() {
       SEARCH_MODE_RESTRICT:new Set(['^','?']),SEARCH_MODE_ENTRY:new Set(['keywordoffer','searchbutton']),RESULT_TYPE:{RESTRICT:9},RESULT_SOURCE:{SEARCH:3},
       ICON:{SEARCH_GLASS:'glass'},getResultSourceName:source=>source===1 ? 'history' : undefined}});
   vm.runInContext(readFileSync(new URL('UrlbarSearchModeModel.mjs',base),'utf8')
-    .replace(/^import .*;\r?$/gm,'').replaceAll('export class ','class ')+'\nthis.Model=UrlbarSearchModeModel;this.State=UrlbarSearchModeState;',context);
+    .replace(/^import\b[^;]*;\r?$/gm,'').replaceAll('export class ','class ')+'\nthis.Model=UrlbarSearchModeModel;this.State=UrlbarSearchModeState;',context);
   return {State:context.State,model:new context.Model(services),services,state,calls,prefs,engine,local,observers};
 }
 
@@ -140,7 +140,7 @@ test('both input implementations own and dispose the binding, and the native ada
   assert.doesNotMatch(switcher,/nativeSnapshot|nativeActivate|nativeOpened|nativeVisibility/);
   for(const name of ['localSearch','remoteSearch','install','displayedEngineDetails','populateEngines'])assert.ok(switcher.includes(`searchModeModel.${name}(`));
   const session=readFileSync(new URL('../upstream/firefox/browser/base/content/WinUIAddressSession.sys.mjs',import.meta.url),'utf8');
-  assert.match(session,/searchModeModel\.snapshot\(/);assert.match(session,/searchModeModel\.activate\(/);
+  assert.match(session,/searchModeModel\s*\.snapshot\(/);assert.match(session,/searchModeModel\s*\.activate\(/);
 });
 
 
@@ -419,7 +419,7 @@ test('retained and independent mode-entry predicate excludes unchanged, preview 
     assert.equal(model.constructor.shouldRecordModeEntry(mode,same),!!mode&&!mode.isPreview&&!same);
   }
   const source=readFileSync(new URL('UrlbarInputBase.mjs',base),'utf8');
-  assert.match(source,/UrlbarSearchModeModel\.shouldRecordModeEntry\(searchMode, areSearchModesSame\)/);
+  assert.match(source,/UrlbarSearchModeModel\s*\.shouldRecordModeEntry\(\s*searchMode,\s*areSearchModesSame,?\s*\)/);
 });
 
 

@@ -26,8 +26,7 @@ struct Surface {
         if (!source || !GetClientRect(hwnd, &bounds)) return;
         source.SiteBridge().MoveAndResize({0, 0, bounds.right, bounds.bottom});
     }
-    static LRESULT CALLBACK Proc(HWND hwnd, UINT message, WPARAM w, LPARAM l,
-                                 UINT_PTR, DWORD_PTR data) {
+    static LRESULT CALLBACK Proc(HWND hwnd, UINT message, WPARAM w, LPARAM l, UINT_PTR, DWORD_PTR data) {
         auto* self = reinterpret_cast<Surface*>(data);
         if (message == WM_NCDESTROY) {
             Close(hwnd);
@@ -35,13 +34,18 @@ struct Surface {
         }
         try {
             if (message == WM_SIZE) self->Resize();
-        } catch (...) { /* No exceptions across a Windows callback. */ }
+        } catch (...) { /* No exceptions across a Windows callback. */
+        }
         return DefSubclassProc(hwnd, message, w, l);
     }
     ~Surface() {
         RemoveWindowSubclass(hwnd, Proc, reinterpret_cast<UINT_PTR>(this));
         RemovePropW(hwnd, Property);
-        if (source) { try { source.Close(); } catch (...) {} }
+        if (source) {
+            try {
+                source.Close();
+            } catch (...) {}
+        }
     }
 };
 inline HRESULT Close(HWND hwnd) {
@@ -69,7 +73,8 @@ inline HRESULT Show(HWND hwnd) {
             <TextBlock Text="Loading browser…" HorizontalAlignment="Center"
                 Foreground="{ThemeResource TextFillColorPrimaryBrush}"/>
           </StackPanel>
-        </Grid>)").as<UIElement>());
+        </Grid>)")
+                                .as<UIElement>());
     check_bool(SetWindowSubclass(hwnd, Surface::Proc, reinterpret_cast<UINT_PTR>(surface.get()),
                                  reinterpret_cast<DWORD_PTR>(surface.get())));
     check_bool(SetPropW(hwnd, Property, reinterpret_cast<HANDLE>(1)));
@@ -77,7 +82,7 @@ inline HRESULT Show(HWND hwnd) {
     surface->source.SiteBridge().Show();
     Active() = std::move(surface);
     // Keep normal system caption controls; do not steal foreground focus.
-    ShowWindow(hwnd, GetPropW(hwnd,L"Fenn.NativeStartupMaximized") ? SW_SHOWMAXIMIZED : SW_SHOWNOACTIVATE);
+    ShowWindow(hwnd, GetPropW(hwnd, L"Fenn.NativeStartupMaximized") ? SW_SHOWMAXIMIZED : SW_SHOWNOACTIVATE);
     return S_OK;
 }
-}
+}  // namespace NativeStartupSurface

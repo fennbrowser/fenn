@@ -329,35 +329,94 @@ impl RequestQueue {
         self.dropped_outcomes
     }
 
-    pub fn bind_transfer(&mut self,ticket:u64,request:u64,own_endpoint:u64,preview:bool) -> bool {
-        let Some(record)=self.transfers.get(ticket) else {return false;};
-        let tab=if record.source_endpoint==own_endpoint {record.tab} else {0};
-        if request!=0 && !self.queued.iter().any(|r|r.id==request && r.kind==RequestKind::StripAction && r.tab==tab) {return false;}
-        if !self.transfers.bind(ticket,request) {return false;}
-        if preview {self.foreign.bind(request);}true
+    pub fn bind_transfer(
+        &mut self,
+        ticket: u64,
+        request: u64,
+        own_endpoint: u64,
+        preview: bool,
+    ) -> bool {
+        let Some(record) = self.transfers.get(ticket) else {
+            return false;
+        };
+        let tab = if record.source_endpoint == own_endpoint {
+            record.tab
+        } else {
+            0
+        };
+        if request != 0
+            && !self
+                .queued
+                .iter()
+                .any(|r| r.id == request && r.kind == RequestKind::StripAction && r.tab == tab)
+        {
+            return false;
+        }
+        if !self.transfers.bind(ticket, request) {
+            return false;
+        }
+        if preview {
+            self.foreign.bind(request);
+        }
+        true
     }
 
-    pub fn wait_group_drag(&mut self, request:u64, group:u32, before_group:u32, before_tab:u32)->bool {
-        if group==0 || (before_group!=0 && before_tab!=0) || !self.queued.iter().any(|r|
-            r.id==request && r.kind==RequestKind::StripAction && r.tab==0) { return false; }
-        self.group_drag.wait(request,group,before_group,before_tab); true
+    pub fn wait_group_drag(
+        &mut self,
+        request: u64,
+        group: u32,
+        before_group: u32,
+        before_tab: u32,
+    ) -> bool {
+        if group == 0
+            || (before_group != 0 && before_tab != 0)
+            || !self
+                .queued
+                .iter()
+                .any(|r| r.id == request && r.kind == RequestKind::StripAction && r.tab == 0)
+        {
+            return false;
+        }
+        self.group_drag
+            .wait(request, group, before_group, before_tab);
+        true
     }
-    pub fn begin_group_departure(&mut self, group:u32, request:u64)->bool {
-        if request!=0 && !self.queued.iter().any(|r| r.id==request && r.kind==RequestKind::StripAction && r.tab==0) { return false; }
-        self.group_departure.begin(group,request)
+    pub fn begin_group_departure(&mut self, group: u32, request: u64) -> bool {
+        if request != 0
+            && !self
+                .queued
+                .iter()
+                .any(|r| r.id == request && r.kind == RequestKind::StripAction && r.tab == 0)
+        {
+            return false;
+        }
+        self.group_departure.begin(group, request)
     }
-    pub fn hold_foreign_group(&mut self, request:u64)->bool {
-        self.queued.iter().any(|r| r.id==request && r.kind==RequestKind::StripAction && r.tab==0) &&
-            self.foreign_group.hold(request)
+    pub fn hold_foreign_group(&mut self, request: u64) -> bool {
+        self.queued
+            .iter()
+            .any(|r| r.id == request && r.kind == RequestKind::StripAction && r.tab == 0)
+            && self.foreign_group.hold(request)
     }
     pub fn commit_tab_drag(&mut self, request: u64, before: u32) -> bool {
-        if request != 0 && !self.queued.iter().any(|r| r.id == request &&
-            r.kind == RequestKind::StripAction && r.tab == self.tab_drag.state().tab) { return false; }
+        if request != 0
+            && !self.queued.iter().any(|r| {
+                r.id == request
+                    && r.kind == RequestKind::StripAction
+                    && r.tab == self.tab_drag.state().tab
+            })
+        {
+            return false;
+        }
         self.tab_drag.commit(request, before)
     }
 
     pub fn stage_address(&mut self, id: u64, kind: crate::intent::IntentKind) -> bool {
-        if !self.queued.iter().any(|r| r.id == id && r.kind == RequestKind::AddressAction) {
+        if !self
+            .queued
+            .iter()
+            .any(|r| r.id == id && r.kind == RequestKind::AddressAction)
+        {
             return false;
         }
         self.address.stage(id, kind);
@@ -368,7 +427,9 @@ impl RequestQueue {
         self.pending.selection_pending(revision)
     }
 
-    pub fn clear_selection(&mut self) { self.pending.clear_selection(); }
+    pub fn clear_selection(&mut self) {
+        self.pending.clear_selection();
+    }
 
     pub fn retain_tabs(&mut self, contains: impl Fn(u32) -> bool) {
         self.pending.retain_tabs(contains);
@@ -382,8 +443,12 @@ impl RequestQueue {
         payload: &[u16],
     ) -> EnqueueResult {
         if !self.closed && kind == RequestKind::CloseTab && self.pending.closing(tab) {
-            return EnqueueResult { status: EnqueueStatus::RejectedPendingClose,
-                id: 0, superseded: 0, notify: false };
+            return EnqueueResult {
+                status: EnqueueStatus::RejectedPendingClose,
+                id: 0,
+                superseded: 0,
+                notify: false,
+            };
         }
         let result = self.enqueue_inner(kind, tab, context_revision, payload);
         // Preserve the native feedback rules even on backpressure: a refused
@@ -413,12 +478,19 @@ impl RequestQueue {
         context_revision: u32,
         payload: &[u16],
     ) -> EnqueueResult {
-        let reject = |status| EnqueueResult { status, id: 0, superseded: 0, notify: false };
+        let reject = |status| EnqueueResult {
+            status,
+            id: 0,
+            superseded: 0,
+            notify: false,
+        };
         if self.closed {
             return reject(EnqueueStatus::RejectedClosed);
         }
-        if matches!(kind, RequestKind::SelectTab | RequestKind::MenuEvent | RequestKind::CloseTab)
-            && tab == 0
+        if matches!(
+            kind,
+            RequestKind::SelectTab | RequestKind::MenuEvent | RequestKind::CloseTab
+        ) && tab == 0
         {
             return reject(EnqueueStatus::RejectedInvalid);
         }
@@ -446,7 +518,13 @@ impl RequestQueue {
 
         let id = self.next_id;
         self.next_id += 1;
-        let request = Request { id, kind, tab, context_revision, payload: payload.to_vec() };
+        let request = Request {
+            id,
+            kind,
+            tab,
+            context_revision,
+            payload: payload.to_vec(),
+        };
         let mut superseded = 0;
         match replace_at {
             // The newest value takes the replaced request's place in the
@@ -472,7 +550,12 @@ impl RequestQueue {
             // will be notified when it unblocks.
             DrainState::NotificationPending | DrainState::Draining | DrainState::Blocked => false,
         };
-        EnqueueResult { status: EnqueueStatus::Accepted, id, superseded, notify }
+        EnqueueResult {
+            status: EnqueueStatus::Accepted,
+            id,
+            superseded,
+            notify,
+        }
     }
 
     /// The notification could not be scheduled. Return to `Idle` so a later
@@ -500,7 +583,9 @@ impl RequestQueue {
         let mut batch = Vec::new();
         let mut bytes = 0;
         while batch.len() < max_entries {
-            let Some(front) = self.queued.front() else { break };
+            let Some(front) = self.queued.front() else {
+                break;
+            };
             let size = front.bytes();
             // Always take at least one entry, so a single large payload cannot
             // wedge the queue.
@@ -626,8 +711,10 @@ impl RequestQueue {
         self.address.complete(id);
         self.tab_drag.complete(id, outcome == Outcome::Completed);
         self.group_drag.complete(id, outcome == Outcome::Completed);
-        self.foreign_group.complete(id, outcome == Outcome::Completed);
-        self.group_departure.complete(id, outcome == Outcome::Completed);
+        self.foreign_group
+            .complete(id, outcome == Outcome::Completed);
+        self.group_departure
+            .complete(id, outcome == Outcome::Completed);
         self.foreign.complete(id, outcome == Outcome::Completed);
         self.transfers.complete(id, outcome == Outcome::Completed);
         while self.history.len() >= self.limits.completion_history {
@@ -655,10 +742,16 @@ mod tests {
         let mut q = queue();
         let first = q.enqueue(RequestKind::CloseTab, 7, 1, &[]);
         assert_eq!(first.status, EnqueueStatus::Accepted);
-        assert!(first.notify, "the idle transition schedules the only wakeup");
+        assert!(
+            first.notify,
+            "the idle transition schedules the only wakeup"
+        );
         for tab in 8..12 {
             let more = q.enqueue(RequestKind::CloseTab, tab, 1, &[]);
-            assert!(!more.notify, "additional work accumulates, it does not repost");
+            assert!(
+                !more.notify,
+                "additional work accumulates, it does not repost"
+            );
         }
         assert_eq!(q.state(), DrainState::NotificationPending);
         assert_eq!(q.queued_len(), 5);
@@ -688,7 +781,10 @@ mod tests {
         q.complete(batch[0].id, Outcome::Completed).unwrap();
         assert!(!q.end_drain().unwrap());
         assert_eq!(q.state(), DrainState::Idle);
-        assert!(q.enqueue(RequestKind::NewTab, 0, 0, &[]).notify, "idle rearms");
+        assert!(
+            q.enqueue(RequestKind::NewTab, 0, 0, &[]).notify,
+            "idle rearms"
+        );
     }
 
     #[test]
@@ -709,7 +805,10 @@ mod tests {
         q.set_blocked(true);
         let queued = q.enqueue(RequestKind::CloseTab, 5, 0, &[]);
         assert_eq!(queued.status, EnqueueStatus::Accepted);
-        assert!(!queued.notify, "blocked queues wait for the unblock, they do not post");
+        assert!(
+            !queued.notify,
+            "blocked queues wait for the unblock, they do not post"
+        );
         assert!(!q.enqueue(RequestKind::CloseTab, 6, 0, &[]).notify);
         assert_eq!(q.begin_drain(), Err(DrainError::Busy));
         assert!(q.set_blocked(false), "unblocking arranges the wakeup");
@@ -725,7 +824,10 @@ mod tests {
         q.take_batch(1, 1 << 20);
         q.set_blocked(true);
         q.enqueue(RequestKind::CloseTab, 2, 0, &[]);
-        assert!(!q.end_drain().unwrap(), "blocked: no wakeup until unblocked");
+        assert!(
+            !q.end_drain().unwrap(),
+            "blocked: no wakeup until unblocked"
+        );
         assert_eq!(q.state(), DrainState::Blocked);
         assert!(q.set_blocked(false));
     }
@@ -759,7 +861,10 @@ mod tests {
         let batch = q.take_batch(8, 1 << 20);
         let kinds: Vec<RequestKind> = batch.iter().map(|request| request.kind).collect();
         assert_eq!(kinds, vec![RequestKind::SelectTab, RequestKind::MenuEvent]);
-        assert_eq!(batch[0].tab, 12, "the newest selection, in the oldest one's place");
+        assert_eq!(
+            batch[0].tab, 12,
+            "the newest selection, in the oldest one's place"
+        );
     }
 
     #[test]
@@ -777,7 +882,10 @@ mod tests {
         q.begin_drain().unwrap();
         let batch = q.take_batch(8, 1 << 20);
         let kinds: Vec<RequestKind> = batch.iter().map(|request| request.kind).collect();
-        assert_eq!(kinds, vec![RequestKind::StripAction, RequestKind::AddressAction]);
+        assert_eq!(
+            kinds,
+            vec![RequestKind::StripAction, RequestKind::AddressAction]
+        );
         assert_eq!(batch[1].id, second.id);
     }
 
@@ -792,7 +900,10 @@ mod tests {
         assert!(q.take_outcomes().is_empty());
         q.begin_drain().unwrap();
         let batch = q.take_batch(8, 1 << 20);
-        assert_eq!(batch.iter().map(|r|r.id).collect::<Vec<_>>(), vec![edit.id, back.id, reload.id]);
+        assert_eq!(
+            batch.iter().map(|r| r.id).collect::<Vec<_>>(),
+            vec![edit.id, back.id, reload.id]
+        );
     }
 
     #[test]
@@ -806,7 +917,10 @@ mod tests {
         let report = q.enqueue(RequestKind::AddressVisibility, 0, 1, &[]);
         assert_eq!(report.superseded, 0, "a report leaves an intent alone");
         let newer_report = q.enqueue(RequestKind::AddressVisibility, 0, 1, &[]);
-        assert_eq!(newer_report.superseded, report.id, "but reports collapse into the newest");
+        assert_eq!(
+            newer_report.superseded, report.id,
+            "but reports collapse into the newest"
+        );
         q.begin_drain().unwrap();
         let batch = q.take_batch(8, 1 << 20);
         assert_eq!(
@@ -841,13 +955,22 @@ mod tests {
         let mut q = queue();
         let mode = q.enqueue(RequestKind::AddressModeAction, 0, 1, &[]);
         let address = q.enqueue(RequestKind::AddressAction, 0, 1, &[]);
-        assert_eq!(address.superseded, 0, "an address intent leaves a mode intent alone");
+        assert_eq!(
+            address.superseded, 0,
+            "an address intent leaves a mode intent alone"
+        );
         let newer_mode = q.enqueue(RequestKind::AddressModeAction, 0, 1, &[]);
-        assert_eq!(newer_mode.superseded, mode.id, "but a mode intent supersedes its own kind");
+        assert_eq!(
+            newer_mode.superseded, mode.id,
+            "but a mode intent supersedes its own kind"
+        );
         q.begin_drain().unwrap();
         let batch = q.take_batch(8, 1 << 20);
         let kinds: Vec<RequestKind> = batch.iter().map(|request| request.kind).collect();
-        assert_eq!(kinds, vec![RequestKind::AddressModeAction, RequestKind::AddressAction]);
+        assert_eq!(
+            kinds,
+            vec![RequestKind::AddressModeAction, RequestKind::AddressAction]
+        );
         assert_eq!(batch[0].id, newer_mode.id);
     }
 
@@ -866,7 +989,10 @@ mod tests {
         q.begin_drain().unwrap();
         let batch = q.take_batch(8, 1 << 20);
         let kinds: Vec<RequestKind> = batch.iter().map(|request| request.kind).collect();
-        assert_eq!(kinds, vec![RequestKind::SelectTab, RequestKind::AddressAction]);
+        assert_eq!(
+            kinds,
+            vec![RequestKind::SelectTab, RequestKind::AddressAction]
+        );
         assert_eq!(batch[0].tab, 11);
         assert_eq!(batch[1].id, newer_address.id);
     }
@@ -878,11 +1004,17 @@ mod tests {
         // them would land the tab in the wrong place and report nothing wrong.
         let first = q.enqueue(RequestKind::StripAction, 10, 1, &[]);
         let second = q.enqueue(RequestKind::StripAction, 11, 1, &[]);
-        assert_eq!(second.superseded, 0, "a strip gesture never supersedes another");
+        assert_eq!(
+            second.superseded, 0,
+            "a strip gesture never supersedes another"
+        );
         assert_eq!(q.queued_len(), 2);
         q.begin_drain().unwrap();
         let batch = q.take_batch(8, 1 << 20);
-        assert_eq!(batch.iter().map(|r| r.id).collect::<Vec<_>>(), vec![first.id, second.id]);
+        assert_eq!(
+            batch.iter().map(|r| r.id).collect::<Vec<_>>(),
+            vec![first.id, second.id]
+        );
     }
 
     #[test]
@@ -891,7 +1023,10 @@ mod tests {
         // A group toggle names a group, and an incoming adopt names another
         // window's tab; neither has an id in this window's tab space. The
         // kinds that do address a tab still must not be targetless.
-        assert_eq!(q.enqueue(RequestKind::StripAction, 0, 1, &[]).status, EnqueueStatus::Accepted);
+        assert_eq!(
+            q.enqueue(RequestKind::StripAction, 0, 1, &[]).status,
+            EnqueueStatus::Accepted
+        );
         assert_eq!(
             q.enqueue(RequestKind::SelectTab, 0, 1, &[]).status,
             EnqueueStatus::RejectedInvalid
@@ -913,9 +1048,16 @@ mod tests {
         let kinds: Vec<RequestKind> = batch.iter().map(|request| request.kind).collect();
         assert_eq!(
             kinds,
-            vec![RequestKind::StripAction, RequestKind::SelectTab, RequestKind::StripAction]
+            vec![
+                RequestKind::StripAction,
+                RequestKind::SelectTab,
+                RequestKind::StripAction
+            ]
         );
-        assert_eq!(batch[1].tab, 12, "the newest selection, in the oldest one's place");
+        assert_eq!(
+            batch[1].tab, 12,
+            "the newest selection, in the oldest one's place"
+        );
     }
 
     #[test]
@@ -924,7 +1066,11 @@ mod tests {
         for _ in 0..3 {
             q.enqueue(RequestKind::MenuEvent, 5, 1, &[]);
         }
-        assert_eq!(q.queued_len(), 3, "open/activate/dismiss are transitions, not a value");
+        assert_eq!(
+            q.queued_len(),
+            3,
+            "open/activate/dismiss are transitions, not a value"
+        );
     }
 
     #[test]
@@ -938,17 +1084,36 @@ mod tests {
 
     #[test]
     fn overflow_is_explicit_backpressure_not_a_silent_drop() {
-        let mut q = RequestQueue::new(Limits { max_entries: 2, ..Limits::default() });
-        assert_eq!(q.enqueue(RequestKind::CloseTab, 1, 0, &[]).status, EnqueueStatus::Accepted);
-        assert_eq!(q.enqueue(RequestKind::CloseTab, 2, 0, &[]).status, EnqueueStatus::Accepted);
+        let mut q = RequestQueue::new(Limits {
+            max_entries: 2,
+            ..Limits::default()
+        });
+        assert_eq!(
+            q.enqueue(RequestKind::CloseTab, 1, 0, &[]).status,
+            EnqueueStatus::Accepted
+        );
+        assert_eq!(
+            q.enqueue(RequestKind::CloseTab, 2, 0, &[]).status,
+            EnqueueStatus::Accepted
+        );
         let full = q.enqueue(RequestKind::CloseTab, 3, 0, &[]);
         assert_eq!(full.status, EnqueueStatus::RejectedQueueFull);
         assert_eq!(full.id, 0);
-        assert_eq!(q.queued_len(), 2, "nothing already accepted was thrown away");
+        assert_eq!(
+            q.queued_len(),
+            2,
+            "nothing already accepted was thrown away"
+        );
         // A superseding kind still fits, because it frees its own slot first.
-        let mut q = RequestQueue::new(Limits { max_entries: 1, ..Limits::default() });
+        let mut q = RequestQueue::new(Limits {
+            max_entries: 1,
+            ..Limits::default()
+        });
         q.enqueue(RequestKind::SelectTab, 1, 0, &[]);
-        assert_eq!(q.enqueue(RequestKind::SelectTab, 2, 0, &[]).status, EnqueueStatus::Accepted);
+        assert_eq!(
+            q.enqueue(RequestKind::SelectTab, 2, 0, &[]).status,
+            EnqueueStatus::Accepted
+        );
     }
 
     #[test]
@@ -965,9 +1130,15 @@ mod tests {
             EnqueueStatus::RejectedTooLarge
         );
         let ok = vec![b'x' as u16; 16];
-        assert_eq!(q.enqueue(RequestKind::CloseTab, 1, 0, &ok).status, EnqueueStatus::Accepted);
+        assert_eq!(
+            q.enqueue(RequestKind::CloseTab, 1, 0, &ok).status,
+            EnqueueStatus::Accepted
+        );
         assert_eq!(q.queued_bytes(), 32);
-        assert_eq!(q.enqueue(RequestKind::CloseTab, 2, 0, &ok).status, EnqueueStatus::Accepted);
+        assert_eq!(
+            q.enqueue(RequestKind::CloseTab, 2, 0, &ok).status,
+            EnqueueStatus::Accepted
+        );
         assert_eq!(
             q.enqueue(RequestKind::CloseTab, 3, 0, &ok).status,
             EnqueueStatus::RejectedTooLarge
@@ -994,8 +1165,14 @@ mod tests {
         assert!(q.is_in_flight(request.id));
         q.complete(request.id, Outcome::Completed).unwrap();
         assert!(!q.is_in_flight(request.id));
-        assert_eq!(q.complete(request.id, Outcome::Completed), Err(CompleteError::Duplicate));
-        assert_eq!(q.complete(9999, Outcome::Completed), Err(CompleteError::Unknown));
+        assert_eq!(
+            q.complete(request.id, Outcome::Completed),
+            Err(CompleteError::Duplicate)
+        );
+        assert_eq!(
+            q.complete(9999, Outcome::Completed),
+            Err(CompleteError::Unknown)
+        );
     }
 
     #[test]
@@ -1009,7 +1186,10 @@ mod tests {
         // The same batch delivered a second time names an id that is no longer
         // executable for this endpoint.
         assert!(!q.is_in_flight(request.id));
-        assert_eq!(q.complete(request.id, Outcome::Completed), Err(CompleteError::Duplicate));
+        assert_eq!(
+            q.complete(request.id, Outcome::Completed),
+            Err(CompleteError::Duplicate)
+        );
     }
 
     #[test]
@@ -1024,7 +1204,10 @@ mod tests {
         let outcomes = q.take_outcomes();
         assert!(outcomes.contains(&(queued.id, Outcome::Cancelled)));
         assert!(outcomes.contains(&(running.id, Outcome::Cancelled)));
-        assert!(q.generation() > generation, "late completions cannot match the old generation");
+        assert!(
+            q.generation() > generation,
+            "late completions cannot match the old generation"
+        );
         assert_eq!(
             q.enqueue(RequestKind::CloseTab, 3, 0, &[]).status,
             EnqueueStatus::RejectedClosed
@@ -1069,10 +1252,12 @@ mod tests {
             q.enqueue(RequestKind::SelectTab, 0, 0, &[]).status,
             EnqueueStatus::RejectedInvalid
         );
-        assert_eq!(q.enqueue(RequestKind::NewTab, 0, 0, &[]).status, EnqueueStatus::Accepted);
+        assert_eq!(
+            q.enqueue(RequestKind::NewTab, 0, 0, &[]).status,
+            EnqueueStatus::Accepted
+        );
     }
 }
-
 
 #[cfg(test)]
 mod address_tests {
@@ -1081,7 +1266,10 @@ mod address_tests {
 
     #[test]
     fn address_completion_survives_outcome_report_eviction_and_reset() {
-        let mut q = RequestQueue::new(Limits { max_pending_outcomes: 1, ..Default::default() });
+        let mut q = RequestQueue::new(Limits {
+            max_pending_outcomes: 1,
+            ..Default::default()
+        });
         q.address.edit();
         let first = q.enqueue(RequestKind::AddressAction, 0, 1, &[]).id;
         assert!(q.stage_address(first, IntentKind::Edit));
@@ -1108,11 +1296,16 @@ mod address_tests {
 
     #[test]
     fn refusal_does_not_replace_old_request_or_lose_retry_after_completion() {
-        let mut q = RequestQueue::new(Limits { max_entries: 1, ..Default::default() });
+        let mut q = RequestQueue::new(Limits {
+            max_entries: 1,
+            ..Default::default()
+        });
         q.address.edit();
         let old = q.enqueue(RequestKind::AddressAction, 0, 1, &[]).id;
         q.stage_address(old, IntentKind::Edit);
-        q.begin_drain().unwrap(); q.take_batch(1, 65536); q.end_drain().unwrap();
+        q.begin_drain().unwrap();
+        q.take_batch(1, 65536);
+        q.end_drain().unwrap();
         q.enqueue(RequestKind::NewTab, 0, 1, &[]);
         q.address.edit();
         let refused = q.enqueue(RequestKind::AddressAction, 0, 1, &[]);
@@ -1130,8 +1323,15 @@ mod mode_tests {
     use crate::intent::{Conditions, Decision, IntentKind};
 
     fn enter(q: &mut RequestQueue, modifiers: u32) -> crate::address::ShellAddressAction {
-        q.address.action(IntentKind::Activate, Conditions { has_session: true,
-            mode_intent_staged: false, ..Default::default() }, modifiers)
+        q.address.action(
+            IntentKind::Activate,
+            Conditions {
+                has_session: true,
+                mode_intent_staged: false,
+                ..Default::default()
+            },
+            modifiers,
+        )
     }
 
     #[test]
@@ -1142,14 +1342,19 @@ mod mode_tests {
         let mode = q.enqueue(RequestKind::AddressModeAction, 0, 1, &[]).id;
         assert_eq!(q.address.state().mode_pending, 1);
         assert_eq!(enter(&mut q, 8).decision, Decision::Drop as u32);
-        q.begin_drain().unwrap(); q.take_batch(16, 65536); q.end_drain().unwrap();
+        q.begin_drain().unwrap();
+        q.take_batch(16, 65536);
+        q.end_drain().unwrap();
         let newer = q.enqueue(RequestKind::AddressModeAction, 0, 1, &[]).id;
         q.complete(mode, Outcome::Completed).unwrap();
         assert_eq!(q.address.state().mode_pending, 1);
-        q.begin_drain().unwrap(); q.take_batch(16, 65536); q.end_drain().unwrap();
+        q.begin_drain().unwrap();
+        q.take_batch(16, 65536);
+        q.end_drain().unwrap();
         q.complete(newer, Outcome::Rejected).unwrap();
         assert_eq!(q.address.state().mode_pending, 0);
-        q.address.stage(100, IntentKind::Edit); q.address.complete(100);
+        q.address.stage(100, IntentKind::Edit);
+        q.address.complete(100);
         q.address.publish(1, true);
         assert!(!q.address.take_deferred());
         assert_eq!(enter(&mut q, 0).modifiers, 0);
@@ -1157,34 +1362,54 @@ mod mode_tests {
 
     #[test]
     fn refused_mode_preserves_retained_enter_and_existing_mode_identity() {
-        let mut q = RequestQueue::new(Limits { max_entries: 1, ..Default::default() });
+        let mut q = RequestQueue::new(Limits {
+            max_entries: 1,
+            ..Default::default()
+        });
         q.enqueue(RequestKind::NewTab, 0, 0, &[]);
-        q.address.edit(); enter(&mut q, 5);
-        assert_eq!(q.enqueue(RequestKind::AddressModeAction, 0, 1, &[]).status,
-                   EnqueueStatus::RejectedQueueFull);
+        q.address.edit();
+        enter(&mut q, 5);
+        assert_eq!(
+            q.enqueue(RequestKind::AddressModeAction, 0, 1, &[]).status,
+            EnqueueStatus::RejectedQueueFull
+        );
         assert_eq!(q.address.state().mode_pending, 0);
-        q.address.stage(100, IntentKind::Edit); q.address.complete(100); q.address.publish(1, true);
+        q.address.stage(100, IntentKind::Edit);
+        q.address.complete(100);
+        q.address.publish(1, true);
         assert!(q.address.take_deferred());
         assert_eq!(enter(&mut q, 0).modifiers, 5);
-        q.begin_drain().unwrap(); q.take_batch(16, 65536); q.end_drain().unwrap();
+        q.begin_drain().unwrap();
+        q.take_batch(16, 65536);
+        q.end_drain().unwrap();
         let mode = q.enqueue(RequestKind::AddressModeAction, 0, 1, &[]).id;
         let oversized = vec![0; q.limits.max_request_bytes / 2 + 1];
-        assert_eq!(q.enqueue(RequestKind::AddressModeAction, 0, 1, &oversized).status,
-                   EnqueueStatus::RejectedTooLarge);
+        assert_eq!(
+            q.enqueue(RequestKind::AddressModeAction, 0, 1, &oversized)
+                .status,
+            EnqueueStatus::RejectedTooLarge
+        );
         assert_eq!(q.address.state().mode_pending, 1);
-        q.begin_drain().unwrap(); q.take_batch(16, 65536); q.end_drain().unwrap();
+        q.begin_drain().unwrap();
+        q.take_batch(16, 65536);
+        q.end_drain().unwrap();
         q.complete(mode, Outcome::Completed).unwrap();
         assert_eq!(q.address.state().mode_pending, 0);
     }
 
     #[test]
     fn mode_supersession_reset_and_report_eviction_cannot_strand_priority() {
-        let mut q = RequestQueue::new(Limits { max_pending_outcomes: 1, ..Default::default() });
+        let mut q = RequestQueue::new(Limits {
+            max_pending_outcomes: 1,
+            ..Default::default()
+        });
         let old = q.enqueue(RequestKind::AddressModeAction, 0, 1, &[]).id;
         let mode = q.enqueue(RequestKind::AddressModeAction, 0, 1, &[]);
         assert_eq!(mode.superseded, old);
         assert_eq!(q.address.state().mode_pending, 1);
-        q.begin_drain().unwrap(); q.take_batch(16, 65536); q.end_drain().unwrap();
+        q.begin_drain().unwrap();
+        q.take_batch(16, 65536);
+        q.end_drain().unwrap();
         q.address.reset_mode(); // local switcher disable does not cancel browser work
         assert_eq!(q.address.state().mode_pending, 0);
         let newer = q.enqueue(RequestKind::AddressModeAction, 0, 1, &[]).id;
@@ -1195,7 +1420,9 @@ mod mode_tests {
         assert_ne!(newer, latest);
         assert_eq!(q.address.state().mode_pending, 1);
         let tab = q.enqueue(RequestKind::NewTab, 0, 2, &[]).id;
-        q.begin_drain().unwrap(); q.take_batch(16, 65536); q.end_drain().unwrap();
+        q.begin_drain().unwrap();
+        q.take_batch(16, 65536);
+        q.end_drain().unwrap();
         q.complete(latest, Outcome::Rejected).unwrap();
         q.complete(tab, Outcome::Completed).unwrap();
         assert!(q.dropped_outcomes() > 0);
@@ -1212,20 +1439,34 @@ mod tab_drag_tests {
     use super::*;
     #[test]
     fn reordered_feedback_survives_evicted_reports_and_rejects_wrong_requests() {
-        let mut q=RequestQueue::new(Limits{max_pending_outcomes:1,..Default::default()});
-        q.tab_drag.arm(7,0.0,0.0);
-        q.tab_drag.promote(0,&[crate::tab_drag::ShellDragRow{left:0.0,width:100.0}]);
-        let wrong=q.enqueue(RequestKind::NewTab,0,0,&[]).id;
-        assert!(!q.commit_tab_drag(wrong,0));
-        let other=q.enqueue(RequestKind::StripAction,8,0,&[]).id;
-        assert!(!q.commit_tab_drag(other,0));
-        let request=q.enqueue(RequestKind::StripAction,7,0,&[]).id;
-        assert!(q.commit_tab_drag(request,0));
-        q.begin_drain().unwrap();q.take_batch(16,65536);q.end_drain().unwrap();
-        q.complete(request,Outcome::Rejected).unwrap();q.complete(wrong,Outcome::Completed).unwrap();
-        assert!(q.dropped_outcomes()>0); assert_eq!(q.tab_drag.state().awaiting,0);
-        assert_eq!(q.tab_drag.state().request,0);
-        q.cancel_all();assert_eq!(q.tab_drag.state().phase,0);
+        let mut q = RequestQueue::new(Limits {
+            max_pending_outcomes: 1,
+            ..Default::default()
+        });
+        q.tab_drag.arm(7, 0.0, 0.0);
+        q.tab_drag.promote(
+            0,
+            &[crate::tab_drag::ShellDragRow {
+                left: 0.0,
+                width: 100.0,
+            }],
+        );
+        let wrong = q.enqueue(RequestKind::NewTab, 0, 0, &[]).id;
+        assert!(!q.commit_tab_drag(wrong, 0));
+        let other = q.enqueue(RequestKind::StripAction, 8, 0, &[]).id;
+        assert!(!q.commit_tab_drag(other, 0));
+        let request = q.enqueue(RequestKind::StripAction, 7, 0, &[]).id;
+        assert!(q.commit_tab_drag(request, 0));
+        q.begin_drain().unwrap();
+        q.take_batch(16, 65536);
+        q.end_drain().unwrap();
+        q.complete(request, Outcome::Rejected).unwrap();
+        q.complete(wrong, Outcome::Completed).unwrap();
+        assert!(q.dropped_outcomes() > 0);
+        assert_eq!(q.tab_drag.state().awaiting, 0);
+        assert_eq!(q.tab_drag.state().request, 0);
+        q.cancel_all();
+        assert_eq!(q.tab_drag.state().phase, 0);
     }
 }
 
@@ -1233,32 +1474,53 @@ mod tab_drag_tests {
 mod foreign_transfer_tests {
     use super::*;
     #[test]
-    fn outcomes_survive_report_eviction_and_refused_admission(){
-        let mut q=RequestQueue::new(Limits{max_pending_outcomes:1,max_entries:1,..Default::default()});
-        let t=q.transfers.reserve(77,1,9);
-        let request=q.enqueue(RequestKind::StripAction,0,0,&[]).id;
-        assert!(q.bind_transfer(t.ticket,request,88,false));
-        q.begin_drain().unwrap();q.take_batch(1,65536);q.end_drain().unwrap();
-        let other=q.enqueue(RequestKind::NewTab,0,0,&[]).id;
-        let refused=q.transfers.reserve(77,2,10);
-        assert_eq!(q.enqueue(RequestKind::StripAction,0,0,&[]).status,EnqueueStatus::RejectedQueueFull);
-        assert!(q.bind_transfer(refused.ticket,0,88,false));
-        q.begin_drain().unwrap();q.take_batch(1,65536);q.end_drain().unwrap();
-        q.complete(request,Outcome::Rejected).unwrap();q.complete(other,Outcome::Completed).unwrap();
-        assert_eq!(q.take_outcomes(),vec![(other,Outcome::Completed)]);
-        assert_eq!(q.transfers.next_effect(0).ticket,t.ticket);
-        assert_eq!(q.transfers.next_effect(t.ticket).ticket,refused.ticket);
-        q.close();assert_eq!(q.transfers.next_effect(0).ticket,t.ticket);
+    fn outcomes_survive_report_eviction_and_refused_admission() {
+        let mut q = RequestQueue::new(Limits {
+            max_pending_outcomes: 1,
+            max_entries: 1,
+            ..Default::default()
+        });
+        let t = q.transfers.reserve(77, 1, 9);
+        let request = q.enqueue(RequestKind::StripAction, 0, 0, &[]).id;
+        assert!(q.bind_transfer(t.ticket, request, 88, false));
+        q.begin_drain().unwrap();
+        q.take_batch(1, 65536);
+        q.end_drain().unwrap();
+        let other = q.enqueue(RequestKind::NewTab, 0, 0, &[]).id;
+        let refused = q.transfers.reserve(77, 2, 10);
+        assert_eq!(
+            q.enqueue(RequestKind::StripAction, 0, 0, &[]).status,
+            EnqueueStatus::RejectedQueueFull
+        );
+        assert!(q.bind_transfer(refused.ticket, 0, 88, false));
+        q.begin_drain().unwrap();
+        q.take_batch(1, 65536);
+        q.end_drain().unwrap();
+        q.complete(request, Outcome::Rejected).unwrap();
+        q.complete(other, Outcome::Completed).unwrap();
+        assert_eq!(q.take_outcomes(), vec![(other, Outcome::Completed)]);
+        assert_eq!(q.transfers.next_effect(0).ticket, t.ticket);
+        assert_eq!(q.transfers.next_effect(t.ticket).ticket, refused.ticket);
+        q.close();
+        assert_eq!(q.transfers.next_effect(0).ticket, t.ticket);
     }
     #[test]
-    fn bind_rejects_wrong_kind_tab_and_already_drained_requests(){
-        let mut q=RequestQueue::new(Default::default());let t=q.transfers.reserve(1,1,7);
-        let wrong=q.enqueue(RequestKind::NewTab,0,0,&[]).id;assert!(!q.bind_transfer(t.ticket,wrong,1,false));
-        let wrong_tab=q.enqueue(RequestKind::StripAction,8,0,&[]).id;assert!(!q.bind_transfer(t.ticket,wrong_tab,1,false));
-        let valid=q.enqueue(RequestKind::StripAction,7,0,&[]).id;assert!(q.bind_transfer(t.ticket,valid,1,false));
-        q.begin_drain().unwrap();q.take_batch(16,65536);q.end_drain().unwrap();
-        let later=q.transfers.reserve(1,2,7);assert!(!q.bind_transfer(later.ticket,valid,1,false));
-        q.cancel_all();assert_eq!(q.transfers.next_effect(0).result,2);
+    fn bind_rejects_wrong_kind_tab_and_already_drained_requests() {
+        let mut q = RequestQueue::new(Default::default());
+        let t = q.transfers.reserve(1, 1, 7);
+        let wrong = q.enqueue(RequestKind::NewTab, 0, 0, &[]).id;
+        assert!(!q.bind_transfer(t.ticket, wrong, 1, false));
+        let wrong_tab = q.enqueue(RequestKind::StripAction, 8, 0, &[]).id;
+        assert!(!q.bind_transfer(t.ticket, wrong_tab, 1, false));
+        let valid = q.enqueue(RequestKind::StripAction, 7, 0, &[]).id;
+        assert!(q.bind_transfer(t.ticket, valid, 1, false));
+        q.begin_drain().unwrap();
+        q.take_batch(16, 65536);
+        q.end_drain().unwrap();
+        let later = q.transfers.reserve(1, 2, 7);
+        assert!(!q.bind_transfer(later.ticket, valid, 1, false));
+        q.cancel_all();
+        assert_eq!(q.transfers.next_effect(0).result, 2);
     }
 }
 
@@ -1267,14 +1529,23 @@ mod group_drag_tests {
     use super::*;
     #[test]
     fn group_guard_rejection_survives_evicted_outcome_reports() {
-        let mut q=RequestQueue::new(Limits{max_pending_outcomes:1,..Default::default()});
-        let wrong=q.enqueue(RequestKind::StripAction,9,0,&[]).id;
-        assert!(!q.wait_group_drag(wrong,1,0,0));
-        let request=q.enqueue(RequestKind::StripAction,0,0,&[]).id;
-        assert!(q.wait_group_drag(request,1,0,0));
-        q.begin_drain().unwrap(); q.take_batch(16,65536); q.end_drain().unwrap();
-        q.complete(request,Outcome::Rejected).unwrap(); q.complete(wrong,Outcome::Completed).unwrap();
-        assert!(q.dropped_outcomes()>0); assert!(!q.group_drag.state().awaiting);
-        q.group_drag.wait(99,1,0,0); q.cancel_all(); assert!(!q.group_drag.state().awaiting);
+        let mut q = RequestQueue::new(Limits {
+            max_pending_outcomes: 1,
+            ..Default::default()
+        });
+        let wrong = q.enqueue(RequestKind::StripAction, 9, 0, &[]).id;
+        assert!(!q.wait_group_drag(wrong, 1, 0, 0));
+        let request = q.enqueue(RequestKind::StripAction, 0, 0, &[]).id;
+        assert!(q.wait_group_drag(request, 1, 0, 0));
+        q.begin_drain().unwrap();
+        q.take_batch(16, 65536);
+        q.end_drain().unwrap();
+        q.complete(request, Outcome::Rejected).unwrap();
+        q.complete(wrong, Outcome::Completed).unwrap();
+        assert!(q.dropped_outcomes() > 0);
+        assert!(!q.group_drag.state().awaiting);
+        q.group_drag.wait(99, 1, 0, 0);
+        q.cancel_all();
+        assert!(!q.group_drag.state().awaiting);
     }
 }

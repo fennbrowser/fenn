@@ -25,8 +25,16 @@ struct NativeShellCore {
     // ffi.rs pins the accepted range so a kind added on one side alone fails
     // there.
     enum Kind : uint32_t {
-        SelectTab = 1, MenuEvent = 2, CloseTab = 3, NewTab = 4, StripAction = 5, AddressAction = 6,
-        AddressModeAction = 7, AddressVisibility = 8, StripPreview = 9, NavigationAction = 10
+        SelectTab = 1,
+        MenuEvent = 2,
+        CloseTab = 3,
+        NewTab = 4,
+        StripAction = 5,
+        AddressAction = 6,
+        AddressModeAction = 7,
+        AddressVisibility = 8,
+        StripPreview = 9,
+        NavigationAction = 10
     };
     // Outcomes, matching queue.rs `Outcome`.
     enum Outcome : uint32_t { Completed = 1, Rejected = 2, Cancelled = 3, Superseded = 4 };
@@ -35,8 +43,18 @@ struct NativeShellCore {
     // Address-bar intents and the decisions about them, matching intent.rs.
     // `NoIntent` is the boundary's "nothing is staged", not a kind.
     enum Intent : uint32_t {
-        NoIntent = 0, Edit = 1, TextSelection = 2, Select = 3, Activate = 4,
-        Focus = 5, Blur = 6, Dismiss = 7, GlobalAction = 8, Fallback = 9, Clipboard = 10, ContextMenu = 11
+        NoIntent = 0,
+        Edit = 1,
+        TextSelection = 2,
+        Select = 3,
+        Activate = 4,
+        Focus = 5,
+        Blur = 6,
+        Dismiss = 7,
+        GlobalAction = 8,
+        Fallback = 9,
+        Clipboard = 10,
+        ContextMenu = 11
     };
     enum Decision : uint32_t { Stage = 1, Replace = 2, Amend = 3, Defer = 4, DropIntent = 5 };
 
@@ -49,16 +67,18 @@ struct NativeShellCore {
     Decision Decide(Intent incoming, Intent staged, ShellIntentConditions const& conditions) const {
         uint32_t decision = DropIntent;
         if (!core) return DropIntent;
-        if (shell_core_decide_intent(incoming, staged, &conditions, &decision) != SHELL_STATUS_OK)
-            return DropIntent;
+        if (shell_core_decide_intent(incoming, staged, &conditions, &decision) != SHELL_STATUS_OK) return DropIntent;
         return Decision(decision);
     }
 
-    ShellAddressInteractionState AddressInteraction(ShellAddressInteractionKind kind = SHELL_ADDRESS_INTERACTION_KIND_INSPECT,
-                                                    uint32_t pointer = 0, uint64_t token = 0, bool value = false) const {
+    ShellAddressInteractionState AddressInteraction(
+        ShellAddressInteractionKind kind = SHELL_ADDRESS_INTERACTION_KIND_INSPECT, uint32_t pointer = 0,
+        uint64_t token = 0, bool value = false) const {
         ShellAddressInteractionState state{};
-        winrt::check_hresult(core && shell_core_address_interaction(core, uint32_t(kind), pointer, token, value, &state)
-            == SHELL_STATUS_OK ? S_OK : E_INVALIDARG);
+        winrt::check_hresult(core && shell_core_address_interaction(core, uint32_t(kind), pointer, token, value,
+                                                                    &state) == SHELL_STATUS_OK
+                                 ? S_OK
+                                 : E_INVALIDARG);
         return state;
     }
 
@@ -67,46 +87,67 @@ struct NativeShellCore {
         if (core) shell_core_address_state(core, &value);
         return value;
     }
-    void ResetAddressMode() { if (core) shell_core_address_reset_mode(core); }
-    void ResetAddress() { if (core) shell_core_address_reset(core); }
-    void ResetAddressPublication() { if (core) shell_core_address_publication_reset(core); }
-    void ResetToolbarPublication() { if (core) shell_core_toolbar_publication_reset(core); }
+    void ResetAddressMode() {
+        if (core) shell_core_address_reset_mode(core);
+    }
+    void ResetAddress() {
+        if (core) shell_core_address_reset(core);
+    }
+    void ResetAddressPublication() {
+        if (core) shell_core_address_publication_reset(core);
+    }
+    void ResetToolbarPublication() {
+        if (core) shell_core_toolbar_publication_reset(core);
+    }
     ShellToolbarPublication ToolbarPublication(uint64_t revision, std::wstring_view fingerprint, bool commit) {
         ShellToolbarPublication decision = SHELL_TOOLBAR_PUBLICATION_IGNORED;
         winrt::check_hresult(shell_core_toolbar_publication(core, revision,
-            reinterpret_cast<uint16_t const*>(fingerprint.data()), fingerprint.size(), commit, &decision)
-            == SHELL_STATUS_OK ? S_OK : E_INVALIDARG);
+                                                            reinterpret_cast<uint16_t const*>(fingerprint.data()),
+                                                            fingerprint.size(), commit, &decision) == SHELL_STATUS_OK
+                                 ? S_OK
+                                 : E_INVALIDARG);
         return decision;
     }
     bool AddressPublication(std::wstring_view session, uint64_t sequence, uint64_t revision,
                             std::wstring_view fingerprint, bool commit) {
         bool apply = false;
-        winrt::check_hresult(shell_core_address_publication(core,
-            reinterpret_cast<uint16_t const*>(session.data()), session.size(), sequence, revision,
-            reinterpret_cast<uint16_t const*>(fingerprint.data()), fingerprint.size(), commit, &apply)
-            == SHELL_STATUS_OK ? S_OK : E_INVALIDARG);
+        winrt::check_hresult(shell_core_address_publication(core, reinterpret_cast<uint16_t const*>(session.data()),
+                                                            session.size(), sequence, revision,
+                                                            reinterpret_cast<uint16_t const*>(fingerprint.data()),
+                                                            fingerprint.size(), commit, &apply) == SHELL_STATUS_OK
+                                 ? S_OK
+                                 : E_INVALIDARG);
         return apply;
     }
-    bool AddressMenuEligible(std::wstring_view session, std::wstring_view currentSession,
-            uint64_t edit, uint64_t currentEdit, std::wstring_view target, std::wstring_view expectedTarget,
-            bool requested, bool focused) {
-        const ShellAddressMenuContext context{
-            reinterpret_cast<uint16_t const*>(session.data()), session.size(),
-            reinterpret_cast<uint16_t const*>(currentSession.data()), currentSession.size(), edit, currentEdit,
-            reinterpret_cast<uint16_t const*>(target.data()), target.size(),
-            reinterpret_cast<uint16_t const*>(expectedTarget.data()), expectedTarget.size(), requested, focused};
+    bool AddressMenuEligible(std::wstring_view session, std::wstring_view currentSession, uint64_t edit,
+                             uint64_t currentEdit, std::wstring_view target, std::wstring_view expectedTarget,
+                             bool requested, bool focused) {
+        const ShellAddressMenuContext context{reinterpret_cast<uint16_t const*>(session.data()),
+                                              session.size(),
+                                              reinterpret_cast<uint16_t const*>(currentSession.data()),
+                                              currentSession.size(),
+                                              edit,
+                                              currentEdit,
+                                              reinterpret_cast<uint16_t const*>(target.data()),
+                                              target.size(),
+                                              reinterpret_cast<uint16_t const*>(expectedTarget.data()),
+                                              expectedTarget.size(),
+                                              requested,
+                                              focused};
         bool eligible = false;
-        winrt::check_hresult(shell_core_address_menu_eligible(core, &context, &eligible)
-            == SHELL_STATUS_OK ? S_OK : E_INVALIDARG);
+        winrt::check_hresult(
+            shell_core_address_menu_eligible(core, &context, &eligible) == SHELL_STATUS_OK ? S_OK : E_INVALIDARG);
         return eligible;
     }
-    ShellAddressSectionDecision AddressSection(uint32_t channel, std::wstring_view session,
-            uint64_t generation, std::wstring_view fingerprint, bool eligible, bool commit) {
+    ShellAddressSectionDecision AddressSection(uint32_t channel, std::wstring_view session, uint64_t generation,
+                                               std::wstring_view fingerprint, bool eligible, bool commit) {
         ShellAddressSectionDecision decision = SHELL_ADDRESS_SECTION_DECISION_IGNORED;
-        winrt::check_hresult(shell_core_address_section(core, channel,
-            reinterpret_cast<uint16_t const*>(session.data()), session.size(), generation,
-            reinterpret_cast<uint16_t const*>(fingerprint.data()), fingerprint.size(), eligible, commit, &decision)
-            == SHELL_STATUS_OK ? S_OK : E_INVALIDARG);
+        winrt::check_hresult(
+            shell_core_address_section(core, channel, reinterpret_cast<uint16_t const*>(session.data()), session.size(),
+                                       generation, reinterpret_cast<uint16_t const*>(fingerprint.data()),
+                                       fingerprint.size(), eligible, commit, &decision) == SHELL_STATUS_OK
+                ? S_OK
+                : E_INVALIDARG);
         return decision;
     }
     bool AddressEdit() { return core && shell_core_address_edit(core) == SHELL_STATUS_OK; }
@@ -116,7 +157,9 @@ struct NativeShellCore {
     void PublishAddress(uint64_t edit, bool settled) {
         if (core) shell_core_address_publish(core, edit, settled);
     }
-    void CancelAddressSubmit() { if (core) shell_core_address_cancel_submit(core); }
+    void CancelAddressSubmit() {
+        if (core) shell_core_address_cancel_submit(core);
+    }
     ShellAddressAction NegotiateAddress(Intent incoming, ShellIntentConditions const& conditions, uint32_t modifiers) {
         ShellAddressAction action{DropIntent, 0};
         if (core) shell_core_address_action(core, incoming, &conditions, modifiers, &action);
@@ -186,8 +229,8 @@ struct NativeShellCore {
 
     // Returns the request id, or 0 when the core refused it. `notify` is set
     // only when the caller must now schedule exactly one drain notification.
-    uint64_t Enqueue(Kind kind, uint32_t tab, uint32_t contextRevision, std::wstring_view payload,
-                     bool& notify, uint32_t* status = nullptr) {
+    uint64_t Enqueue(Kind kind, uint32_t tab, uint32_t contextRevision, std::wstring_view payload, bool& notify,
+                     uint32_t* status = nullptr) {
         notify = false;
         if (status) *status = 0;
         if (!core) return 0;
@@ -261,9 +304,8 @@ struct NativeShellCore {
         return core && shell_core_model_begin_snapshot(core, session, revision, capacity) == SHELL_STATUS_OK;
     }
     bool PushSnapshotTab(uint32_t tab, std::wstring_view title, uint32_t commands) {
-        return core && shell_core_model_push_snapshot_tab(
-                           core, tab, reinterpret_cast<uint16_t const*>(title.data()), title.size(), commands) ==
-                           SHELL_STATUS_OK;
+        return core && shell_core_model_push_snapshot_tab(core, tab, reinterpret_cast<uint16_t const*>(title.data()),
+                                                          title.size(), commands) == SHELL_STATUS_OK;
     }
     ShellStatus CommitSnapshot(uint32_t selected, uint32_t& changeCount) {
         changeCount = 0;

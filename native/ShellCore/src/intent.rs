@@ -151,7 +151,11 @@ pub fn decide(
         if !conditions.has_session {
             return Decision::Drop;
         }
-        return if staged.is_some() { Decision::Replace } else { Decision::Stage };
+        return if staged.is_some() {
+            Decision::Replace
+        } else {
+            Decision::Stage
+        };
     }
 
     // Every other kind is suppressed mid-composition: the intermediate states
@@ -211,7 +215,11 @@ pub fn decide(
         Some(IntentKind::Edit) if incoming == IntentKind::Activate => Decision::Defer,
         // Clipboard and context menus carry the current edit/range and replace those
         // publications without waiting for suggestions.
-        Some(IntentKind::Edit | IntentKind::TextSelection) if matches!(incoming, IntentKind::Clipboard | IntentKind::ContextMenu) => Decision::Replace,
+        Some(IntentKind::Edit | IntentKind::TextSelection)
+            if matches!(incoming, IntentKind::Clipboard | IntentKind::ContextMenu) =>
+        {
+            Decision::Replace
+        }
         // Opening a context menu replaces a focus query, not an edit or submit.
         Some(IntentKind::Focus) if incoming == IntentKind::ContextMenu => Decision::Replace,
         // A commit or a highlight supersedes a mere caret move.
@@ -272,9 +280,15 @@ mod tests {
         let mut behind = ready();
         behind.edit_acknowledged = false;
         for staged in [IntentKind::Edit, IntentKind::TextSelection] {
-            assert_eq!(decide(IntentKind::ContextMenu, Some(staged), behind), Decision::Replace);
+            assert_eq!(
+                decide(IntentKind::ContextMenu, Some(staged), behind),
+                Decision::Replace
+            );
         }
-        assert_eq!(decide(IntentKind::ContextMenu, Some(IntentKind::Activate), ready()), Decision::Drop);
+        assert_eq!(
+            decide(IntentKind::ContextMenu, Some(IntentKind::Activate), ready()),
+            Decision::Drop
+        );
     }
 
     #[test]
@@ -303,12 +317,25 @@ mod tests {
 
     #[test]
     fn clipboard_carries_the_edit_without_waiting_for_results() {
-        let behind = Conditions { edit_acknowledged: false, query_settled: false, ..ready() };
+        let behind = Conditions {
+            edit_acknowledged: false,
+            query_settled: false,
+            ..ready()
+        };
         for staged in [IntentKind::Edit, IntentKind::TextSelection] {
-            assert_eq!(decide(IntentKind::Clipboard, Some(staged), behind), Decision::Replace);
+            assert_eq!(
+                decide(IntentKind::Clipboard, Some(staged), behind),
+                Decision::Replace
+            );
         }
-        assert_eq!(decide(IntentKind::Clipboard, Some(IntentKind::Clipboard), ready()), Decision::Drop);
-        assert_eq!(decide(IntentKind::Clipboard, Some(IntentKind::Activate), ready()), Decision::Drop);
+        assert_eq!(
+            decide(IntentKind::Clipboard, Some(IntentKind::Clipboard), ready()),
+            Decision::Drop
+        );
+        assert_eq!(
+            decide(IntentKind::Clipboard, Some(IntentKind::Activate), ready()),
+            Decision::Drop
+        );
     }
 
     #[test]
@@ -346,7 +373,10 @@ mod tests {
         // Composition start and end call Edit() in the C++ and carry the
         // composing flag; treating "composing" as a blanket suppression would
         // break IME input entirely.
-        let composing = Conditions { composing: true, ..ready() };
+        let composing = Conditions {
+            composing: true,
+            ..ready()
+        };
         assert_eq!(decide(IntentKind::Edit, None, composing), Decision::Stage);
         assert_eq!(
             decide(IntentKind::Edit, Some(IntentKind::Select), composing),
@@ -374,7 +404,11 @@ mod tests {
     fn a_caret_move_never_displaces_anything() {
         for staged in ALL {
             let decision = decide(IntentKind::TextSelection, Some(staged), ready());
-            let expected = if staged == IntentKind::Edit { Decision::Amend } else { Decision::Drop };
+            let expected = if staged == IntentKind::Edit {
+                Decision::Amend
+            } else {
+                Decision::Drop
+            };
             assert_eq!(decision, expected, "caret move over {staged:?}");
         }
     }
@@ -385,10 +419,22 @@ mod tests {
             decide(IntentKind::Activate, Some(IntentKind::Edit), ready()),
             Decision::Defer
         );
-        let unacknowledged = Conditions { edit_acknowledged: false, ..ready() };
-        assert_eq!(decide(IntentKind::Activate, None, unacknowledged), Decision::Defer);
-        let unsettled = Conditions { query_settled: false, ..ready() };
-        assert_eq!(decide(IntentKind::Activate, None, unsettled), Decision::Defer);
+        let unacknowledged = Conditions {
+            edit_acknowledged: false,
+            ..ready()
+        };
+        assert_eq!(
+            decide(IntentKind::Activate, None, unacknowledged),
+            Decision::Defer
+        );
+        let unsettled = Conditions {
+            query_settled: false,
+            ..ready()
+        };
+        assert_eq!(
+            decide(IntentKind::Activate, None, unsettled),
+            Decision::Defer
+        );
     }
 
     #[test]
@@ -405,18 +451,34 @@ mod tests {
     #[test]
     fn focus_returning_cancels_a_caret_move_or_a_stale_blur() {
         for staged in [IntentKind::TextSelection, IntentKind::Blur] {
-            assert_eq!(decide(IntentKind::Focus, Some(staged), ready()), Decision::Replace);
+            assert_eq!(
+                decide(IntentKind::Focus, Some(staged), ready()),
+                Decision::Replace
+            );
         }
         // But focus does not get to displace a commit already on its way.
-        assert_eq!(decide(IntentKind::Focus, Some(IntentKind::Activate), ready()), Decision::Drop);
+        assert_eq!(
+            decide(IntentKind::Focus, Some(IntentKind::Activate), ready()),
+            Decision::Drop
+        );
     }
 
     #[test]
     fn a_global_action_needs_the_browser_level_and_yields_to_everything_but_a_caret() {
-        let behind = Conditions { edit_acknowledged: false, ..ready() };
-        assert_eq!(decide(IntentKind::GlobalAction, None, behind), Decision::Drop);
+        let behind = Conditions {
+            edit_acknowledged: false,
+            ..ready()
+        };
         assert_eq!(
-            decide(IntentKind::GlobalAction, Some(IntentKind::TextSelection), ready()),
+            decide(IntentKind::GlobalAction, None, behind),
+            Decision::Drop
+        );
+        assert_eq!(
+            decide(
+                IntentKind::GlobalAction,
+                Some(IntentKind::TextSelection),
+                ready()
+            ),
             Decision::Replace
         );
         for staged in ALL.iter().filter(|k| **k != IntentKind::TextSelection) {
@@ -427,8 +489,14 @@ mod tests {
             );
         }
         // It is also the one kind that does not require a session of its own.
-        let sessionless = Conditions { has_session: false, ..ready() };
-        assert_eq!(decide(IntentKind::GlobalAction, None, sessionless), Decision::Stage);
+        let sessionless = Conditions {
+            has_session: false,
+            ..ready()
+        };
+        assert_eq!(
+            decide(IntentKind::GlobalAction, None, sessionless),
+            Decision::Stage
+        );
     }
 
     #[test]
@@ -436,28 +504,43 @@ mod tests {
         // Applying suppresses everything, including an edit: a text change the
         // publication itself just wrote is not the user typing.
         for kind in ALL {
-            let applying = Conditions { applying: true, ..ready() };
+            let applying = Conditions {
+                applying: true,
+                ..ready()
+            };
             assert_eq!(decide(kind, None, applying), Decision::Drop, "{kind:?}");
         }
     }
 
     #[test]
     fn without_a_session_only_a_global_action_means_anything() {
-        let sessionless = Conditions { has_session: false, ..ready() };
+        let sessionless = Conditions {
+            has_session: false,
+            ..ready()
+        };
         for kind in ALL {
-            let expected =
-                if kind == IntentKind::GlobalAction { Decision::Stage } else { Decision::Drop };
+            let expected = if kind == IntentKind::GlobalAction {
+                Decision::Stage
+            } else {
+                Decision::Drop
+            };
             assert_eq!(decide(kind, None, sessionless), expected, "{kind:?}");
             // Including an edit: Edit() returns early without a session.
             if kind == IntentKind::Edit {
-                assert_eq!(decide(kind, Some(IntentKind::Select), sessionless), Decision::Drop);
+                assert_eq!(
+                    decide(kind, Some(IntentKind::Select), sessionless),
+                    Decision::Drop
+                );
             }
         }
     }
 
     #[test]
     fn the_mode_menu_holds_the_slot_while_one_of_its_intents_is_outstanding() {
-        let mode = Conditions { mode_intent_staged: true, ..ready() };
+        let mode = Conditions {
+            mode_intent_staged: true,
+            ..ready()
+        };
         for kind in ALL {
             // A caret move is decided before the mode check and a global action
             // before that, so those two keep their own answers.

@@ -9,7 +9,7 @@ globalThis.Ci = {nsIContentPolicy:TYPE, nsIHttpChannel:{}, nsIPermissionManager:
 globalThis.ChromeUtils = {generateQI:() => () => {}, now:() => 0};
 globalThis.Components = {isSuccessCode:() => true};
 let source = await readFile(new URL("../upstream/firefox/browser/components/fennadblock/FennAdblockService.sys.mjs", import.meta.url), "utf8");
-source = source.replace(/^import .*;$/gm, "const setTimeout=()=>0, clearTimeout=()=>{};");
+source = source.replace(/^import\b[^;]*;$/gm, "const setTimeout=()=>0, clearTimeout=()=>{};");
 const {FennAdblockService: service} = await import("data:text/javascript;base64," + Buffer.from(source).toString("base64"));
 
 const uri = (spec, host = new URL(spec).hostname) => ({spec, asciiHost:host, schemeIs:s => spec.startsWith(s + ":")});

@@ -28,7 +28,28 @@
 
 #define MAX_EDIT_ID 9007199254740991
 
-#define MAX_ROWS 10000
+#define MAX_FINGERPRINT ((6 * 1024) * 1024)
+
+#define MAX_ADDRESS_SECTION_FINGERPRINT ((6 * 1024) * 1024)
+
+#define MAX_TRANSFERS 256
+
+#define MAGIC 20038
+
+#define VERSION 1
+
+#define HEADER_BYTES 40
+
+#define MAX_CLIP 64
+
+/*
+ Strip and address, plus the clip list's bound.
+ */
+#define MAX_CHROME 2
+
+
+
+#define MAX_TITLE 32768
 
 /*
  A settled group that grew at least this much re-catches its moved edge.
@@ -54,102 +75,6 @@
  Bound on surfaces and layout slots per frame.
  */
 #define MAX_ENTRIES 10000
-
-#define MAX_TRANSFERS 256
-
-#define SHELL_NO_INDEX UINT32_MAX
-
-#define MAX_TABS 10000
-
-#define MAX_COMMANDS 128
-
-#define MAX_ID 64
-
-#define MAX_FINGERPRINT ((6 * 1024) * 1024)
-
-#define MAX_ACTIONS 256
-
-#define MAX_DESCRIPTION 65536
-
-#define MAX_TOOLBAR_FINGERPRINT ((6 * 1024) * 1024)
-
-#define MAX_PREVIEW_FINGERPRINT (1024 * 1024)
-
-#define MAX_ADDRESS_SECTION_FINGERPRINT ((6 * 1024) * 1024)
-
-/*
- Bound on simultaneously settling elements.
- */
-#define MAX_SETTLING 4096
-
-#define SHELL_SETTLE_TAB 0
-
-#define SHELL_SETTLE_HEADER 1
-
-/*
- Shared progress clock for a WinUI exit/layout checkpoint sequence.
- */
-#define SHELL_SETTLE_CLOCK 2
-
-#define TAB_MOTION_MS 135
-
-#define GROUP_MOTION_MS 150
-
-#define SHELL_MOTION_REPOSITION_MS 167
-
-#define SHELL_MOTION_ENTER_MS 250
-
-#define SHELL_MOTION_EXIT_MS 125
-
-#define SHELL_MOTION_FADE_MS 83
-
-#define SHELL_MOTION_TRAVEL_DIP 6.0
-
-#define SHELL_MOTION_MOVE_X1 0.55
-
-#define SHELL_MOTION_MOVE_Y1 0.55
-
-#define SHELL_MOTION_MOVE_X2 0.0
-
-#define SHELL_MOTION_MOVE_Y2 1.0
-
-#define PAGE_INPUT_MAX_TEXT 65536
-
-#define PAGE_INPUT_MAX_EVENTS 128
-
-/*
- The event kind that tells Gecko a publication was accepted (`revision`).
- */
-#define ACCEPTED 7
-
-#define STARTUP_MAX_TABS 32
-
-#define STARTUP_MAX_TEXT 32768
-
-#define STARTUP_MAX_SUBMISSIONS 64
-
-#define STARTUP_MAX_UNITS 262144
-
-#define STARTUP_BROWSER_ROWS 4096
-
-#define MAGIC 20038
-
-#define VERSION 1
-
-#define HEADER_BYTES 40
-
-#define BYTES 16
-
-#define MAX_CLIP 64
-
-/*
- Strip and address, plus the clip list's bound.
- */
-#define MAX_CHROME 2
-
-
-
-#define MAX_TITLE 32768
 
 /*
  Channel and kind numbers for C. They mirror [`frame::Channel`] and
@@ -219,12 +144,83 @@
 
 #define SHELL_FRAME_REFUSED_BIND 2
 
+#define MAX_TABS 10000
+
+#define MAX_COMMANDS 128
+
+#define MAX_ID 64
+
+#define SHELL_NO_INDEX UINT32_MAX
+
+#define TAB_MOTION_MS 135
+
+#define GROUP_MOTION_MS 150
+
+#define SHELL_MOTION_REPOSITION_MS 167
+
+#define SHELL_MOTION_ENTER_MS 250
+
+#define SHELL_MOTION_EXIT_MS 125
+
+#define SHELL_MOTION_FADE_MS 83
+
+#define SHELL_MOTION_TRAVEL_DIP 6.0
+
+#define SHELL_MOTION_MOVE_X1 0.55
+
+#define SHELL_MOTION_MOVE_Y1 0.55
+
+#define SHELL_MOTION_MOVE_X2 0.0
+
+#define SHELL_MOTION_MOVE_Y2 1.0
+
+#define PAGE_INPUT_MAX_TEXT 65536
+
+#define PAGE_INPUT_MAX_EVENTS 128
+
+/*
+ The event kind that tells Gecko a publication was accepted (`revision`).
+ */
+#define ACCEPTED 7
+
 /*
  Keep credited frames plus return credits below each OS adapter route's slots.
  */
 #define SHELL_PIPE_FLIGHT_FRAMES 4
 
 #define SHELL_PIPE_FLIGHT_BYTES ((4 * 1024) * 1024)
+
+#define MAX_PREVIEW_FINGERPRINT (1024 * 1024)
+
+/*
+ Bound on simultaneously settling elements.
+ */
+#define MAX_SETTLING 4096
+
+#define SHELL_SETTLE_TAB 0
+
+#define SHELL_SETTLE_HEADER 1
+
+/*
+ Shared progress clock for a WinUI exit/layout checkpoint sequence.
+ */
+#define SHELL_SETTLE_CLOCK 2
+
+#define STARTUP_MAX_TABS 32
+
+#define STARTUP_MAX_TEXT 32768
+
+#define STARTUP_MAX_SUBMISSIONS 64
+
+#define STARTUP_MAX_UNITS 262144
+
+#define STARTUP_BROWSER_ROWS 4096
+
+#define MAX_ACTIONS 256
+
+#define MAX_DESCRIPTION 65536
+
+#define MAX_TOOLBAR_FINGERPRINT ((6 * 1024) * 1024)
 
 #define SHELL_STARTUP_ROW_CAPACITY 4128
 
@@ -636,6 +632,12 @@ typedef struct {
 } ShellPipeBinding;
 
 typedef struct {
+  uint32_t peer;
+  uint32_t generation;
+  uint16_t nonce[32];
+} ShellReconnectDescriptor;
+
+typedef struct {
   uint64_t times[2];
   uint32_t count;
   uint32_t reserved;
@@ -681,12 +683,6 @@ typedef struct {
   uint64_t restored;
   uint32_t kind;
 } ShellRecoveryWindowEffect;
-
-typedef struct {
-  uint32_t peer;
-  uint32_t generation;
-  uint16_t nonce[32];
-} ShellReconnectDescriptor;
 
 /*
  Firefox-published identity for one endpoint. Privacy: 0 unknown, 1 normal,
@@ -1673,6 +1669,14 @@ bool shell_pipe_binding(ShellPipeBinding *binding,
                         uint32_t serial,
                         uint64_t shell);
 
+/*
+ # Safety
+ Input is readable for length units; output is writable and disjoint.
+ */
+bool shell_reconnect_parse(const uint16_t *input,
+                           uintptr_t length,
+                           ShellReconnectDescriptor *output);
+
 bool shell_recovery_history_merge(ShellRecoveryHistory a,
                                   ShellRecoveryHistory b,
                                   uint64_t now,
@@ -1745,14 +1749,6 @@ bool shell_recovery_windows(uint64_t attempt,
                             ShellRecoveryWindowEffect *output,
                             uintptr_t capacity,
                             uintptr_t *count);
-
-/*
- # Safety
- Input is readable for length units; output is writable and disjoint.
- */
-bool shell_reconnect_parse(const uint16_t *input,
-                           uintptr_t length,
-                           ShellReconnectDescriptor *output);
 
 /*
  # Safety

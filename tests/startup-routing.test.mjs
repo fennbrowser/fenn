@@ -4,7 +4,7 @@ import vm from "node:vm";
 import { test } from "node:test";
 
 const source = readFileSync(new URL("../upstream/firefox/browser/modules/BrowserWindowTracker.sys.mjs", import.meta.url), "utf8")
-  .replace(/^import .*;$/gm, "").replace("export const BrowserWindowTracker", "const BrowserWindowTracker") + "\nglobalThis.tracker = BrowserWindowTracker;";
+  .replace(/^import\b[^;]*;$/gm, "").replace("export const BrowserWindowTracker", "const BrowserWindowTracker") + "\nglobalThis.tracker = BrowserWindowTracker;";
 
 function fixture({ mode = "1", platform = "win", owns = true, failure = false, routingFailure = false, localizationFailure = false } = {}) {
   const calls = [];

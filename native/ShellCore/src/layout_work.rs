@@ -35,7 +35,12 @@ impl LayoutWork {
 
     /// Record before host work: a reentrant invalidation during that work must
     /// survive for the next pass. The host invalidates again if its work fails.
-    pub fn observe(&mut self, consumer: u32, inputs: ShellLayoutInputs, force: bool) -> Option<bool> {
+    pub fn observe(
+        &mut self,
+        consumer: u32,
+        inputs: ShellLayoutInputs,
+        force: bool,
+    ) -> Option<bool> {
         let previous = self.previous.get_mut(consumer as usize)?;
         if !inputs.values.iter().all(|value| value.is_finite()) {
             return None;
@@ -49,13 +54,17 @@ impl LayoutWork {
 #[cfg(test)]
 mod tests {
     use super::*;
-    fn inputs() -> ShellLayoutInputs { ShellLayoutInputs { values: [0.0; 16] } }
+    fn inputs() -> ShellLayoutInputs {
+        ShellLayoutInputs { values: [0.0; 16] }
+    }
 
     #[test]
     fn unrelated_layouts_do_not_repeat_work() {
         let mut work = LayoutWork::default();
         assert_eq!(work.observe(0, inputs(), false), Some(true));
-        for _ in 0..1000 { assert_eq!(work.observe(0, inputs(), false), Some(false)); }
+        for _ in 0..1000 {
+            assert_eq!(work.observe(0, inputs(), false), Some(false));
+        }
     }
 
     #[test]
@@ -74,7 +83,9 @@ mod tests {
     #[test]
     fn consumers_and_explicit_invalidation_are_independent() {
         let mut work = LayoutWork::default();
-        for kind in 0..3 { assert_eq!(work.observe(kind, inputs(), false), Some(true)); }
+        for kind in 0..3 {
+            assert_eq!(work.observe(kind, inputs(), false), Some(true));
+        }
         work.invalidate(1);
         assert_eq!(work.observe(0, inputs(), false), Some(false));
         assert_eq!(work.observe(1, inputs(), false), Some(true));
@@ -85,7 +96,9 @@ mod tests {
     fn motion_and_reentrant_or_failed_work_can_retry() {
         let mut work = LayoutWork::default();
         work.observe(1, inputs(), false);
-        for _ in 0..3 { assert_eq!(work.observe(1, inputs(), true), Some(true)); }
+        for _ in 0..3 {
+            assert_eq!(work.observe(1, inputs(), true), Some(true));
+        }
         assert_eq!(work.observe(1, inputs(), false), Some(false));
         work.invalidate(1); // realization or failure inside the host callback
         assert_eq!(work.observe(1, inputs(), false), Some(true));
@@ -96,7 +109,8 @@ mod tests {
         let mut work = LayoutWork::default();
         work.observe(0, inputs(), false);
         for bad in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
-            let mut sample = inputs(); sample.values[5] = bad;
+            let mut sample = inputs();
+            sample.values[5] = bad;
             assert_eq!(work.observe(0, sample, false), None);
             assert_eq!(work.observe(0, inputs(), false), Some(false));
         }

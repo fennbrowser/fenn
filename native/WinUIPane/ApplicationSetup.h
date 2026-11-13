@@ -18,7 +18,6 @@ inline void Configure(const winrt::Microsoft::UI::Xaml::Application& app) {
     // Application ownership alone does not prove deferred controls releases safe.
     HMODULE controls{};
     if (GetModuleHandleW(L"Microsoft.UI.Xaml.Controls.dll"))
-        check_bool(GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_PIN,
-                                     L"Microsoft.UI.Xaml.Controls.dll", &controls));
+        check_bool(GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_PIN, L"Microsoft.UI.Xaml.Controls.dll", &controls));
 }
-}
+}  // namespace ApplicationSetup

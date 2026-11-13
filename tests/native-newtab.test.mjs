@@ -5,7 +5,7 @@ import vm from "node:vm";
 
 function fixture() {
   const source=readFileSync(new URL("../upstream/firefox/browser/base/content/WinUINewTabPage.sys.mjs",import.meta.url),"utf8")
-    .replace(/^import .*;$/m,"")
+    .replace(/^import\b[^;]*;$/m,"")
     .replace("export class WinUINewTabPage","this.WinUINewTabPage = class WinUINewTabPage");
   const attributes=new Set(),prefs=new Map([["fenn.winui.newtab.enabled",true]]),opened=[];
   const loadFlags={STATE_START:1,STATE_IS_NETWORK:2,STATE_STOP:4};

@@ -8,7 +8,7 @@ globalThis.Components = {isSuccessCode:() => true};
 const delays = [];
 globalThis.__adblockTimer = (callback, ms) => { delays.push(ms); return setTimeout(callback, 0); };
 let source = await readFile(new URL("../upstream/firefox/browser/components/fennadblock/FennAdblockService.sys.mjs", import.meta.url), "utf8");
-source = source.replace(/^import .*;$/gm, "");
+source = source.replace(/^import\b[^;]*;$/gm, "");
 source = "const setTimeout=(f,ms)=>globalThis.__adblockTimer(f,ms), clearTimeout=()=>{};\n" + source;
 const {FennAdblockService: service} = await import("data:text/javascript;base64," + Buffer.from(source).toString("base64"));
 

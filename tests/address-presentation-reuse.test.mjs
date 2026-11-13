@@ -6,7 +6,7 @@ import vm from 'node:vm';
 const sandbox = vm.createContext({console, UrlbarShared:{RESULT_TYPE:{SEARCH:2,TIP:7,RESTRICT:9},
   ICON:{HISTORY:'history'},getSpanForResult:r=>r.span || 1,deepEqual:(a,b)=>JSON.stringify(a)===JSON.stringify(b)}});
 vm.runInContext(readFileSync(new URL('../upstream/firefox/browser/base/content/WinUIAddressSession.sys.mjs',import.meta.url),'utf8')
-  .replace(/^import .*;$/m,'').replace('export class WinUIAddressSession','this.Session = class WinUIAddressSession'),sandbox);
+  .replace(/^import\b[^;]*;$/m,'').replace('export class WinUIAddressSession','this.Session = class WinUIAddressSession'),sandbox);
 const flush = async () => { for(let i=0;i<8;i++) await Promise.resolve(); };
 
 test('publication preserves localized group metadata on every row, including suppressed headings', async () => {
@@ -151,7 +151,7 @@ test('provider enabled-state changes invalidate reuse even without a payload cha
 });
 
 vm.runInContext(readFileSync(new URL('../upstream/firefox/browser/components/urlbar/content/UrlbarResultPresentation.mjs',import.meta.url),'utf8')
-  .replace(/^import .*;$/gm,'').replace('export class UrlbarResultPresentation','this.Presentation = class UrlbarResultPresentation'),sandbox);
+  .replace(/^import\b[^;]*;$/gm,'').replace('export class UrlbarResultPresentation','this.Presentation = class UrlbarResultPresentation'),sandbox);
 function navigationFixture() {
   const f=fixture();
   const second={...f.result,payload:{engine:'Second'}};

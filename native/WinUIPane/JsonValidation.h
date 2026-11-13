@@ -94,7 +94,7 @@ inline void ValidateImage(JsonObject const& item, size_t& totalPixels, ImageLimi
 // fields across snapshots (rather than the original JSON) can decode
 // without reconstructing a throwaway JsonObject.
 inline winrt::Microsoft::UI::Xaml::Media::Imaging::WriteableBitmap DecodeImage(int width, int height,
-                                                                        winrt::hstring const& pixels) {
+                                                                               winrt::hstring const& pixels) {
     winrt::Microsoft::UI::Xaml::Media::Imaging::WriteableBitmap bitmap(width, height);
     auto bytes = bitmap.PixelBuffer().data();
     auto nibble = [](wchar_t c) { return c <= L'9' ? c - L'0' : c - L'a' + 10; };

@@ -58,28 +58,40 @@ static void Require(bool value, const char* message) {
 static WinUIPaneApi fixtureApi{};
 struct FixtureEndpoint {
     HWND hwnd{};
-    HANDLE ready=CreateEventW(nullptr,TRUE,FALSE,nullptr);
+    HANDLE ready = CreateEventW(nullptr, TRUE, FALSE, nullptr);
     std::thread thread;
-    FixtureEndpoint() : thread([this] {
-        hwnd=CreateWindowExW(0,L"STATIC",L"Contract endpoint",0,0,0,0,0,HWND_MESSAGE,nullptr,GetModuleHandleW(nullptr),nullptr);
-        SetEvent(ready);
-        MSG message{};
-        while(GetMessageW(&message,nullptr,0,0)>0) DispatchMessageW(&message);
-        DestroyWindow(hwnd);
-    }) { WaitForSingleObject(ready,INFINITE); CloseHandle(ready); }
-    ~FixtureEndpoint() { PostThreadMessageW(GetWindowThreadProcessId(hwnd,nullptr),WM_QUIT,0,0); thread.join(); }
+    FixtureEndpoint()
+        : thread([this] {
+              hwnd = CreateWindowExW(0, L"STATIC", L"Contract endpoint", 0, 0, 0, 0, 0, HWND_MESSAGE, nullptr,
+                                     GetModuleHandleW(nullptr), nullptr);
+              SetEvent(ready);
+              MSG message{};
+              while (GetMessageW(&message, nullptr, 0, 0) > 0) DispatchMessageW(&message);
+              DestroyWindow(hwnd);
+          }) {
+        WaitForSingleObject(ready, INFINITE);
+        CloseHandle(ready);
+    }
+    ~FixtureEndpoint() {
+        PostThreadMessageW(GetWindowThreadProcessId(hwnd, nullptr), WM_QUIT, 0, 0);
+        thread.join();
+    }
 };
-static HWND CreateFixtureWindow(DWORD ex,const wchar_t*,const wchar_t* title,DWORD style,
-                                int x,int y,int width,int height,HWND parent,HMENU,HINSTANCE instance,void*) {
+static HWND CreateFixtureWindow(DWORD ex, const wchar_t*, const wchar_t* title, DWORD style, int x, int y, int width,
+                                int height, HWND parent, HMENU, HINSTANCE instance, void*) {
     static FixtureEndpoint endpoint;
-    RECT bounds{x,y,x+width,y+height}; HWND hwnd{};
-    Require(SUCCEEDED(fixtureApi.createWindowHost(ex,title,style,&bounds,parent,instance,&hwnd)),"create Window-backed fixture");
-    Require(SUCCEEDED(fixtureApi.bindIndependentEndpoint(hwnd,reinterpret_cast<uintptr_t>(endpoint.hwnd),endpoint.hwnd)),"bind fixture endpoint and page input window");
-    SetWindowTextW(hwnd,title);
+    RECT bounds{x, y, x + width, y + height};
+    HWND hwnd{};
+    Require(SUCCEEDED(fixtureApi.createWindowHost(ex, title, style, &bounds, parent, instance, &hwnd)),
+            "create Window-backed fixture");
+    Require(
+        SUCCEEDED(fixtureApi.bindIndependentEndpoint(hwnd, reinterpret_cast<uintptr_t>(endpoint.hwnd), endpoint.hwnd)),
+        "bind fixture endpoint and page input window");
+    SetWindowTextW(hwnd, title);
     return hwnd;
 }
 static BOOL DestroyFixtureWindow(HWND hwnd) {
-    if(GetPropW(hwnd,L"Fenn.NativeWindowHost")) return SUCCEEDED(fixtureApi.destroyWindowHost(hwnd));
+    if (GetPropW(hwnd, L"Fenn.NativeWindowHost")) return SUCCEEDED(fixtureApi.destroyWindowHost(hwnd));
     return DestroyWindow(hwnd);
 }
 static BOOL(WINAPI* translatePane)(MSG*) = nullptr;
@@ -101,13 +113,15 @@ static void Pump() {
 // legitimately own a preview with the same window class.
 static std::vector<HWND> DragPreviewWindows() {
     std::vector<HWND> windows;
-    EnumThreadWindows(GetCurrentThreadId(), [](HWND hwnd, LPARAM data) -> BOOL {
-        wchar_t name[128]{};
-        GetClassNameW(hwnd, name, 128);
-        if (wcscmp(name, L"FennTabTearoff") == 0)
-            reinterpret_cast<std::vector<HWND>*>(data)->push_back(hwnd);
-        return TRUE;
-    }, reinterpret_cast<LPARAM>(&windows));
+    EnumThreadWindows(
+        GetCurrentThreadId(),
+        [](HWND hwnd, LPARAM data) -> BOOL {
+            wchar_t name[128]{};
+            GetClassNameW(hwnd, name, 128);
+            if (wcscmp(name, L"FennTabTearoff") == 0) reinterpret_cast<std::vector<HWND>*>(data)->push_back(hwnd);
+            return TRUE;
+        },
+        reinterpret_cast<LPARAM>(&windows));
     return windows;
 }
 static bool nestedDragCreateObserved{};
@@ -233,8 +247,7 @@ static void WithTab(HWND hwnd, const wchar_t* id, const wchar_t* title, bool sel
                 fwprintf(stderr, L"UIA button label=%s\n", label ? label : L"<null>");
                 // New tab carries Firefox's label (English until published); the
                 // stock close button is named by WinUI.
-                Require(SUCCEEDED(nameHr) && label &&
-                            (newTab ? std::wstring(label) == L"New tab" : *label != L'\0'),
+                Require(SUCCEEDED(nameHr) && label && (newTab ? std::wstring(label) == L"New tab" : *label != L'\0'),
                         "close button accessible name");
                 SysFreeString(label);
                 ComPtr<IUIAutomationInvokePattern> invoke;
@@ -314,16 +327,18 @@ static RECT AwaitDragPreview(HWND window) {
         GetWindowRect(window, &bounds);
         if (bounds.right > bounds.left && bounds.bottom > bounds.top) {
             if (GetTickCount64() - started > 1000)
-                fprintf(stderr, "Drag preview painted after %llums\n", static_cast<unsigned long long>(GetTickCount64() - started));
+                fprintf(stderr, "Drag preview painted after %llums\n",
+                        static_cast<unsigned long long>(GetTickCount64() - started));
             return bounds;
         }
-        Pump(); Sleep(10);
+        Pump();
+        Sleep(10);
     } while (GetTickCount64() - started < LiveTreeTimeoutMs);
     Require(false, "asynchronous drag preview paints within the readiness deadline");
     return bounds;
 }
-static winrt::Microsoft::UI::Xaml::FrameworkElement FindInTabList(winrt::Microsoft::UI::Xaml::Controls::TabView const& view,
-                                                                 winrt::hstring const& id);
+static winrt::Microsoft::UI::Xaml::FrameworkElement FindInTabList(
+    winrt::Microsoft::UI::Xaml::Controls::TabView const& view, winrt::hstring const& id);
 // The host island's strip TabView, once its content tree is live.
 static winrt::Microsoft::UI::Xaml::Controls::TabView StripView(HMODULE module, HWND hwnd) {
     using namespace winrt::Microsoft::UI::Xaml;
@@ -346,24 +361,24 @@ static winrt::Microsoft::UI::Xaml::Controls::TabViewItem StripRow(
             found && found.IsLoaded() && found.ActualWidth() > 0 && found.ActualHeight() > 0) {
             if (GetTickCount64() - started > 1000)
                 fprintf(stderr, "Strip row id=%u went live after %llums\n", id,
-                    static_cast<unsigned long long>(GetTickCount64() - started));
+                        static_cast<unsigned long long>(GetTickCount64() - started));
             return found.as<winrt::Microsoft::UI::Xaml::Controls::TabViewItem>();
         }
         Pump();
         Sleep(10);
     }
     auto last = FindInTabList(view, L"FennTab-" + winrt::to_hstring(id));
-    fprintf(stderr, "Unrealized strip row id=%u loaded=%d host=%d view=%.1fx%.1f found=%d row=%.1fx%.1f rowLoaded=%d\n", id,
-            view.IsLoaded(), view.XamlRoot().IsHostVisible(), view.ActualWidth(), view.ActualHeight(), last != nullptr,
-            last ? last.ActualWidth() : -1.0, last ? last.ActualHeight() : -1.0, last ? last.IsLoaded() : 0);
+    fprintf(stderr, "Unrealized strip row id=%u loaded=%d host=%d view=%.1fx%.1f found=%d row=%.1fx%.1f rowLoaded=%d\n",
+            id, view.IsLoaded(), view.XamlRoot().IsHostVisible(), view.ActualWidth(), view.ActualHeight(),
+            last != nullptr, last ? last.ActualWidth() : -1.0, last ? last.ActualHeight() : -1.0,
+            last ? last.IsLoaded() : 0);
     Require(false, "native strip row is loaded and laid out before interaction");
     return nullptr;
 }
 // Since ABI v12 this is a publication with no reply. Every native intent,
 // including the strip's own gestures, arrives through drainRequests instead,
 // so there is nothing to read back here.
-static void MenuPublish(WinUIPaneApi& api, HWND hwnd,
-                         wchar_t const* snapshot = L"{\"version\":2}") {
+static void MenuPublish(WinUIPaneApi& api, HWND hwnd, wchar_t const* snapshot = L"{\"version\":2}") {
     auto result = api.syncTabMenu(hwnd, snapshot);
     if (FAILED(result)) fwprintf(stderr, L"Publication HRESULT %08x: %ls\n", unsigned(result), snapshot);
     Require(SUCCEEDED(result), "menu protocol publication");
@@ -442,7 +457,8 @@ static void CompleteRequests(WinUIPaneApi& api, HWND hwnd, winrt::Windows::Data:
 // completing every batch as the browser would. Returns an empty object if none
 // arrives, so a caller can assert absence as well as presence.
 static winrt::Windows::Data::Json::JsonObject NextRequest(WinUIPaneApi& api, HWND hwnd, uint32_t kind,
-                                                          wchar_t const* eventKind = nullptr, int attempts = 40, uint32_t outcome = 1) {
+                                                          wchar_t const* eventKind = nullptr, int attempts = 40,
+                                                          uint32_t outcome = 1) {
     using namespace winrt::Windows::Data::Json;
     for (int i = 0; i < attempts; ++i) {
         auto batch = DrainRequests(api, hwnd);
@@ -465,7 +481,10 @@ static winrt::Windows::Data::Json::JsonObject NextRequest(WinUIPaneApi& api, HWN
 }
 // Refresh the existing test fixture after publishing descriptions, as Firefox does.
 // Publish a menu context for these tabs, then the snapshot that shows them.
-static uint32_t NextTabRevision() { static uint32_t revision = 0; return revision += 100; }
+static uint32_t NextTabRevision() {
+    static uint32_t revision = 0;
+    return revision += 100;
+}
 
 static void PrepareFixtureMenus(WinUIPaneApi& api, HWND hwnd, std::vector<WinUITab> tabs, uint32_t selected) {
     std::vector<uint32_t> ids;
@@ -496,8 +515,7 @@ static void CheckContextMenu(HMODULE module, WinUIPaneApi& api, HWND hwnd) {
         }
     };
     auto sync = [&](uint32_t count = 2) {
-        Require(SUCCEEDED(api.syncTabs(hwnd, tabs, count, 71, NextTabRevision(), &selected)),
-                "context tabs");
+        Require(SUCCEEDED(api.syncTabs(hwnd, tabs, count, 71, NextTabRevision(), &selected)), "context tabs");
         settle();
     };
     SetForegroundWindow(hwnd);
@@ -519,8 +537,7 @@ static void CheckContextMenu(HMODULE module, WinUIPaneApi& api, HWND hwnd) {
         fprintf(stderr, "Context open count=%u revision=%u\n", count, menuTestRevision);
         if (menu && menu.IsOpen()) menu.Hide();
         settle();
-        while (DrainRequests(api, hwnd).Size()) {
-        }
+        while (DrainRequests(api, hwnd).Size()) {}
         auto row = StripRow(view, 72);
         menu = row.ContextFlyout().as<Controls::MenuFlyout>();
         SetForegroundWindow(hwnd);
@@ -545,21 +562,26 @@ static void CheckContextMenu(HMODULE module, WinUIPaneApi& api, HWND hwnd) {
         auto request = NextRequest(api, hwnd, 2, L"open");
         opened = request.Size() ? request.GetNamedObject(L"action") : Object();
         Require(opened.Size() && opened.GetNamedNumber(L"tab") == 72 &&
-                    opened.GetNamedNumber(L"revision") ==
-                        current.GetNamedObject(L"state").GetNamedNumber(L"revision"),
+                    opened.GetNamedNumber(L"revision") == current.GetNamedObject(L"state").GetNamedNumber(L"revision"),
                 "opening retains target and published revision");
         if (!describe) return;
-        auto description = MenuDescription(opened.GetNamedNumber(L"session"), 72, opened.GetNamedNumber(L"revision"), nested);
-        if (!nested) description.GetNamedObject(L"menu").GetNamedArray(L"items").GetObjectAt(1).SetNamedValue(
-            L"checked", Value::CreateBooleanValue(true));
-        if (!nested) description.GetNamedObject(L"menu").GetNamedArray(L"items").GetObjectAt(0).SetNamedValue(
-            L"image", Object::Parse(LR"({"width":2,"height":2,"pixels":"0000ffff00000000000000000000ffff"})"));
+        auto description =
+            MenuDescription(opened.GetNamedNumber(L"session"), 72, opened.GetNamedNumber(L"revision"), nested);
+        if (!nested)
+            description.GetNamedObject(L"menu").GetNamedArray(L"items").GetObjectAt(1).SetNamedValue(
+                L"checked", Value::CreateBooleanValue(true));
+        if (!nested)
+            description.GetNamedObject(L"menu").GetNamedArray(L"items").GetObjectAt(0).SetNamedValue(
+                L"image", Object::Parse(LR"({"width":2,"height":2,"pixels":"0000ffff00000000000000000000ffff"})"));
         MenuPublish(api, hwnd, description.Stringify().c_str());
         settle();
         Require(menu.IsOpen() && menu.Items().Size() == count && menu.Items().GetAt(count - 1).ActualWidth() > 0,
                 "the authoritative description replaces the pending state in place");
-        Require(nested || bool(menu.Items().GetAt(0).as<Controls::MenuFlyoutItem>().Icon().try_as<Controls::ImageIcon>().Source()),
-                "menu uses a decoded image icon, never a font fallback glyph");
+        Require(
+            nested ||
+                bool(
+                    menu.Items().GetAt(0).as<Controls::MenuFlyoutItem>().Icon().try_as<Controls::ImageIcon>().Source()),
+            "menu uses a decoded image icon, never a font fallback glyph");
         Require(nested || menu.Items().GetAt(1).as<Controls::ToggleMenuFlyoutItem>().IsChecked(),
                 "authoritative checked state is rendered by a native toggle menu item");
     };
@@ -604,7 +626,8 @@ static void CheckContextMenu(HMODULE module, WinUIPaneApi& api, HWND hwnd) {
     open();
     Require(FAILED(api.syncTabMenu(hwnd, old.Stringify().c_str())), "late context is refused for producer recovery");
     Require(menu.IsOpen() && menu.Items().Size() == 3, "late state cannot replace current controls");
-    auto compact = Object::Parse(LR"({"version":2,"publishOnly":true,"state":{"base":1,"revision":2,"selection":[71,72]}})");
+    auto compact =
+        Object::Parse(LR"({"version":2,"publishOnly":true,"state":{"base":1,"revision":2,"selection":[71,72]}})");
     auto contextState = compact.GetNamedObject(L"state");
     contextState.SetNamedValue(L"base", Value::CreateNumberValue(menuTestRevision));
     contextState.SetNamedValue(L"revision", Value::CreateNumberValue(menuTestRevision + 1));
@@ -623,7 +646,7 @@ static void CheckContextMenu(HMODULE module, WinUIPaneApi& api, HWND hwnd) {
     MenuPublish(api, hwnd, current.Stringify().c_str());
     settle();
     Require(!menu.IsOpen(), "compact context dismisses obsolete menu descriptions");
-    open(); // Both tab identities survived the compact publication.
+    open();  // Both tab identities survived the compact publication.
     MenuPublish(api, hwnd, current.Stringify().c_str());
     Require(menu.IsOpen(), "exact compact replay does not dismiss a current opening");
     // A description that no longer names the open request must not be rendered.
@@ -637,8 +660,7 @@ static void CheckContextMenu(HMODULE module, WinUIPaneApi& api, HWND hwnd) {
                 "a description for another session, tab or revision is discarded");
     }
     auto reject = [&](Object const& malformed, char const* what) {
-        Require(FAILED(api.syncTabMenu(hwnd, malformed.Stringify().c_str())),
-                "invalid state rejected atomically");
+        Require(FAILED(api.syncTabMenu(hwnd, malformed.Stringify().c_str())), "invalid state rejected atomically");
         fprintf(stderr, "Reject %s open=%d items=%u\n", what, menu.IsOpen(), menu.Items().Size());
         Require(menu.IsOpen() && menu.Items().Size() == 3, "invalid state preserves current menu");
     };
@@ -665,8 +687,7 @@ static void CheckContextMenu(HMODULE module, WinUIPaneApi& api, HWND hwnd) {
             "an unanswered opening never becomes actionable");
     menu.Hide();
     settle();
-    while (DrainRequests(api, hwnd).Size()) {
-    }
+    while (DrainRequests(api, hwnd).Size()) {}
     current = MenuState({71});
     MenuPublish(api, hwnd, current.Stringify().c_str());
     sync(1);
@@ -693,8 +714,7 @@ static void CheckContextMenu(HMODULE module, WinUIPaneApi& api, HWND hwnd) {
     open();
     menu.Hide();
     settle();
-    while (DrainRequests(api, hwnd).Size()) {
-    }
+    while (DrainRequests(api, hwnd).Size()) {}
     current = MenuState({71, 72});
     for (auto binding : current.GetNamedObject(L"state").GetNamedArray(L"tabs"))
         binding.GetObject().SetNamedValue(L"selected", Value::CreateBooleanValue(true));
@@ -740,8 +760,7 @@ static void CheckShellCoreRequests(HMODULE module, WinUIPaneApi& api, HWND hwnd)
     uint32_t revision{};
     WinUITab tabs[]{{101, L"Core first", 7}, {102, L"Core second", 7}, {103, L"Core third", 7}};
     MenuPublish(api, hwnd, MenuState({101, 102, 103}).Stringify().c_str());
-    Require(SUCCEEDED(api.syncTabs(hwnd, tabs, 3, 101, NextTabRevision(), &revision)),
-            "seed the presentation model");
+    Require(SUCCEEDED(api.syncTabs(hwnd, tabs, 3, 101, NextTabRevision(), &revision)), "seed the presentation model");
     Require(revision != 0, "a snapshot reports the model revision it produced");
     Pump();
 
@@ -750,7 +769,12 @@ static void CheckShellCoreRequests(HMODULE module, WinUIPaneApi& api, HWND hwnd)
     static int notifications = 0;
     notifications = 0;
     Require(SUCCEEDED(api.setNotifySink(
-                hwnd, [](void*) -> BOOL { ++notifications; return TRUE; }, nullptr)),
+                hwnd,
+                [](void*) -> BOOL {
+                    ++notifications;
+                    return TRUE;
+                },
+                nullptr)),
             "register the drain wakeup");
     for (uint32_t id : {102u, 103u, 102u}) {
         view.SelectedItem(StripRow(view, id));
@@ -819,7 +843,8 @@ static void CheckShellCoreRequests(HMODULE module, WinUIPaneApi& api, HWND hwnd)
     auto delta = [&](wchar_t const* json) {
         uint32_t next = 0;
         auto publication = winrt::Windows::Data::Json::JsonObject::Parse(json);
-        publication.SetNamedValue(L"revision", winrt::Windows::Data::Json::JsonValue::CreateNumberValue(publication.GetNamedNumber(L"base") + 1));
+        publication.SetNamedValue(L"revision", winrt::Windows::Data::Json::JsonValue::CreateNumberValue(
+                                                   publication.GetNamedNumber(L"base") + 1));
         auto hr = api.applyTabDelta(hwnd, publication.Stringify().c_str(), &next);
         return std::pair<HRESULT, uint32_t>{hr, next};
     };
@@ -830,8 +855,8 @@ static void CheckShellCoreRequests(HMODULE module, WinUIPaneApi& api, HWND hwnd)
     Require(SUCCEEDED(applied.first) && applied.second > before, "a title delta applies and advances the revision");
     // Exact replay acknowledges the same producer stamp without work.
     Require(delta(title.c_str()).second == applied.second, "exact replay retains the publication revision");
-    auto selection = std::wstring(LR"({"version":1,"base":)") + std::to_wstring(applied.second) +
-                     LR"(,"selected":103,"titles":[]})";
+    auto selection =
+        std::wstring(LR"({"version":1,"base":)") + std::to_wstring(applied.second) + LR"(,"selected":103,"titles":[]})";
     auto selected = delta(selection.c_str());
     Require(SUCCEEDED(selected.first), "a selection delta applies");
     Pump();
@@ -846,7 +871,7 @@ static void CheckShellCoreRequests(HMODULE module, WinUIPaneApi& api, HWND hwnd)
     Pump();
     Require(view.SelectedItem() == StripRow(view, 103), "refused batch retains active selection");
     auto tabBatch = std::wstring(LR"({"version":1,"base":)") + std::to_wstring(selected.second) +
-                 LR"(,"selected":101,"titles":[{"id":102,"title":"batch two"},{"id":103,"title":"batch three"}]})";
+                    LR"(,"selected":101,"titles":[{"id":102,"title":"batch two"},{"id":103,"title":"batch three"}]})";
     auto batched = delta(tabBatch.c_str());
     Require(SUCCEEDED(batched.first) && batched.second == selected.second + 1,
             "two titles and selection acknowledge one producer revision");
@@ -862,7 +887,12 @@ static void CheckShellCoreRequests(HMODULE module, WinUIPaneApi& api, HWND hwnd)
     // Work queued with no sink must not be stranded: registering one again
     // schedules the wakeup that could not be delivered.
     Require(SUCCEEDED(api.setNotifySink(
-                hwnd, [](void*) -> BOOL { ++notifications; return TRUE; }, nullptr)),
+                hwnd,
+                [](void*) -> BOOL {
+                    ++notifications;
+                    return TRUE;
+                },
+                nullptr)),
             "re-register the drain wakeup");
     Require(notifications == 1, "a late sink picks up the work that could not be announced");
     CompleteRequests(api, hwnd, DrainRequests(api, hwnd));
@@ -876,11 +906,13 @@ static void CheckShellCoreRequests(HMODULE module, WinUIPaneApi& api, HWND hwnd)
         Require(SUCCEEDED(api.syncTabs(hwnd, tabs, 3, 101, NextTabRevision(), &revision)),
                 "the pane still accepts snapshots after a contained panic");
         uint32_t next = 0;
-        Require(api.applyTabDelta(hwnd, LR"({"version":1,"base":1,"revision":2,"titles":[]})", &next) == E_NOT_VALID_STATE,
-                "a poisoned core refuses deltas instead of pretending to apply them");
+        Require(
+            api.applyTabDelta(hwnd, LR"({"version":1,"base":1,"revision":2,"titles":[]})", &next) == E_NOT_VALID_STATE,
+            "a poisoned core refuses deltas instead of pretending to apply them");
     }
-    puts("Shell core: one wakeup per endpoint, superseding selection, blocked/unblocked execution, bounded batches, "
-         "replay rejection, incremental deltas, gap detection and panic containment passed");
+    puts(
+        "Shell core: one wakeup per endpoint, superseding selection, blocked/unblocked execution, bounded batches, "
+        "replay rejection, incremental deltas, gap detection and panic containment passed");
 }
 
 // Exercise OS-delivered Tab navigation before observing address edits.
@@ -937,7 +969,8 @@ static void CheckMenuThemes(HMODULE module, WinUIPaneApi& api, HWND hwnd, std::v
     }
     auto view = StripView(module, hwnd);
     auto root = view.XamlRoot().Content().as<Controls::Grid>();
-    std::function<FrameworkElement(DependencyObject const&)> findNewTab = [&](DependencyObject const& node) -> FrameworkElement {
+    std::function<FrameworkElement(DependencyObject const&)> findNewTab =
+        [&](DependencyObject const& node) -> FrameworkElement {
         if (auto element = node.try_as<FrameworkElement>();
             element && Automation::AutomationProperties::GetAutomationId(element) == L"FennStripNewTab")
             return element;
@@ -984,10 +1017,10 @@ static void CheckMenuThemes(HMODULE module, WinUIPaneApi& api, HWND hwnd, std::v
         auto action = request.GetNamedObject(L"action");
         // Answer the opening so there are real command rows to inspect.
         MenuPublish(api, hwnd,
-                     MenuDescription(action.GetNamedNumber(L"session"), uint32_t(action.GetNamedNumber(L"tab")),
-                                     action.GetNamedNumber(L"revision"))
-                         .Stringify()
-                         .c_str());
+                    MenuDescription(action.GetNamedNumber(L"session"), uint32_t(action.GetNamedNumber(L"tab")),
+                                    action.GetNamedNumber(L"revision"))
+                        .Stringify()
+                        .c_str());
         for (int i = 0; i < 300 && !menu.Items().GetAt(0).ActualWidth(); ++i) {
             Pump();
             Sleep(10);
@@ -1025,22 +1058,33 @@ static void CheckStockFlyout(HMODULE module, HWND hwnd) {
     bool opened = false;
     auto token = menu.Opened([&](auto const&, auto const&) { opened = true; });
     menu.ShowAt(anchor);
-    for (int i = 0; i < 500 && (!opened || item.ActualWidth() == 0); ++i) { Pump(); Sleep(10); }
+    for (int i = 0; i < 500 && (!opened || item.ActualWidth() == 0); ++i) {
+        Pump();
+        Sleep(10);
+    }
     menu.Opened(token);
-    fwprintf(stderr,L"Lifecycle popup opened=%d isOpen=%d item=%.1fx%.1f rootLoaded=%d visible=%d\n",
-        opened,menu.IsOpen(),item.ActualWidth(),item.ActualHeight(),anchor.IsLoaded(),anchor.XamlRoot().IsHostVisible());
+    fwprintf(stderr, L"Lifecycle popup opened=%d isOpen=%d item=%.1fx%.1f rootLoaded=%d visible=%d\n", opened,
+             menu.IsOpen(), item.ActualWidth(), item.ActualHeight(), anchor.IsLoaded(),
+             anchor.XamlRoot().IsHostVisible());
     Require(opened && menu.IsOpen() && item.ActualWidth() > 0 && item.ActualHeight() > 0,
-        "stock flyout renders across address-source closure");
+            "stock flyout renders across address-source closure");
     bool visible = false;
     // Use the same thread-scoped popup discovery as PaneAutomation.ps1.
-    EnumThreadWindows(GetCurrentThreadId(),[](HWND window,LPARAM data)->BOOL {
-        wchar_t name[256]{};GetClassNameW(window,name,256);
-        if(IsWindowVisible(window) && wcsstr(name,L"Popup"))*reinterpret_cast<bool*>(data)=true;
-        return TRUE;
-    },reinterpret_cast<LPARAM>(&visible));
-    Require(visible,"rendered lifecycle flyout has a visible native popup window");
+    EnumThreadWindows(
+        GetCurrentThreadId(),
+        [](HWND window, LPARAM data) -> BOOL {
+            wchar_t name[256]{};
+            GetClassNameW(window, name, 256);
+            if (IsWindowVisible(window) && wcsstr(name, L"Popup")) *reinterpret_cast<bool*>(data) = true;
+            return TRUE;
+        },
+        reinterpret_cast<LPARAM>(&visible));
+    Require(visible, "rendered lifecycle flyout has a visible native popup window");
     menu.Hide();
-    for(int i=0;i<30;++i){Pump();Sleep(10);}
+    for (int i = 0; i < 30; ++i) {
+        Pump();
+        Sleep(10);
+    }
 }
 
 void CheckAddress(WinUIPaneApi& api, HMODULE module, HWND hwnd) {
@@ -1051,7 +1095,8 @@ void CheckAddress(WinUIPaneApi& api, HMODULE module, HWND hwnd) {
         auto rows = [](wchar_t const* id) {
             auto data = winrt::Windows::Data::Json::JsonArray::Parse(
                 LR"([{"id":"old","title":"Tip","description":"Help","buttons":[{"id":"action","label":"Act","enabled":true}],"helpLink":{"id":"help","before":"","label":"Help","after":""}}])");
-            data.GetAt(0).GetObject().SetNamedValue(L"id", winrt::Windows::Data::Json::JsonValue::CreateStringValue(id));
+            data.GetAt(0).GetObject().SetNamedValue(L"id",
+                                                    winrt::Windows::Data::Json::JsonValue::CreateStringValue(id));
             return data;
         };
         suggestions.SyncRows(rows(L"old"));
@@ -1059,29 +1104,36 @@ void CheckAddress(WinUIPaneApi& api, HMODULE module, HWND hwnd) {
         auto button = suggestions.visuals[0].mainButtons[0];
         auto help = suggestions.visuals[0].help;
         suggestions.SyncRows(rows(L"new"));
-        Require(suggestions.list.Items().GetAt(0) == container &&
-                    suggestions.visuals[0].mainButtons[0] != button && suggestions.visuals[0].help != help,
+        Require(suggestions.list.Items().GetAt(0) == container && suggestions.visuals[0].mainButtons[0] != button &&
+                    suggestions.visuals[0].help != help,
                 "recycled slot replaces callbacks even when action metadata is unchanged");
         hstring activated;
         suggestions.activateButton = [&](auto const&, auto const& resultId) { activated = resultId; };
         Automation::Peers::ButtonAutomationPeer peer(suggestions.visuals[0].mainButtons[0]);
-        peer.GetPattern(Automation::Peers::PatternInterface::Invoke).as<Automation::Provider::IInvokeProvider>().Invoke();
+        peer.GetPattern(Automation::Peers::PatternInterface::Invoke)
+            .as<Automation::Provider::IInvokeProvider>()
+            .Invoke();
         Pump();
         Require(activated == L"new", "recycled tip action activates the current result identity");
         activated = L"";
         Automation::Peers::ButtonAutomationPeer retiredPeer(button);
-        retiredPeer.GetPattern(Automation::Peers::PatternInterface::Invoke).as<Automation::Provider::IInvokeProvider>().Invoke();
+        retiredPeer.GetPattern(Automation::Peers::PatternInterface::Invoke)
+            .as<Automation::Provider::IInvokeProvider>()
+            .Invoke();
         Pump();
         Require(activated.empty(), "detached control cannot dispatch its retired result action");
         auto currentButton = suggestions.visuals[0].mainButtons[0];
         auto currentHelp = suggestions.visuals[0].help;
         auto refreshed = rows(L"newer");
-        refreshed.GetAt(0).GetObject().SetNamedValue(L"presentationId", winrt::Windows::Data::Json::JsonValue::CreateStringValue(L"new"));
+        refreshed.GetAt(0).GetObject().SetNamedValue(L"presentationId",
+                                                     winrt::Windows::Data::Json::JsonValue::CreateStringValue(L"new"));
         suggestions.SyncRows(refreshed);
         Require(suggestions.visuals[0].mainButtons[0] == currentButton && suggestions.visuals[0].help == currentHelp,
                 "unchanged presentation keeps native controls across action-ID renewal");
         Automation::Peers::ButtonAutomationPeer currentPeer(currentButton);
-        currentPeer.GetPattern(Automation::Peers::PatternInterface::Invoke).as<Automation::Provider::IInvokeProvider>().Invoke();
+        currentPeer.GetPattern(Automation::Peers::PatternInterface::Invoke)
+            .as<Automation::Provider::IInvokeProvider>()
+            .Invoke();
         Pump();
         Require(activated == L"newer", "retained button dispatches only the current result identity");
         auto reordered = winrt::Windows::Data::Json::JsonArray::Parse(LR"([{"id":"inserted","title":"Inserted"}])");
@@ -1092,35 +1144,46 @@ void CheckAddress(WinUIPaneApi& api, HMODULE module, HWND hwnd) {
         suggestions.SyncSelection(L"newer");
         auto selectedContainer = suggestions.list.SelectedItem();
         int reorderSelectionChanges = 0;
-        const auto reorderToken = suggestions.list.SelectionChanged([&](auto const&, auto const&) { ++reorderSelectionChanges; });
+        const auto reorderToken =
+            suggestions.list.SelectionChanged([&](auto const&, auto const&) { ++reorderSelectionChanges; });
         suggestions.SyncRows(refreshed);
         suggestions.SyncSelection(L"newer");
         Require(reorderSelectionChanges == 0 && suggestions.list.SelectedItem() == selectedContainer,
                 "moving selected rich result forward never detaches or deselects its container");
-        suggestions.SyncRows(reordered); suggestions.SyncSelection(L"newer");
+        suggestions.SyncRows(reordered);
+        suggestions.SyncSelection(L"newer");
         Require(reorderSelectionChanges == 0 && suggestions.list.SelectedItem() == selectedContainer,
                 "insertion before selected result keeps its stock selection state");
         auto several = winrt::Windows::Data::Json::JsonArray::Parse(
             LR"([{"id":"one","title":"One"},{"id":"two","title":"Two"},{"id":"three","title":"Three"}])");
         several.Append(refreshed.GetAt(0));
-        suggestions.SyncRows(several); suggestions.SyncSelection(L"newer");
-        suggestions.SyncRows(refreshed); suggestions.SyncSelection(L"newer");
+        suggestions.SyncRows(several);
+        suggestions.SyncSelection(L"newer");
+        suggestions.SyncRows(refreshed);
+        suggestions.SyncSelection(L"newer");
         Require(reorderSelectionChanges == 0 && suggestions.list.SelectedItem() == selectedContainer,
                 "selected result survives multiple preceding removals without selection transitions");
-        refreshed.GetAt(0).GetObject().SetNamedValue(L"stale", winrt::Windows::Data::Json::JsonValue::CreateBooleanValue(true));
-        refreshed.GetAt(0).GetObject().SetNamedValue(L"retainedSelected", winrt::Windows::Data::Json::JsonValue::CreateBooleanValue(true));
-        suggestions.SyncRows(several); suggestions.SyncSelection(L"");
-        suggestions.SyncRows(refreshed); suggestions.SyncSelection(L"");
+        refreshed.GetAt(0).GetObject().SetNamedValue(L"stale",
+                                                     winrt::Windows::Data::Json::JsonValue::CreateBooleanValue(true));
+        refreshed.GetAt(0).GetObject().SetNamedValue(L"retainedSelected",
+                                                     winrt::Windows::Data::Json::JsonValue::CreateBooleanValue(true));
+        suggestions.SyncRows(several);
+        suggestions.SyncSelection(L"");
+        suggestions.SyncRows(refreshed);
+        suggestions.SyncSelection(L"");
         Require(reorderSelectionChanges == 0 && suggestions.CurrentSelectedIndex() == -1 &&
-                    suggestions.VisibleIds().empty() && !selectedContainer.as<Controls::ListViewItem>().IsHitTestVisible(),
+                    suggestions.VisibleIds().empty() &&
+                    !selectedContainer.as<Controls::ListViewItem>().IsHitTestVisible(),
                 "reordered retained selection stays visible without activation or exposure authority");
         activated = L"";
-        currentPeer.GetPattern(Automation::Peers::PatternInterface::Invoke).as<Automation::Provider::IInvokeProvider>().Invoke();
+        currentPeer.GetPattern(Automation::Peers::PatternInterface::Invoke)
+            .as<Automation::Provider::IInvokeProvider>()
+            .Invoke();
         Pump();
         Require(activated.empty(), "retained reordered rich action cannot activate a stale result");
         Require(suggestions.visuals[0].mainButtons[0] == currentButton && suggestions.visuals[0].help == currentHelp &&
-                    !currentButton.IsTabStop() && !currentHelp.IsTabStop() &&
-                    !suggestions.FirstButton() && !suggestions.FirstHelp() && !suggestions.FocusFirstAction(),
+                    !currentButton.IsTabStop() && !currentHelp.IsTabStop() && !suggestions.FirstButton() &&
+                    !suggestions.FirstHelp() && !suggestions.FocusFirstAction(),
                 "stale rich presentation keeps controls but excludes keyboard traversal");
         int fieldRecoveries = 0;
         suggestions.focusField = [&] { ++fieldRecoveries; };
@@ -1137,92 +1200,128 @@ void CheckAddress(WinUIPaneApi& api, HMODULE module, HWND hwnd) {
         auto acknowledgment = winrt::Windows::Data::Json::JsonArray::Parse(
             LR"([{"id":"ack","title":"Dismissed","feedback":"Dismissed"}])");
         suggestions.SyncRows(acknowledgment);
-        Require(Automation::AutomationProperties::GetLiveSetting(suggestions.visuals[0].title) == Automation::Peers::AutomationLiveSetting::Polite,
+        Require(Automation::AutomationProperties::GetLiveSetting(suggestions.visuals[0].title) ==
+                    Automation::Peers::AutomationLiveSetting::Polite,
                 "dismissal acknowledgment is a polite live region");
         auto inlineRow = winrt::Windows::Data::Json::JsonArray::Parse(
             LR"([{"id":"url","title":"Known site title","displayUrl":"example.test","inlineUrl":true}])");
-        suggestions.SyncRows(inlineRow); suggestions.RefreshLabels();
-        Require(Automation::AutomationProperties::GetLiveSetting(suggestions.visuals[0].title) == Automation::Peers::AutomationLiveSetting::Off,
+        suggestions.SyncRows(inlineRow);
+        suggestions.RefreshLabels();
+        Require(Automation::AutomationProperties::GetLiveSetting(suggestions.visuals[0].title) ==
+                    Automation::Peers::AutomationLiveSetting::Off,
                 "ordinary title reuse clears acknowledgment live-region state");
         Require(suggestions.visuals[0].title.Text() == L"Known site title" &&
                     suggestions.visuals[0].destination.Text() == L"example.test" &&
                     suggestions.visuals[0].destination.Visibility() == Visibility::Visible &&
                     suggestions.visuals[0].url.Visibility() == Visibility::Collapsed &&
-                    Automation::AutomationProperties::GetName(suggestions.list.Items().GetAt(0).as<Controls::ListViewItem>()) == L"Known site title · example.test",
+                    Automation::AutomationProperties::GetName(
+                        suggestions.list.Items().GetAt(0).as<Controls::ListViewItem>()) ==
+                        L"Known site title · example.test",
                 "Firefox-published heuristic title and display URL share one line and accessible name");
         auto emphasized = inlineRow.GetAt(0).GetObject();
-        emphasized.SetNamedValue(L"titleRuns", winrt::Windows::Data::Json::JsonArray::Parse(
-            LR"([{"text":"Known","matched":true},{"text":" site title","matched":false}])"));
-        emphasized.SetNamedValue(L"urlRuns", winrt::Windows::Data::Json::JsonArray::Parse(
-            LR"([{"text":"example","matched":true},{"text":".test","matched":false}])"));
+        emphasized.SetNamedValue(L"titleRuns",
+                                 winrt::Windows::Data::Json::JsonArray::Parse(
+                                     LR"([{"text":"Known","matched":true},{"text":" site title","matched":false}])"));
+        emphasized.SetNamedValue(L"urlRuns",
+                                 winrt::Windows::Data::Json::JsonArray::Parse(
+                                     LR"([{"text":"example","matched":true},{"text":".test","matched":false}])"));
         SuggestionList::ValidateTextRuns(emphasized, L"titleRuns", L"Known site title");
         SuggestionList::ValidateTextRuns(emphasized, L"urlRuns", L"example.test");
-        suggestions.SyncRows(inlineRow); suggestions.RefreshLabels();
+        suggestions.SyncRows(inlineRow);
+        suggestions.RefreshLabels();
         auto titleRun = suggestions.visuals[0].title.Inlines().GetAt(0).as<Documents::Run>();
-        Require(titleRun.FontWeight().Weight == 700 &&
-                    suggestions.visuals[0].title.Inlines().GetAt(1).as<Documents::Run>().FontWeight().Weight == 400 &&
-                    suggestions.visuals[0].destination.Inlines().GetAt(0).as<Documents::Run>().FontWeight().Weight == 700 &&
-                    suggestions.visuals[0].title.Text() == L"Known site title" &&
-                    Automation::AutomationProperties::GetName(suggestions.list.Items().GetAt(0).as<Controls::ListViewItem>()) == L"Known site title · example.test",
-                "Firefox spans emphasize title and URL without changing text or accessible name");
-        suggestions.SyncSelection(L"url"); suggestions.RefreshLabels(); suggestions.SyncRows(inlineRow);
+        Require(
+            titleRun.FontWeight().Weight == 700 &&
+                suggestions.visuals[0].title.Inlines().GetAt(1).as<Documents::Run>().FontWeight().Weight == 400 &&
+                suggestions.visuals[0].destination.Inlines().GetAt(0).as<Documents::Run>().FontWeight().Weight == 700 &&
+                suggestions.visuals[0].title.Text() == L"Known site title" &&
+                Automation::AutomationProperties::GetName(
+                    suggestions.list.Items().GetAt(0).as<Controls::ListViewItem>()) ==
+                    L"Known site title · example.test",
+            "Firefox spans emphasize title and URL without changing text or accessible name");
+        suggestions.SyncSelection(L"url");
+        suggestions.RefreshLabels();
+        suggestions.SyncRows(inlineRow);
         Require(suggestions.visuals[0].title.Inlines().GetAt(0) == titleRun,
                 "selection and unchanged publications retain highlighted text runs");
         bool rejectedRuns = false;
-        try { SuggestionList::ValidateTextRuns(emphasized, L"titleRuns", L"Different title"); }
-        catch (winrt::hresult_error const&) { rejectedRuns = true; }
+        try {
+            SuggestionList::ValidateTextRuns(emphasized, L"titleRuns", L"Different title");
+        } catch (winrt::hresult_error const&) {
+            rejectedRuns = true;
+        }
         Require(rejectedRuns, "mismatched highlighted text is rejected before presentation");
-        inlineRow.GetAt(0).GetObject().SetNamedValue(L"inlineUrl", winrt::Windows::Data::Json::JsonValue::CreateBooleanValue(false));
-        suggestions.SyncRows(inlineRow); suggestions.RefreshLabels();
-        Require(suggestions.visuals[0].title.Text() == L"Known site title" && suggestions.visuals[0].url.Visibility() == Visibility::Visible &&
+        inlineRow.GetAt(0).GetObject().SetNamedValue(L"inlineUrl",
+                                                     winrt::Windows::Data::Json::JsonValue::CreateBooleanValue(false));
+        suggestions.SyncRows(inlineRow);
+        suggestions.RefreshLabels();
+        Require(suggestions.visuals[0].title.Text() == L"Known site title" &&
+                    suggestions.visuals[0].url.Visibility() == Visibility::Visible &&
                     suggestions.visuals[0].destination.Visibility() == Visibility::Collapsed &&
                     suggestions.visuals[0].separator.Visibility() == Visibility::Collapsed,
                 "recycled row clears inline URL presentation when Firefox changes layout");
         Require(suggestions.visuals[0].url.Inlines().GetAt(0).as<Documents::Run>().FontWeight().Weight == 700,
                 "rich row URL retains Firefox emphasis");
-        emphasized.Remove(L"titleRuns"); emphasized.Remove(L"urlRuns");
-        suggestions.SyncRows(inlineRow); suggestions.RefreshLabels();
+        emphasized.Remove(L"titleRuns");
+        emphasized.Remove(L"urlRuns");
+        suggestions.SyncRows(inlineRow);
+        suggestions.RefreshLabels();
         Require(suggestions.visuals[0].title.Text() == L"Known site title" &&
                     suggestions.visuals[0].title.Inlines().GetAt(0).as<Documents::Run>().FontWeight().Weight == 400,
                 "unhighlighted publication clears previous emphasis");
         suggestions.SyncSelection(L"url");
         int selectionChanges = 0;
-        const auto selectionToken = suggestions.list.SelectionChanged([&](auto const&, auto const&) { ++selectionChanges; });
+        const auto selectionToken =
+            suggestions.list.SelectionChanged([&](auto const&, auto const&) { ++selectionChanges; });
         emphasized.SetNamedValue(L"stale", winrt::Windows::Data::Json::JsonValue::CreateBooleanValue(true));
-        suggestions.SyncRows(inlineRow); suggestions.SyncSelection(L""); suggestions.RefreshLabels();
-        Require(suggestions.retainedSelection == 0 && suggestions.list.SelectedIndex() == 0 && suggestions.CurrentSelectedIndex() == -1 &&
-                    !suggestions.HasCurrentRows() && suggestions.VisibleIds().empty(),
+        suggestions.SyncRows(inlineRow);
+        suggestions.SyncSelection(L"");
+        suggestions.RefreshLabels();
+        Require(suggestions.retainedSelection == 0 && suggestions.list.SelectedIndex() == 0 &&
+                    suggestions.CurrentSelectedIndex() == -1 && !suggestions.HasCurrentRows() &&
+                    suggestions.VisibleIds().empty(),
                 "pending query retains only selection appearance without activation or exposure authority");
-        suggestions.SyncRows(inlineRow); suggestions.SyncSelection(L"");
+        suggestions.SyncRows(inlineRow);
+        suggestions.SyncSelection(L"");
         Require(suggestions.retainedSelection == 0, "repeated pending publications preserve selection appearance");
         auto earlyHistory = winrt::Windows::Data::Json::JsonArray::Parse(
             LR"([{"id":"url","title":"Previous first","stale":true},{"id":"history","title":"Early history","sectionLabel":"Suggest"}])");
-        suggestions.SyncRows(earlyHistory); suggestions.SyncSelection(L"");
+        suggestions.SyncRows(earlyHistory);
+        suggestions.SyncSelection(L"");
         Require(suggestions.list.SelectedIndex() == 0 && suggestions.CurrentSelectedIndex() == -1 &&
-                    suggestions.visuals[0].section.Text().empty() && suggestions.visuals[1].section.Text() == L"Suggest",
+                    suggestions.visuals[0].section.Text().empty() &&
+                    suggestions.visuals[1].section.Text() == L"Suggest",
                 "late heuristic keeps heading below the stale selected first slot");
-        earlyHistory.GetAt(0).GetObject().SetNamedValue(L"stale", winrt::Windows::Data::Json::JsonValue::CreateBooleanValue(false));
-        earlyHistory.GetAt(0).GetObject().SetNamedValue(L"id", winrt::Windows::Data::Json::JsonValue::CreateStringValue(L"new-heuristic"));
-        suggestions.SyncRows(earlyHistory); suggestions.SyncSelection(L"new-heuristic");
+        earlyHistory.GetAt(0).GetObject().SetNamedValue(
+            L"stale", winrt::Windows::Data::Json::JsonValue::CreateBooleanValue(false));
+        earlyHistory.GetAt(0).GetObject().SetNamedValue(
+            L"id", winrt::Windows::Data::Json::JsonValue::CreateStringValue(L"new-heuristic"));
+        suggestions.SyncRows(earlyHistory);
+        suggestions.SyncSelection(L"new-heuristic");
         Require(selectionChanges == 0 && suggestions.list.Items().GetAt(0) == container,
                 "early history then heuristic never deselects or recreates the accented first container");
         emphasized.SetNamedValue(L"stale", winrt::Windows::Data::Json::JsonValue::CreateBooleanValue(false));
-        suggestions.SyncRows(inlineRow); suggestions.SyncSelection(L"url");
+        suggestions.SyncRows(inlineRow);
+        suggestions.SyncSelection(L"url");
         Require(selectionChanges == 0 && suggestions.CurrentSelectedIndex() == 0,
                 "pending-to-current first result never deselects/reselects the stock control");
         auto coalesced = winrt::Windows::Data::Json::JsonArray::Parse(
             LR"([{"id":"never-displayed","title":"Intermediate result","stale":true,"retainedSelected":true}])");
-        suggestions.SyncRows(coalesced); suggestions.SyncSelection(L"");
+        suggestions.SyncRows(coalesced);
+        suggestions.SyncSelection(L"");
         Require(selectionChanges == 0 && suggestions.list.SelectedIndex() == 0 &&
                     suggestions.CurrentSelectedIndex() == -1 && suggestions.VisibleIds().empty() &&
                     suggestions.list.Items().GetAt(0) == container,
                 "coalesced query publications preserve explicit stale selection without activation authority");
-        coalesced.GetAt(0).GetObject().SetNamedValue(L"retainedSelected", winrt::Windows::Data::Json::JsonValue::CreateBooleanValue(false));
-        suggestions.SyncRows(coalesced); suggestions.SyncSelection(L"");
+        coalesced.GetAt(0).GetObject().SetNamedValue(L"retainedSelected",
+                                                     winrt::Windows::Data::Json::JsonValue::CreateBooleanValue(false));
+        suggestions.SyncRows(coalesced);
+        suggestions.SyncSelection(L"");
         Require(suggestions.list.SelectedIndex() == -1,
                 "explicit Firefox empty retained selection overrides same-ID continuity");
         suggestions.list.SelectionChanged(selectionToken);
-        suggestions.SyncRows(inlineRow); suggestions.SyncSelection(L"");
+        suggestions.SyncRows(inlineRow);
+        suggestions.SyncSelection(L"");
         Require(suggestions.retainedSelection == -1 && suggestions.list.SelectedIndex() == -1,
                 "Firefox empty selection clears retained appearance when current rows arrive");
         suggestions.SyncRows(winrt::Windows::Data::Json::JsonArray::Parse(
@@ -1231,8 +1330,9 @@ void CheckAddress(WinUIPaneApi& api, HMODULE module, HWND hwnd) {
         Require(!suggestions.HasCurrentRows() && suggestions.list.Items().Size() == 1 &&
                     suggestions.list.Items().GetAt(0) == container &&
                     container.as<Controls::ListViewItem>().IsEnabled() &&
-                    !container.as<Controls::ListViewItem>().IsHitTestVisible() && suggestions.list.SelectedIndex() == -1 &&
-                    suggestions.VisibleIds().empty() && suggestions.visuals[0].mainButtons.empty() && !suggestions.visuals[0].help,
+                    !container.as<Controls::ListViewItem>().IsHitTestVisible() &&
+                    suggestions.list.SelectedIndex() == -1 && suggestions.VisibleIds().empty() &&
+                    suggestions.visuals[0].mainButtons.empty() && !suggestions.visuals[0].help,
                 "pending rows retain their appearance without selection, exposure or early-Enter readiness");
         suggestions.Clear();
         Require(suggestions.ids.empty() && suggestions.list.Items().Size() == 0,
@@ -1240,69 +1340,84 @@ void CheckAddress(WinUIPaneApi& api, HMODULE module, HWND hwnd) {
     }
     {
         PinnedExtensionButtons indicators;
-        auto state= PinnedExtensionButtons::Read(winrt::Windows::Data::Json::JsonObject::Parse(
-            LR"({"navigation":{"omnibarLeft":[{"id":"warning","label":"Warning","enabled":true,"alwaysVisible":true,"background":[0,0,0,0],"foreground":[0,0,0,255]},{"id":"ordinary","label":"Action","enabled":true,"background":[0,0,0,0],"foreground":[0,0,0,255]}]}})"),L"omnibarLeft");
-        fwprintf(stderr,L"Icon fixture state %s:%s\n",state[0].icon.c_str(),state[0].iconState.c_str());
-        indicators.Apply(state,true);
+        auto state = PinnedExtensionButtons::Read(
+            winrt::Windows::Data::Json::JsonObject::Parse(
+                LR"({"navigation":{"omnibarLeft":[{"id":"warning","label":"Warning","enabled":true,"alwaysVisible":true,"background":[0,0,0,0],"foreground":[0,0,0,255]},{"id":"ordinary","label":"Action","enabled":true,"background":[0,0,0,0],"foreground":[0,0,0,255]}]}})"),
+            L"omnibarLeft");
+        fwprintf(stderr, L"Icon fixture state %s:%s\n", state[0].icon.c_str(), state[0].iconState.c_str());
+        indicators.Apply(state, true);
         indicators.SetRevealed(false);
-        Require(indicators.panel.Opacity()==1 && indicators.rows.at(L"warning").button.Opacity()==1 &&
-                    indicators.rows.at(L"ordinary").button.Opacity()==0,
+        Require(indicators.panel.Opacity() == 1 && indicators.rows.at(L"warning").button.Opacity() == 1 &&
+                    indicators.rows.at(L"ordinary").button.Opacity() == 0,
                 "persistent Firefox indicator survives hover-off without revealing adjacent ordinary action");
         indicators.SetRevealed(true);
-        Require(indicators.rows.at(L"ordinary").button.Opacity()==1, "hover reveals ordinary action");
-        state[0].alwaysVisible=false;
-        fwprintf(stderr,L"Icon fixture state %s:%s\n",state[0].icon.c_str(),state[0].iconState.c_str());
-        indicators.Apply(state,true); indicators.SetRevealed(false);
-        Require(indicators.rows.at(L"warning").button.Opacity()==0, "cleared active state returns to hover-only presentation");
-        auto retained=indicators.rows.at(L"warning").button;
-        state[0].icon=L"camera"; state[0].iconState=L"blocked";
-        fwprintf(stderr,L"Icon fixture state %s:%s\n",state[0].icon.c_str(),state[0].iconState.c_str());
-        indicators.Apply(state,true);
-        auto& native=indicators.rows.at(L"warning");
-        Require(native.button==retained && native.image.Visibility()==Visibility::Collapsed &&
-            native.nativeHost.Visibility()==Visibility::Visible && native.blocked.Visibility()==Visibility::Visible,
-            "built-in blocked icon replaces pixels without rebuilding the control");
+        Require(indicators.rows.at(L"ordinary").button.Opacity() == 1, "hover reveals ordinary action");
+        state[0].alwaysVisible = false;
+        fwprintf(stderr, L"Icon fixture state %s:%s\n", state[0].icon.c_str(), state[0].iconState.c_str());
+        indicators.Apply(state, true);
+        indicators.SetRevealed(false);
+        Require(indicators.rows.at(L"warning").button.Opacity() == 0,
+                "cleared active state returns to hover-only presentation");
+        auto retained = indicators.rows.at(L"warning").button;
+        state[0].icon = L"camera";
+        state[0].iconState = L"blocked";
+        fwprintf(stderr, L"Icon fixture state %s:%s\n", state[0].icon.c_str(), state[0].iconState.c_str());
+        indicators.Apply(state, true);
+        auto& native = indicators.rows.at(L"warning");
+        Require(native.button == retained && native.image.Visibility() == Visibility::Collapsed &&
+                    native.nativeHost.Visibility() == Visibility::Visible &&
+                    native.blocked.Visibility() == Visibility::Visible,
+                "built-in blocked icon replaces pixels without rebuilding the control");
         for (auto kind : {L"microphone", L"camera", L"screen"}) {
-            state[0].icon=kind; state[0].iconState=L"recording";
-            indicators.Apply(state,true);
-            Require(native.button==retained && native.recording.Visibility()==Visibility::Visible &&
-                native.active.Visibility()==Visibility::Collapsed, "active capture has a separate recording cue");
-            state[0].iconState=L"normal";
-            indicators.Apply(state,true);
-            Require(native.recording.Visibility()==Visibility::Collapsed, "permission alone has no recording cue");
+            state[0].icon = kind;
+            state[0].iconState = L"recording";
+            indicators.Apply(state, true);
+            Require(native.button == retained && native.recording.Visibility() == Visibility::Visible &&
+                        native.active.Visibility() == Visibility::Collapsed,
+                    "active capture has a separate recording cue");
+            state[0].iconState = L"normal";
+            indicators.Apply(state, true);
+            Require(native.recording.Visibility() == Visibility::Collapsed, "permission alone has no recording cue");
         }
-        state[0].icon=L"microphone"; state[0].iconState=L"paused";
-        fwprintf(stderr,L"Icon fixture state %s:%s\n",state[0].icon.c_str(),state[0].iconState.c_str());
-        indicators.Apply(state,true);
-        Require(native.nativeIcon.Glyph()==OmnibarIcons::Glyph(L"microphone") &&
-            native.blocked.Visibility()==Visibility::Collapsed && native.active.Visibility()==Visibility::Collapsed &&
-            native.recording.Visibility()==Visibility::Collapsed,
-            "paused sharing keeps its device icon without an activity badge");
-        state[0].icon=L"translation"; state[0].iconState=L"busy";
-        fwprintf(stderr,L"Icon fixture state %s:%s\n",state[0].icon.c_str(),state[0].iconState.c_str());
-        indicators.Apply(state,true);
-        Require(native.busy.IsActive() && native.nativeIcon.Visibility()==Visibility::Collapsed,
-            "translation loading uses the native progress ring");
-        state[0].iconState=L"active"; state[0].badge=L"fr";
-        fwprintf(stderr,L"Icon fixture state %s:%s\n",state[0].icon.c_str(),state[0].iconState.c_str());
-        indicators.Apply(state,true);
-        Require(!native.busy.IsActive() && native.active.Visibility()==Visibility::Visible &&
-            native.nativeText.Text()==L"fr" && native.badgeBorder.Visibility()==Visibility::Collapsed,
-            "translation completion retains locale with native themed text");
-        state[0].icon=L"pip"; state[0].badge=L"";
-        fwprintf(stderr,L"Icon fixture state %s:%s\n",state[0].icon.c_str(),state[0].iconState.c_str());
-        indicators.Apply(state,true);
-        Require(native.nativeVector.Data() && native.nativeVector.Visibility()==Visibility::Visible,
-            "built-in vector icon is native geometry");
-        state[0].icon=L""; state[0].iconState=L"normal";
-        state[0].image=winrt::Windows::Data::Json::JsonObject::Parse(LR"({"width":1,"height":1,"pixels":"000000ff"})");
-        fwprintf(stderr,L"Icon fixture state %s:%s\n",state[0].icon.c_str(),state[0].iconState.c_str());
-        indicators.Apply(state,true);
-        Require(native.nativeHost.Visibility()==Visibility::Collapsed && native.image.Source() &&
-            native.image.Visibility()==Visibility::Visible && native.button==retained,
-            "extension image path stays intact and clears native presentation");
-        indicators.Apply({},true);
-        Require(indicators.rows.empty() && indicators.panel.Visibility()==Visibility::Collapsed,
+        state[0].icon = L"microphone";
+        state[0].iconState = L"paused";
+        fwprintf(stderr, L"Icon fixture state %s:%s\n", state[0].icon.c_str(), state[0].iconState.c_str());
+        indicators.Apply(state, true);
+        Require(native.nativeIcon.Glyph() == OmnibarIcons::Glyph(L"microphone") &&
+                    native.blocked.Visibility() == Visibility::Collapsed &&
+                    native.active.Visibility() == Visibility::Collapsed &&
+                    native.recording.Visibility() == Visibility::Collapsed,
+                "paused sharing keeps its device icon without an activity badge");
+        state[0].icon = L"translation";
+        state[0].iconState = L"busy";
+        fwprintf(stderr, L"Icon fixture state %s:%s\n", state[0].icon.c_str(), state[0].iconState.c_str());
+        indicators.Apply(state, true);
+        Require(native.busy.IsActive() && native.nativeIcon.Visibility() == Visibility::Collapsed,
+                "translation loading uses the native progress ring");
+        state[0].iconState = L"active";
+        state[0].badge = L"fr";
+        fwprintf(stderr, L"Icon fixture state %s:%s\n", state[0].icon.c_str(), state[0].iconState.c_str());
+        indicators.Apply(state, true);
+        Require(!native.busy.IsActive() && native.active.Visibility() == Visibility::Visible &&
+                    native.nativeText.Text() == L"fr" && native.badgeBorder.Visibility() == Visibility::Collapsed,
+                "translation completion retains locale with native themed text");
+        state[0].icon = L"pip";
+        state[0].badge = L"";
+        fwprintf(stderr, L"Icon fixture state %s:%s\n", state[0].icon.c_str(), state[0].iconState.c_str());
+        indicators.Apply(state, true);
+        Require(native.nativeVector.Data() && native.nativeVector.Visibility() == Visibility::Visible,
+                "built-in vector icon is native geometry");
+        state[0].icon = L"";
+        state[0].iconState = L"normal";
+        state[0].image =
+            winrt::Windows::Data::Json::JsonObject::Parse(LR"({"width":1,"height":1,"pixels":"000000ff"})");
+        fwprintf(stderr, L"Icon fixture state %s:%s\n", state[0].icon.c_str(), state[0].iconState.c_str());
+        indicators.Apply(state, true);
+        Require(native.nativeHost.Visibility() == Visibility::Collapsed && native.image.Source() &&
+                    native.image.Visibility() == Visibility::Visible && native.button == retained,
+                "extension image path stays intact and clears native presentation");
+        indicators.Apply({}, true);
+        Require(indicators.rows.empty() && indicators.panel.Visibility() == Visibility::Collapsed,
                 "Firefox removal revokes persistent indicators");
     }
     std::vector<wchar_t> output(262144);
@@ -1311,19 +1426,20 @@ void CheckAddress(WinUIPaneApi& api, HMODULE module, HWND hwnd) {
     auto publishAddress = [&](wchar_t const* json) -> HRESULT {
         try {
             auto value = winrt::Windows::Data::Json::JsonObject::Parse(json);
-            value.SetNamedValue(L"sequence", winrt::Windows::Data::Json::JsonValue::CreateNumberValue(double(++addressSequence)));
+            value.SetNamedValue(L"sequence",
+                                winrt::Windows::Data::Json::JsonValue::CreateNumberValue(double(++addressSequence)));
             return api.syncAddress(hwnd, value.Stringify().c_str());
-        } catch (...) { return E_INVALIDARG; }
+        } catch (...) {
+            return E_INVALIDARG;
+        }
     };
     const wchar_t* snapshot =
         LR"({"version":1,"enabled":true,"session":"native-test","revision":1,"sequence":1,"text":"initial","rows":[{"id":"a","title":"First suggestion"},{"id":"b","title":"Second suggestion"}]})";
     // The address lives in its own toolbar island beside the strip.
     RECT addressRect{100, 44, 570, 76};
     Require(SUCCEEDED(api.updateAddress(hwnd, &addressRect, TRUE)), "toolbar address host");
-    Require(FAILED(publishAddress(L"{broken")),
-            "reject malformed address JSON");
-    Require(SUCCEEDED(publishAddress(snapshot)),
-            "accept native address snapshot");
+    Require(FAILED(publishAddress(L"{broken")), "reject malformed address JSON");
+    Require(SUCCEEDED(publishAddress(snapshot)), "accept native address snapshot");
     Pump();
     auto inspect =
         reinterpret_cast<HRESULT(WINAPI*)(HWND, void**)>(GetProcAddress(module, "WinUIPaneTestGetAddressContent"));
@@ -1344,99 +1460,123 @@ void CheckAddress(WinUIPaneApi& api, HMODULE module, HWND hwnd) {
         // including the semantic container-color binding.
         PinnedExtensionButtons icons;
         std::vector<PinnedExtensionButtons::State> states;
-        for (auto kind : {L"bookmark",L"pip",L"fruit",L"pet",L"tree",L"fence",L"fingerprint",L"translation"}) {
+        for (auto kind : {L"bookmark", L"pip", L"fruit", L"pet", L"tree", L"fence", L"fingerprint", L"translation"}) {
             PinnedExtensionButtons::State next;
-            next.id=kind; next.label=kind; next.icon=kind;
-            next.enabled=true; next.alwaysVisible=true;
-            next.iconColored=next.icon!=L"bookmark" && next.icon!=L"pip" && next.icon!=L"translation";
-            next.foreground={255,34,102,170};
+            next.id = kind;
+            next.label = kind;
+            next.icon = kind;
+            next.enabled = true;
+            next.alwaysVisible = true;
+            next.iconColored = next.icon != L"bookmark" && next.icon != L"pip" && next.icon != L"translation";
+            next.foreground = {255, 34, 102, 170};
             states.push_back(next);
         }
-        icons.Apply(states,true);
-        auto root=content.as<Controls::Grid>();
-        auto original=root.RequestedTheme();
+        icons.Apply(states, true);
+        auto root = content.as<Controls::Grid>();
+        auto original = root.RequestedTheme();
         root.Children().Append(icons.panel);
         root.UpdateLayout();
         AwaitLiveTree(icons.rows.at(L"fence").nativeVector);
         winrt::Windows::UI::Color light{};
-        for (auto theme : {ElementTheme::Light,ElementTheme::Dark,ElementTheme::Light}) {
+        for (auto theme : {ElementTheme::Light, ElementTheme::Dark, ElementTheme::Light}) {
             root.RequestedTheme(theme);
-            for (int i=0;i<20;++i) { Pump(); Sleep(10); }
-            auto color=icons.rows.at(L"bookmark").nativeIcon.Foreground().as<Media::SolidColorBrush>().Color();
-            Require(icons.rows.at(L"bookmark").nativeIcon.ActualTheme()==theme,"native icon follows live root theme");
-            if (theme==ElementTheme::Light) light=color;
+            for (int i = 0; i < 20; ++i) {
+                Pump();
+                Sleep(10);
+            }
+            auto color = icons.rows.at(L"bookmark").nativeIcon.Foreground().as<Media::SolidColorBrush>().Color();
+            Require(icons.rows.at(L"bookmark").nativeIcon.ActualTheme() == theme,
+                    "native icon follows live root theme");
+            if (theme == ElementTheme::Light)
+                light = color;
             else if (!winrt::Windows::UI::ViewManagement::AccessibilitySettings().HighContrast())
-                Require(color!=light,"native glyph foreground changes between light and dark");
+                Require(color != light, "native glyph foreground changes between light and dark");
             for (auto const& next : states) {
-                auto& row=icons.rows.at(next.id);
+                auto& row = icons.rows.at(next.id);
                 if (OmnibarIcons::Path(next.icon)) {
-                    fwprintf(stderr,L"Live vector %s: data=%d loaded=%d button=%d host=%d panel=%d width=%f\n",next.icon.c_str(),bool(row.nativeVector.Data()),row.nativeVector.IsLoaded(),row.button.IsLoaded(),row.nativeHost.IsLoaded(),icons.panel.IsLoaded(),row.nativeVector.ActualWidth());
-                    Require(row.nativeVector.Data() && row.nativeVector.IsLoaded(),"custom vector realizes in live XAML");
+                    fwprintf(stderr, L"Live vector %s: data=%d loaded=%d button=%d host=%d panel=%d width=%f\n",
+                             next.icon.c_str(), bool(row.nativeVector.Data()), row.nativeVector.IsLoaded(),
+                             row.button.IsLoaded(), row.nativeHost.IsLoaded(), icons.panel.IsLoaded(),
+                             row.nativeVector.ActualWidth());
+                    Require(row.nativeVector.Data() && row.nativeVector.IsLoaded(),
+                            "custom vector realizes in live XAML");
                 }
                 if (next.iconColored && !winrt::Windows::UI::ViewManagement::AccessibilitySettings().HighContrast()) {
-                    Require(row.coloredIcon.Foreground().as<Media::SolidColorBrush>().Color()==next.foreground,"container font preserves semantic color across themes");
-                    if (OmnibarIcons::Path(next.icon)) Require(row.nativeVector.Foreground().as<Media::SolidColorBrush>().Color()==next.foreground,"container vector follows the live color binding");
+                    Require(row.coloredIcon.Foreground().as<Media::SolidColorBrush>().Color() == next.foreground,
+                            "container font preserves semantic color across themes");
+                    if (OmnibarIcons::Path(next.icon))
+                        Require(row.nativeVector.Foreground().as<Media::SolidColorBrush>().Color() == next.foreground,
+                                "container vector follows the live color binding");
                 }
             }
         }
-        uint32_t index=0;
-        if (root.Children().IndexOf(icons.panel,index)) root.Children().RemoveAt(index);
+        uint32_t index = 0;
+        if (root.Children().IndexOf(icons.panel, index)) root.Children().RemoveAt(index);
         root.RequestedTheme(original);
     }
     auto toolbarSurface = content.as<Controls::Grid>().Children().GetAt(0).as<Controls::Grid>();
     auto toolbarCorners = toolbarSurface.CornerRadius();
-    auto tabCorners = winrt::unbox_value<CornerRadius>(Application::Current().Resources().Lookup(winrt::box_value(L"OverlayCornerRadius")));
+    auto tabCorners = winrt::unbox_value<CornerRadius>(
+        Application::Current().Resources().Lookup(winrt::box_value(L"OverlayCornerRadius")));
     Require(toolbarCorners.TopLeft == tabCorners.TopLeft && toolbarCorners.TopRight == tabCorners.TopRight &&
-            toolbarCorners.BottomLeft == 0 && toolbarCorners.BottomRight == 0 && toolbarCorners.TopLeft > 0 &&
-            toolbarSurface.GetBindingExpression(Controls::Grid::CornerRadiusProperty()),
+                toolbarCorners.BottomLeft == 0 && toolbarCorners.BottomRight == 0 && toolbarCorners.TopLeft > 0 &&
+                toolbarSurface.GetBindingExpression(Controls::Grid::CornerRadiusProperty()),
             "navigation background keeps live tab-matching top corners and square bottom corners");
     {
-        auto stripInspect = reinterpret_cast<HRESULT(WINAPI*)(HWND, void**)>(GetProcAddress(module, "WinUIPaneTestGetContent"));
+        auto stripInspect =
+            reinterpret_cast<HRESULT(WINAPI*)(HWND, void**)>(GetProcAddress(module, "WinUIPaneTestGetContent"));
         UIElement stripContent{nullptr};
         Require(stripInspect && SUCCEEDED(stripInspect(hwnd, put_abi(stripContent))), "inspect strip border geometry");
         auto stripRoot = stripContent.as<Controls::Grid>();
         auto stripView = StripView(module, hwnd);
         auto originalHeader = stripView.TabStripHeader();
         Controls::Border header;
-        header.Width(160); header.Height(32);
+        header.Width(160);
+        header.Height(32);
         stripView.TabStripHeader(header);
         auto originalVisibility = toolbarSurface.Visibility();
-        auto radiusBinding = toolbarSurface.GetBindingExpression(Controls::Grid::CornerRadiusProperty()).ParentBinding();
+        auto radiusBinding =
+            toolbarSurface.GetBindingExpression(Controls::Grid::CornerRadiusProperty()).ParentBinding();
         toolbarSurface.Visibility(Visibility::Visible);
         auto extent = [&] {
             content.as<FrameworkElement>().UpdateLayout();
             stripRoot.UpdateLayout();
-            for (int i=0; i<20; ++i) { Pump(); Sleep(10); }
-            double left=1e9, right=-1e9;
+            for (int i = 0; i < 20; ++i) {
+                Pump();
+                Sleep(10);
+            }
+            double left = 1e9, right = -1e9;
             unsigned clipped{};
             std::function<void(DependencyObject const&)> visit = [&](DependencyObject const& node) {
                 if (node.try_as<Controls::TabViewItem>()) return;
-                if (auto line=node.try_as<Controls::Border>(); line && line.Clip() && line.ActualHeight()==1) {
-                    auto box=line.Clip().Rect();
+                if (auto line = node.try_as<Controls::Border>(); line && line.Clip() && line.ActualHeight() == 1) {
+                    auto box = line.Clip().Rect();
                     ++clipped;
-                    if (box.Width>0) {
-                        auto start=line.TransformToVisual(stripRoot).TransformPoint({box.X,0});
-                        left=std::min(left,double(start.X)); right=std::max(right,double(start.X+box.Width));
+                    if (box.Width > 0) {
+                        auto start = line.TransformToVisual(stripRoot).TransformPoint({box.X, 0});
+                        left = std::min(left, double(start.X));
+                        right = std::max(right, double(start.X + box.Width));
                     }
                 }
-                for (int i=0; i<Media::VisualTreeHelper::GetChildrenCount(node); ++i)
-                    visit(Media::VisualTreeHelper::GetChild(node,i));
+                for (int i = 0; i < Media::VisualTreeHelper::GetChildrenCount(node); ++i)
+                    visit(Media::VisualTreeHelper::GetChild(node, i));
             };
             visit(stripRoot);
-            fprintf(stderr,"Border trim: segments=%u extent=%.1f..%.1f surface=%.1fx%.1f loaded=%d\n",
-                    clipped,left,right,toolbarSurface.ActualWidth(),toolbarSurface.ActualHeight(),toolbarSurface.IsLoaded());
-            Require(clipped>=2 && right>left, "corner trim retains the stock interior border and caption continuations");
-            return std::pair{left,right};
+            fprintf(stderr, "Border trim: segments=%u extent=%.1f..%.1f surface=%.1fx%.1f loaded=%d\n", clipped, left,
+                    right, toolbarSurface.ActualWidth(), toolbarSurface.ActualHeight(), toolbarSurface.IsLoaded());
+            Require(clipped >= 2 && right > left,
+                    "corner trim retains the stock interior border and caption continuations");
+            return std::pair{left, right};
         };
-        auto before=extent();
-        toolbarSurface.CornerRadius({toolbarCorners.TopLeft+6,toolbarCorners.TopRight+6,0,0});
-        auto after=extent();
-        Require(after.first>=before.first+5 && after.second<=before.second-5,
+        auto before = extent();
+        toolbarSurface.CornerRadius({toolbarCorners.TopLeft + 6, toolbarCorners.TopRight + 6, 0, 0});
+        auto after = extent();
+        Require(after.first >= before.first + 5 && after.second <= before.second - 5,
                 "both border ends follow live toolbar corner radius changes");
-        toolbarSurface.SetBinding(Controls::Grid::CornerRadiusProperty(),radiusBinding);
+        toolbarSurface.SetBinding(Controls::Grid::CornerRadiusProperty(), radiusBinding);
         toolbarSurface.Visibility(Visibility::Collapsed);
         Pump();
-        for (uint32_t i : {4u,5u})
+        for (uint32_t i : {4u, 5u})
             Require(!stripRoot.Children().GetAt(i).as<Controls::Border>().Clip(),
                     "hiding native toolbar restores untrimmed caption borders");
         toolbarSurface.Visibility(originalVisibility);
@@ -1450,8 +1590,13 @@ void CheckAddress(WinUIPaneApi& api, HMODULE module, HWND hwnd) {
     Require(formattedDisplay.Parent() == header && !formattedDisplay.IsHitTestVisible(),
             "formatted URL display survives final toolbar layout and cannot intercept input");
     auto address = header.Parent().as<Controls::StackPanel>();
-    auto popupContent =
-        address.Children().GetAt(1).as<Controls::Primitives::Popup>().Child().as<Controls::Border>().Child().as<Controls::StackPanel>();
+    auto popupContent = address.Children()
+                            .GetAt(1)
+                            .as<Controls::Primitives::Popup>()
+                            .Child()
+                            .as<Controls::Border>()
+                            .Child()
+                            .as<Controls::StackPanel>();
     auto list = popupContent.Children().GetAt(0).as<Controls::ListView>();
     Require(address.Visibility() == Visibility::Visible && field.Text() == L"initial" && list.Items().Size() == 2,
             "real TextBox and ListView receive snapshot");
@@ -1463,8 +1608,12 @@ void CheckAddress(WinUIPaneApi& api, HMODULE module, HWND hwnd) {
             LR"([{"id":"compact","title":"Wikipedia","displayUrl":"wikipedia.org","inlineUrl":true,"actionLabel":"Switch to tab"}])");
         for (double width : {900.0, 420.0, 280.0}) {
             fixture.list.Width(width);
-            fixture.SyncRows(compact); fixture.SyncSelection(L""); fixture.RefreshLabels();
-            root.UpdateLayout(); AwaitLiveTree(fixture.visuals[0].headline); root.UpdateLayout();
+            fixture.SyncRows(compact);
+            fixture.SyncSelection(L"");
+            fixture.RefreshLabels();
+            root.UpdateLayout();
+            AwaitLiveTree(fixture.visuals[0].headline);
+            root.UpdateLayout();
             auto& visual = fixture.visuals[0];
             auto row = fixture.list.Items().GetAt(0).as<Controls::ListViewItem>();
             const auto height = row.ActualHeight();
@@ -1475,26 +1624,39 @@ void CheckAddress(WinUIPaneApi& api, HMODULE module, HWND hwnd) {
             Require(height >= 36 && height <= 40 && std::abs(titleBounds.Y - urlBounds.Y) < 1 &&
                         urlBounds.X > titleBounds.X + titleBounds.Width && urlBounds.X + urlBounds.Width <= width,
                     "ordinary destination stays beside the title in one compact row at wide and narrow widths");
-            fixture.SyncSelection(L"compact"); fixture.RefreshLabels(); root.UpdateLayout();
+            fixture.SyncSelection(L"compact");
+            fixture.RefreshLabels();
+            root.UpdateLayout();
             Require(row.ActualHeight() == height && visual.action.Visibility() == Visibility::Visible &&
                         visual.title.Text() == L"Wikipedia" && visual.destination.ActualWidth() > 0,
                     "selected action occupies its own bounded field without changing row height or title text");
             auto longRow = compact.GetAt(0).GetObject();
             longRow.SetNamedValue(L"title", winrt::Windows::Data::Json::JsonValue::CreateStringValue(
-                L"A very long page title that must leave room for its destination even in a narrow browser window"));
-            fixture.SyncRows(compact); fixture.RefreshLabels(); root.UpdateLayout();
-            Require(row.ActualHeight() == height && visual.title.IsTextTrimmed() && visual.destination.ActualWidth() > 20,
-                    "long title is ellipsized independently while a destination remains visible");
-            longRow.SetNamedValue(L"title", winrt::Windows::Data::Json::JsonValue::CreateStringValue(L"Page title\nwith an embedded line break"));
-            fixture.SyncRows(compact); fixture.RefreshLabels(); root.UpdateLayout();
+                                                L"A very long page title that must leave room for its destination even "
+                                                L"in a narrow browser window"));
+            fixture.SyncRows(compact);
+            fixture.RefreshLabels();
+            root.UpdateLayout();
+            Require(
+                row.ActualHeight() == height && visual.title.IsTextTrimmed() && visual.destination.ActualWidth() > 20,
+                "long title is ellipsized independently while a destination remains visible");
+            longRow.SetNamedValue(L"title", winrt::Windows::Data::Json::JsonValue::CreateStringValue(
+                                                L"Page title\nwith an embedded line break"));
+            fixture.SyncRows(compact);
+            fixture.RefreshLabels();
+            root.UpdateLayout();
             Require(row.ActualHeight() == height,
                     "embedded title line breaks cannot expand an ordinary result to two lines");
             longRow.SetNamedValue(L"title", winrt::Windows::Data::Json::JsonValue::CreateStringValue(L"Wikipedia"));
             longRow.SetNamedValue(L"inlineUrl", winrt::Windows::Data::Json::JsonValue::CreateBooleanValue(false));
-            longRow.SetNamedValue(L"description", winrt::Windows::Data::Json::JsonValue::CreateStringValue(L"Firefox rich description"));
-            fixture.SyncRows(compact); fixture.RefreshLabels(); root.UpdateLayout();
+            longRow.SetNamedValue(
+                L"description", winrt::Windows::Data::Json::JsonValue::CreateStringValue(L"Firefox rich description"));
+            fixture.SyncRows(compact);
+            fixture.RefreshLabels();
+            root.UpdateLayout();
             Require(row.ActualHeight() > height && visual.url.Visibility() == Visibility::Visible &&
-                        visual.destination.Visibility() == Visibility::Collapsed && visual.description.Text() == L"Firefox rich description",
+                        visual.destination.Visibility() == Visibility::Collapsed &&
+                        visual.description.Text() == L"Firefox rich description",
                     "reused compact row becomes rich without losing description or destination");
             longRow.Remove(L"description");
             longRow.SetNamedValue(L"inlineUrl", winrt::Windows::Data::Json::JsonValue::CreateBooleanValue(true));
@@ -1505,19 +1667,22 @@ void CheckAddress(WinUIPaneApi& api, HMODULE module, HWND hwnd) {
                 auto row = winrt::Windows::Data::Json::JsonObject::Parse(LR"({"id":"glyph","title":"Icon layout"})");
                 row.SetNamedValue(L"imageSize", winrt::Windows::Data::Json::JsonValue::CreateNumberValue(size));
                 row.SetNamedValue(L"symbol", winrt::Windows::Data::Json::JsonValue::CreateStringValue(kind));
-                winrt::Windows::Data::Json::JsonArray rows; rows.Append(row);
-                fixture.SyncRows(rows); fixture.RefreshLabels();
+                winrt::Windows::Data::Json::JsonArray rows;
+                rows.Append(row);
+                fixture.SyncRows(rows);
+                fixture.RefreshLabels();
                 root.UpdateLayout();
                 AwaitLiveTree(fixture.visuals[0].symbolHost);
                 auto host = fixture.visuals[0].symbolHost;
                 auto symbol = fixture.visuals[0].symbol;
                 Require(host.Width() == size && host.Height() == size && host.ActualWidth() == size &&
-                            host.Stretch() == Media::Stretch::Uniform && std::isnan(symbol.Width()) && std::isnan(symbol.Height()) &&
-                            symbol.ActualWidth() > 0 && symbol.ActualHeight() > 0,
+                            host.Stretch() == Media::Stretch::Uniform && std::isnan(symbol.Width()) &&
+                            std::isnan(symbol.Height()) && symbol.ActualWidth() > 0 && symbol.ActualHeight() > 0,
                         "stock fallback glyph keeps natural layout inside a scaled compact or rich icon slot");
                 const auto bounds = symbol.TransformToVisual(host).TransformBounds(
                     {0, 0, float(symbol.ActualWidth()), float(symbol.ActualHeight())});
-                Require(bounds.Width <= size + 0.1f && bounds.Height <= size + 0.1f && bounds.X >= -0.1f && bounds.Y >= -0.1f,
+                Require(bounds.Width <= size + 0.1f && bounds.Height <= size + 0.1f && bounds.X >= -0.1f &&
+                            bounds.Y >= -0.1f,
                         "complete fallback symbol bounds fit within the result icon slot");
             }
         }
@@ -1529,7 +1694,8 @@ void CheckAddress(WinUIPaneApi& api, HMODULE module, HWND hwnd) {
         auto root = content.as<Controls::Grid>();
         NativeAddressValue value;
         value.Create();
-        Require(value.display.Inlines().Size() == 3, "URL display contains exactly three styled runs, without XAML whitespace runs");
+        Require(value.display.Inlines().Size() == 3,
+                "URL display contains exactly three styled runs, without XAML whitespace runs");
         auto formatted = JsonObject::Parse(LR"({"domainEmphasis":{"text":"www.example.com/path","start":4,"end":15}})");
         NativeAddressValue::Validate(formatted);
         value.Apply(formatted);
@@ -1537,13 +1703,15 @@ void CheckAddress(WinUIPaneApi& api, HMODULE module, HWND hwnd) {
                     value.display.Inlines().GetAt(1).as<Documents::Run>().Text() == L"example.com" &&
                     value.display.Inlines().GetAt(2).as<Documents::Run>().Text() == L"/path",
                 "native URL display uses Firefox UTF-16 ranges without parsing the URL");
-        for (auto invalid : {LR"({"text":"url","start":-1,"end":2})",
-                             LR"({"text":"url","start":0.5,"end":2})",
-                             LR"({"text":"url","start":0,"end":9})",
-                             LR"({"text":"url","start":2,"end":2})"}) {
+        for (auto invalid : {LR"({"text":"url","start":-1,"end":2})", LR"({"text":"url","start":0.5,"end":2})",
+                             LR"({"text":"url","start":0,"end":9})", LR"({"text":"url","start":2,"end":2})"}) {
             formatted.SetNamedValue(L"domainEmphasis", JsonObject::Parse(invalid));
             bool rejected = false;
-            try { NativeAddressValue::Validate(formatted); } catch (...) { rejected = true; }
+            try {
+                NativeAddressValue::Validate(formatted);
+            } catch (...) {
+                rejected = true;
+            }
             Require(rejected, "malformed domain offsets are rejected before native mutation");
         }
         Controls::Grid displayHost;
@@ -1578,41 +1746,40 @@ void CheckAddress(WinUIPaneApi& api, HMODULE module, HWND hwnd) {
     // Reparenting the strip header above can queue address focus intents.
     // Complete them as Firefox does before asserting publication ordering;
     // visible direction metadata alone does not prove a snapshot committed.
-    for (int i=0;i<20;++i) {
+    for (int i = 0; i < 20; ++i) {
         Pump();
-        auto batch=DrainRequests(api,hwnd);
-        if(!batch.Size())break;
-        CompleteRequests(api,hwnd,batch);
+        auto batch = DrainRequests(api, hwnd);
+        if (!batch.Size()) break;
+        CompleteRequests(api, hwnd, batch);
     }
-    Require(SUCCEEDED(publishAddress(snapshot)),"commit settled address before ordering checks");
+    Require(SUCCEEDED(publishAddress(snapshot)), "commit settled address before ordering checks");
     auto directionSnapshot = winrt::Windows::Data::Json::JsonObject::Parse(snapshot);
     directionSnapshot.SetNamedValue(L"rtl", winrt::Windows::Data::Json::JsonValue::CreateBooleanValue(true));
     Require(SUCCEEDED(publishAddress(directionSnapshot.Stringify().c_str())) &&
                 address.FlowDirection() == FlowDirection::RightToLeft &&
                 field.FlowDirection() == FlowDirection::RightToLeft && field.Text() == L"initial",
             "mirror address layout without changing text");
-    Require(SUCCEEDED(publishAddress(snapshot)) &&
-                address.FlowDirection() == FlowDirection::LeftToRight && field.TextAlignment() == TextAlignment::Left,
+    Require(SUCCEEDED(publishAddress(snapshot)) && address.FlowDirection() == FlowDirection::LeftToRight &&
+                field.TextAlignment() == TextAlignment::Left,
             "restore default LTR address layout");
     auto stale = winrt::Windows::Data::Json::JsonObject::Parse(snapshot);
     stale.SetNamedValue(L"text", winrt::Windows::Data::Json::JsonValue::CreateStringValue(L"stale"));
     stale.SetNamedValue(L"rtl", winrt::Windows::Data::Json::JsonValue::CreateBooleanValue(true));
-    const auto staleResult=api.syncAddress(hwnd, stale.Stringify().c_str());
-    Require(SUCCEEDED(staleResult) && field.Text() == L"initial" &&
-                address.FlowDirection() == FlowDirection::LeftToRight,
-            "stale address publication leaves editor and direction untouched");
+    const auto staleResult = api.syncAddress(hwnd, stale.Stringify().c_str());
+    Require(
+        SUCCEEDED(staleResult) && field.Text() == L"initial" && address.FlowDirection() == FlowDirection::LeftToRight,
+        "stale address publication leaves editor and direction untouched");
     stale.SetNamedValue(L"placeholder", winrt::Windows::Data::Json::JsonValue::CreateNumberValue(5));
     Require(FAILED(api.syncAddress(hwnd, stale.Stringify().c_str())), "malformed stale address body is refused");
     auto invalidCompletion = winrt::Windows::Data::Json::JsonObject::Parse(snapshot);
     invalidCompletion.SetNamedValue(L"autofill", winrt::Windows::Data::Json::JsonObject::Parse(
-        LR"({"serial":1,"editId":0,"before":"ini","start":3,"end":999})"));
+                                                     LR"({"serial":1,"editId":0,"before":"ini","start":3,"end":999})"));
     Require(FAILED(publishAddress(invalidCompletion.Stringify().c_str())) && field.Text() == L"initial",
             "reject out-of-bounds completion before native editor mutation");
     auto originalRow = list.Items().GetAt(0);
     const wchar_t* imageSnapshot =
         LR"({"version":1,"enabled":true,"session":"native-test","revision":1,"sequence":2,"text":"initial","selectedId":"b","rows":[{"id":"a","title":"First suggestion","sectionLabel":"Shortcuts","imageSize":32,"image":{"width":1,"height":1,"pixels":"0000ffff"}},{"id":"b","title":"Second suggestion"}]})";
-    Require(SUCCEEDED(publishAddress(imageSnapshot)),
-            "accept decoded image");
+    Require(SUCCEEDED(publishAddress(imageSnapshot)), "accept decoded image");
     auto rowContent = originalRow.as<Controls::ListViewItem>().Content().as<Controls::StackPanel>();
     auto image = rowContent.Children()
                      .GetAt(1)
@@ -1634,26 +1801,28 @@ void CheckAddress(WinUIPaneApi& api, HMODULE module, HWND hwnd) {
     // Provider updates and subsequent edits use fresh result IDs. Retaining
     // only identical IDs misses the normal typing path and replays animations.
     auto secondRow = list.Items().GetAt(1);
-    Require(SUCCEEDED(publishAddress(
-        LR"({"version":1,"enabled":true,"session":"native-test","revision":1,"text":"initial","selectedId":"new-b","rows":[{"id":"new-a","title":"Updated first"},{"id":"new-b","title":"Updated second"},{"id":"new-c","title":"Added third"}]})")),
+    Require(
+        SUCCEEDED(publishAddress(
+            LR"({"version":1,"enabled":true,"session":"native-test","revision":1,"text":"initial","selectedId":"new-b","rows":[{"id":"new-a","title":"Updated first"},{"id":"new-b","title":"Updated second"},{"id":"new-c","title":"Added third"}]})")),
         "accept fresh query identities and an appended result");
     Pump();
-    Require(list.Items().Size() == 3 && list.Items().GetAt(0) == originalRow &&
-                list.Items().GetAt(1) == secondRow && list.SelectedIndex() == 1 &&
-                unbox_value<hstring>(originalRow.as<Controls::ListViewItem>().Tag()) == L"new-a" &&
-                Automation::AutomationProperties::GetName(originalRow.as<Controls::ListViewItem>()) == L"Updated first" &&
-                !image.Source(),
-            "typing retains containers while refreshing identity, accessibility, selection and image");
-    Require(SUCCEEDED(publishAddress(
-        LR"({"version":1,"enabled":true,"session":"native-test","revision":1,"text":"initial","rows":[{"id":"short-a","title":"Remaining result"}]})")) &&
-                list.Items().Size() == 1 && list.Items().GetAt(0) == originalRow && list.SelectedIndex() == -1,
-            "shrinking results removes only trailing containers and clears absent selection");
+    Require(
+        list.Items().Size() == 3 && list.Items().GetAt(0) == originalRow && list.Items().GetAt(1) == secondRow &&
+            list.SelectedIndex() == 1 &&
+            unbox_value<hstring>(originalRow.as<Controls::ListViewItem>().Tag()) == L"new-a" &&
+            Automation::AutomationProperties::GetName(originalRow.as<Controls::ListViewItem>()) == L"Updated first" &&
+            !image.Source(),
+        "typing retains containers while refreshing identity, accessibility, selection and image");
+    Require(
+        SUCCEEDED(publishAddress(
+            LR"({"version":1,"enabled":true,"session":"native-test","revision":1,"text":"initial","rows":[{"id":"short-a","title":"Remaining result"}]})")) &&
+            list.Items().Size() == 1 && list.Items().GetAt(0) == originalRow && list.SelectedIndex() == -1,
+        "shrinking results removes only trailing containers and clears absent selection");
     // Restore the original rows for the following independent fixtures.
     Require(SUCCEEDED(publishAddress(snapshot)), "restore original address fixture");
     const wchar_t* modesSnapshot =
         LR"({"version":1,"enabled":true,"session":"native-test","revision":1,"sequence":3,"text":"initial","rows":[{"id":"a","title":"First suggestion"},{"id":"b","title":"Second suggestion"}],"modes":{"generation":1,"applied":0,"active":false,"label":"Test engine","entries":[{"id":"engine","label":"Test engine","local":false,"symbol":"search","image":{"width":1,"height":1,"pixels":"0000ffff"}},{"id":"local","label":"History","local":true,"symbol":"history"},{"id":"settings","label":"Settings","local":true,"symbol":"settings"}]}})";
-    Require(SUCCEEDED(publishAddress(modesSnapshot)),
-            "accept native mode model");
+    Require(SUCCEEDED(publishAddress(modesSnapshot)), "accept native mode model");
     // The toolbar header also holds the embedded site controls, so find the
     // search-mode dropdown by type rather than position.
     Controls::DropDownButton modeButton{nullptr};
@@ -1691,8 +1860,7 @@ void CheckAddress(WinUIPaneApi& api, HMODULE module, HWND hwnd) {
         "reject changed menu identities without new generation");
     const wchar_t* globalSnapshot =
         LR"({"version":1,"enabled":true,"session":"native-test","revision":1,"sequence":4,"text":"initial","rows":[{"id":"a","title":"First suggestion"}],"globalActions":[{"id":"global:action:0","resultId":"global","title":"Search with Fixture","hint":"Press Tab to select:","image":{"width":1,"height":1,"pixels":"0000ffff"}}]})";
-    Require(SUCCEEDED(publishAddress(globalSnapshot)),
-            "accept separate global action");
+    Require(SUCCEEDED(publishAddress(globalSnapshot)), "accept separate global action");
     auto group = popupContent.Children().GetAt(1).as<Controls::StackPanel>();
     auto actionButton = group.Children().GetAt(0).as<Controls::StackPanel>().Children().GetAt(1).as<Controls::Button>();
     Require(list.Items().Size() == 1 && actionButton.Content() &&
@@ -1706,21 +1874,18 @@ void CheckAddress(WinUIPaneApi& api, HMODULE module, HWND hwnd) {
     // A publication produced before the edit predates it, so while the edit is
     // still outstanding it must not be applied -- otherwise the field snaps
     // back to the text the browser knew about when it published.
-    Require(SUCCEEDED(publishAddress(snapshot)),
-            "an older publication is accepted while an edit is outstanding");
+    Require(SUCCEEDED(publishAddress(snapshot)), "an older publication is accepted while an edit is outstanding");
     Require(field.Text() == L"changed", "old snapshot does not overwrite an outstanding edit");
     // Since the address intents joined the request path, the edit wakes the
     // host itself rather than waiting to be collected by the next publication.
     auto editRequest = NextRequest(api, hwnd, 6, L"edit");
     Require(editRequest.Size() != 0, "native edit reaches the request queue");
     auto edit = editRequest.GetNamedObject(L"action");
-    Require(edit.GetNamedString(L"text") == L"changed" &&
-                edit.GetNamedString(L"session") == L"native-test",
+    Require(edit.GetNamedString(L"text") == L"changed" && edit.GetNamedString(L"session") == L"native-test",
             "native edit is copied and session scoped");
     // Once the host has answered it, publications apply again: the browser is
     // now the authority on what the field should say.
-    Require(SUCCEEDED(publishAddress(snapshot)),
-            "publications apply again once the edit has been answered");
+    Require(SUCCEEDED(publishAddress(snapshot)), "publications apply again once the edit has been answered");
     Require(field.Text() == L"initial", "an answered edit stops holding off publications");
     // Fill the real pane queue with non-coalescing UIA button invocations.
     // A rejected edit must survive until completion frees queue capacity.
@@ -1743,7 +1908,8 @@ void CheckAddress(WinUIPaneApi& api, HMODULE module, HWND hwnd) {
                 if (request.GetNamedNumber(L"kind") != 6) continue;
                 auto action = request.GetNamedObject(L"action");
                 if (action.GetNamedString(L"kind") == L"edit" &&
-                    action.GetNamedString(L"text") == L"previous admitted edit") heldEdit = batch;
+                    action.GetNamedString(L"text") == L"previous admitted edit")
+                    heldEdit = batch;
             }
             if (!heldEdit.Size()) CompleteRequests(api, hwnd, batch);
         }
@@ -1752,7 +1918,8 @@ void CheckAddress(WinUIPaneApi& api, HMODULE module, HWND hwnd) {
                     "wait for address edit messages");
         }
     }
-    Require(heldEdit.Size() != 0, "receive and hold the previous admitted edit before filling the queue (10 second deadline)");
+    Require(heldEdit.Size() != 0,
+            "receive and hold the previous admitted edit before filling the queue (10 second deadline)");
     auto newTab = byId(StripView(module, hwnd), L"FennStripNewTab");
     auto invoke = Automation::Peers::FrameworkElementAutomationPeer::CreatePeerForElement(newTab)
                       .GetPattern(Automation::Peers::PatternInterface::Invoke)
@@ -1773,7 +1940,8 @@ void CheckAddress(WinUIPaneApi& api, HMODULE module, HWND hwnd) {
     Require(SUCCEEDED(publishAddress(snapshot)), "publish after the previous edit completes");
     Require(field.Text() == L"edit while full", "old completion preserves the newer unadmitted edit");
     auto firstFullBatch = DrainRequests(api, hwnd);
-    Require(firstFullBatch.Size() && firstFullBatch.GetNamedArray(L"requests").Size() == 16, "full queue yields a bounded batch");
+    Require(firstFullBatch.Size() && firstFullBatch.GetNamedArray(L"requests").Size() == 16,
+            "full queue yields a bounded batch");
     for (auto value : firstFullBatch.GetNamedArray(L"requests"))
         Require(value.GetObject().GetNamedNumber(L"kind") == 4, "queue was filled by actual new-tab actions");
     CompleteRequests(api, hwnd, firstFullBatch);
@@ -1809,36 +1977,49 @@ void CheckAddress(WinUIPaneApi& api, HMODULE module, HWND hwnd) {
     auto nextMenu = nextModes.GetNamedObject(L"modes");
     nextMenu.SetNamedValue(L"generation", winrt::Windows::Data::Json::JsonValue::CreateNumberValue(2));
     auto nextEntries = nextMenu.GetNamedArray(L"entries");
-    nextEntries.GetObjectAt(0).SetNamedValue(L"label", winrt::Windows::Data::Json::JsonValue::CreateStringValue(L"New engine"));
-    Require(publishUntil(nextModes.Stringify().c_str(), [&] { return modeButton.IsEnabled() &&
-        modeButton.Flyout().as<Controls::MenuFlyout>().Items().GetAt(0).as<Controls::MenuFlyoutItem>().Text() == L"New engine"; }),
-        "new mode generation replaces the menu");
+    nextEntries.GetObjectAt(0).SetNamedValue(L"label",
+                                             winrt::Windows::Data::Json::JsonValue::CreateStringValue(L"New engine"));
+    Require(publishUntil(nextModes.Stringify().c_str(),
+                         [&] {
+                             return modeButton.IsEnabled() && modeButton.Flyout()
+                                                                      .as<Controls::MenuFlyout>()
+                                                                      .Items()
+                                                                      .GetAt(0)
+                                                                      .as<Controls::MenuFlyoutItem>()
+                                                                      .Text() == L"New engine";
+                         }),
+            "new mode generation replaces the menu");
     const auto retainedFlyout = modeButton.Flyout().as<Controls::MenuFlyout>();
     const auto retainedModeItem = retainedFlyout.Items().GetAt(0).as<Controls::MenuFlyoutItem>();
     const auto retainedModeImage = retainedModeItem.Icon().as<Controls::ImageIcon>().Source();
     Require(SUCCEEDED(publishAddress(nextModes.Stringify().c_str())) && modeButton.Flyout() == retainedFlyout &&
-        retainedModeItem.Icon().as<Controls::ImageIcon>().Source() == retainedModeImage,
-        "mode replay preserves the flyout, item and bitmap");
-    Require(SUCCEEDED(publishAddress(modesSnapshot)) && modeButton.Flyout() == retainedFlyout && retainedModeItem.Text() == L"New engine",
-        "late mode generation cannot replace the accepted menu in a newer address publication");
+                retainedModeItem.Icon().as<Controls::ImageIcon>().Source() == retainedModeImage,
+            "mode replay preserves the flyout, item and bitmap");
+    Require(SUCCEEDED(publishAddress(modesSnapshot)) && modeButton.Flyout() == retainedFlyout &&
+                retainedModeItem.Text() == L"New engine",
+            "late mode generation cannot replace the accepted menu in a newer address publication");
     auto conflictingModes = winrt::Windows::Data::Json::JsonObject::Parse(nextModes.Stringify());
-    conflictingModes.SetNamedValue(L"text", winrt::Windows::Data::Json::JsonValue::CreateStringValue(L"must not apply"));
-    conflictingModes.GetNamedObject(L"modes").GetNamedArray(L"entries").GetObjectAt(0).SetNamedValue(L"label",
-        winrt::Windows::Data::Json::JsonValue::CreateStringValue(L"Conflicting engine"));
-    Require(FAILED(publishAddress(conflictingModes.Stringify().c_str())) && field.Text() == L"initial" && retainedModeItem.Text() == L"New engine",
-        "mode conflict refuses the container before editor or menu mutation");
-    nextEntries.GetObjectAt(0).GetNamedObject(L"image").SetNamedValue(L"pixels",
-        winrt::Windows::Data::Json::JsonValue::CreateStringValue(L"00ff00ff"));
+    conflictingModes.SetNamedValue(L"text",
+                                   winrt::Windows::Data::Json::JsonValue::CreateStringValue(L"must not apply"));
+    conflictingModes.GetNamedObject(L"modes")
+        .GetNamedArray(L"entries")
+        .GetObjectAt(0)
+        .SetNamedValue(L"label", winrt::Windows::Data::Json::JsonValue::CreateStringValue(L"Conflicting engine"));
+    Require(FAILED(publishAddress(conflictingModes.Stringify().c_str())) && field.Text() == L"initial" &&
+                retainedModeItem.Text() == L"New engine",
+            "mode conflict refuses the container before editor or menu mutation");
+    nextEntries.GetObjectAt(0).GetNamedObject(L"image").SetNamedValue(
+        L"pixels", winrt::Windows::Data::Json::JsonValue::CreateStringValue(L"00ff00ff"));
     Require(SUCCEEDED(publishAddress(nextModes.Stringify().c_str())) && modeButton.Flyout() == retainedFlyout &&
-        retainedFlyout.Items().GetAt(0) == retainedModeItem && retainedModeItem.Icon().as<Controls::ImageIcon>().Source() != retainedModeImage,
-        "same-generation image completion refreshes the icon in place");
+                retainedFlyout.Items().GetAt(0) == retainedModeItem &&
+                retainedModeItem.Icon().as<Controls::ImageIcon>().Source() != retainedModeImage,
+            "same-generation image completion refreshes the icon in place");
     for (int i = 0; i < 64; ++i) invoke.Invoke();
     Pump();
     field.Text(L"cancelled before admission");
     Pump();
-    Require(
-        SUCCEEDED(publishAddress(LR"({"version":1,"enabled":false})")),
-        "disable address controls with an unadmitted edit");
+    Require(SUCCEEDED(publishAddress(LR"({"version":1,"enabled":false})")),
+            "disable address controls with an unadmitted edit");
     Require(!NextRequest(api, hwnd, 6, L"edit", 8).Size(), "disabling cancels the unadmitted edit");
     Require(address.Visibility() == Visibility::Collapsed && list.Items().Size() == 0,
             "disable removes native suggestions");
@@ -1847,16 +2028,18 @@ void CheckAddress(WinUIPaneApi& api, HMODULE module, HWND hwnd) {
     auto popup = address.Children().GetAt(1).as<Controls::Primitives::Popup>();
     auto waiting = winrt::Windows::Data::Json::JsonObject::Parse(
         LR"({"version":1,"enabled":true,"session":"empty-popup-test","revision":1,"text":"waiting","open":true,"rows":[]})");
-    Require(SUCCEEDED(publishAddress(waiting.Stringify().c_str())) && !popup.IsOpen() && field.Text()==L"waiting",
+    Require(SUCCEEDED(publishAddress(waiting.Stringify().c_str())) && !popup.IsOpen() && field.Text() == L"waiting",
             "open pending query retains the editor without an empty popup");
-    waiting.SetNamedValue(L"rows", winrt::Windows::Data::Json::JsonArray::Parse(
-        LR"([{"id":"arrived","title":"Arrived result"}])"));
-    Require(SUCCEEDED(publishAddress(waiting.Stringify().c_str())) && popup.IsOpen() && list.Items().Size()==1,
+    waiting.SetNamedValue(
+        L"rows", winrt::Windows::Data::Json::JsonArray::Parse(LR"([{"id":"arrived","title":"Arrived result"}])"));
+    Require(SUCCEEDED(publishAddress(waiting.Stringify().c_str())) && popup.IsOpen() && list.Items().Size() == 1,
             "first asynchronous result opens the pending popup");
     waiting.SetNamedValue(L"rows", winrt::Windows::Data::Json::JsonArray());
     Require(SUCCEEDED(publishAddress(waiting.Stringify().c_str())) && !popup.IsOpen(),
             "removing the last result hides the empty surface");
-    waiting.SetNamedValue(L"globalActions", winrt::Windows::Data::Json::JsonObject::Parse(globalSnapshot).GetNamedArray(L"globalActions"));
+    waiting.SetNamedValue(
+        L"globalActions",
+        winrt::Windows::Data::Json::JsonObject::Parse(globalSnapshot).GetNamedArray(L"globalActions"));
     Require(SUCCEEDED(publishAddress(waiting.Stringify().c_str())) && popup.IsOpen() && !list.Items().Size(),
             "global actions alone still open the popup");
     waiting.SetNamedValue(L"open", winrt::Windows::Data::Json::JsonValue::CreateBooleanValue(false));
@@ -1866,7 +2049,8 @@ void CheckAddress(WinUIPaneApi& api, HMODULE module, HWND hwnd) {
     puts("Native address: real controls, bounded JSON, copied edit, feedback suppression and disable passed");
 }
 
-static void CheckTabStrip(HMODULE module, WinUIPaneApi& api, HWND host, bool selectionOnly = false, bool reentryOnly = false) {
+static void CheckTabStrip(HMODULE module, WinUIPaneApi& api, HWND host, bool selectionOnly = false,
+                          bool reentryOnly = false) {
     using namespace winrt;
     using namespace winrt::Microsoft::UI::Xaml;
     RECT rect{0, 0, 600, 40};
@@ -1883,8 +2067,7 @@ static void CheckTabStrip(HMODULE module, WinUIPaneApi& api, HWND host, bool sel
     WinUITab tabs[]{{11, L"Same title"}, {22, L"Same title"}};
     uint32_t selected{};
     auto sync = [&] {
-        Require(SUCCEEDED(api.syncTabs(host, tabs, 2, 11, NextTabRevision(), &selected)),
-                "sync strip snapshot");
+        Require(SUCCEEDED(api.syncTabs(host, tabs, 2, 11, NextTabRevision(), &selected)), "sync strip snapshot");
     };
     sync();
     auto inspect = reinterpret_cast<HRESULT(WINAPI*)(HWND, void**)>(GetProcAddress(module, "WinUIPaneTestGetContent"));
@@ -1894,7 +2077,7 @@ static void CheckTabStrip(HMODULE module, WinUIPaneApi& api, HWND host, bool sel
     auto view = root.Children().GetAt(0).as<Controls::TabView>();
     auto groupIndicator = root.Children().GetAt(2).as<Controls::Border>();
     Require(groupIndicator.Visibility() == Visibility::Collapsed && !groupIndicator.IsHitTestVisible() &&
-            groupIndicator.BorderThickness().Left == 2 && groupIndicator.BorderBrush(),
+                groupIndicator.BorderThickness().Left == 2 && groupIndicator.BorderBrush(),
             "group dwell visual starts hidden, themed and does not intercept input");
     auto first = view.TabItems().GetAt(0).as<Controls::TabViewItem>();
     auto second = view.TabItems().GetAt(1).as<Controls::TabViewItem>();
@@ -1913,21 +2096,29 @@ static void CheckTabStrip(HMODULE module, WinUIPaneApi& api, HWND host, bool sel
             GetProcAddress(module, "WinUIPaneTestSelectionDecorations"));
         auto refresh = reinterpret_cast<HRESULT(WINAPI*)(HWND)>(GetProcAddress(module, "WinUIPaneTestRefreshAmbient"));
         Require(inspectSelection && refresh, "selection decoration inspection available");
-        for (int i = 0; i < 30; ++i) { Pump(); Sleep(10); }
+        for (int i = 0; i < 30; ++i) {
+            Pump();
+            Sleep(10);
+        }
         Require(SUCCEEDED(refresh(host)), "prepare stationary decoration geometry");
         uint32_t revision{};
-        Require(SUCCEEDED(api.syncTabs(host, tabs, 2, 11, NextTabRevision(), &revision)), "prepare selection-delta base");
-        for (int i = 0; i < 30; ++i) { Pump(); Sleep(10); }
+        Require(SUCCEEDED(api.syncTabs(host, tabs, 2, 11, NextTabRevision(), &revision)),
+                "prepare selection-delta base");
+        for (int i = 0; i < 30; ++i) {
+            Pump();
+            Sleep(10);
+        }
         Require(SUCCEEDED(refresh(host)), "settle selection-delta geometry");
         for (uint32_t id : {22u, 11u, 22u, 11u}) {
             uint64_t before[4]{}, after[4]{};
             Require(SUCCEEDED(inspectSelection(host, before, FALSE)), "read selection decoration counts");
-            const auto delta = L"{\"version\":1,\"base\":" + std::to_wstring(revision) +
-                L",\"revision\":" + std::to_wstring(revision + 1) + L",\"titles\":[],\"selected\":" + std::to_wstring(id) + L"}";
+            const auto delta = L"{\"version\":1,\"base\":" + std::to_wstring(revision) + L",\"revision\":" +
+                               std::to_wstring(revision + 1) + L",\"titles\":[],\"selected\":" + std::to_wstring(id) +
+                               L"}";
             Require(SUCCEEDED(api.applyTabDelta(host, delta.c_str(), &revision)), "apply selection-only delta");
             Require(SUCCEEDED(inspectSelection(host, after, FALSE)), "read updated selection decoration counts");
             Require(after[0] == before[0] + 1 && after[1] == before[1] && after[2] == before[2],
-                "stationary ungrouped selection avoids full ambient and separator scans");
+                    "stationary ungrouped selection avoids full ambient and separator scans");
             Require(view.SelectedItem() == (id == 11 ? first : second), "stock TabView selection follows delta");
             Require(SUCCEEDED(inspectSelection(host, after, TRUE)), "incremental decorations match full refresh");
         }
@@ -1939,10 +2130,17 @@ static void CheckTabStrip(HMODULE module, WinUIPaneApi& api, HWND host, bool sel
                 if (size == 1000) {
                     std::vector<uint32_t> ids{11, 22};
                     std::vector<WinUITab> many{{11, L"Same title"}, {22, L"Same title"}};
-                    for (uint32_t i = 2; i < size; ++i) { ids.push_back(100 + i); many.push_back({100 + i, L"Background tab"}); }
+                    for (uint32_t i = 2; i < size; ++i) {
+                        ids.push_back(100 + i);
+                        many.push_back({100 + i, L"Background tab"});
+                    }
                     MenuPublish(api, host, MenuState(ids).Stringify().c_str());
-                    Require(SUCCEEDED(api.syncTabs(host, many.data(), size, 11, revision + 1, &revision)), "prepare 1000-tab reentry fixture");
-                    for (int i = 0; i < 50; ++i) { Pump(); Sleep(10); }
+                    Require(SUCCEEDED(api.syncTabs(host, many.data(), size, 11, revision + 1, &revision)),
+                            "prepare 1000-tab reentry fixture");
+                    for (int i = 0; i < 50; ++i) {
+                        Pump();
+                        Sleep(10);
+                    }
                     first = view.TabItems().GetAt(0).as<Controls::TabViewItem>();
                     second = view.TabItems().GetAt(1).as<Controls::TabViewItem>();
                 }
@@ -1960,28 +2158,46 @@ static void CheckTabStrip(HMODULE module, WinUIPaneApi& api, HWND host, bool sel
                         if (scenario == 1) root.InvalidateMeasure();
                         if (scenario == 2) first.InvalidateArrange();
                         if (scenario == 3) first.Padding(Thickness{double(iteration % 2), 0, 0, 0});
-                        if (scenario == 4) first.Header().as<Controls::Grid>().Children().GetAt(2).as<Controls::StackPanel>()
-                            .Children().GetAt(0).as<Controls::TextBlock>().Text(iteration % 2 ? L"Pending title" : L"Same title");
+                        if (scenario == 4)
+                            first.Header()
+                                .as<Controls::Grid>()
+                                .Children()
+                                .GetAt(2)
+                                .as<Controls::StackPanel>()
+                                .Children()
+                                .GetAt(0)
+                                .as<Controls::TextBlock>()
+                                .Text(iteration % 2 ? L"Pending title" : L"Same title");
                         const uint32_t id = iteration % 2 ? 11u : 22u;
-                        const auto delta = L"{\"version\":1,\"base\":" + std::to_wstring(revision) +
-                            L",\"revision\":" + std::to_wstring(revision + 1) + L",\"titles\":[],\"selected\":" + std::to_wstring(id) + L"}";
-                        Require(SUCCEEDED(api.applyTabDelta(host, delta.c_str(), &revision)), "apply reentry selection delta");
+                        const auto delta = L"{\"version\":1,\"base\":" + std::to_wstring(revision) + L",\"revision\":" +
+                                           std::to_wstring(revision + 1) + L",\"titles\":[],\"selected\":" +
+                                           std::to_wstring(id) + L"}";
+                        Require(SUCCEEDED(api.applyTabDelta(host, delta.c_str(), &revision)),
+                                "apply reentry selection delta");
                         Require(SUCCEEDED(inspectSelection(host, after, FALSE)), "read post-selection work");
                         if (after[0] > before[0]) {
                             ++fast;
-                            Require(SUCCEEDED(inspectSelection(host, after, TRUE)), "reentry selection output matches full refresh");
-                        } else ++fallback;
-                        Require(view.SelectedItem() == (id == 11 ? first : second), "reentry selection follows browser");
+                            Require(SUCCEEDED(inspectSelection(host, after, TRUE)),
+                                    "reentry selection output matches full refresh");
+                        } else
+                            ++fallback;
+                        Require(view.SelectedItem() == (id == 11 ? first : second),
+                                "reentry selection follows browser");
                         Pump();
                     }
                     root.UpdateLayout();
                     Require(SUCCEEDED(reentry(host, counts, FALSE)), "read reentry diagnostic");
-                    printf("REENTRY tabs=%u scenario=%u fast=%u fallback=%u attempts=%llu eligible=%llu layout_pre=%llu layout_body=%llu refresh_pre=%llu refresh_body=%llu layout_total=%llu\n",
-                        size, scenario, fast, fallback, counts[0], counts[1], counts[2], counts[3], counts[4], counts[5], counts[6]);
+                    printf(
+                        "REENTRY tabs=%u scenario=%u fast=%u fallback=%u attempts=%llu eligible=%llu layout_pre=%llu "
+                        "layout_body=%llu refresh_pre=%llu refresh_body=%llu layout_total=%llu\n",
+                        size, scenario, fast, fallback, counts[0], counts[1], counts[2], counts[3], counts[4],
+                        counts[5], counts[6]);
                     fflush(stdout);
-                    Require(counts[0] >= 60 && counts[6] > 0, "diagnostic observes real selections and layout callbacks");
+                    Require(counts[0] >= 60 && counts[6] > 0,
+                            "diagnostic observes real selections and layout callbacks");
                     if (scenario == 0) Require(fast > 0, "stationary diagnostic reaches fast path");
-                    Require(counts[4] == 0 && counts[5] == 0, "no full ambient refresh reentered selection geometry reads");
+                    Require(counts[4] == 0 && counts[5] == 0,
+                            "no full ambient refresh reentered selection geometry reads");
                 }
             }
             puts("CHECKS PASSED: selection reentry diagnostic, 600 deltas, pending XAML layout and 1000 tabs");
@@ -1992,40 +2208,45 @@ static void CheckTabStrip(HMODULE module, WinUIPaneApi& api, HWND host, bool sel
     Require(root.ColumnDefinitions().Size() == 3 && root.ColumnDefinitions().GetAt(2).Width().Value > 0,
             "system caption buttons reserve their SDK inset");
     Require(view.ActualWidth() + root.ColumnDefinitions().GetAt(0).Width().Value +
-                root.ColumnDefinitions().GetAt(2).Width().Value <= root.ActualWidth() + 1,
+                    root.ColumnDefinitions().GetAt(2).Width().Value <=
+                root.ActualWidth() + 1,
             "tabs do not overlap the system caption inset");
-    auto systemCaption = winrt::Microsoft::UI::Windowing::AppWindow::GetFromWindowId(
-        winrt::Microsoft::UI::GetWindowIdFromWindow(host)).TitleBar();
+    auto systemCaption =
+        winrt::Microsoft::UI::Windowing::AppWindow::GetFromWindowId(winrt::Microsoft::UI::GetWindowIdFromWindow(host))
+            .TitleBar();
     Controls::Button allTabs{nullptr};
     if (auto header = view.TabStripHeader().try_as<Controls::Panel>())
         for (auto child : header.Children())
             if (auto candidate = child.try_as<Controls::Button>();
-                candidate && winrt::Microsoft::UI::Xaml::Automation::AutomationProperties::GetAutomationId(candidate) == L"FennAllTabs")
+                candidate && winrt::Microsoft::UI::Xaml::Automation::AutomationProperties::GetAutomationId(candidate) ==
+                                 L"FennAllTabs")
                 allTabs = candidate;
     Require(allTabs && allTabs.Visibility() == Visibility::Visible && allTabs.Width() == 32 &&
                 allTabs.Content().try_as<Controls::FontIcon>() &&
                 allTabs.Content().as<Controls::FontIcon>().HorizontalAlignment() == HorizontalAlignment::Center,
             "list-all-tabs button sits in the strip header beside the product menu button");
-    Require(systemCaption.ExtendsContentIntoTitleBar() &&
-                systemCaption.PreferredHeightOption() == winrt::Microsoft::UI::Windowing::TitleBarHeightOption::Standard &&
-                GetPropW(host, WINUI_PANE_SYSTEM_CAPTION_PROPERTY),
-            "Windows owns the visible native strip caption");
+    Require(
+        systemCaption.ExtendsContentIntoTitleBar() &&
+            systemCaption.PreferredHeightOption() == winrt::Microsoft::UI::Windowing::TitleBarHeightOption::Standard &&
+            GetPropW(host, WINUI_PANE_SYSTEM_CAPTION_PROPERTY),
+        "Windows owns the visible native strip caption");
     Require(systemCaption.Height() <= root.ActualHeight() * root.XamlRoot().RasterizationScale(),
             "system caption controls stay inside the tab strip reservation");
     for (int height : {32, 48, 40}) {
         rect.bottom = height;
         Require(SUCCEEDED(api.updateTabStrip(host, &rect, TRUE)), "change strip height");
         const auto expected = height == 48 ? winrt::Microsoft::UI::Windowing::TitleBarHeightOption::Tall
-                                          : winrt::Microsoft::UI::Windowing::TitleBarHeightOption::Standard;
+                                           : winrt::Microsoft::UI::Windowing::TitleBarHeightOption::Standard;
         for (int i = 0; i < 100; ++i) {
             Pump();
             if (root.ActualHeight() == height && view.ActualHeight() == height && first.ActualHeight() == 32 &&
-                systemCaption.PreferredHeightOption() == expected) break;
+                systemCaption.PreferredHeightOption() == expected)
+                break;
             Sleep(10);
         }
         if (root.ActualHeight() != height || view.ActualHeight() != height || first.ActualHeight() != 32)
-            fprintf(stderr, "Strip height: requested=%d root=%.1f view=%.1f row=%.1f\n",
-                height, root.ActualHeight(), view.ActualHeight(), first.ActualHeight());
+            fprintf(stderr, "Strip height: requested=%d root=%.1f view=%.1f row=%.1f\n", height, root.ActualHeight(),
+                    view.ActualHeight(), first.ActualHeight());
         Require(root.ActualHeight() == height && view.ActualHeight() == height && first.ActualHeight() == 32,
                 "all strip layouts preserve tab height without a bottom band");
         Require(systemCaption.PreferredHeightOption() == expected, "caption size follows strip layout");
@@ -2042,8 +2263,8 @@ static void CheckTabStrip(HMODULE module, WinUIPaneApi& api, HWND host, bool sel
     Require(first != second && view.SelectedItem() == first, "duplicate titles preserve identity and active tab");
     view.SelectedItem(second);
     auto selectionRequest = NextRequest(api, host, 1);
-    auto event = selectionRequest.Size() ? selectionRequest.GetNamedObject(L"action")
-                                         : winrt::Windows::Data::Json::JsonObject();
+    auto event =
+        selectionRequest.Size() ? selectionRequest.GetNamedObject(L"action") : winrt::Windows::Data::Json::JsonObject();
     Require(event.Size() && event.GetNamedString(L"kind") == L"selection" && event.GetNamedNumber(L"tab") == 22,
             "TabView selection queues browser intent on the request path");
     sync();
@@ -2082,21 +2303,19 @@ static void CheckTabStrip(HMODULE module, WinUIPaneApi& api, HWND host, bool sel
             "short and long titles receive equal comfortable widths");
     WinUITab crowded[12]{{11, L"Same title"}, {22, L"Y"}};
     for (uint32_t i = 2; i < 12; ++i) crowded[i] = {100 + i, L"Another tab"};
-    Require(SUCCEEDED(api.syncTabs(host, crowded, 4, 11, NextTabRevision(), &selected)),
-            "four-tab sizing snapshot");
+    Require(SUCCEEDED(api.syncTabs(host, crowded, 4, 11, NextTabRevision(), &selected)), "four-tab sizing snapshot");
     settleWidths();
     fprintf(stderr, "Four width actual %.1f Width %.1f Min %.1f Max %.1f align %d\n", first.ActualWidth(),
             first.Width(), first.MinWidth(), first.MaxWidth(), int(first.HorizontalAlignment()));
     Require(first.ActualWidth() < spaciousWidth - 20 && first.ActualWidth() >= 99, "tabs shrink as the strip fills");
-    Require(SUCCEEDED(api.syncTabs(host, crowded, 12, 11, NextTabRevision(), &selected)),
-            "overflow sizing snapshot");
+    Require(SUCCEEDED(api.syncTabs(host, crowded, 12, 11, NextTabRevision(), &selected)), "overflow sizing snapshot");
     settleWidths();
     fprintf(stderr, "Tab sizing: spacious=%.1f crowded=%.1f\n", spaciousWidth, first.ActualWidth());
     Require(first.ActualWidth() >= 99 && first.ActualWidth() <= 101, "tabs stop shrinking at WinUI's 100-unit minimum");
     // Check real template controls, not just TabView's layout slot: an Auto
     // column inside the stock template can extend beyond that slot.
-    std::function<FrameworkElement(DependencyObject, hstring)> findStripPart =
-        [&](DependencyObject node, hstring name) -> FrameworkElement {
+    std::function<FrameworkElement(DependencyObject, hstring)> findStripPart = [&](DependencyObject node,
+                                                                                   hstring name) -> FrameworkElement {
         if (auto element = node.try_as<FrameworkElement>(); element && element.Name() == name) return element;
         for (int i = 0; i < Media::VisualTreeHelper::GetChildrenCount(node); ++i)
             if (auto found = findStripPart(Media::VisualTreeHelper::GetChild(node, i), name)) return found;
@@ -2110,10 +2329,10 @@ static void CheckTabStrip(HMODULE module, WinUIPaneApi& api, HWND host, bool sel
         const auto right = root.ActualWidth() - root.ColumnDefinitions().GetAt(2).ActualWidth();
         auto add = findStripPart(view, L"AddButton");
         Require(bool(add), "stock add button exists in overflowing strip");
-        const auto bounds = add.TransformToVisual(root).TransformBounds(
-            {0, 0, float(add.ActualWidth()), float(add.ActualHeight())});
-        fprintf(stderr, "Caption overflow: width=%d view=%.1f safe=[%.1f,%.1f] add=[%.1f,%.1f]\n",
-            width, view.ActualWidth(), left, right, bounds.X, bounds.X + bounds.Width);
+        const auto bounds =
+            add.TransformToVisual(root).TransformBounds({0, 0, float(add.ActualWidth()), float(add.ActualHeight())});
+        fprintf(stderr, "Caption overflow: width=%d view=%.1f safe=[%.1f,%.1f] add=[%.1f,%.1f]\n", width,
+                view.ActualWidth(), left, right, bounds.X, bounds.X + bounds.Width);
         Require(bounds.X >= left - 1 && bounds.X + bounds.Width <= right + 1,
                 "stock add button stays outside caption insets when overflowing and resizing");
     }
@@ -2122,17 +2341,18 @@ static void CheckTabStrip(HMODULE module, WinUIPaneApi& api, HWND host, bool sel
     Require(std::abs(first.ActualWidth() - spaciousWidth) < 1, "tabs grow after other tabs close");
     // Closing rows must retire their passthrough rectangles, and a position-only
     // island move must remap the surviving controls without requiring resize.
-    RECT captionOwner{}; GetWindowRect(host, &captionOwner);
+    RECT captionOwner{};
+    GetWindowRect(host, &captionOwner);
     SetForegroundWindow(host);
     BringWindowToTop(host);
     // The sizing fixture intentionally lets the island exceed its STATIC owner.
     // SDK hit regions are clipped to that owner: make this input fixture fit.
-    Require(SetWindowPos(host, nullptr, 0, 0, rect.right + 200, 480,
-        SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE), "fit caption input fixture inside its owner");
+    Require(SetWindowPos(host, nullptr, 0, 0, rect.right + 200, 480, SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE),
+            "fit caption input fixture inside its owner");
     settleWidths();
     std::function<FrameworkElement(DependencyObject)> captionAdd = [&](DependencyObject node) -> FrameworkElement {
-        if (auto e = node.try_as<FrameworkElement>(); e &&
-            (!e.IsLoaded() || e.Visibility() != Visibility::Visible)) return nullptr;
+        if (auto e = node.try_as<FrameworkElement>(); e && (!e.IsLoaded() || e.Visibility() != Visibility::Visible))
+            return nullptr;
         if (auto e = node.try_as<FrameworkElement>(); e && e.Name() == L"AddButton") return e;
         for (int i = 0; i < Media::VisualTreeHelper::GetChildrenCount(node); ++i)
             if (auto found = captionAdd(Media::VisualTreeHelper::GetChild(node, i))) return found;
@@ -2144,18 +2364,18 @@ static void CheckTabStrip(HMODULE module, WinUIPaneApi& api, HWND host, bool sel
         auto local = add.TransformToVisual(nullptr).TransformPoint(
             {float(add.ActualWidth()) + afterAdd, float(add.ActualHeight()) / 2});
         auto screen = root.XamlRoot().ContentIsland().CoordinateConverter().ConvertLocalToScreen(local);
-        POINT client{screen.X, screen.Y}; ScreenToClient(host, &client);
+        POINT client{screen.X, screen.Y};
+        ScreenToClient(host, &client);
         auto input = winrt::Microsoft::UI::Input::InputNonClientPointerSource::GetForWindowId(
             winrt::Microsoft::UI::GetWindowIdFromWindow(host));
         bool passthrough = false;
         for (auto r : input.GetRegionRects(winrt::Microsoft::UI::Input::NonClientRegionKind::Passthrough)) {
             fprintf(stderr, "Caption SDK pass %d,%d,%d,%d\n", r.X, r.Y, r.Width, r.Height);
-            passthrough |= client.x >= r.X && client.x < r.X + r.Width &&
-                client.y >= r.Y && client.y < r.Y + r.Height;
+            passthrough |= client.x >= r.X && client.x < r.X + r.Width && client.y >= r.Y && client.y < r.Y + r.Height;
         }
         const auto hit = SendMessageW(host, WM_NCHITTEST, 0, MAKELPARAM(screen.X, screen.Y));
-        fprintf(stderr, "Caption target afterAdd=%.0f client=%ld,%ld hit=%lld passthrough=%d\n",
-            afterAdd, client.x, client.y, static_cast<long long>(hit), passthrough);
+        fprintf(stderr, "Caption target afterAdd=%.0f client=%ld,%ld hit=%lld passthrough=%d\n", afterAdd, client.x,
+                client.y, static_cast<long long>(hit), passthrough);
         return std::pair{hit, passthrough};
     };
     auto checkCaptionTargets = [&] {
@@ -2164,7 +2384,8 @@ static void CheckTabStrip(HMODULE module, WinUIPaneApi& api, HWND host, bool sel
         const auto deadline = GetTickCount64() + 3000;
         bool ready = false;
         do {
-            Pump(); root.UpdateLayout();
+            Pump();
+            root.UpdateLayout();
             const auto button = captionHit(-16), empty = captionHit(30);
             ready = button.second && empty.first == HTCAPTION && !empty.second;
             if (ready) break;
@@ -2174,7 +2395,8 @@ static void CheckTabStrip(HMODULE module, WinUIPaneApi& api, HWND host, bool sel
     };
     checkCaptionTargets();
     const auto captionRect = rect;
-    rect.top += 26; rect.bottom += 26;
+    rect.top += 26;
+    rect.bottom += 26;
     Require(SUCCEEDED(api.updateTabStrip(host, &rect, TRUE)), "move strip without resizing its XAML root");
     settleWidths();
     checkCaptionTargets();
@@ -2183,23 +2405,27 @@ static void CheckTabStrip(HMODULE module, WinUIPaneApi& api, HWND host, bool sel
     settleWidths();
     checkCaptionTargets();
     Require(SetWindowPos(host, nullptr, 0, 0, captionOwner.right - captionOwner.left,
-        captionOwner.bottom - captionOwner.top, SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE),
-        "restore caption fixture owner dimensions");
+                         captionOwner.bottom - captionOwner.top, SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE),
+            "restore caption fixture owner dimensions");
     settleWidths();
-    puts("CHECKS PASSED: closed-row caption holes retire and position-only moves preserve New Tab and empty-space input");
+    puts(
+        "CHECKS PASSED: closed-row caption holes retire and position-only moves preserve New Tab and empty-space "
+        "input");
     // Adding and closing a tab animate the New Tab button, the tab itself (a
     // reveal clip or a stand-in) and, when widths change, the other tabs. Check
     // in both flow directions that each piece starts, points the right way and
     // is fully cleaned up, by polling the pane's own bookkeeping.
     {
-        auto entry = reinterpret_cast<HRESULT(WINAPI*)(HWND, uint32_t, uint32_t*)>(GetProcAddress(module, "WinUIPaneTestEntryMotion"));
+        auto entry = reinterpret_cast<HRESULT(WINAPI*)(HWND, uint32_t, uint32_t*)>(
+            GetProcAddress(module, "WinUIPaneTestEntryMotion"));
         Require(entry != nullptr, "entry motion inspector exists");
         const bool animated = winrt::Windows::UI::ViewManagement::UISettings().AnimationsEnabled();
         for (int i = 0; i < 400; ++i) {
             uint32_t idle[10]{};
             Require(SUCCEEDED(entry(host, 0, idle)), "wait for prior caption-fixture motion before pixel control");
             if (!idle[0] && !idle[3] && !idle[4] && !idle[5] && !idle[6]) break;
-            Pump(); Sleep(5);
+            Pump();
+            Sleep(5);
         }
         // Rendered-pixel control: a fixed-size favicon must stay square while
         // its row changes width. The uncompensated control proves this capture
@@ -2210,7 +2436,10 @@ static void CheckTabStrip(HMODULE module, WinUIPaneApi& api, HWND host, bool sel
             const auto background = icon.Background();
             const auto visibility = icon.Visibility();
             std::vector<Visibility> iconChildren;
-            for (auto child : icon.Children()) { iconChildren.push_back(child.Visibility()); child.Visibility(Visibility::Collapsed); }
+            for (auto child : icon.Children()) {
+                iconChildren.push_back(child.Visibility());
+                child.Visibility(Visibility::Collapsed);
+            }
             icon.Background(Media::SolidColorBrush(winrt::Windows::UI::Color{255, 255, 0, 255}));
             icon.Visibility(Visibility::Visible);
             auto visual = Hosting::ElementCompositionPreview::GetElementVisual(first);
@@ -2219,28 +2448,44 @@ static void CheckTabStrip(HMODULE module, WinUIPaneApi& api, HWND host, bool sel
             const auto originalCenter = visual.CenterPoint();
             visual.CenterPoint({0, 0, 0});
             auto marker = [&] {
-                for (int i = 0; i < 15; ++i) { Pump(); Sleep(10); }
-                RECT client{}; GetClientRect(host, &client);
-                POINT origin{}; ClientToScreen(host, &origin);
+                for (int i = 0; i < 15; ++i) {
+                    Pump();
+                    Sleep(10);
+                }
+                RECT client{};
+                GetClientRect(host, &client);
+                POINT origin{};
+                ClientToScreen(host, &origin);
                 HDC screen = GetDC(nullptr), memory = CreateCompatibleDC(screen);
-                BITMAPINFO info{}; info.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
-                info.bmiHeader.biWidth = client.right; info.bmiHeader.biHeight = -client.bottom;
-                info.bmiHeader.biPlanes = 1; info.bmiHeader.biBitCount = 32; info.bmiHeader.biCompression = BI_RGB;
+                BITMAPINFO info{};
+                info.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+                info.bmiHeader.biWidth = client.right;
+                info.bmiHeader.biHeight = -client.bottom;
+                info.bmiHeader.biPlanes = 1;
+                info.bmiHeader.biBitCount = 32;
+                info.bmiHeader.biCompression = BI_RGB;
                 void* pixels{};
                 HBITMAP bitmap = CreateDIBSection(screen, &info, DIB_RGB_COLORS, &pixels, nullptr, 0);
                 Require(bitmap && pixels, "create content-scale capture");
                 auto previous = SelectObject(memory, bitmap);
-                Require(BitBlt(memory, 0, 0, client.right, client.bottom, screen, origin.x, origin.y, SRCCOPY), "capture composed tab content");
+                Require(BitBlt(memory, 0, 0, client.right, client.bottom, screen, origin.x, origin.y, SRCCOPY),
+                        "capture composed tab content");
                 int left = client.right, right = -1, top = client.bottom, bottom = -1;
                 auto data = static_cast<uint32_t const*>(pixels);
-                for (int y = 0; y < client.bottom; ++y) for (int x = 0; x < client.right; ++x) {
-                    const auto pixel = data[y * client.right + x];
-                    if ((pixel & 255) > 240 && ((pixel >> 8) & 255) < 20 && ((pixel >> 16) & 255) > 240) {
-                        left = std::min(left, x); right = std::max(right, x);
-                        top = std::min(top, y); bottom = std::max(bottom, y);
+                for (int y = 0; y < client.bottom; ++y)
+                    for (int x = 0; x < client.right; ++x) {
+                        const auto pixel = data[y * client.right + x];
+                        if ((pixel & 255) > 240 && ((pixel >> 8) & 255) < 20 && ((pixel >> 16) & 255) > 240) {
+                            left = std::min(left, x);
+                            right = std::max(right, x);
+                            top = std::min(top, y);
+                            bottom = std::max(bottom, y);
+                        }
                     }
-                }
-                SelectObject(memory, previous); DeleteObject(bitmap); DeleteDC(memory); ReleaseDC(nullptr, screen);
+                SelectObject(memory, previous);
+                DeleteObject(bitmap);
+                DeleteDC(memory);
+                ReleaseDC(nullptr, screen);
                 Require(right >= left && bottom >= top, "favicon marker is visible in composed pixels");
                 return std::pair{right - left + 1, bottom - top + 1};
             };
@@ -2252,88 +2497,136 @@ static void CheckTabStrip(HMODULE module, WinUIPaneApi& api, HWND host, bool sel
                 uint32_t ignored[10]{};
                 Require(SUCCEEDED(entry(host, rtlContent ? 2 : 1, ignored)), "set content-scale flow direction");
                 {
-                    auto title=first.Header().as<Controls::Grid>().Children().GetAt(2).as<FrameworkElement>();
-                    auto text=title.as<Controls::StackPanel>().Children().GetAt(0).as<Controls::TextBlock>();
-                    const auto oldText=text.Text();
-                    text.Text(L"A long tab title that must retain its native ellipsis throughout every intermediate resize width, including repeated opens and closes");
+                    auto title = first.Header().as<Controls::Grid>().Children().GetAt(2).as<FrameworkElement>();
+                    auto text = title.as<Controls::StackPanel>().Children().GetAt(0).as<Controls::TextBlock>();
+                    const auto oldText = text.Text();
+                    text.Text(
+                        L"A long tab title that must retain its native ellipsis throughout every intermediate resize "
+                        L"width, including repeated opens and closes");
                     TabContentScale preserve(first);
                     for (float scale : {.65f, 1.35f, .8f, 1.f}) {
                         visual.Scale({scale, 1, 1});
-                        preserve.Update(first.ActualWidth()*scale);
+                        preserve.Update(first.ActualWidth() * scale);
                         const auto shown = marker();
-                        Require(text.IsTextTrimmed(),"native ellipsis remains active at intermediate displayed widths");
-                        fprintf(stderr, "Content scale rtl=%d scale=%.2f natural=%dx%d shown=%dx%d\n",
-                            int(rtlContent), scale, natural.first, natural.second, shown.first, shown.second);
+                        Require(text.IsTextTrimmed(),
+                                "native ellipsis remains active at intermediate displayed widths");
+                        fprintf(stderr, "Content scale rtl=%d scale=%.2f natural=%dx%d shown=%dx%d\n", int(rtlContent),
+                                scale, natural.first, natural.second, shown.first, shown.second);
                         Require(std::abs(shown.first - natural.first) <= 1 && shown.second == natural.second,
-                            "composed favicon retains its natural size through shrink, grow and interruption");
+                                "composed favicon retains its natural size through shrink, grow and interruption");
                     }
                     text.Text(oldText);
                 }
                 visual.Scale({.65f, 1, 1});
-                Require(marker().first < natural.first - 2, "content compensation releases its expression on cancellation");
+                Require(marker().first < natural.first - 2,
+                        "content compensation releases its expression on cancellation");
             }
-            visual.Scale(originalScale); visual.CenterPoint(originalCenter);
-            icon.Background(background); icon.Visibility(visibility);
+            visual.Scale(originalScale);
+            visual.CenterPoint(originalCenter);
+            icon.Background(background);
+            icon.Visibility(visibility);
             for (uint32_t i = 0; i < iconChildren.size(); ++i) icon.Children().GetAt(i).Visibility(iconChildren[i]);
             uint32_t ignored[10]{};
             Require(SUCCEEDED(entry(host, 1, ignored)), "restore flow direction after content-scale checks");
             settleWidths();
         }
         {
-            Controls::Grid toolbar; toolbar.Width(320); toolbar.Height(32);
+            Controls::Grid toolbar;
+            toolbar.Width(320);
+            toolbar.Height(32);
             Controls::Button left, middle, right;
-            for (auto button : {left,middle,right}) { button.Width(32); button.Height(32); }
-            Automation::AutomationProperties::SetAutomationId(middle,L"MotionButton");
-            toolbar.Children().Append(left); toolbar.Children().Append(right); root.Children().Append(toolbar);
+            for (auto button : {left, middle, right}) {
+                button.Width(32);
+                button.Height(32);
+            }
+            Automation::AutomationProperties::SetAutomationId(middle, L"MotionButton");
+            toolbar.Children().Append(left);
+            toolbar.Children().Append(right);
+            root.Children().Append(toolbar);
             auto arrange = [&](std::vector<UIElement> const& order) {
                 toolbar.ColumnDefinitions().Clear();
-                for (size_t i=0;i<order.size();++i) {
-                    Controls::ColumnDefinition column; column.Width(GridLengthHelper::FromPixels(36));
-                    toolbar.ColumnDefinitions().Append(column); Controls::Grid::SetColumn(order[i].as<FrameworkElement>(),int(i));
+                for (size_t i = 0; i < order.size(); ++i) {
+                    Controls::ColumnDefinition column;
+                    column.Width(GridLengthHelper::FromPixels(36));
+                    toolbar.ColumnDefinitions().Append(column);
+                    Controls::Grid::SetColumn(order[i].as<FrameworkElement>(), int(i));
                 }
                 root.UpdateLayout();
             };
-            std::vector<UIElement> pair{left,right}, triple{left,middle,right}; arrange(pair);
+            std::vector<UIElement> pair{left, right}, triple{left, middle, right};
+            arrange(pair);
             ToolbarMotion motion;
-            auto inspectToolbar=[&](bool removal) {
-                bool exit=false,move=false,enter=false;
-                for(int i=0;i<500 && motion.phase!=ToolbarMotion::Phase::Idle;++i) {
+            auto inspectToolbar = [&](bool removal) {
+                bool exit = false, move = false, enter = false;
+                for (int i = 0; i < 500 && motion.phase != ToolbarMotion::Phase::Idle; ++i) {
                     winrt::Windows::Foundation::Numerics::float3 shift{};
-                    Hosting::ElementCompositionPreview::GetElementVisual(right).Properties().TryGetVector3(L"Translation",shift);
-                    if(motion.phase==ToolbarMotion::Phase::Exit) {
-                        exit=true; Require(std::abs(shift.x-36)<.01,"toolbar neighbor waits for exit");
-                        Require(!middle.IsHitTestVisible() && !middle.IsTabStop() && Automation::AutomationProperties::GetAutomationId(middle).empty(),
-                            "toolbar exit has no input or automation identity");
+                    Hosting::ElementCompositionPreview::GetElementVisual(right).Properties().TryGetVector3(
+                        L"Translation", shift);
+                    if (motion.phase == ToolbarMotion::Phase::Exit) {
+                        exit = true;
+                        Require(std::abs(shift.x - 36) < .01, "toolbar neighbor waits for exit");
+                        Require(!middle.IsHitTestVisible() && !middle.IsTabStop() &&
+                                    Automation::AutomationProperties::GetAutomationId(middle).empty(),
+                                "toolbar exit has no input or automation identity");
                     }
-                    if(motion.phase==ToolbarMotion::Phase::Move) {
-                        move=true;
-                        if(removal) Require(motion.overlay.Visibility()==Visibility::Collapsed,"exit disappears before toolbar neighbors move");
-                        else Require(Hosting::ElementCompositionPreview::GetElementVisual(middle).Opacity()==0,"toolbar addition waits invisibly for its gap");
+                    if (motion.phase == ToolbarMotion::Phase::Move) {
+                        move = true;
+                        if (removal)
+                            Require(motion.overlay.Visibility() == Visibility::Collapsed,
+                                    "exit disappears before toolbar neighbors move");
+                        else
+                            Require(Hosting::ElementCompositionPreview::GetElementVisual(middle).Opacity() == 0,
+                                    "toolbar addition waits invisibly for its gap");
                     }
-                    if(motion.phase==ToolbarMotion::Phase::Enter) {enter=true;Require(std::abs(shift.x)<.01,"toolbar neighbors finish before entrance");}
-                    Pump();Sleep(2);
+                    if (motion.phase == ToolbarMotion::Phase::Enter) {
+                        enter = true;
+                        Require(std::abs(shift.x) < .01, "toolbar neighbors finish before entrance");
+                    }
+                    Pump();
+                    Sleep(2);
                 }
-                Require(motion.phase==ToolbarMotion::Phase::Idle && !motion.overlay,"toolbar motion cleans up within its bound");
-                if(animated) Require(move && (removal?exit:enter),"toolbar runs its two ordered phases");
+                Require(motion.phase == ToolbarMotion::Phase::Idle && !motion.overlay,
+                        "toolbar motion cleans up within its bound");
+                if (animated) Require(move && (removal ? exit : enter), "toolbar runs its two ordered phases");
             };
-            auto before=ToolbarMotion::Capture(toolbar,pair);
-            toolbar.Children().Append(middle);arrange(triple);motion.Begin(toolbar,before,triple);inspectToolbar(false);
-            before=ToolbarMotion::Capture(toolbar,triple);
-            uint32_t index{};toolbar.Children().IndexOf(middle,index);toolbar.Children().RemoveAt(index);arrange(pair);
-            motion.Begin(toolbar,before,pair);inspectToolbar(true);
-            Require(middle.IsHitTestVisible() && middle.IsTabStop() && Automation::AutomationProperties::GetAutomationId(middle)==L"MotionButton",
-                "toolbar restores reusable control input state");
-            before=ToolbarMotion::Capture(toolbar,pair);toolbar.Children().Append(middle);arrange(triple);
-            motion.Begin(toolbar,before,triple);
-            before=ToolbarMotion::Capture(toolbar,triple);motion.Cancel();
-            Require(Hosting::ElementCompositionPreview::GetElementVisual(middle).Opacity()==1 && !motion.overlay,"cancelled toolbar addition restores reusable visibility");
-            toolbar.Children().IndexOf(middle,index);toolbar.Children().RemoveAt(index);arrange(pair);
-            motion.Begin(toolbar,before,pair);
-            if(animated) Require(motion.leaving.empty(),"removing a still-hidden toolbar addition never creates a visible exit face");
+            auto before = ToolbarMotion::Capture(toolbar, pair);
+            toolbar.Children().Append(middle);
+            arrange(triple);
+            motion.Begin(toolbar, before, triple);
+            inspectToolbar(false);
+            before = ToolbarMotion::Capture(toolbar, triple);
+            uint32_t index{};
+            toolbar.Children().IndexOf(middle, index);
+            toolbar.Children().RemoveAt(index);
+            arrange(pair);
+            motion.Begin(toolbar, before, pair);
+            inspectToolbar(true);
+            Require(middle.IsHitTestVisible() && middle.IsTabStop() &&
+                        Automation::AutomationProperties::GetAutomationId(middle) == L"MotionButton",
+                    "toolbar restores reusable control input state");
+            before = ToolbarMotion::Capture(toolbar, pair);
+            toolbar.Children().Append(middle);
+            arrange(triple);
+            motion.Begin(toolbar, before, triple);
+            before = ToolbarMotion::Capture(toolbar, triple);
             motion.Cancel();
-            root.Children().IndexOf(toolbar,index);root.Children().RemoveAt(index);
+            Require(Hosting::ElementCompositionPreview::GetElementVisual(middle).Opacity() == 1 && !motion.overlay,
+                    "cancelled toolbar addition restores reusable visibility");
+            toolbar.Children().IndexOf(middle, index);
+            toolbar.Children().RemoveAt(index);
+            arrange(pair);
+            motion.Begin(toolbar, before, pair);
+            if (animated)
+                Require(motion.leaving.empty(),
+                        "removing a still-hidden toolbar addition never creates a visible exit face");
+            motion.Cancel();
+            root.Children().IndexOf(toolbar, index);
+            root.Children().RemoveAt(index);
         }
-        struct Seen { bool tracked{}, entryChannels{}, closing{}, neighbors{}, waited{}; uint32_t addSign{}, ghostLeft{}, firstScale{}, firstShift{5000}; };
+        struct Seen {
+            bool tracked{}, entryChannels{}, closing{}, neighbors{}, waited{};
+            uint32_t addSign{}, ghostLeft{}, firstScale{}, firstShift{5000};
+        };
         auto observe = [&](std::function<void()> change, std::function<void()> checkGhost = {}) {
             Seen seen{};
             change();
@@ -2347,31 +2640,37 @@ static void CheckTabStrip(HMODULE module, WinUIPaneApi& api, HWND host, bool sel
                 seen.neighbors |= out[6] != 0;
                 if (!out[0] && (out[3] || out[6])) {
                     for (auto item : view.TabItems())
-                        if (auto row = item.try_as<Controls::TabViewItem>(); row && row.Opacity() == 0) seen.waited = true;
+                        if (auto row = item.try_as<Controls::TabViewItem>(); row && row.Opacity() == 0)
+                            seen.waited = true;
                 }
                 if (out[0] && out[1]) {
                     uint32_t space[10]{};
-                    Require(SUCCEEDED(entry(host,7,space)) && !space[0],
-                        "new tab pops in only when its own space is clear");
+                    Require(SUCCEEDED(entry(host, 7, space)) && !space[0],
+                            "new tab pops in only when its own space is clear");
                 }
                 if (out[8] && std::abs(int(out[8]) - 1000) >= 2) {
                     uint32_t protectedRows[10]{};
                     Require(SUCCEEDED(entry(host, 3, protectedRows)), "inspect resize content protection");
-                    if (!protectedRows[0]) fprintf(stderr, "Missing content protection: frame=%d scale=%u moving=%u\n", i, out[8], out[6]);
-                    Require(protectedRows[0] != 0,
-                        "real neighbor settles install natural-size content protection");
+                    if (!protectedRows[0])
+                        fprintf(stderr, "Missing content protection: frame=%d scale=%u moving=%u\n", i, out[8], out[6]);
+                    Require(protectedRows[0] != 0, "real neighbor settles install natural-size content protection");
                 }
                 if (out[3] && !seen.addSign) seen.addSign = out[3];
                 if (out[7] && !seen.ghostLeft) seen.ghostLeft = out[7];
-                if (out[6] && !seen.firstScale) { seen.firstScale = out[8]; seen.firstShift = out[9]; }
+                if (out[6] && !seen.firstScale) {
+                    seen.firstScale = out[8];
+                    seen.firstShift = out[9];
+                }
                 if (i > 3 && !out[0] && !out[1] && !out[3] && !out[4] && !out[5] && !out[6] &&
-                    (seen.tracked || seen.closing || !animated)) break;
+                    (seen.tracked || seen.closing || !animated))
+                    break;
                 Pump();
                 Sleep(2);
             }
             uint32_t out[10]{};
             Require(SUCCEEDED(entry(host, 0, out)), "inspect settled entry motion");
-            fprintf(stderr,"Settled entry channels: %u %u %u %u %u %u\n",out[0],out[1],out[3],out[4],out[5],out[6]);
+            fprintf(stderr, "Settled entry channels: %u %u %u %u %u %u\n", out[0], out[1], out[3], out[4], out[5],
+                    out[6]);
             Require(!out[0] && !out[1] && !out[3] && !out[4] && !out[5] && !out[6],
                     "entry motion leaves no clip, offset, stand-in or composition transform behind");
             return seen;
@@ -2395,22 +2694,31 @@ static void CheckTabStrip(HMODULE module, WinUIPaneApi& api, HWND host, bool sel
             for (bool wide : {false, true}) {
                 rect.right = wide ? 1000 : 800;
                 Require(SUCCEEDED(api.updateTabStrip(host, &rect, TRUE)), "size the strip for entry motion");
-                sync(); settleWidths(); waitIdle();
+                sync();
+                settleWidths();
+                waitIdle();
                 const auto before = first.ActualWidth();
                 auto firstBounds = [&] {
                     return first.TransformToVisual(root).TransformBounds({0, 0, float(first.ActualWidth()), 1});
                 };
                 const auto firstOld = firstBounds();
                 const auto addOld = addX();
-                auto grown = observe([&] { Require(SUCCEEDED(api.syncTabs(host, crowded, 3, 11, NextTabRevision(), &selected)), "add a tab"); });
-                settleWidths(); waitIdle();
-                const bool addMoved = std::abs(addX() - addOld) > 1, resized = std::abs(first.ActualWidth() - before) > 1;
-                fprintf(stderr, "Entry geometry: rtl=%d wide=%d add=%.1f->%.1f sign=%u width=%.1f->%.1f\n",
-                    rtl, wide, addOld, addX(), grown.addSign, before, first.ActualWidth());
+                auto grown = observe([&] {
+                    Require(SUCCEEDED(api.syncTabs(host, crowded, 3, 11, NextTabRevision(), &selected)), "add a tab");
+                });
+                settleWidths();
+                waitIdle();
+                const bool addMoved = std::abs(addX() - addOld) > 1,
+                           resized = std::abs(first.ActualWidth() - before) > 1;
+                fprintf(stderr, "Entry geometry: rtl=%d wide=%d add=%.1f->%.1f sign=%u width=%.1f->%.1f\n", rtl, wide,
+                        addOld, addX(), grown.addSign, before, first.ActualWidth());
                 if (animated) {
-                    Require(grown.tracked && grown.entryChannels, "a new tab rises and fades without a clipping wipe in both directions");
+                    Require(grown.tracked && grown.entryChannels,
+                            "a new tab rises and fades without a clipping wipe in both directions");
                     if (addMoved || resized) Require(grown.waited, "new tab stays invisible while neighbors make room");
-                    if (addMoved) Require(grown.addSign == 2u, "New Tab button eases in from its old, lower position in both directions");
+                    if (addMoved)
+                        Require(grown.addSign == 2u,
+                                "New Tab button eases in from its old, lower position in both directions");
                     if (resized) {
                         Require(grown.neighbors, "existing tabs ease when a new tab changes their width");
                         // The eased start must reproduce the old geometry: its left edge
@@ -2418,64 +2726,81 @@ static void CheckTabStrip(HMODULE module, WinUIPaneApi& api, HWND host, bool sel
                         const auto firstNew = firstBounds();
                         Require(std::abs((float(grown.firstShift) - 5000) / 10 - (firstOld.X - firstNew.X)) < 1.5 &&
                                     std::abs(float(grown.firstScale) / 1000 - firstOld.Width / firstNew.Width) < .01,
-                                "existing tabs start on their old position and width and ease to the new one in both directions");
+                                "existing tabs start on their old position and width and ease to the new one in both "
+                                "directions");
                     }
                 }
                 auto closingRow = view.TabItems().GetAt(2).as<Controls::TabViewItem>();
                 // A completed entry must release HoldEnd so drag hiding can
                 // subsequently write the row's opacity without an override.
                 closingRow.Opacity(0.4);
-                Require(std::abs(closingRow.Opacity() - 0.4) < .001, "entry releases opacity for subsequent drag hiding");
+                Require(std::abs(closingRow.Opacity() - 0.4) < .001,
+                        "entry releases opacity for subsequent drag hiding");
                 closingRow.Opacity(1);
 
                 // The visual title intentionally differs from its UIA name;
                 // status artwork and close visibility must survive the exit.
                 auto closingHeader = closingRow.Header().as<Controls::Grid>();
-                closingHeader.Children().GetAt(2).as<Controls::StackPanel>().Children().GetAt(0)
-                    .as<Controls::TextBlock>().Text(L"Visible title, not the accessibility label");
+                closingHeader.Children()
+                    .GetAt(2)
+                    .as<Controls::StackPanel>()
+                    .Children()
+                    .GetAt(0)
+                    .as<Controls::TextBlock>()
+                    .Text(L"Visible title, not the accessibility label");
                 closingHeader.Children().GetAt(3).Visibility(Visibility::Visible);
                 closingRow.IsClosable(wide);
                 closingRow.FontWeight(winrt::Windows::UI::Text::FontWeight{600});
                 root.UpdateLayout();
                 const auto closing = closingRow.TransformToVisual(root).TransformBounds({0, 0, 1, 1});
-                closingRow.Opacity(0.65); // Closing during a fade must not brighten.
+                closingRow.Opacity(0.65);  // Closing during a fade must not brighten.
                 const auto closeAddX = addX();
                 const auto closeNeighborWidth = first.ActualWidth();
-                auto closed = observe([&] {
-                    sync();
-                    uint32_t immediate[10]{};
-                    Require(SUCCEEDED(entry(host, 0, immediate)), "inspect close before the next layout/frame");
-                    if (animated) Require(immediate[4] == 1, "close stand-in exists in the removal update, not after a layout deadline");
-                }, [&] {
-                    bool foundGhost = false;
-                    for (auto layer : root.Children()) {
-                        auto canvas = layer.try_as<Controls::Canvas>();
-                        if (!canvas) continue;
-                        for (auto child : canvas.Children()) {
-                            auto ghost = child.try_as<Controls::TabViewItem>();
-                            if (!ghost) continue;
-                            foundGhost = true;
-                            Require(ghost.Opacity() <= 0.651,
-                                "closing stand-in never brightens beyond the removed row's opacity");
-                            Require(ghost.Header() == closingHeader && ghost.IsClosable() == wide &&
-                                ghost.FontWeight().Weight == 600 && !ghost.IsHitTestVisible() &&
-                                Automation::AutomationProperties::GetAccessibilityView(ghost) == Automation::Peers::AccessibilityView::Raw,
-                                "closing ghost retains the exact title/status header and close state without input or UIA exposure");
+                auto closed = observe(
+                    [&] {
+                        sync();
+                        uint32_t immediate[10]{};
+                        Require(SUCCEEDED(entry(host, 0, immediate)), "inspect close before the next layout/frame");
+                        if (animated)
+                            Require(immediate[4] == 1,
+                                    "close stand-in exists in the removal update, not after a layout deadline");
+                    },
+                    [&] {
+                        bool foundGhost = false;
+                        for (auto layer : root.Children()) {
+                            auto canvas = layer.try_as<Controls::Canvas>();
+                            if (!canvas) continue;
+                            for (auto child : canvas.Children()) {
+                                auto ghost = child.try_as<Controls::TabViewItem>();
+                                if (!ghost) continue;
+                                foundGhost = true;
+                                Require(ghost.Opacity() <= 0.651,
+                                        "closing stand-in never brightens beyond the removed row's opacity");
+                                Require(ghost.Header() == closingHeader && ghost.IsClosable() == wide &&
+                                            ghost.FontWeight().Weight == 600 && !ghost.IsHitTestVisible() &&
+                                            Automation::AutomationProperties::GetAccessibilityView(ghost) ==
+                                                Automation::Peers::AccessibilityView::Raw,
+                                        "closing ghost retains the exact title/status header and close state without "
+                                        "input or UIA exposure");
+                            }
                         }
-                    }
-                    Require(foundGhost, "inspect the actual closing ghost");
-                    Require(std::abs(addX() - closeAddX) < .5,
-                        "New Tab holds its old position until the closing tab has exited");
-                    const auto neighborVisual = winrt::Microsoft::UI::Xaml::Hosting::ElementCompositionPreview::GetElementVisual(first);
-                    Require(std::abs(first.ActualWidth() * neighborVisual.Scale().x - closeNeighborWidth) < .5,
-                        "neighbor width remains held across layout passes until the closing tab exits");
-                });
-                settleWidths(); waitIdle();
+                        Require(foundGhost, "inspect the actual closing ghost");
+                        Require(std::abs(addX() - closeAddX) < .5,
+                                "New Tab holds its old position until the closing tab has exited");
+                        const auto neighborVisual =
+                            winrt::Microsoft::UI::Xaml::Hosting::ElementCompositionPreview::GetElementVisual(first);
+                        Require(std::abs(first.ActualWidth() * neighborVisual.Scale().x - closeNeighborWidth) < .5,
+                                "neighbor width remains held across layout passes until the closing tab exits");
+                    });
+                settleWidths();
+                waitIdle();
                 if (animated) {
                     Require(closed.closing && closed.ghostLeft, "closing a tab shows a stand-in");
                     Require(std::abs(float(closed.ghostLeft) / 10 - closing.X) < 1.5,
                             "the stand-in starts where the closing tab was");
-                    if (addMoved) Require(closed.addSign == 1u, "New Tab button eases in from its old, higher position on close in both directions");
+                    if (addMoved)
+                        Require(closed.addSign == 1u,
+                                "New Tab button eases in from its old, higher position on close in both directions");
                 }
                 // Closing must leave every tab with an Equal-mode width, not
                 // sized to its content (TabView left in SizeToContent).
@@ -2494,31 +2819,38 @@ static void CheckTabStrip(HMODULE module, WinUIPaneApi& api, HWND host, bool sel
             Require(SUCCEEDED(api.updateTabStrip(host, &rect, TRUE)), "size the strip for overflow entry motion");
             WinUITab many[14]{{11, L"Same title"}, {22, L"Y"}};
             for (uint32_t i = 2; i < 14; ++i) many[i] = {300 + i, L"Overflow tab"};
-            for (bool rtl : {false,true}) {
-                Require(SUCCEEDED(entry(host,rtl?2:1,none)),"first-overflow direction");
+            for (bool rtl : {false, true}) {
+                Require(SUCCEEDED(entry(host, rtl ? 2 : 1, none)), "first-overflow direction");
                 bool crossed = false;
-                for (uint32_t count=2;count<=10;++count) {
-                    Require(SUCCEEDED(api.syncTabs(host,many,count,many[count-1].id,NextTabRevision(),&selected)),
+                for (uint32_t count = 2; count <= 10; ++count) {
+                    Require(
+                        SUCCEEDED(api.syncTabs(host, many, count, many[count - 1].id, NextTabRevision(), &selected)),
                         "append selected tabs through first overflow");
-                    for(int frame=0;frame<80;++frame){Pump();root.UpdateLayout();Sleep(10);}
-                    auto scroll = findStripPart(view,L"ScrollViewer").as<Controls::ScrollViewer>();
-                    if (scroll.ComputedHorizontalScrollBarVisibility()!=Visibility::Visible) continue;
-                    auto newest=view.TabItems().GetAt(count-1).as<Controls::TabViewItem>();
-                    auto scrollContent=scroll.Content().as<UIElement>();
-                    const auto x=newest.TransformToVisual(scrollContent).TransformPoint({0,0}).X;
-                    fprintf(stderr,"First overflow rtl=%d count=%u x=%.2f width=%.2f offset=%.2f viewport=%.2f\n",
-                        int(rtl),count,x,newest.ActualWidth(),scroll.HorizontalOffset(),scroll.ViewportWidth());
-                    Require(x>=scroll.HorizontalOffset()-1 &&
-                        x+newest.ActualWidth()<=scroll.HorizontalOffset()+scroll.ViewportWidth()+1,
-                        "newest selected tab is fully inside the content viewport when arrows first appear");
-                    crossed=true;
+                    for (int frame = 0; frame < 80; ++frame) {
+                        Pump();
+                        root.UpdateLayout();
+                        Sleep(10);
+                    }
+                    auto scroll = findStripPart(view, L"ScrollViewer").as<Controls::ScrollViewer>();
+                    if (scroll.ComputedHorizontalScrollBarVisibility() != Visibility::Visible) continue;
+                    auto newest = view.TabItems().GetAt(count - 1).as<Controls::TabViewItem>();
+                    auto scrollContent = scroll.Content().as<UIElement>();
+                    const auto x = newest.TransformToVisual(scrollContent).TransformPoint({0, 0}).X;
+                    fprintf(stderr, "First overflow rtl=%d count=%u x=%.2f width=%.2f offset=%.2f viewport=%.2f\n",
+                            int(rtl), count, x, newest.ActualWidth(), scroll.HorizontalOffset(),
+                            scroll.ViewportWidth());
+                    Require(x >= scroll.HorizontalOffset() - 1 &&
+                                x + newest.ActualWidth() <= scroll.HorizontalOffset() + scroll.ViewportWidth() + 1,
+                            "newest selected tab is fully inside the content viewport when arrows first appear");
+                    crossed = true;
                     break;
                 }
-                Require(crossed,"first-overflow fixture crosses the scroll threshold");
+                Require(crossed, "first-overflow fixture crosses the scroll threshold");
             }
-            Require(SUCCEEDED(entry(host,1,none)),"restore overflow entry direction");
+            Require(SUCCEEDED(entry(host, 1, none)), "restore overflow entry direction");
             Require(SUCCEEDED(api.syncTabs(host, many, 12, 11, NextTabRevision(), &selected)), "overflow the strip");
-            settleWidths(); waitIdle();
+            settleWidths();
+            waitIdle();
             // This host renders few frames, so lay out on each poll as a
             // running browser would every frame.
             auto observeLaidOut = [&](std::function<void()> change) {
@@ -2553,13 +2885,17 @@ static void CheckTabStrip(HMODULE module, WinUIPaneApi& api, HWND host, bool sel
                     active = created;
                 }
                 auto seen = observeLaidOut([&] {
-                    Require(SUCCEEDED(api.syncTabs(host, next, count, active, NextTabRevision(), &selected)), "open a tab in an overflowing strip");
+                    Require(SUCCEEDED(api.syncTabs(host, next, count, active, NextTabRevision(), &selected)),
+                            "open a tab in an overflowing strip");
                 });
-                settleWidths(); waitIdle();
-                printf("Overflow entry (%s): tracked=%d entry=%d\n", middle ? "middle" : "end", seen.tracked, seen.entryChannels);
+                settleWidths();
+                waitIdle();
+                printf("Overflow entry (%s): tracked=%d entry=%d\n", middle ? "middle" : "end", seen.tracked,
+                       seen.entryChannels);
                 fflush(stdout);
                 if (animated)
-                    Require(seen.tracked && seen.entryChannels, "a tab opened in an overflowing strip is revealed like one in a strip with room");
+                    Require(seen.tracked && seen.entryChannels,
+                            "a tab opened in an overflowing strip is revealed like one in a strip with room");
                 uint32_t out[10]{};
                 Require(SUCCEEDED(entry(host, 0, out)) && !out[0] && !out[1] && !out[3] && !out[6],
                         "overflow entry motion leaves no clip, offset or composition transform behind");
@@ -2571,97 +2907,136 @@ static void CheckTabStrip(HMODULE module, WinUIPaneApi& api, HWND host, bool sel
                     for (uint32_t i = 0; i < count; ++i) many[i] = next[i];
                 }
             }
-            sync(); settleWidths(); waitIdle();
+            sync();
+            settleWidths();
+            waitIdle();
         }
         {
             // A new close can arrive during the exit hold or the resize. The
             // final five tabs must match a clean five-tab layout without hover.
-            WinUITab rapid[14]{{11,L"Same title"},{22,L"Y"}};
-            for(uint32_t i=2;i<14;++i)rapid[i]={500+i,L"Rapid close title"};
+            WinUITab rapid[14]{{11, L"Same title"}, {22, L"Y"}};
+            for (uint32_t i = 2; i < 14; ++i) rapid[i] = {500 + i, L"Rapid close title"};
             // Leave room for width growth before the last queued exits complete.
-            rect.right=1400;
-            Require(SUCCEEDED(api.updateTabStrip(host,&rect,TRUE)),"size rapid-close width fixture");
-            auto drain=[&] {
-                for(int i=0;i<160;++i){Pump();root.UpdateLayout();Sleep(10);}
+            rect.right = 1400;
+            Require(SUCCEEDED(api.updateTabStrip(host, &rect, TRUE)), "size rapid-close width fixture");
+            auto drain = [&] {
+                for (int i = 0; i < 160; ++i) {
+                    Pump();
+                    root.UpdateLayout();
+                    Sleep(10);
+                }
             };
-            for(bool rtl : {false,true}) {
-                Require(SUCCEEDED(entry(host,rtl?2:1,none)),"rapid-close direction");
-                Require(SUCCEEDED(api.syncTabs(host,rapid,5,11,NextTabRevision(),&selected)),"clean five-tab baseline");
-                drain(); const double expected=first.ActualWidth();
-                for(int spacing : {0,20,70,140}) {
-                    Require(SUCCEEDED(api.syncTabs(host,rapid,14,11,NextTabRevision(),&selected)),"populate rapid-close tabs");
+            for (bool rtl : {false, true}) {
+                Require(SUCCEEDED(entry(host, rtl ? 2 : 1, none)), "rapid-close direction");
+                Require(SUCCEEDED(api.syncTabs(host, rapid, 5, 11, NextTabRevision(), &selected)),
+                        "clean five-tab baseline");
+                drain();
+                const double expected = first.ActualWidth();
+                for (int spacing : {0, 20, 70, 140}) {
+                    Require(SUCCEEDED(api.syncTabs(host, rapid, 14, 11, NextTabRevision(), &selected)),
+                            "populate rapid-close tabs");
                     drain();
-                    const double burstStartWidth=first.ActualWidth();
-                    for(uint32_t count=13;count>=5;--count) {
-                        Require(SUCCEEDED(api.syncTabs(host,rapid,count,11,NextTabRevision(),&selected)),"rapid close publication");
-                        const auto until=GetTickCount64()+spacing;
+                    const double burstStartWidth = first.ActualWidth();
+                    for (uint32_t count = 13; count >= 5; --count) {
+                        Require(SUCCEEDED(api.syncTabs(host, rapid, count, 11, NextTabRevision(), &selected)),
+                                "rapid close publication");
+                        const auto until = GetTickCount64() + spacing;
                         do {
-                            Pump();root.UpdateLayout();
+                            Pump();
+                            root.UpdateLayout();
                             uint32_t clips[10]{};
-                            Require(SUCCEEDED(entry(host,6,clips)) && !clips[1],
-                                "full dropping tabs reserve their slots without clipping or overlapping neighbors");
-                            if(spacing)Sleep(2);
-                        }while(GetTickCount64()<until);
-                        if(animated && count==6 && spacing>=70) {
+                            Require(SUCCEEDED(entry(host, 6, clips)) && !clips[1],
+                                    "full dropping tabs reserve their slots without clipping or overlapping neighbors");
+                            if (spacing) Sleep(2);
+                        } while (GetTickCount64() < until);
+                        if (animated && count == 6 && spacing >= 70) {
                             uint32_t moving[10]{};
-                            Require(SUCCEEDED(entry(host,5,moving)),"sample width before the close burst ends");
-                            fprintf(stderr,"During close burst rtl=%d interval=%d start=%.2f moving=%.2f\n",
-                                int(rtl),spacing,burstStartWidth,double(moving[0])/1000);
-                            Require(double(moving[0])/1000>burstStartWidth+5,
-                                "tabs grow while closes keep arriving, before the burst ends");
+                            Require(SUCCEEDED(entry(host, 5, moving)), "sample width before the close burst ends");
+                            fprintf(stderr, "During close burst rtl=%d interval=%d start=%.2f moving=%.2f\n", int(rtl),
+                                    spacing, burstStartWidth, double(moving[0]) / 1000);
+                            Require(double(moving[0]) / 1000 > burstStartWidth + 5,
+                                    "tabs grow while closes keep arriving, before the burst ends");
                         }
                     }
                     drain();
-                    for(auto item : view.TabItems()) if(auto row=item.try_as<Controls::TabViewItem>()) {
-                        const auto scale=Hosting::ElementCompositionPreview::GetElementVisual(row).Scale().x;
-                        fprintf(stderr,"Rapid close rtl=%d interval=%d expected=%.2f actual=%.2f min=%.2f max=%.2f scale=%.4f\n",
-                            int(rtl),spacing,expected,row.ActualWidth(),row.MinWidth(),row.MaxWidth(),scale);
-                        Require(std::abs(row.ActualWidth()-expected)<1.5 && std::abs(scale-1)<.001,
-                            "rapid closes release width holds and fill the same space as a clean layout");
-                    }
+                    for (auto item : view.TabItems())
+                        if (auto row = item.try_as<Controls::TabViewItem>()) {
+                            const auto scale = Hosting::ElementCompositionPreview::GetElementVisual(row).Scale().x;
+                            fprintf(stderr,
+                                    "Rapid close rtl=%d interval=%d expected=%.2f actual=%.2f min=%.2f max=%.2f "
+                                    "scale=%.4f\n",
+                                    int(rtl), spacing, expected, row.ActualWidth(), row.MinWidth(), row.MaxWidth(),
+                                    scale);
+                            Require(std::abs(row.ActualWidth() - expected) < 1.5 && std::abs(scale - 1) < .001,
+                                    "rapid closes release width holds and fill the same space as a clean layout");
+                        }
                 }
             }
-            for(bool rtl : {false,true}) {
-                Require(SUCCEEDED(entry(host,rtl?2:1,none)),"rapid-open direction");
-                Require(SUCCEEDED(api.syncTabs(host,rapid,5,11,NextTabRevision(),&selected)),"rapid-open baseline");
-                drain(); const double startWidth=first.ActualWidth();
-                for(uint32_t count=6;count<=12;++count) {
-                    Require(SUCCEEDED(api.syncTabs(host,rapid,count,11,NextTabRevision(),&selected)),"rapid open publication");
-                    const auto until=GetTickCount64()+70;
-                    do {Pump();root.UpdateLayout();Sleep(2);}while(GetTickCount64()<until);
-                    if(animated && count==8) {
+            for (bool rtl : {false, true}) {
+                Require(SUCCEEDED(entry(host, rtl ? 2 : 1, none)), "rapid-open direction");
+                Require(SUCCEEDED(api.syncTabs(host, rapid, 5, 11, NextTabRevision(), &selected)),
+                        "rapid-open baseline");
+                drain();
+                const double startWidth = first.ActualWidth();
+                for (uint32_t count = 6; count <= 12; ++count) {
+                    Require(SUCCEEDED(api.syncTabs(host, rapid, count, 11, NextTabRevision(), &selected)),
+                            "rapid open publication");
+                    const auto until = GetTickCount64() + 70;
+                    do {
+                        Pump();
+                        root.UpdateLayout();
+                        Sleep(2);
+                    } while (GetTickCount64() < until);
+                    if (animated && count == 8) {
                         uint32_t moving[10]{};
-                        Require(SUCCEEDED(entry(host,5,moving)),"sample width during rapid openings");
-                        fprintf(stderr,"During open burst rtl=%d start=%.2f moving=%.2f\n",int(rtl),startWidth,double(moving[0])/1000);
-                        Require(double(moving[0])/1000<startWidth-5,"neighbors keep shrinking during successive openings");
+                        Require(SUCCEEDED(entry(host, 5, moving)), "sample width during rapid openings");
+                        fprintf(stderr, "During open burst rtl=%d start=%.2f moving=%.2f\n", int(rtl), startWidth,
+                                double(moving[0]) / 1000);
+                        Require(double(moving[0]) / 1000 < startWidth - 5,
+                                "neighbors keep shrinking during successive openings");
                     }
                     // Keep publishing after this checkpoint: visibility must
                     // not depend on reaching the last addition in the burst.
-                    if(animated && count==10)
-                        Require(view.TabItems().GetAt(5).as<Controls::TabViewItem>().Opacity()>0,
-                            "earlier entrants reveal during the burst while later neighbors keep moving");
+                    if (animated && count == 10)
+                        Require(view.TabItems().GetAt(5).as<Controls::TabViewItem>().Opacity() > 0,
+                                "earlier entrants reveal during the burst while later neighbors keep moving");
                 }
-                drain();waitIdle();
-                for(auto item:view.TabItems())Require(item.as<Controls::TabViewItem>().Opacity()==1,"all burst entrants eventually reveal");
-                Require(SUCCEEDED(api.syncTabs(host,rapid,5,11,NextTabRevision(),&selected)),"coalesced-open baseline");
                 drain();
-                Require(SUCCEEDED(api.syncTabs(host,rapid,7,11,NextTabRevision(),&selected)),"two opens in one publication");
-                if(animated) for(uint32_t i=5;i<7;++i)
-                    Require(view.TabItems().GetAt(i).as<Controls::TabViewItem>().Opacity()==0,"coalesced additions wait for their shared gap");
-                drain();waitIdle();
-                for(auto item:view.TabItems())Require(item.as<Controls::TabViewItem>().Opacity()==1,"coalesced entrants eventually reveal");
+                waitIdle();
+                for (auto item : view.TabItems())
+                    Require(item.as<Controls::TabViewItem>().Opacity() == 1, "all burst entrants eventually reveal");
+                Require(SUCCEEDED(api.syncTabs(host, rapid, 5, 11, NextTabRevision(), &selected)),
+                        "coalesced-open baseline");
+                drain();
+                Require(SUCCEEDED(api.syncTabs(host, rapid, 7, 11, NextTabRevision(), &selected)),
+                        "two opens in one publication");
+                if (animated)
+                    for (uint32_t i = 5; i < 7; ++i)
+                        Require(view.TabItems().GetAt(i).as<Controls::TabViewItem>().Opacity() == 0,
+                                "coalesced additions wait for their shared gap");
+                drain();
+                waitIdle();
+                for (auto item : view.TabItems())
+                    Require(item.as<Controls::TabViewItem>().Opacity() == 1, "coalesced entrants eventually reveal");
             }
-            sync();settleWidths();waitIdle();
+            sync();
+            settleWidths();
+            waitIdle();
         }
         Require(SUCCEEDED(entry(host, 4, none)), "expire an interrupted tab resize hold");
-        for (int i=0;i<10;++i) { Pump(); root.UpdateLayout(); Sleep(10); }
+        for (int i = 0; i < 10; ++i) {
+            Pump();
+            root.UpdateLayout();
+            Sleep(10);
+        }
         uint32_t recovered[10]{};
         Require(SUCCEEDED(entry(host, 0, recovered)) && !recovered[6],
-            "settle watchdog restores full scale and zero offset after interrupted resize");
+                "settle watchdog restores full scale and zero offset after interrupted resize");
         rect.right = 800;
         Require(SUCCEEDED(api.updateTabStrip(host, &rect, TRUE)), "restore the strip width after entry motion");
         Require(SUCCEEDED(entry(host, 1, none)), "restore left-to-right after entry motion");
-        sync(); settleWidths();
+        sync();
+        settleWidths();
     }
     // Drag-to-reorder: a real OS drag gesture can't be scripted here (WinUI's
     // gesture recognizer can't be triggered from outside actual pointer
@@ -2716,7 +3091,8 @@ static void CheckTabStrip(HMODULE module, WinUIPaneApi& api, HWND host, bool sel
     settleWidths();
     Require(view.TabItems().GetAt(0) == first && view.TabItems().GetAt(1) == second,
             "Firefox's next snapshot reconciles the simulated drag back to its own order");
-    auto setDragging = reinterpret_cast<HRESULT(WINAPI*)(HWND, BOOL)>(GetProcAddress(module, "WinUIPaneTestSetDragging"));
+    auto setDragging =
+        reinterpret_cast<HRESULT(WINAPI*)(HWND, BOOL)>(GetProcAddress(module, "WinUIPaneTestSetDragging"));
     Require(setDragging != nullptr, "dragging test hook exists");
     auto firstName = [&] {
         return first.Header()
@@ -2766,13 +3142,16 @@ static void CheckTabStrip(HMODULE module, WinUIPaneApi& api, HWND host, bool sel
         Require(arranged > 0 && arranged + .5 >= natural, "pinned tab is wide enough for its whole favicon");
     }
     Require(header.Children().GetAt(2).as<Controls::StackPanel>().Children().Size() == 1,
-        "tab face contains only its title, without a group/split subtitle");
+            "tab face contains only its title, without a group/split subtitle");
     {
         // The hover card: a transient Flyout opened by hovering, centered
         // under its tab, and filled by Firefox's answer to the newest request.
         // Like Firefox's preview it opens only in the active window.
         SetForegroundWindow(host);
-        for (int i = 0; i < 10; ++i) { Pump(); Sleep(10); }
+        for (int i = 0; i < 10; ++i) {
+            Pump();
+            Sleep(10);
+        }
         Require(GetForegroundWindow() == host, "the strip's window is active for hover-card checks");
         auto hoverCard = reinterpret_cast<HRESULT(WINAPI*)(HWND, uint32_t, BOOL, void**)>(
             GetProcAddress(module, "WinUIPaneTestHoverCard"));
@@ -2789,29 +3168,42 @@ static void CheckTabStrip(HMODULE module, WinUIPaneApi& api, HWND host, bool sel
                     card.ShowMode() == Controls::Primitives::FlyoutShowMode::Transient &&
                     !card.ShouldConstrainToRootBounds() &&
                     card.Placement() == Controls::Primitives::FlyoutPlacementMode::Bottom,
-            "hover card is a transient, windowed Flyout below its tab with Desktop Acrylic");
-        auto lines = card.Content().as<Controls::Grid>().Children().GetAt(0).as<Controls::Border>().Child().as<Controls::StackPanel>().Children();
+                "hover card is a transient, windowed Flyout below its tab with Desktop Acrylic");
+        auto lines = card.Content()
+                         .as<Controls::Grid>()
+                         .Children()
+                         .GetAt(0)
+                         .as<Controls::Border>()
+                         .Child()
+                         .as<Controls::StackPanel>()
+                         .Children();
         auto line = [&](uint32_t i) { return lines.GetAt(i).as<Controls::TextBlock>(); };
         auto frame = lines.GetAt(3).as<Controls::Border>();
         auto preview = frame.Child().as<Controls::Image>();
         Require(line(0).Text() == Automation::AutomationProperties::GetName(second), "hover card shows the tab title");
         Require(std::wstring(line(2).Text()).find(L"Work Â· Split 1 right") != std::wstring::npos,
-            "group/split detail remains in the native hover card");
+                "group/split detail remains in the native hover card");
         Require(line(1).Visibility() == Visibility::Collapsed && frame.Visibility() == Visibility::Collapsed,
-            "no domain or thumbnail before Firefox answers");
+                "no domain or thumbnail before Firefox answers");
         bool cardOpen = false;
         auto openedToken = card.Opened([&](auto const&, auto const&) { cardOpen = true; });
         auto closedToken = card.Closed([&](auto const&, auto const&) { cardOpen = false; });
         Require(SUCCEEDED(setDragging(host, TRUE)), "simulate a drag before hovering");
         hover(22, true);
-        for (int i = 0; i < 80; ++i) { Pump(); Sleep(10); }
+        for (int i = 0; i < 80; ++i) {
+            Pump();
+            Sleep(10);
+        }
         Require(!cardOpen, "no hover card opens while a strip gesture owns the pointer");
         Require(SUCCEEDED(setDragging(host, FALSE)), "end the simulated drag");
         hover(22, true);
         Require(!cardOpen, "the card waits out the hover delay");
         auto request = NextRequest(api, host, 9, L"strip-preview");
         Require(request.Size() != 0, "hovering a tab asks Firefox for its preview");
-        for (int i = 0; i < 300 && !cardOpen; ++i) { Pump(); Sleep(10); }
+        for (int i = 0; i < 300 && !cardOpen; ++i) {
+            Pump();
+            Sleep(10);
+        }
         Require(cardOpen, "the hover card opens after the hover delay");
         {
             Controls::FlyoutPresenter presenter{nullptr};
@@ -2820,96 +3212,132 @@ static void CheckTabStrip(HMODULE module, WinUIPaneApi& api, HWND host, bool sel
                 if (candidate && candidate.Content() == card.Content()) presenter = candidate;
             }
             Require(presenter != nullptr, "the open card's presenter is found");
-            for (int i = 0; i < 50 && presenter.ActualWidth() == 0; ++i) { Pump(); Sleep(10); }
+            for (int i = 0; i < 50 && presenter.ActualWidth() == 0; ++i) {
+                Pump();
+                Sleep(10);
+            }
             const auto tabBounds = second.TransformToVisual(nullptr).TransformBounds(
                 {0, 0, float(second.ActualWidth()), float(second.ActualHeight())});
             const auto cardBounds = presenter.TransformToVisual(nullptr).TransformBounds(
                 {0, 0, float(presenter.ActualWidth()), float(presenter.ActualHeight())});
             const auto offset = (cardBounds.X + cardBounds.Width / 2) - (tabBounds.X + tabBounds.Width / 2);
-            fwprintf(stderr, L"Hover card tab=%.1f,%.1f %.1fx%.1f card=%.1f,%.1f %.1fx%.1f\n", tabBounds.X,
-                     tabBounds.Y, tabBounds.Width, tabBounds.Height, cardBounds.X, cardBounds.Y, cardBounds.Width,
+            fwprintf(stderr, L"Hover card tab=%.1f,%.1f %.1fx%.1f card=%.1f,%.1f %.1fx%.1f\n", tabBounds.X, tabBounds.Y,
+                     tabBounds.Width, tabBounds.Height, cardBounds.X, cardBounds.Y, cardBounds.Width,
                      cardBounds.Height);
             Require(cardBounds.Width > 0 && std::abs(offset) <= 1.0f &&
                         cardBounds.Y >= tabBounds.Y + tabBounds.Height - 1.0f,
-                "the hover card is centered under its tab");
+                    "the hover card is centered under its tab");
         }
         auto action = request.GetNamedObject(L"action");
         Require(action.GetNamedNumber(L"id") == 22 && action.GetNamedNumber(L"scale") > 0,
-            "the preview request names the hovered tab and the card's scale");
+                "the preview request names the hovered tab and the card's scale");
         const auto requestNumber = action.GetNamedNumber(L"request");
         auto answer = [&](double number, wchar_t const* fields) {
             return L"{\"version\":2,\"publishOnly\":true,\"tabPreview\":{\"tab\":22,\"request\":" +
-                std::to_wstring(uint64_t(number)) + L"," + fields + L"}}";
+                   std::to_wstring(uint64_t(number)) + L"," + fields + L"}}";
         };
         MenuPublish(api, host, answer(requestNumber + 1, LR"("domain":"stale.example","thumbnail":true)").c_str());
         Require(line(1).Visibility() == Visibility::Collapsed, "an answer to another request is ignored");
         MenuPublish(api, host, answer(requestNumber, LR"("domain":"example.co.uk","thumbnail":true)").c_str());
         Require(line(1).Text() == L"example.co.uk" && line(1).Visibility() == Visibility::Visible,
-            "Firefox's registrable domain is shown");
+                "Firefox's registrable domain is shown");
         Require(frame.Visibility() == Visibility::Visible && !preview.Source(),
-            "the thumbnail's space is reserved before the capture lands");
-        Require(FAILED(api.syncTabMenu(host, answer(requestNumber,
-                    LR"("domain":"x","thumbnail":true,"image":{"width":2,"height":2,"pixels":"00"})").c_str())) &&
-                    FAILED(api.syncTabMenu(host, answer(requestNumber,
-                    LR"("domain":"x","thumbnail":true,"image":{"width":700,"height":1,"pixels":"00"})").c_str())) &&
+                "the thumbnail's space is reserved before the capture lands");
+        Require(FAILED(api.syncTabMenu(
+                    host, answer(requestNumber,
+                                 LR"("domain":"x","thumbnail":true,"image":{"width":2,"height":2,"pixels":"00"})")
+                              .c_str())) &&
+                    FAILED(api.syncTabMenu(
+                        host, answer(requestNumber,
+                                     LR"("domain":"x","thumbnail":true,"image":{"width":700,"height":1,"pixels":"00"})")
+                                  .c_str())) &&
                     line(1).Text() == L"example.co.uk",
-            "malformed or oversized thumbnails are rejected before the card changes");
-        MenuPublish(api, host, answer(requestNumber,
-            LR"("domain":"example.co.uk","thumbnail":true,"image":{"width":2,"height":1,"pixels":"0000ffff00ff00ff"})").c_str());
+                "malformed or oversized thumbnails are rejected before the card changes");
+        MenuPublish(
+            api, host,
+            answer(
+                requestNumber,
+                LR"("domain":"example.co.uk","thumbnail":true,"image":{"width":2,"height":1,"pixels":"0000ffff00ff00ff"})")
+                .c_str());
         Require(bool(preview.Source()), "the captured thumbnail is shown");
         const auto acceptedImage = preview.Source();
-        MenuPublish(api, host, answer(requestNumber,
-            LR"("domain":"example.co.uk","thumbnail":true,"image":{"width":2,"height":1,"pixels":"0000ffff00ff00ff"})").c_str());
+        MenuPublish(
+            api, host,
+            answer(
+                requestNumber,
+                LR"("domain":"example.co.uk","thumbnail":true,"image":{"width":2,"height":1,"pixels":"0000ffff00ff00ff"})")
+                .c_str());
         Require(preview.Source() == acceptedImage, "exact thumbnail replay keeps the existing bitmap");
         MenuPublish(api, host, answer(requestNumber, LR"("domain":"late-domain.example","thumbnail":false)").c_str());
-        Require(preview.Source() == acceptedImage && line(1).Text() == L"example.co.uk" && frame.Visibility() == Visibility::Visible,
-            "a reordered initial answer cannot withdraw the completed thumbnail");
-        Require(FAILED(api.syncTabMenu(host, answer(requestNumber,
-            LR"("domain":"conflict.example","thumbnail":false,"image":null)").c_str())) &&
-            preview.Source() == acceptedImage && line(1).Text() == L"example.co.uk",
-            "conflicting completion is refused before card mutation");
+        Require(preview.Source() == acceptedImage && line(1).Text() == L"example.co.uk" &&
+                    frame.Visibility() == Visibility::Visible,
+                "a reordered initial answer cannot withdraw the completed thumbnail");
+        Require(FAILED(api.syncTabMenu(
+                    host,
+                    answer(requestNumber, LR"("domain":"conflict.example","thumbnail":false,"image":null)").c_str())) &&
+                    preview.Source() == acceptedImage && line(1).Text() == L"example.co.uk",
+                "conflicting completion is refused before card mutation");
 
         hover(22, false);
-        for (int i = 0; i < 100 && (cardOpen || preview.Source()); ++i) { Pump(); Sleep(5); }
+        for (int i = 0; i < 100 && (cardOpen || preview.Source()); ++i) {
+            Pump();
+            Sleep(5);
+        }
         Require(!cardOpen, "leaving the tab closes its card");
         Require(!preview.Source() && frame.Visibility() == Visibility::Collapsed,
-            "a closed card releases its thumbnail");
-        MenuPublish(api, host, answer(requestNumber,
-            LR"("domain":"late.example","thumbnail":true,"image":{"width":2,"height":1,"pixels":"0000ffff00ff00ff"})").c_str());
+                "a closed card releases its thumbnail");
+        MenuPublish(
+            api, host,
+            answer(
+                requestNumber,
+                LR"("domain":"late.example","thumbnail":true,"image":{"width":2,"height":1,"pixels":"0000ffff00ff00ff"})")
+                .c_str());
         Require(!preview.Source() && line(1).Text() == L"example.co.uk", "a late answer after closing is ignored");
         hover(22, true);
         auto newer = NextRequest(api, host, 9, L"strip-preview");
         Require(newer.Size() != 0, "reopening allocates a fresh preview request");
         const auto newerRequest = newer.GetNamedObject(L"action").GetNamedNumber(L"request");
         Require(newerRequest > requestNumber, "dismissal never reuses request identity");
-        MenuPublish(api, host, answer(newerRequest,
-            LR"("domain":"capture-failed.example","thumbnail":false,"image":null)").c_str());
-        Require(!preview.Source() && frame.Visibility() == Visibility::Collapsed && line(1).Text() == L"capture-failed.example",
-            "failed capture completes without an image and withdraws the frame");
+        MenuPublish(
+            api, host,
+            answer(newerRequest, LR"("domain":"capture-failed.example","thumbnail":false,"image":null)").c_str());
+        Require(!preview.Source() && frame.Visibility() == Visibility::Collapsed &&
+                    line(1).Text() == L"capture-failed.example",
+                "failed capture completes without an image and withdraws the frame");
         MenuPublish(api, host, answer(newerRequest, LR"("domain":"late.example","thumbnail":true)").c_str());
         Require(line(1).Text() == L"capture-failed.example" && frame.Visibility() == Visibility::Collapsed,
-            "late initial answer cannot undo failed capture");
+                "late initial answer cannot undo failed capture");
         hover(22, false);
-        for (int i = 0; i < 100 && cardOpen; ++i) { Pump(); Sleep(5); }
-        Sleep(350); // Outside the reshow window: this opening stays pending.
+        for (int i = 0; i < 100 && cardOpen; ++i) {
+            Pump();
+            Sleep(5);
+        }
+        Sleep(350);  // Outside the reshow window: this opening stays pending.
         hover(22, true);
         Require(!cardOpen, "a new opening waits for the hover delay");
         auto pendingRequest = NextRequest(api, host, 9, L"strip-preview");
         Require(pendingRequest.Size() != 0, "pending opening owns a fresh request");
         const auto pendingNumber = pendingRequest.GetNamedObject(L"action").GetNamedNumber(L"request");
-        MenuPublish(api, host, answer(pendingNumber,
-            LR"("domain":"pending.example","thumbnail":true,"image":{"width":2,"height":1,"pixels":"0000ffff00ff00ff"})").c_str());
+        MenuPublish(
+            api, host,
+            answer(
+                pendingNumber,
+                LR"("domain":"pending.example","thumbnail":true,"image":{"width":2,"height":1,"pixels":"0000ffff00ff00ff"})")
+                .c_str());
         Require(bool(preview.Source()), "a capture may finish before the card opens");
         hover(22, false);
-        Require(!preview.Source() && frame.Visibility() == Visibility::Collapsed, "pending dismissal releases its bitmap without a Closed event");
-        MenuPublish(api, host, answer(pendingNumber,
-            LR"("domain":"revoked.example","thumbnail":false,"image":null)").c_str());
-        Require(line(1).Text() == L"pending.example" && !preview.Source(), "pending dismissal revokes late publications");
+        Require(!preview.Source() && frame.Visibility() == Visibility::Collapsed,
+                "pending dismissal releases its bitmap without a Closed event");
+        MenuPublish(api, host,
+                    answer(pendingNumber, LR"("domain":"revoked.example","thumbnail":false,"image":null)").c_str());
+        Require(line(1).Text() == L"pending.example" && !preview.Source(),
+                "pending dismissal revokes late publications");
         card.Opened(openedToken);
         card.Closed(closedToken);
     }
-    Require(std::wstring(Automation::AutomationProperties::GetHelpText(second)).find(L"Work Â· Split 1 right") != std::wstring::npos,
-        "group/split detail remains accessible");
+    Require(std::wstring(Automation::AutomationProperties::GetHelpText(second)).find(L"Work Â· Split 1 right") !=
+                std::wstring::npos,
+            "group/split detail remains accessible");
     auto firstFavicon = first.Header().as<Controls::Grid>().Children().GetAt(0).as<Controls::Grid>();
     Require(firstFavicon.Visibility() == Visibility::Visible &&
                 firstFavicon.Children().GetAt(0).as<Controls::Image>().Visibility() == Visibility::Visible &&
@@ -2941,7 +3369,8 @@ static void CheckTabStrip(HMODULE module, WinUIPaneApi& api, HWND host, bool sel
             "oversized favicon dimensions are rejected before native mutation");
     // The header is the groups button, or a panel holding it beside a leading control.
     Controls::DropDownButton groups{nullptr};
-    if (auto direct = view.TabStripHeader().try_as<Controls::DropDownButton>()) groups = direct;
+    if (auto direct = view.TabStripHeader().try_as<Controls::DropDownButton>())
+        groups = direct;
     else if (auto panel = view.TabStripHeader().try_as<Controls::Panel>())
         for (auto child : panel.Children())
             if (auto candidate = child.try_as<Controls::DropDownButton>()) groups = candidate;
@@ -2972,7 +3401,10 @@ static void CheckTabStrip(HMODULE module, WinUIPaneApi& api, HWND host, bool sel
         bool covered = false;
         auto token = card.Opened([&](auto const&, auto const&) { covered = true; });
         hover(22, true);
-        for (int i = 0; i < 80; ++i) { Pump(); Sleep(10); }
+        for (int i = 0; i < 80; ++i) {
+            Pump();
+            Sleep(10);
+        }
         hover(22, false);
         card.Opened(token);
         Require(!covered, "no hover card opens over an open menu");
@@ -3000,46 +3432,73 @@ static void CheckTabStrip(HMODULE module, WinUIPaneApi& api, HWND host, bool sel
     Require(FAILED(api.syncTabMenu(host, bad.Stringify().c_str())),
             "duplicate presentation IDs rejected before native mutation");
     bad.SetNamedValue(L"version", winrt::Windows::Data::Json::JsonValue::CreateNumberValue(99));
-    Require(FAILED(api.syncTabMenu(host, bad.Stringify().c_str())),
-            "invalid outer strip envelope rejected");
+    Require(FAILED(api.syncTabMenu(host, bad.Stringify().c_str())), "invalid outer strip envelope rejected");
     bad.SetNamedValue(L"version", winrt::Windows::Data::Json::JsonValue::CreateNumberValue(2));
     sync();
     Require(second.Header() == header, "metadata updates retain header identity");
     // The metadata delta must update immediately, without a full tab Sync,
     // and omission must retain the original decoded Image and group flyout.
-    auto firstIcon = first.Header().as<Controls::Grid>().Children().GetAt(0).as<Controls::Grid>()
-                         .Children().GetAt(0).as<Controls::Image>();
+    auto firstIcon = first.Header()
+                         .as<Controls::Grid>()
+                         .Children()
+                         .GetAt(0)
+                         .as<Controls::Grid>()
+                         .Children()
+                         .GetAt(0)
+                         .as<Controls::Image>();
     auto retainedImage = firstIcon.Source();
     auto retainedFlyout = groups.Flyout();
-    auto metadataDelta = LR"({"version":2,"publishOnly":true,"strip":{"version":2,"base":2,"revision":3,"containerDot":true,"rows":[{"id":11,"flags":3,"containerName":"Personal","containerColor":4281839103}],"removed":[]}})";
+    auto metadataDelta =
+        LR"({"version":2,"publishOnly":true,"strip":{"version":2,"base":2,"revision":3,"containerDot":true,"rows":[{"id":11,"flags":3,"containerName":"Personal","containerColor":4281839103}],"removed":[]}})";
     MenuPublish(api, host, metadataDelta);
     Require(firstIcon.Source() == retainedImage && retainedImage, "an omitted image preserves the decoded source");
     Require(groups.Flyout() == retainedFlyout, "a row delta preserves group controls");
-    Require(first.Header().as<Controls::Grid>().Children().GetAt(0).as<Controls::Grid>()
-                .Children().GetAt(1).as<Controls::ProgressRing>().IsActive(), "metadata delta applies without full Sync");
+    Require(first.Header()
+                .as<Controls::Grid>()
+                .Children()
+                .GetAt(0)
+                .as<Controls::Grid>()
+                .Children()
+                .GetAt(1)
+                .as<Controls::ProgressRing>()
+                .IsActive(),
+            "metadata delta applies without full Sync");
     MenuPublish(api, host, metadataDelta);  // Identical retry is harmless.
     auto container = first.Header().as<Controls::Grid>().Children().GetAt(4).as<Controls::Border>();
-    Require(container.Visibility() == Visibility::Visible &&
-                container.Background().as<Media::SolidColorBrush>().Color() == winrt::Windows::UI::Color{255, 55, 173, 255},
-            "container delta paints the authoritative Firefox color");
-    Require(std::wstring_view(Automation::AutomationProperties::GetHelpText(first)).find(L"Personal") != std::wstring_view::npos,
+    Require(
+        container.Visibility() == Visibility::Visible &&
+            container.Background().as<Media::SolidColorBrush>().Color() == winrt::Windows::UI::Color{255, 55, 173, 255},
+        "container delta paints the authoritative Firefox color");
+    Require(std::wstring_view(Automation::AutomationProperties::GetHelpText(first)).find(L"Personal") !=
+                std::wstring_view::npos,
             "container name is accessible independently of color");
-    for (auto invalid : {
-        LR"({"version":2,"publishOnly":true,"strip":{"version":2,"base":3,"revision":4,"rows":[{"id":11,"containerColor":-1}],"removed":[]}})",
-        LR"({"version":2,"publishOnly":true,"strip":{"version":2,"base":3,"revision":4,"rows":[{"id":11,"flags":"bad"}],"removed":[]}})",
-        LR"({"version":2,"publishOnly":true,"strip":{"version":2,"base":3,"revision":4,"rows":[{"id":11,"detail":null}],"removed":[]}})",
-        LR"({"version":2,"publishOnly":true,"strip":{"version":2,"base":2,"revision":4,"rows":[],"removed":[]}})",
-        LR"({"version":2,"publishOnly":true,"strip":{"version":2,"base":3,"revision":4,"rows":[{"id":11,"flags":0},{"id":999,"flags":0}],"removed":[]}})",
-        LR"({"version":2,"publishOnly":true,"strip":{"version":2,"base":3,"revision":4,"rows":[{"id":11,"flags":0},{"id":11,"flags":1}],"removed":[]}})",
-        LR"({"version":2,"publishOnly":true,"strip":{"version":2,"base":3,"revision":4,"rows":[],"removed":[999]}})",
-        LR"({"version":2,"publishOnly":true,"strip":{"version":2,"base":3,"revision":4,"rows":[{"id":11,"image":{"width":1,"height":1,"pixels":"0000FFFF"}}],"removed":[]}})",
-        LR"({"version":2,"publishOnly":true,"strip":{"version":2,"base":3,"revision":4,"rows":[{"id":11,"flags":0}],"removed":[11]}})"}) {
+    for (
+        auto invalid :
+        {LR"({"version":2,"publishOnly":true,"strip":{"version":2,"base":3,"revision":4,"rows":[{"id":11,"containerColor":-1}],"removed":[]}})",
+         LR"({"version":2,"publishOnly":true,"strip":{"version":2,"base":3,"revision":4,"rows":[{"id":11,"flags":"bad"}],"removed":[]}})",
+         LR"({"version":2,"publishOnly":true,"strip":{"version":2,"base":3,"revision":4,"rows":[{"id":11,"detail":null}],"removed":[]}})",
+         LR"({"version":2,"publishOnly":true,"strip":{"version":2,"base":2,"revision":4,"rows":[],"removed":[]}})",
+         LR"({"version":2,"publishOnly":true,"strip":{"version":2,"base":3,"revision":4,"rows":[{"id":11,"flags":0},{"id":999,"flags":0}],"removed":[]}})",
+         LR"({"version":2,"publishOnly":true,"strip":{"version":2,"base":3,"revision":4,"rows":[{"id":11,"flags":0},{"id":11,"flags":1}],"removed":[]}})",
+         LR"({"version":2,"publishOnly":true,"strip":{"version":2,"base":3,"revision":4,"rows":[],"removed":[999]}})",
+         LR"({"version":2,"publishOnly":true,"strip":{"version":2,"base":3,"revision":4,"rows":[{"id":11,"image":{"width":1,"height":1,"pixels":"0000FFFF"}}],"removed":[]}})",
+         LR"({"version":2,"publishOnly":true,"strip":{"version":2,"base":3,"revision":4,"rows":[{"id":11,"flags":0}],"removed":[11]}})"}) {
         Require(FAILED(api.syncTabMenu(host, invalid)), "invalid delta is rejected atomically");
         Require(firstIcon.Source() == retainedImage, "rejected delta preserves the image");
-        Require(first.Header().as<Controls::Grid>().Children().GetAt(0).as<Controls::Grid>()
-                    .Children().GetAt(1).as<Controls::ProgressRing>().IsActive(), "rejected delta preserves prior flags");
+        Require(first.Header()
+                    .as<Controls::Grid>()
+                    .Children()
+                    .GetAt(0)
+                    .as<Controls::Grid>()
+                    .Children()
+                    .GetAt(1)
+                    .as<Controls::ProgressRing>()
+                    .IsActive(),
+                "rejected delta preserves prior flags");
     }
-    MenuPublish(api, host, LR"({"version":2,"publishOnly":true,"strip":{"version":2,"base":3,"revision":4,"rows":[{"id":11,"image":null,"containerName":"","containerColor":0}],"removed":[]}})");
+    MenuPublish(
+        api, host,
+        LR"({"version":2,"publishOnly":true,"strip":{"version":2,"base":3,"revision":4,"rows":[{"id":11,"image":null,"containerName":"","containerColor":0}],"removed":[]}})");
     Require(container.Visibility() == Visibility::Collapsed, "cleared container removes its indicator in place");
     Require(!firstIcon.Source(), "explicit null clears a retained image");
     for (auto theme : {ElementTheme::Light, ElementTheme::Dark, ElementTheme::Light}) {
@@ -3050,15 +3509,16 @@ static void CheckTabStrip(HMODULE module, WinUIPaneApi& api, HWND host, bool sel
                     systemCaption.ButtonBackgroundColor().Value().A == 0 &&
                     systemCaption.ButtonInactiveBackgroundColor().Value().A == 0,
                 "strip and caption backgrounds reveal the island backdrop across theme changes");
-        const auto captionTheme = theme == ElementTheme::Dark
-            ? winrt::Microsoft::UI::Windowing::TitleBarTheme::Dark : winrt::Microsoft::UI::Windowing::TitleBarTheme::Light;
+        const auto captionTheme = theme == ElementTheme::Dark ? winrt::Microsoft::UI::Windowing::TitleBarTheme::Dark
+                                                              : winrt::Microsoft::UI::Windowing::TitleBarTheme::Light;
         for (int i = 0; i < 100 && systemCaption.PreferredTheme() != captionTheme; ++i) {
             Pump();
             Sleep(10);
         }
         if (systemCaption.PreferredTheme() != captionTheme)
             fprintf(stderr, "Caption theme mismatch: root=%d requested=%d caption=%d expected=%d loaded=%d\n",
-                int(root.ActualTheme()), int(theme), int(systemCaption.PreferredTheme()), int(captionTheme), root.IsLoaded());
+                    int(root.ActualTheme()), int(theme), int(systemCaption.PreferredTheme()), int(captionTheme),
+                    root.IsLoaded());
         Require(systemCaption.PreferredTheme() == captionTheme,
                 "Windows caption follows live strip theme without overriding hover colors");
     }
@@ -3088,10 +3548,10 @@ static void CheckTabStrip(HMODULE module, WinUIPaneApi& api, HWND host, bool sel
         Require(request.Size(), "strip opening asks for this tab's description");
         auto action = request.GetNamedObject(L"action");
         MenuPublish(api, host,
-                     MenuDescription(action.GetNamedNumber(L"session"), uint32_t(action.GetNamedNumber(L"tab")),
-                                     action.GetNamedNumber(L"revision"))
-                         .Stringify()
-                         .c_str());
+                    MenuDescription(action.GetNamedNumber(L"session"), uint32_t(action.GetNamedNumber(L"tab")),
+                                    action.GetNamedNumber(L"revision"))
+                        .Stringify()
+                        .c_str());
         for (int i = 0; i < 100 && flyout.Items().Size() != 3; ++i) {
             Pump();
             Sleep(10);
@@ -3136,26 +3596,35 @@ static void CheckInlineGroups(HMODULE module, WinUIPaneApi& api, HWND host, bool
     SetForegroundWindow(host);
     auto inspect = reinterpret_cast<HRESULT(WINAPI*)(HWND, void**)>(GetProcAddress(module, "WinUIPaneTestGetContent"));
     UIElement content{nullptr};
-    Require(SUCCEEDED(inspect(host,put_abi(content))), "inspect inline strip");
+    Require(SUCCEEDED(inspect(host, put_abi(content))), "inspect inline strip");
     auto root = content.as<Controls::Grid>();
     auto view = root.Children().GetAt(0).as<Controls::TabView>();
     // Finish island activation before inserting the grouped source.
     AwaitLiveTree(root);
-    for (int i=0;i<20;++i) { Pump(); Sleep(10); }
+    for (int i = 0; i < 20; ++i) {
+        Pump();
+        Sleep(10);
+    }
     MenuPublish(api, host, MenuState({41, 42}).Stringify().c_str());
-    auto full = LR"({"version":2,"publishOnly":true,"strip":{"version":2,"base":0,"revision":1,"rtl":false,"groupsLabel":"Groups","groups":[{"id":7,"name":"Research","label":"Collapse Research","collapsed":false,"color":4281558681},{"id":9,"name":"Empty","label":"Expand Empty","collapsed":true}],"rows":[{"id":41,"detail":"","flags":0},{"id":42,"detail":"","flags":0}],"layout":[{"group":0,"tab":41},{"group":7,"tab":0},{"group":7,"tab":42},{"group":9,"tab":0}]}})";
+    auto full =
+        LR"({"version":2,"publishOnly":true,"strip":{"version":2,"base":0,"revision":1,"rtl":false,"groupsLabel":"Groups","groups":[{"id":7,"name":"Research","label":"Collapse Research","collapsed":false,"color":4281558681},{"id":9,"name":"Empty","label":"Expand Empty","collapsed":true}],"rows":[{"id":41,"detail":"","flags":0},{"id":42,"detail":"","flags":0}],"layout":[{"group":0,"tab":41},{"group":7,"tab":0},{"group":7,"tab":42},{"group":9,"tab":0}]}})";
     MenuPublish(api, host, full);
-    WinUITab tabs[]{{41,L"Home"},{42,L"Research page"}};
+    WinUITab tabs[]{{41, L"Home"}, {42, L"Research page"}};
     uint32_t selected{};
-    Require(SUCCEEDED(api.syncTabs(host,tabs,2,41, NextTabRevision(), &selected)), "sync grouped tabs");
+    Require(SUCCEEDED(api.syncTabs(host, tabs, 2, 41, NextTabRevision(), &selected)), "sync grouped tabs");
     auto settle = [&] {
-        for (int i=0;i<20;++i) { Pump(); Sleep(10); }
+        for (int i = 0; i < 20; ++i) {
+            Pump();
+            Sleep(10);
+        }
         // Layout baselines must exclude entry translation. The old fixed
         // 200 ms wait could sample a still-running 250 ms entrance.
-        auto entry = reinterpret_cast<HRESULT(WINAPI*)(HWND, uint32_t, uint32_t*)>(GetProcAddress(module, "WinUIPaneTestEntryMotion"));
+        auto entry = reinterpret_cast<HRESULT(WINAPI*)(HWND, uint32_t, uint32_t*)>(
+            GetProcAddress(module, "WinUIPaneTestEntryMotion"));
         Require(entry != nullptr, "entry inspector for settled group geometry");
-        for (int i=0;i<200;++i) {
-            Pump(); root.UpdateLayout();
+        for (int i = 0; i < 200; ++i) {
+            Pump();
+            root.UpdateLayout();
             uint32_t motion[10]{};
             Require(SUCCEEDED(entry(host, 0, motion)), "inspect settled group geometry");
             if (!motion[0] && !motion[1] && !motion[3] && !motion[4] && !motion[5] && !motion[6]) return;
@@ -3165,56 +3634,75 @@ static void CheckInlineGroups(HMODULE module, WinUIPaneApi& api, HWND host, bool
     };
     std::function<Controls::Button(DependencyObject const&, hstring const&)> find;
     find = [&](DependencyObject const& node, hstring const& id) -> Controls::Button {
-        if (auto button = node.try_as<Controls::Button>(); button &&
-            (Automation::AutomationProperties::GetAutomationId(button) == id || button.Name() == id)) return button;
-        for (int i=0;i<Media::VisualTreeHelper::GetChildrenCount(node);++i)
-            if (auto found = find(Media::VisualTreeHelper::GetChild(node,i),id)) return found;
+        if (auto button = node.try_as<Controls::Button>();
+            button && (Automation::AutomationProperties::GetAutomationId(button) == id || button.Name() == id))
+            return button;
+        for (int i = 0; i < Media::VisualTreeHelper::GetChildrenCount(node); ++i)
+            if (auto found = find(Media::VisualTreeHelper::GetChild(node, i), id)) return found;
         return nullptr;
     };
-    for (int i=0;i<1500 && !root.IsLoaded();++i) { Pump(); Sleep(10); }
+    for (int i = 0; i < 1500 && !root.IsLoaded(); ++i) {
+        Pump();
+        Sleep(10);
+    }
     Require(root.IsLoaded(), "recreated inline island has loaded");
-    for (int i=0;i<500 && !find(view,L"FennInlineGroup-9");++i) { Pump(); Sleep(10); }
+    for (int i = 0; i < 500 && !find(view, L"FennInlineGroup-9"); ++i) {
+        Pump();
+        Sleep(10);
+    }
     settle();
-    auto header = find(view,L"FennInlineGroup-7");
+    auto header = find(view, L"FennInlineGroup-7");
     auto ambientLayer = root.Children().GetAt(1).as<Controls::Canvas>();
     Require(!ambientLayer.IsHitTestVisible() && Automation::AutomationProperties::GetAccessibilityView(ambientLayer) ==
-            Automation::Peers::AccessibilityView::Raw, "ambient decoration cannot capture input or enter the control tree");
+                                                    Automation::Peers::AccessibilityView::Raw,
+            "ambient decoration cannot capture input or enter the control tree");
     auto ambientOutput = Hosting::ElementCompositionPreview::GetElementChildVisual(ambientLayer)
-        .as<winrt::Microsoft::UI::Composition::SpriteVisual>();
+                             .as<winrt::Microsoft::UI::Composition::SpriteVisual>();
     auto ambientMask = ambientOutput.Brush().as<winrt::Microsoft::UI::Composition::CompositionMaskBrush>();
-    auto occludedSurface = ambientMask.Source().as<winrt::Microsoft::UI::Composition::CompositionSurfaceBrush>()
-        .Surface().as<winrt::Microsoft::UI::Composition::CompositionVisualSurface>();
+    auto occludedSurface = ambientMask.Source()
+                               .as<winrt::Microsoft::UI::Composition::CompositionSurfaceBrush>()
+                               .Surface()
+                               .as<winrt::Microsoft::UI::Composition::CompositionVisualSurface>();
     auto occluded = occludedSurface.SourceVisual().as<winrt::Microsoft::UI::Composition::SpriteVisual>();
     auto faceMaskBrush = occluded.Brush().as<winrt::Microsoft::UI::Composition::CompositionMaskBrush>();
-    auto faceSurface = faceMaskBrush.Mask().as<winrt::Microsoft::UI::Composition::CompositionSurfaceBrush>()
-        .Surface().as<winrt::Microsoft::UI::Composition::CompositionVisualSurface>();
+    auto faceSurface = faceMaskBrush.Mask()
+                           .as<winrt::Microsoft::UI::Composition::CompositionSurfaceBrush>()
+                           .Surface()
+                           .as<winrt::Microsoft::UI::Composition::CompositionVisualSurface>();
     auto faceRoot = faceSurface.SourceVisual().as<winrt::Microsoft::UI::Composition::ContainerVisual>();
     Require(faceRoot.Comment() == L"tab-face-occlusion" && faceSurface.SourceSize().x > 0,
-        "face occlusion uses a bounded Composition surface after diffusion");
-    auto ambientSurface = faceMaskBrush.Source().as<winrt::Microsoft::UI::Composition::CompositionSurfaceBrush>()
-        .Surface().as<winrt::Microsoft::UI::Composition::CompositionVisualSurface>();
+            "face occlusion uses a bounded Composition surface after diffusion");
+    auto ambientSurface = faceMaskBrush.Source()
+                              .as<winrt::Microsoft::UI::Composition::CompositionSurfaceBrush>()
+                              .Surface()
+                              .as<winrt::Microsoft::UI::Composition::CompositionVisualSurface>();
     auto lit = ambientSurface.SourceVisual().as<winrt::Microsoft::UI::Composition::ContainerVisual>();
     Require(lit.Comment() == L"ambient-lit" && lit.Children().Count() == 2,
-        "ambient light and group halos diffuse in separate layers before shared masks");
+            "ambient light and group halos diffuse in separate layers before shared masks");
     auto ambient = lit.Children().First().Current().as<winrt::Microsoft::UI::Composition::ContainerVisual>();
-    auto haloIterator = lit.Children().First(); haloIterator.MoveNext();
+    auto haloIterator = lit.Children().First();
+    haloIterator.MoveNext();
     auto haloDiffusion = haloIterator.Current().as<winrt::Microsoft::UI::Composition::LayerVisual>();
-    Require(haloDiffusion.Comment() == L"group-halo-diffusion" && haloDiffusion.Effect() && haloDiffusion.Opacity() == .9f,
+    Require(
+        haloDiffusion.Comment() == L"group-halo-diffusion" && haloDiffusion.Effect() && haloDiffusion.Opacity() == .9f,
         "halo layer uses the same diffusion as other ambient light");
     auto edgeFade = ambientMask.Mask().as<winrt::Microsoft::UI::Composition::CompositionLinearGradientBrush>();
     Require(edgeFade.ColorStops().Size() == 4 && edgeFade.ColorStops().GetAt(1).Color().A == 255 &&
-        edgeFade.ColorStops().GetAt(2).Color().A == 255, "post-diffusion edge mask preserves interior illumination");
+                edgeFade.ColorStops().GetAt(2).Color().A == 255,
+            "post-diffusion edge mask preserves interior illumination");
     auto diffusion = ambient.as<winrt::Microsoft::UI::Composition::LayerVisual>();
-    Require(diffusion.Effect() && diffusion.Size().x > 0 && diffusion.Size().y > 0 &&
-        diffusion.Opacity() == .9f, "ambient-only diffusion has an active effect and viewport-sized surface");
+    Require(diffusion.Effect() && diffusion.Size().x > 0 && diffusion.Size().y > 0 && diffusion.Opacity() == .9f,
+            "ambient-only diffusion has an active effect and viewport-sized surface");
     auto bottomGlow = ambient.Children().First().Current().as<winrt::Microsoft::UI::Composition::ContainerVisual>();
-    auto upperIterator = ambient.Children().First(); upperIterator.MoveNext();
+    auto upperIterator = ambient.Children().First();
+    upperIterator.MoveNext();
     auto topGlow = upperIterator.Current().as<winrt::Microsoft::UI::Composition::ContainerVisual>();
-    printf("Ambient fields: bottom=%d top=%d live=%d\n", bottomGlow.Children().Count(), topGlow.Children().Count(), checkMotion);
+    printf("Ambient fields: bottom=%d top=%d live=%d\n", bottomGlow.Children().Count(), topGlow.Children().Count(),
+           checkMotion);
     fflush(stdout);
     // The initial grouped-source insertion may not have realized its members
     // yet. Assert complete field geometry in the loaded motion fixture below.
-    auto addButton = find(view,L"AddButton");
+    auto addButton = find(view, L"AddButton");
     Require(bool(addButton), "grouped strip has the stock add button");
     std::function<FrameworkElement(DependencyObject, hstring)> findOverflowPart =
         [&](DependencyObject node, hstring name) -> FrameworkElement {
@@ -3247,7 +3735,7 @@ static void CheckInlineGroups(HMODULE module, WinUIPaneApi& api, HWND host, bool
             // Equal mode would fill this width with two tabs and push the
             // expanded and empty collapsed headers into a spurious overflow.
             fprintf(stderr, "Grouped fit: scrollable=%.1f viewport=%.1f tab=%.1f\n", scroller.ScrollableWidth(),
-                scroller.ViewportWidth(), visibleTabs.empty() ? 0.0 : visibleTabs.front().ActualWidth());
+                    scroller.ViewportWidth(), visibleTabs.empty() ? 0.0 : visibleTabs.front().ActualWidth());
             Require(scroller.ComputedHorizontalScrollBarVisibility() == Visibility::Collapsed &&
                         scroller.ScrollableWidth() < .5,
                     "group headers do not show stock arrows while tabs can still shrink");
@@ -3257,22 +3745,27 @@ static void CheckInlineGroups(HMODULE module, WinUIPaneApi& api, HWND host, bool
             Require(scroller.ComputedHorizontalScrollBarVisibility() == Visibility::Visible,
                     "minimum-width grouped overflow shows stock scroll arrows");
             Controls::TabViewItem home{nullptr};
-            for (auto const& tab : visibleTabs) if (unbox_value<uint32_t>(tab.Tag()) == 41) home = tab;
+            for (auto const& tab : visibleTabs)
+                if (unbox_value<uint32_t>(tab.Tag()) == 41) home = tab;
             Require(bool(home), "grouped overflow fixture has its selected first tab");
             auto scrolled = scroller.Content().as<UIElement>();
             auto fullyVisible = [&](Controls::TabViewItem const& tab) {
                 const auto x = tab.TransformToVisual(scrolled).TransformPoint({0, 0}).X;
                 return x >= scroller.HorizontalOffset() - .5 &&
-                    x + tab.ActualWidth() <= scroller.HorizontalOffset() + scroller.ViewportWidth() + .5;
+                       x + tab.ActualWidth() <= scroller.HorizontalOffset() + scroller.ViewportWidth() + .5;
             };
             // TabView issues a selected-tab bring-into-view request on every
             // tab-list size change and selection, sized when issued; the
             // requests are routed asynchronously and may arrive much later.
             // A marker request queued behind them arrives after all of them.
             bool marker = false;
-            auto markers = home.BringIntoViewRequested(winrt::auto_revoke, [&](auto const&, BringIntoViewRequestedEventArgs const& args) {
-                if (args.TargetRect().Height == .25f) { marker = true; args.Handled(true); }
-            });
+            auto markers = home.BringIntoViewRequested(winrt::auto_revoke,
+                                                       [&](auto const&, BringIntoViewRequestedEventArgs const& args) {
+                                                           if (args.TargetRect().Height == .25f) {
+                                                               marker = true;
+                                                               args.Handled(true);
+                                                           }
+                                                       });
             auto request = [&](Controls::TabViewItem const& tab, float width, float height) {
                 BringIntoViewOptions options;
                 options.TargetRect(winrt::Windows::Foundation::IReference<winrt::Windows::Foundation::Rect>(
@@ -3283,7 +3776,10 @@ static void CheckInlineGroups(HMODULE module, WinUIPaneApi& api, HWND host, bool
                 marker = false;
                 request(home, 0, .25f);
                 const auto started = GetTickCount64();
-                while (!marker && GetTickCount64() - started < 5000) { Pump(); Sleep(5); }
+                while (!marker && GetTickCount64() - started < 5000) {
+                    Pump();
+                    Sleep(5);
+                }
                 Require(marker, "queued tab bring-into-view requests are delivered");
                 // Let any view change they started finish.
                 for (int quiet = 0, i = 0; quiet < 2 && i < 25; ++i) {
@@ -3294,7 +3790,7 @@ static void CheckInlineGroups(HMODULE module, WinUIPaneApi& api, HWND host, bool
             };
             drain();
             fprintf(stderr, "Grouped start: offset=%.1f home=%.1f viewport=%.1f\n", scroller.HorizontalOffset(),
-                home.ActualWidth(), scroller.ViewportWidth());
+                    home.ActualWidth(), scroller.ViewportWidth());
             Require(scroller.HorizontalOffset() < .5 && fullyVisible(home),
                     "resizing into overflow keeps the strip at its start while the selected tab is visible");
             // A request sized for the tab's old 240-DIP width no longer fits
@@ -3305,41 +3801,45 @@ static void CheckInlineGroups(HMODULE module, WinUIPaneApi& api, HWND host, bool
             auto increase = findOverflowPart(view, L"ScrollIncreaseButton").as<Controls::Primitives::RepeatButton>();
             auto decrease = findOverflowPart(view, L"ScrollDecreaseButton").as<Controls::Primitives::RepeatButton>();
             fprintf(stderr, "Grouped scroll: offset=%.1f extent=%.1f increase=%d decrease=%d\n",
-                scroller.HorizontalOffset(), scroller.ScrollableWidth(), increase.IsEnabled(), decrease.IsEnabled());
+                    scroller.HorizontalOffset(), scroller.ScrollableWidth(), increase.IsEnabled(),
+                    decrease.IsEnabled());
             Require(increase.IsEnabled() && !decrease.IsEnabled(), "stock arrows reflect start of grouped overflow");
             // The scroller's template puts the arrows beside the presenter
             // that clips the tabs; glow and outlines stop at that presenter.
             const auto arrowBounds = [&](FrameworkElement const& arrow) {
-                return arrow.TransformToVisual(ambientLayer).TransformBounds(
-                    {0, 0, float(arrow.ActualWidth()), float(arrow.ActualHeight())});
+                return arrow.TransformToVisual(ambientLayer)
+                    .TransformBounds({0, 0, float(arrow.ActualWidth()), float(arrow.ActualHeight())});
             };
             const auto glowClip = ambientLayer.Clip().Rect();
             const auto back = arrowBounds(decrease), forward = arrowBounds(increase);
-            fprintf(stderr, "Grouped glow clip: %.1f..%.1f back=%.1f..%.1f forward=%.1f..%.1f\n",
-                glowClip.X, glowClip.X + glowClip.Width, back.X, back.X + back.Width, forward.X, forward.X + forward.Width);
+            fprintf(stderr, "Grouped glow clip: %.1f..%.1f back=%.1f..%.1f forward=%.1f..%.1f\n", glowClip.X,
+                    glowClip.X + glowClip.Width, back.X, back.X + back.Width, forward.X, forward.X + forward.Width);
             Require(back.Width > 0 && forward.Width > 0 && glowClip.X >= back.X + back.Width - .5 &&
                         glowClip.X + glowClip.Width <= forward.X + .5,
                     "tab glow is clipped to the scroll content between the stock arrows");
             // TabView's stock arrows ask for exactly 50 DIP (c_scrollAmount).
             auto invoke = [&](FrameworkElement element, bool forward, bool staleRequest) {
                 const auto before = scroller.HorizontalOffset();
-                const auto target = forward ? std::min(scroller.ScrollableWidth(), before + 50) : std::max(0.0, before - 50);
+                const auto target =
+                    forward ? std::min(scroller.ScrollableWidth(), before + 50) : std::max(0.0, before - 50);
                 bool finished = false;
-                auto changed = scroller.ViewChanged(winrt::auto_revoke,
-                    [&](auto const&, auto const& args) {
-                        const auto offset = scroller.HorizontalOffset();
-                        if (!args.IsIntermediate() && (forward ? offset > before : offset < before))
-                            finished = true;
-                    });
+                auto changed = scroller.ViewChanged(winrt::auto_revoke, [&](auto const&, auto const& args) {
+                    const auto offset = scroller.HorizontalOffset();
+                    if (!args.IsIntermediate() && (forward ? offset > before : offset < before)) finished = true;
+                });
                 const auto started = GetTickCount64();
                 Automation::Peers::FrameworkElementAutomationPeer::CreatePeerForElement(element)
                     .GetPattern(Automation::Peers::PatternInterface::Invoke)
-                    .as<Automation::Provider::IInvokeProvider>().Invoke();
+                    .as<Automation::Provider::IInvokeProvider>()
+                    .Invoke();
                 // A recreated or background island can finish after the old
                 // one-second delay; wait for the final view event.
-                while (!finished && GetTickCount64() - started < 5000) { Pump(); Sleep(5); }
-                fprintf(stderr, "Grouped scroll completion: forward=%d stale=%d finished=%d waited=%llums\n",
-                    forward, staleRequest, finished, static_cast<unsigned long long>(GetTickCount64() - started));
+                while (!finished && GetTickCount64() - started < 5000) {
+                    Pump();
+                    Sleep(5);
+                }
+                fprintf(stderr, "Grouped scroll completion: forward=%d stale=%d finished=%d waited=%llums\n", forward,
+                        staleRequest, finished, static_cast<unsigned long long>(GetTickCount64() - started));
                 Require(finished, "stock arrow completes scrolling in the requested direction");
                 // A resize or selection request TabView issued before the
                 // click but delivered after the scroll; the pane sees only
@@ -3347,13 +3847,14 @@ static void CheckInlineGroups(HMODULE module, WinUIPaneApi& api, HWND host, bool
                 if (staleRequest) request(home, float(home.DesiredSize().Width) + 2, float(home.ActualHeight()));
                 drain();
                 fprintf(stderr, "Grouped %s: offset=%.1f target=%.1f extent=%.1f increase=%d decrease=%d\n",
-                    forward ? "forward" : "backward", scroller.HorizontalOffset(), target, scroller.ScrollableWidth(),
-                    increase.IsEnabled(), decrease.IsEnabled());
+                        forward ? "forward" : "backward", scroller.HorizontalOffset(), target,
+                        scroller.ScrollableWidth(), increase.IsEnabled(), decrease.IsEnabled());
                 return std::abs(scroller.HorizontalOffset() - target) < 1;
             };
             Require(invoke(increase, true, false) && decrease.IsEnabled(),
                     "stock forward arrow scrolls the constrained grouped list by its full step");
-            Require(invoke(decrease, false, false) && !decrease.IsEnabled(), "stock backward arrow scrolls back to the start");
+            Require(invoke(decrease, false, false) && !decrease.IsEnabled(),
+                    "stock backward arrow scrolls back to the start");
             // From 50 DIP on, the selected first tab is partly hidden, so a
             // late request would pull the strip back to its leading edge.
             Require(invoke(increase, true, true) && !fullyVisible(home),
@@ -3362,20 +3863,23 @@ static void CheckInlineGroups(HMODULE module, WinUIPaneApi& api, HWND host, bool
             Require(invoke(decrease, false, true) && !fullyVisible(home),
                     "a stale selected-tab request cannot undo a stock backward scroll");
             // Later selection still brings the selected tab into view.
-            Require(SUCCEEDED(api.syncTabs(host, tabs, 2, 42, NextTabRevision(), &selected)), "select grouped tab after arrow scroll");
+            Require(SUCCEEDED(api.syncTabs(host, tabs, 2, 42, NextTabRevision(), &selected)),
+                    "select grouped tab after arrow scroll");
             drain();
             Controls::TabViewItem research{nullptr};
-            for (auto const& tab : visibleTabs) if (unbox_value<uint32_t>(tab.Tag()) == 42) research = tab;
+            for (auto const& tab : visibleTabs)
+                if (unbox_value<uint32_t>(tab.Tag()) == 42) research = tab;
             Require(research && research.IsSelected() && fullyVisible(research),
                     "selection after an arrow scroll still brings the selected tab into view");
-            Require(SUCCEEDED(api.syncTabs(host, tabs, 2, 41, NextTabRevision(), &selected)), "restore first tab after arrow scroll");
+            Require(SUCCEEDED(api.syncTabs(host, tabs, 2, 41, NextTabRevision(), &selected)),
+                    "restore first tab after arrow scroll");
             drain();
             Require(fullyVisible(home), "restored selection brings the first tab back into view");
         } else if (width == 820) {
             // Coming from real overflow: the content now fits without arrows
             // but not beside them. Auto visibility latched arrows on here.
             fprintf(stderr, "Grouped refit: scrollable=%.1f viewport=%.1f tab=%.1f\n", scroller.ScrollableWidth(),
-                scroller.ViewportWidth(), visibleTabs.empty() ? 0.0 : visibleTabs.front().ActualWidth());
+                    scroller.ViewportWidth(), visibleTabs.empty() ? 0.0 : visibleTabs.front().ActualWidth());
             Require(scroller.ComputedHorizontalScrollBarVisibility() == Visibility::Collapsed &&
                         scroller.ScrollableWidth() < .5,
                     "stock arrows do not stay latched after overflow ends");
@@ -3384,19 +3888,22 @@ static void CheckInlineGroups(HMODULE module, WinUIPaneApi& api, HWND host, bool
                     "stock arrows disappear when grouped tabs fit again");
         }
     }
-    const auto groupedAddY = addButton.TransformToVisual(root).TransformPoint({0,0}).Y;
+    const auto groupedAddY = addButton.TransformToVisual(root).TransformPoint({0, 0}).Y;
     std::map<uint32_t, float> groupedRowY;
     for (auto item : view.TabItems()) {
         auto row = item.as<Controls::TabViewItem>();
-        groupedRowY[unbox_value<uint32_t>(row.Tag())] = row.TransformToVisual(root).TransformPoint({0,0}).Y;
+        groupedRowY[unbox_value<uint32_t>(row.Tag())] = row.TransformToVisual(root).TransformPoint({0, 0}).Y;
     }
     std::function<void(DependencyObject)> checkHeaderFocus = [&](DependencyObject node) {
         if (auto header = node.try_as<Controls::ListViewHeaderItem>()) {
-            printf("Group container: width=%.1f height=%.1f tabstop=%d content=%d\n",
-                header.ActualWidth(), header.ActualHeight(), header.IsTabStop(), bool(header.Content()));
-            Require(!header.IsTabStop(), "group containers cannot take focus away from actual disclosure buttons or tabs");
+            printf("Group container: width=%.1f height=%.1f tabstop=%d content=%d\n", header.ActualWidth(),
+                   header.ActualHeight(), header.IsTabStop(), bool(header.Content()));
+            Require(!header.IsTabStop(),
+                    "group containers cannot take focus away from actual disclosure buttons or tabs");
             Require(header.ActualHeight() <= 32, "group header cannot inflate the tab row");
-            auto model = header.Content().as<winrt::Windows::Foundation::Collections::IObservableMap<hstring, winrt::Windows::Foundation::IInspectable>>();
+            auto model = header.Content()
+                             .as<winrt::Windows::Foundation::Collections::IObservableMap<
+                                 hstring, winrt::Windows::Foundation::IInspectable>>();
             if (!model.Lookup(L"Header"))
                 Require(header.ActualWidth() == winrt::unbox_value<double>(model.Lookup(L"Gap")),
                         "retain the horizontal gap between runs but not before the first tab");
@@ -3406,42 +3913,56 @@ static void CheckInlineGroups(HMODULE module, WinUIPaneApi& api, HWND host, bool
     };
     checkHeaderFocus(view);
     printf("Inline layout: items=%u width=%.1f height=%.1f header=%d empty=%d\n", view.TabItems().Size(),
-           view.ActualWidth(), view.ActualHeight(), bool(header), bool(find(view,L"FennInlineGroup-9")));
+           view.ActualWidth(), view.ActualHeight(), bool(header), bool(find(view, L"FennInlineGroup-9")));
     fflush(stdout);
-    Require(bool(header) && bool(find(view,L"FennInlineGroup-9")), "inline and empty group headers exist");
+    Require(bool(header) && bool(find(view, L"FennInlineGroup-9")), "inline and empty group headers exist");
     auto capsule = header.Content().as<Controls::Grid>();
     auto marker = capsule.Children().GetAt(0).as<Shapes::Rectangle>();
     Require(!capsule.IsHitTestVisible() && unbox_value<uint32_t>(header.Tag()) == 7,
-        "whole group button is an identified input target for future dragging");
-    Require(capsule.Children().GetAt(1).as<Controls::Grid>().Children().GetAt(0).as<Controls::FontIcon>().Glyph() == L"\uE76C", "expanded group arrow points toward its tabs");
+            "whole group button is an identified input target for future dragging");
+    Require(capsule.Children().GetAt(1).as<Controls::Grid>().Children().GetAt(0).as<Controls::FontIcon>().Glyph() ==
+                L"\uE76C",
+            "expanded group arrow points toward its tabs");
     Require(marker.Visibility() == Visibility::Visible, "Firefox group color marker is visible");
     auto indicatorWidth = [&] { return marker.Width(); };
     auto awaitIndicator = [&](double target) {
-        for (int i=0; i<200 && std::abs(indicatorWidth() - target) >= .001; ++i) { Pump(); Sleep(10); }
+        for (int i = 0; i < 200 && std::abs(indicatorWidth() - target) >= .001; ++i) {
+            Pump();
+            Sleep(10);
+        }
         return std::abs(indicatorWidth() - target) < .001;
     };
     Require(std::abs(indicatorWidth() - 6.0) < .001, "inactive group has a short color indicator");
-    Require(SUCCEEDED(api.syncTabs(host,tabs,2,42, NextTabRevision(), &selected)), "activate group member for indicator");
+    Require(SUCCEEDED(api.syncTabs(host, tabs, 2, 42, NextTabRevision(), &selected)),
+            "activate group member for indicator");
     settle();
     Require(awaitIndicator(16.0), "active group has a long color indicator");
-    Require(find(view,L"FennInlineGroup-7") == header, "selection retains group input target");
-    Require(SUCCEEDED(api.syncTabs(host,tabs,2,41, NextTabRevision(), &selected)), "leave active group for indicator");
+    Require(find(view, L"FennInlineGroup-7") == header, "selection retains group input target");
+    Require(SUCCEEDED(api.syncTabs(host, tabs, 2, 41, NextTabRevision(), &selected)),
+            "leave active group for indicator");
     // Retarget before settling to cover reversal from the displayed width.
-    Pump(); Sleep(30); Pump();
-    Require(SUCCEEDED(api.syncTabs(host,tabs,2,42, NextTabRevision(), &selected)), "reverse group indicator transition");
+    Pump();
+    Sleep(30);
+    Pump();
+    Require(SUCCEEDED(api.syncTabs(host, tabs, 2, 42, NextTabRevision(), &selected)),
+            "reverse group indicator transition");
     settle();
     Require(awaitIndicator(16.0), "reversed indicator reaches active state");
-    Require(SUCCEEDED(api.syncTabs(host,tabs,2,41, NextTabRevision(), &selected)), "restore ungrouped selection");
+    Require(SUCCEEDED(api.syncTabs(host, tabs, 2, 41, NextTabRevision(), &selected)), "restore ungrouped selection");
     settle();
     Require(awaitIndicator(6.0), "ungrouped selection shortens group indicator");
-    auto accent = header.Resources().ThemeDictionaries().Lookup(box_value(L"Default")).as<ResourceDictionary>()
-        .Lookup(box_value(L"InlineGroupColorBrush")).as<Media::SolidColorBrush>();
-    Require(accent.Color() == winrt::Windows::UI::Color{255,51,102,153}, "group accent comes from Firefox ARGB");
+    auto accent = header.Resources()
+                      .ThemeDictionaries()
+                      .Lookup(box_value(L"Default"))
+                      .as<ResourceDictionary>()
+                      .Lookup(box_value(L"InlineGroupColorBrush"))
+                      .as<Media::SolidColorBrush>();
+    Require(accent.Color() == winrt::Windows::UI::Color{255, 51, 102, 153}, "group accent comes from Firefox ARGB");
     auto first = view.TabItems().GetAt(0);
     for (auto theme : {ElementTheme::Light, ElementTheme::Dark, ElementTheme::Light}) {
         root.RequestedTheme(theme);
         settle();
-        Require(find(view,L"FennInlineGroup-7") == header, "theme retains inline header");
+        Require(find(view, L"FennInlineGroup-7") == header, "theme retains inline header");
         Controls::Border surface{nullptr};
         for (auto child : root.Children().GetAt(3).as<Controls::Canvas>().Children()) {
             auto border = child.as<Controls::Border>();
@@ -3451,52 +3972,69 @@ static void CheckInlineGroups(HMODULE module, WinUIPaneApi& api, HWND host, bool
             // The fresh inline fixture has loaded rows; the recreated strip
             // fixture above can retain measured but unloaded group members.
             Require(surface && surface.ActualWidth() >= header.ActualWidth() && surface.BorderThickness().Left == 1 &&
-                !surface.IsHitTestVisible() && Automation::AutomationProperties::GetAccessibilityView(surface) == Automation::Peers::AccessibilityView::Raw,
-                "group outline follows the header without adding input or accessibility targets");
+                        !surface.IsHitTestVisible() &&
+                        Automation::AutomationProperties::GetAccessibilityView(surface) ==
+                            Automation::Peers::AccessibilityView::Raw,
+                    "group outline follows the header without adding input or accessibility targets");
             Require(!surface.Background() && surface.BorderBrush() && surface.ActualTheme() == theme,
-                "group surface has no selection-like fill and retains its live themed outline");
+                    "group surface has no selection-like fill and retains its live themed outline");
             // Group 9's header follows group 7's last tab across a 4-DIP
             // margin: both surfaces reach into it and keep a 1-DIP separation.
             Controls::Border empty{nullptr};
             for (auto child : root.Children().GetAt(3).as<Controls::Canvas>().Children())
-                if (Automation::AutomationProperties::GetAutomationId(child) == L"FennGroupSurface-9") empty = child.as<Controls::Border>();
-            auto emptyHeader = find(view,L"FennInlineGroup-9");
-            auto groupHeader = header.TransformToVisual(root).TransformBounds({0,0,float(header.ActualWidth()),float(header.ActualHeight())});
-            auto nextHeader = emptyHeader.TransformToVisual(root).TransformBounds({0,0,float(emptyHeader.ActualWidth()),float(emptyHeader.ActualHeight())});
-            const auto groupLeft = float(Controls::Canvas::GetLeft(surface)), groupRight = groupLeft + float(surface.Width());
-            const auto emptyLeft = float(Controls::Canvas::GetLeft(empty)), emptyRight = emptyLeft + float(empty.Width());
-            printf("Group reach: group=%.1f..%.1f header=%.1f next=%.1f..%.1f nextHeader=%.1f..%.1f\n", groupLeft, groupRight,
-                groupHeader.X, emptyLeft, emptyRight, nextHeader.X, nextHeader.X + nextHeader.Width);
+                if (Automation::AutomationProperties::GetAutomationId(child) == L"FennGroupSurface-9")
+                    empty = child.as<Controls::Border>();
+            auto emptyHeader = find(view, L"FennInlineGroup-9");
+            auto groupHeader = header.TransformToVisual(root).TransformBounds(
+                {0, 0, float(header.ActualWidth()), float(header.ActualHeight())});
+            auto nextHeader = emptyHeader.TransformToVisual(root).TransformBounds(
+                {0, 0, float(emptyHeader.ActualWidth()), float(emptyHeader.ActualHeight())});
+            const auto groupLeft = float(Controls::Canvas::GetLeft(surface)),
+                       groupRight = groupLeft + float(surface.Width());
+            const auto emptyLeft = float(Controls::Canvas::GetLeft(empty)),
+                       emptyRight = emptyLeft + float(empty.Width());
+            printf("Group reach: group=%.1f..%.1f header=%.1f next=%.1f..%.1f nextHeader=%.1f..%.1f\n", groupLeft,
+                   groupRight, groupHeader.X, emptyLeft, emptyRight, nextHeader.X, nextHeader.X + nextHeader.Width);
             fflush(stdout);
-            Require(std::abs(groupLeft - (groupHeader.X - 5)) < .5f && std::abs(emptyRight - (nextHeader.X + nextHeader.Width + 5)) < .5f,
-                "group surfaces extend the default 5 DIP past their outer members");
+            Require(std::abs(groupLeft - (groupHeader.X - 5)) < .5f &&
+                        std::abs(emptyRight - (nextHeader.X + nextHeader.Width + 5)) < .5f,
+                    "group surfaces extend the default 5 DIP past their outer members");
             Require(emptyLeft - groupRight >= 1 - .01f && emptyLeft < nextHeader.X && groupRight > nextHeader.X - 4,
-                "neighboring group surfaces share the gap without overlapping");
+                    "neighboring group surfaces share the gap without overlapping");
         }
-        Require(header.ActualHeight() > 0 && header.ActualHeight() <= 40 && view.ActualHeight() <= 40, "inline group fits reserved strip height");
-        Require(header.ActualWidth() == 32 && header.ActualHeight() == 32, "capsule retains a compact 32-DIP input target");
+        Require(header.ActualHeight() > 0 && header.ActualHeight() <= 40 && view.ActualHeight() <= 40,
+                "inline group fits reserved strip height");
+        Require(header.ActualWidth() == 32 && header.ActualHeight() == 32,
+                "capsule retains a compact 32-DIP input target");
         auto painted = marker.Fill().as<Media::SolidColorBrush>().Color();
         if (winrt::Windows::UI::ViewManagement::AccessibilitySettings().HighContrast()) {
             const auto system = GetSysColor(COLOR_WINDOWTEXT);
-            Require(painted == winrt::Windows::UI::Color{255,GetRValue(system),GetGValue(system),GetBValue(system)}, "high contrast marker uses system text color");
-        } else Require(painted == accent.Color(), "light/dark marker uses Firefox accent");
+            Require(painted == winrt::Windows::UI::Color{255, GetRValue(system), GetGValue(system), GetBValue(system)},
+                    "high contrast marker uses system text color");
+        } else
+            Require(painted == accent.Color(), "light/dark marker uses Firefox accent");
     }
     auto peer = Automation::Peers::FrameworkElementAutomationPeer::CreatePeerForElement(header);
     peer.GetPattern(Automation::Peers::PatternInterface::Invoke).as<Automation::Provider::IInvokeProvider>().Invoke();
-    auto request = NextRequest(api,host,5,L"strip-group");
-    Require(request.Size() && request.GetNamedObject(L"action").GetNamedNumber(L"group") == 7, "inline header uses shared group command");
-    auto invalid = LR"({"version":2,"publishOnly":true,"strip":{"version":2,"base":1,"revision":2,"rows":[],"removed":[42]}})";
-    Require(FAILED(api.syncTabMenu(host,invalid)), "membership delta requires matching layout");
+    auto request = NextRequest(api, host, 5, L"strip-group");
+    Require(request.Size() && request.GetNamedObject(L"action").GetNamedNumber(L"group") == 7,
+            "inline header uses shared group command");
+    auto invalid =
+        LR"({"version":2,"publishOnly":true,"strip":{"version":2,"base":1,"revision":2,"rows":[],"removed":[42]}})";
+    Require(FAILED(api.syncTabMenu(host, invalid)), "membership delta requires matching layout");
     for (double badColor : {-1.0, 4294967296.0, 1.5}) {
         auto bad = winrt::Windows::Data::Json::JsonObject::Parse(full);
         auto strip = bad.GetNamedObject(L"strip");
         strip.SetNamedValue(L"base", winrt::Windows::Data::Json::JsonValue::CreateNumberValue(1));
         strip.SetNamedValue(L"revision", winrt::Windows::Data::Json::JsonValue::CreateNumberValue(2));
-        strip.GetNamedArray(L"groups").GetObjectAt(0).SetNamedValue(L"color", winrt::Windows::Data::Json::JsonValue::CreateNumberValue(badColor));
-        Require(FAILED(api.syncTabMenu(host,bad.Stringify().c_str())), "invalid group ARGB rejected atomically");
-        Require(accent.Color() == winrt::Windows::UI::Color{255,51,102,153}, "invalid color leaves retained marker unchanged");
+        strip.GetNamedArray(L"groups").GetObjectAt(0).SetNamedValue(
+            L"color", winrt::Windows::Data::Json::JsonValue::CreateNumberValue(badColor));
+        Require(FAILED(api.syncTabMenu(host, bad.Stringify().c_str())), "invalid group ARGB rejected atomically");
+        Require(accent.Color() == winrt::Windows::UI::Color{255, 51, 102, 153},
+                "invalid color leaves retained marker unchanged");
     }
-    auto getBackdrop = reinterpret_cast<HRESULT(WINAPI*)(HWND, void**)>(GetProcAddress(module, "WinUIPaneTestGetBackdrop"));
+    auto getBackdrop =
+        reinterpret_cast<HRESULT(WINAPI*)(HWND, void**)>(GetProcAddress(module, "WinUIPaneTestGetBackdrop"));
     Require(getBackdrop != nullptr, "strip backdrop inspection hook exists");
     auto backdrop = [&] {
         winrt::Microsoft::UI::Xaml::Media::SystemBackdrop value{nullptr};
@@ -3508,52 +4046,70 @@ static void CheckInlineGroups(HMODULE module, WinUIPaneApi& api, HWND host, bool
         return mica ? int(mica.Kind()) : -1;
     };
     Require(micaKind() == int(winrt::Microsoft::UI::Composition::SystemBackdrops::MicaKind::BaseAlt),
-        "strip backdrop defaults to Mica Alt");
+            "strip backdrop defaults to Mica Alt");
     for (auto badBackdrop : {L"Mica", L"blur", L""}) {
-        auto bad = winrt::Windows::Data::Json::JsonObject::Parse(LR"({"version":2,"publishOnly":true,"strip":{"version":2,"base":1,"revision":2,"rows":[],"removed":[]}})");
-        bad.GetNamedObject(L"strip").SetNamedValue(L"backdrop", winrt::Windows::Data::Json::JsonValue::CreateStringValue(badBackdrop));
-        Require(FAILED(api.syncTabMenu(host,bad.Stringify().c_str())), "unknown strip backdrop rejected atomically");
+        auto bad = winrt::Windows::Data::Json::JsonObject::Parse(
+            LR"({"version":2,"publishOnly":true,"strip":{"version":2,"base":1,"revision":2,"rows":[],"removed":[]}})");
+        bad.GetNamedObject(L"strip").SetNamedValue(
+            L"backdrop", winrt::Windows::Data::Json::JsonValue::CreateStringValue(badBackdrop));
+        Require(FAILED(api.syncTabMenu(host, bad.Stringify().c_str())), "unknown strip backdrop rejected atomically");
         Require(micaKind() == int(winrt::Microsoft::UI::Composition::SystemBackdrops::MicaKind::BaseAlt),
-            "rejected backdrop leaves the retained backdrop unchanged");
+                "rejected backdrop leaves the retained backdrop unchanged");
     }
-    auto collapsed = LR"({"version":2,"publishOnly":true,"strip":{"version":2,"base":1,"revision":2,"backdrop":"acrylic","rtl":true,"rows":[],"removed":[42],"groups":[{"id":7,"name":"Renamed","label":"Expand Renamed","collapsed":true},{"id":9,"name":"Empty","label":"Expand Empty","collapsed":true}],"layout":[{"group":0,"tab":41},{"group":7,"tab":0},{"group":9,"tab":0}]}})";
+    auto collapsed =
+        LR"({"version":2,"publishOnly":true,"strip":{"version":2,"base":1,"revision":2,"backdrop":"acrylic","rtl":true,"rows":[],"removed":[42],"groups":[{"id":7,"name":"Renamed","label":"Expand Renamed","collapsed":true},{"id":9,"name":"Empty","label":"Expand Empty","collapsed":true}],"layout":[{"group":0,"tab":41},{"group":7,"tab":0},{"group":9,"tab":0}]}})";
     auto collapseData = winrt::Windows::Data::Json::JsonObject::Parse(collapsed);
-    collapseData.GetNamedObject(L"strip").GetNamedArray(L"groups").GetObjectAt(0).SetNamedValue(L"headerText",
+    collapseData.GetNamedObject(L"strip").GetNamedArray(L"groups").GetObjectAt(0).SetNamedValue(
+        L"headerText",
         winrt::Windows::Data::Json::JsonValue::CreateStringValue(L"A deliberately long named group for trimming"));
-    collapseData.GetNamedObject(L"strip").SetNamedValue(L"rtl", winrt::Windows::Data::Json::JsonValue::CreateBooleanValue(false));
-    MenuPublish(api,host,collapseData.Stringify().c_str());
-    Require(SUCCEEDED(api.syncTabs(host,tabs,1,41, NextTabRevision(), &selected)), "sync hidden group member");
+    collapseData.GetNamedObject(L"strip").SetNamedValue(
+        L"rtl", winrt::Windows::Data::Json::JsonValue::CreateBooleanValue(false));
+    MenuPublish(api, host, collapseData.Stringify().c_str());
+    Require(SUCCEEDED(api.syncTabs(host, tabs, 1, 41, NextTabRevision(), &selected)), "sync hidden group member");
     settle();
     Require(marker.Visibility() == Visibility::Collapsed, "legacy group metadata without color hides marker");
     auto groupText = capsule.Children().GetAt(2).as<Controls::TextBlock>();
     Require(header.ActualWidth() > 32 && header.ActualWidth() <= 154 && groupText.Visibility() == Visibility::Visible &&
-        groupText.Text() == L"A deliberately long named group for trimming" && groupText.TextTrimming() == TextTrimming::CharacterEllipsis &&
-        capsule.Children().GetAt(1).Visibility() == Visibility::Collapsed,
-        "named group uses bounded text without a redundant arrow");
+                groupText.Text() == L"A deliberately long named group for trimming" &&
+                groupText.TextTrimming() == TextTrimming::CharacterEllipsis &&
+                capsule.Children().GetAt(1).Visibility() == Visibility::Collapsed,
+            "named group uses bounded text without a redundant arrow");
     for (auto direction : {FlowDirection::LeftToRight, FlowDirection::RightToLeft}) {
-        root.FlowDirection(direction); settle();
-        auto rotor=capsule.Children().GetAt(1).as<Controls::Grid>();
-        Require(rotor.Visibility() == Visibility::Collapsed && groupText.ActualWidth()>0,
-            "long name retains its text target in LTR and RTL");
+        root.FlowDirection(direction);
+        settle();
+        auto rotor = capsule.Children().GetAt(1).as<Controls::Grid>();
+        Require(rotor.Visibility() == Visibility::Collapsed && groupText.ActualWidth() > 0,
+                "long name retains its text target in LTR and RTL");
     }
-    Require(view.TabItems().Size() == 1 && view.TabItems().GetAt(0) == first && view.SelectedItem() == first, "collapse retains real active tab");
-    Require(find(view,L"FennInlineGroup-7") == header && Automation::AutomationProperties::GetName(header) == L"Expand Renamed", "empty renamed group retains its button");
-    Require(backdrop().try_as<Media::DesktopAcrylicBackdrop>() != nullptr, "strip backdrop delta applies desktop acrylic");
+    Require(view.TabItems().Size() == 1 && view.TabItems().GetAt(0) == first && view.SelectedItem() == first,
+            "collapse retains real active tab");
+    Require(find(view, L"FennInlineGroup-7") == header &&
+                Automation::AutomationProperties::GetName(header) == L"Expand Renamed",
+            "empty renamed group retains its button");
+    Require(backdrop().try_as<Media::DesktopAcrylicBackdrop>() != nullptr,
+            "strip backdrop delta applies desktop acrylic");
     // ShellCore owns replay identity: the accepted revision repeated exactly is
     // a no-op, and different content under that revision is refused.
-    Require(SUCCEEDED(api.syncTabMenu(host,collapseData.Stringify().c_str())), "exact strip replay is a no-op");
-    collapseData.GetNamedObject(L"strip").SetNamedValue(L"backdrop", winrt::Windows::Data::Json::JsonValue::CreateStringValue(L"mica"));
-    Require(FAILED(api.syncTabMenu(host,collapseData.Stringify().c_str())), "changed content under an accepted revision is refused");
-    Require(backdrop().try_as<Media::DesktopAcrylicBackdrop>() != nullptr, "refused replay leaves the backdrop unchanged");
-    MenuPublish(api,host,LR"({"version":2,"publishOnly":true,"strip":{"version":2,"base":2,"revision":3,"labels":{"tabs":"Registerkarten in diesem Fenster","active":"Aktiver Tab","selected":"AusgewÃ¤hlter Tab","allTabs":{"label":"Alle Tabs auflisten","tooltip":"Alle Tabs auflisten, Hinweis"},"newTab":{"label":"Neuer Tab","tooltip":"Neuer Tab, Strg+T"}},"backdrop":"mica","rtl":true,"rows":[],"removed":[],"groups":[{"id":7,"name":"Unnamed group","headerText":"","label":"Expand unnamed group","collapsed":true},{"id":9,"name":"Empty","label":"Expand Empty","collapsed":true}]}})");
+    Require(SUCCEEDED(api.syncTabMenu(host, collapseData.Stringify().c_str())), "exact strip replay is a no-op");
+    collapseData.GetNamedObject(L"strip").SetNamedValue(
+        L"backdrop", winrt::Windows::Data::Json::JsonValue::CreateStringValue(L"mica"));
+    Require(FAILED(api.syncTabMenu(host, collapseData.Stringify().c_str())),
+            "changed content under an accepted revision is refused");
+    Require(backdrop().try_as<Media::DesktopAcrylicBackdrop>() != nullptr,
+            "refused replay leaves the backdrop unchanged");
+    MenuPublish(
+        api, host,
+        LR"({"version":2,"publishOnly":true,"strip":{"version":2,"base":2,"revision":3,"labels":{"tabs":"Registerkarten in diesem Fenster","active":"Aktiver Tab","selected":"AusgewÃ¤hlter Tab","allTabs":{"label":"Alle Tabs auflisten","tooltip":"Alle Tabs auflisten, Hinweis"},"newTab":{"label":"Neuer Tab","tooltip":"Neuer Tab, Strg+T"}},"backdrop":"mica","rtl":true,"rows":[],"removed":[],"groups":[{"id":7,"name":"Unnamed group","headerText":"","label":"Expand unnamed group","collapsed":true},{"id":9,"name":"Empty","label":"Expand Empty","collapsed":true}]}})");
     settle();
-    Require(find(view,L"FennInlineGroup-7") == header && header.ActualWidth() == 32 &&
-        groupText.Visibility() == Visibility::Collapsed && capsule.Children().GetAt(1).Visibility() == Visibility::Visible,
-        "clearing the name restores the arrow on the retained button");
+    Require(find(view, L"FennInlineGroup-7") == header && header.ActualWidth() == 32 &&
+                groupText.Visibility() == Visibility::Collapsed &&
+                capsule.Children().GetAt(1).Visibility() == Visibility::Visible,
+            "clearing the name restores the arrow on the retained button");
     Require(root.FlowDirection() == FlowDirection::RightToLeft, "inline groups inherit RTL");
     {
         auto tip = [](FrameworkElement const& element) {
-            return unbox_value<winrt::hstring>(Controls::ToolTipService::GetToolTip(element).as<Controls::ToolTip>().Content());
+            return unbox_value<winrt::hstring>(
+                Controls::ToolTipService::GetToolTip(element).as<Controls::ToolTip>().Content());
         };
         auto allTabsButton = find(root, L"FennAllTabs").as<Controls::Button>();
         auto stockAdd = find(view, L"FennStripNewTab").as<Controls::Button>();
@@ -3567,8 +4123,8 @@ static void CheckInlineGroups(HMODULE module, WinUIPaneApi& api, HWND host, bool
                 "stock add button takes Firefox's localized name and tooltip");
         // A tooltip owns a popup HWND. It must not cover a foreground sibling
         // window's tab or intercept that tab's next context-menu press.
-        HWND sibling = CreateWindowExW(0, L"STATIC", L"Tooltip foreground sibling", WS_OVERLAPPEDWINDOW,
-            80, 80, 800, 600, nullptr, nullptr, GetModuleHandleW(nullptr), nullptr);
+        HWND sibling = CreateWindowExW(0, L"STATIC", L"Tooltip foreground sibling", WS_OVERLAPPEDWINDOW, 80, 80, 800,
+                                       600, nullptr, nullptr, GetModuleHandleW(nullptr), nullptr);
         Require(sibling != nullptr, "tooltip sibling host");
         for (auto button : {stockAdd, allTabsButton}) {
             SetForegroundWindow(host);
@@ -3593,7 +4149,7 @@ static void CheckInlineGroups(HMODULE module, WinUIPaneApi& api, HWND host, bool
                 "existing rows take the localized active-tab status");
     }
     Require(micaKind() == int(winrt::Microsoft::UI::Composition::SystemBackdrops::MicaKind::Base),
-        "strip backdrop delta applies base Mica");
+            "strip backdrop delta applies base Mica");
     // The grouped source is also used for an entirely ungrouped strip. Moving
     // its first tab changes the run identity and reparents the retained rows.
     for (uint32_t revision = 4; revision <= 8; ++revision) {
@@ -3607,377 +4163,458 @@ static void CheckInlineGroups(HMODULE module, WinUIPaneApi& api, HWND host, bool
         strip.SetNamedValue(L"groupsLabel", winrt::Windows::Data::Json::JsonValue::CreateStringValue(L"Groups"));
         strip.SetNamedValue(L"revision", winrt::Windows::Data::Json::JsonValue::CreateNumberValue(revision));
         MenuPublish(api, host, publication.Stringify().c_str());
-        WinUITab ordered[]{{reversed ? 42u : 41u,L"One"},{reversed ? 41u : 42u,L"Two"}};
-        Require(SUCCEEDED(api.syncTabs(host,ordered,2,42, NextTabRevision(), &selected)), "publish two-tab round trip");
+        WinUITab ordered[]{{reversed ? 42u : 41u, L"One"}, {reversed ? 41u : 42u, L"Two"}};
+        Require(SUCCEEDED(api.syncTabs(host, ordered, 2, 42, NextTabRevision(), &selected)),
+                "publish two-tab round trip");
         settle();
-        Require(std::abs(addButton.TransformToVisual(root).TransformPoint({0,0}).Y - groupedAddY) < .5,
-            "group presence cannot move the add button vertically");
+        Require(std::abs(addButton.TransformToVisual(root).TransformPoint({0, 0}).Y - groupedAddY) < .5,
+                "group presence cannot move the add button vertically");
         Require(micaKind() == int(winrt::Microsoft::UI::Composition::SystemBackdrops::MicaKind::BaseAlt),
-            "a full snapshot without a backdrop restores Mica Alt");
+                "a full snapshot without a backdrop restores Mica Alt");
         for (auto item : view.TabItems()) {
             auto row = item.as<Controls::TabViewItem>();
-            Require(std::abs(row.TransformToVisual(root).TransformPoint({0,0}).Y - groupedRowY.at(unbox_value<uint32_t>(row.Tag()))) < .5,
-                "group presence cannot move tabs vertically");
+            Require(std::abs(row.TransformToVisual(root).TransformPoint({0, 0}).Y -
+                             groupedRowY.at(unbox_value<uint32_t>(row.Tag()))) < .5,
+                    "group presence cannot move tabs vertically");
             const bool active = unbox_value<uint32_t>(row.Tag()) == 42;
             if (row.IsSelected() != active)
-                fprintf(stderr, "Round trip revision=%u tab=%u selected=%d expected=%d index=%d\n",
-                       revision, unbox_value<uint32_t>(row.Tag()), row.IsSelected(), active, view.SelectedIndex());
+                fprintf(stderr, "Round trip revision=%u tab=%u selected=%d expected=%d index=%d\n", revision,
+                        unbox_value<uint32_t>(row.Tag()), row.IsSelected(), active, view.SelectedIndex());
             Require((view.SelectedItem() == row) == active, "round trip retains TabView selection");
             Require(row.IsSelected() == active, "round trip retains the row's visual selection");
         }
     }
     if (checkMotion) {
-        auto motion = reinterpret_cast<HRESULT(WINAPI*)(HWND,uint32_t,uint32_t*)>(GetProcAddress(module,"WinUIPaneTestGroupMotion"));
+        auto motion = reinterpret_cast<HRESULT(WINAPI*)(HWND, uint32_t, uint32_t*)>(
+            GetProcAddress(module, "WinUIPaneTestGroupMotion"));
         Require(motion != nullptr, "group motion lifecycle hook exists");
         auto motionState = [&](uint32_t revision, bool collapsed) {
-            auto state = winrt::Windows::Data::Json::JsonObject::Parse(LR"({"version":2,"publishOnly":true,"strip":{"version":2,"base":0,"revision":9,"rtl":false,"groupsLabel":"Groups","groups":[{"id":7,"name":"Research","label":"Research","collapsed":false}],"rows":[{"id":41,"detail":"","flags":0},{"id":42,"detail":"","flags":0}],"layout":[{"group":7,"tab":0},{"group":7,"tab":41},{"group":7,"tab":42}]}})");
+            auto state = winrt::Windows::Data::Json::JsonObject::Parse(
+                LR"({"version":2,"publishOnly":true,"strip":{"version":2,"base":0,"revision":9,"rtl":false,"groupsLabel":"Groups","groups":[{"id":7,"name":"Research","label":"Research","collapsed":false}],"rows":[{"id":41,"detail":"","flags":0},{"id":42,"detail":"","flags":0}],"layout":[{"group":7,"tab":0},{"group":7,"tab":41},{"group":7,"tab":42}]}})");
             auto strip = state.GetNamedObject(L"strip");
             strip.SetNamedValue(L"revision", winrt::Windows::Data::Json::JsonValue::CreateNumberValue(revision));
             if (collapsed) {
-                strip.GetNamedArray(L"groups").GetObjectAt(0).SetNamedValue(L"collapsed", winrt::Windows::Data::Json::JsonValue::CreateBooleanValue(true));
+                strip.GetNamedArray(L"groups").GetObjectAt(0).SetNamedValue(
+                    L"collapsed", winrt::Windows::Data::Json::JsonValue::CreateBooleanValue(true));
                 strip.GetNamedArray(L"rows").RemoveAt(0);
                 strip.GetNamedArray(L"layout").RemoveAt(1);
             }
-            MenuPublish(api,host,state.Stringify().c_str());
-            Require(SUCCEEDED(api.syncTabs(host,tabs + (collapsed ? 1 : 0),collapsed ? 1 : 2,42, NextTabRevision(), &selected)), "publish motion fixture");
+            MenuPublish(api, host, state.Stringify().c_str());
+            Require(SUCCEEDED(api.syncTabs(host, tabs + (collapsed ? 1 : 0), collapsed ? 1 : 2, 42, NextTabRevision(),
+                                           &selected)),
+                    "publish motion fixture");
         };
-        motionState(9,false); settle();
+        motionState(9, false);
+        settle();
         auto hasGroupSurface = [&] {
             for (auto child : root.Children().GetAt(3).as<Controls::Canvas>().Children())
                 if (Automation::AutomationProperties::GetAutomationId(child) == L"FennGroupSurface-7") return true;
             return false;
         };
         Require(hasGroupSurface(), "expanded group has its shared background");
-        Require(view.TabItems().GetAt(0).as<Controls::TabViewItem>().IsLoaded(), "motion starts with loaded tab visuals");
-        motionState(10,true);
+        Require(view.TabItems().GetAt(0).as<Controls::TabViewItem>().IsLoaded(),
+                "motion starts with loaded tab visuals");
+        motionState(10, true);
         uint32_t ghosts{};
-        Require(SUCCEEDED(motion(host,0,&ghosts)), "inspect outgoing visual lifetime");
+        Require(SUCCEEDED(motion(host, 0, &ghosts)), "inspect outgoing visual lifetime");
         if (winrt::Windows::UI::ViewManagement::UISettings().AnimationsEnabled())
             Require(ghosts == 1, "only the disappearing background tab gets a visual copy");
-        Require(view.TabItems().Size() == 1 && unbox_value<uint32_t>(view.SelectedItem().as<Controls::TabViewItem>().Tag()) == 42,
-            "animation preserves the real selected tab and excludes outgoing visuals from tab navigation");
-        Require(SUCCEEDED(motion(host,1,&ghosts)) && ghosts == 0, "cancellation releases departing visuals");
-        motionState(11,false); settle();
+        Require(view.TabItems().Size() == 1 &&
+                    unbox_value<uint32_t>(view.SelectedItem().as<Controls::TabViewItem>().Tag()) == 42,
+                "animation preserves the real selected tab and excludes outgoing visuals from tab navigation");
+        Require(SUCCEEDED(motion(host, 1, &ghosts)) && ghosts == 0, "cancellation releases departing visuals");
+        motionState(11, false);
+        settle();
         if (winrt::Windows::UI::ViewManagement::UISettings().AnimationsEnabled()) {
-            Require(SUCCEEDED(motion(host,1,&ghosts)), "end group motion before the entry slide");
-            Require(SUCCEEDED(motion(host,7,&ghosts)) && ghosts == 1, "new tab is revealed through an animated clip");
-            Require(SUCCEEDED(motion(host,8,&ghosts)) && ghosts == 1, "stopping the entry reveal leaves an unclipped row at rest");
+            Require(SUCCEEDED(motion(host, 1, &ghosts)), "end group motion before the entry slide");
+            Require(SUCCEEDED(motion(host, 7, &ghosts)) && ghosts == 1, "new tab is revealed through an animated clip");
+            Require(SUCCEEDED(motion(host, 8, &ghosts)) && ghosts == 1,
+                    "stopping the entry reveal leaves an unclipped row at rest");
         }
-        Require(SUCCEEDED(motion(host,2,&ghosts)), "simulate reduced-motion preference");
-        motionState(12,true);
-        Require(SUCCEEDED(motion(host,0,&ghosts)) && ghosts == 0, "reduced motion installs final layout without visual copies");
-        auto reducedArrow = find(view,L"FennInlineGroup-7").Content().as<Controls::Grid>().Children().GetAt(1).as<Controls::Grid>();
+        Require(SUCCEEDED(motion(host, 2, &ghosts)), "simulate reduced-motion preference");
+        motionState(12, true);
+        Require(SUCCEEDED(motion(host, 0, &ghosts)) && ghosts == 0,
+                "reduced motion installs final layout without visual copies");
+        auto reducedArrow =
+            find(view, L"FennInlineGroup-7").Content().as<Controls::Grid>().Children().GetAt(1).as<Controls::Grid>();
         auto reducedIcon = reducedArrow.Children().GetAt(0).as<Controls::FontIcon>();
-        Require(reducedIcon.Glyph() == L"\uE70D" && reducedArrow.RenderTransform().as<Media::RotateTransform>().Angle() == 0,
-            "reduced motion installs the final arrow direction immediately");
-        Require(SUCCEEDED(motion(host,3,&ghosts)), "restore normal motion policy");
+        Require(reducedIcon.Glyph() == L"\uE70D" &&
+                    reducedArrow.RenderTransform().as<Media::RotateTransform>().Angle() == 0,
+                "reduced motion installs the final arrow direction immediately");
+        Require(SUCCEEDED(motion(host, 3, &ghosts)), "restore normal motion policy");
         settle();
         Require(hasGroupSurface(), "collapsed group retains its decorative surface");
-        auto collapsedButton = find(view,L"FennInlineGroup-7");
+        auto collapsedButton = find(view, L"FennInlineGroup-7");
         auto retainedTab = view.SelectedItem().as<Controls::TabViewItem>();
         auto buttonBounds = collapsedButton.TransformToVisual(root).TransformBounds(
-            {0,0,float(collapsedButton.ActualWidth()),float(collapsedButton.ActualHeight())});
+            {0, 0, float(collapsedButton.ActualWidth()), float(collapsedButton.ActualHeight())});
         auto retainedBounds = retainedTab.TransformToVisual(root).TransformBounds(
-            {0,0,float(retainedTab.ActualWidth()),float(retainedTab.ActualHeight())});
-        const auto connectedWidth = std::max(buttonBounds.X + buttonBounds.Width, retainedBounds.X + retainedBounds.Width) -
+            {0, 0, float(retainedTab.ActualWidth()), float(retainedTab.ActualHeight())});
+        const auto connectedWidth =
+            std::max(buttonBounds.X + buttonBounds.Width, retainedBounds.X + retainedBounds.Width) -
             std::min(buttonBounds.X, retainedBounds.X);
         for (auto child : root.Children().GetAt(3).as<Controls::Canvas>().Children()) {
             if (Automation::AutomationProperties::GetAutomationId(child) != L"FennGroupSurface-7") continue;
             auto surface = child.as<Controls::Border>();
             Require(!surface.Background() && std::abs(surface.Width() - (connectedWidth + 10)) < 1 &&
-                std::abs(float(Controls::Canvas::GetLeft(surface)) - (std::min(buttonBounds.X, retainedBounds.X) - 5)) < 1,
-                "collapsed lighting connects the button and retained active member, extending past both, without neutral fill");
+                        std::abs(float(Controls::Canvas::GetLeft(surface)) -
+                                 (std::min(buttonBounds.X, retainedBounds.X) - 5)) < 1,
+                    "collapsed lighting connects the button and retained active member, extending past both, without "
+                    "neutral fill");
         }
         // An active-only group can toggle without any tab-list publication.
-        MenuPublish(api,host,LR"({"version":2,"publishOnly":true,"strip":{"version":2,"base":12,"revision":13,"rows":[],"removed":[],"groups":[{"id":7,"name":"Research","label":"Research","collapsed":false}]}})");
+        MenuPublish(
+            api, host,
+            LR"({"version":2,"publishOnly":true,"strip":{"version":2,"base":12,"revision":13,"rows":[],"removed":[],"groups":[{"id":7,"name":"Research","label":"Research","collapsed":false}]}})");
         bool turned = false;
-        for (int i=0;i<12;++i) {
-            Pump(); Sleep(5);
+        for (int i = 0; i < 12; ++i) {
+            Pump();
+            Sleep(5);
             const auto angle = reducedArrow.RenderTransform().as<Media::RotateTransform>().Angle();
             turned |= angle > 0 && angle < 90;
         }
         if (winrt::Windows::UI::ViewManagement::UISettings().AnimationsEnabled())
             Require(turned, "active-only group arrow rotates without a tab-list change");
         settle();
-        Require(reducedIcon.Glyph() == L"\uE76C" && reducedArrow.RenderTransform().as<Media::RotateTransform>().Angle() == 0,
-            "arrow finishes pointing toward the expanded group");
+        Require(reducedIcon.Glyph() == L"\uE76C" &&
+                    reducedArrow.RenderTransform().as<Media::RotateTransform>().Angle() == 0,
+                "arrow finishes pointing toward the expanded group");
         Require(hasGroupSurface(), "expansion restores the shared group background");
         // Collapsing every member reparents the retained header. Its disclosure
         // animation must survive that transient Unloaded/Loaded pair.
-        MenuPublish(api,host,LR"({"version":2,"publishOnly":true,"strip":{"version":2,"base":0,"revision":14,"rtl":false,"groupsLabel":"Groups","groups":[{"id":7,"name":"Research","headerText":"Research","label":"Research","collapsed":false}],"rows":[{"id":41,"detail":"","flags":0},{"id":42,"detail":"","flags":0}],"layout":[{"group":7,"tab":0},{"group":7,"tab":41},{"group":0,"tab":42}]}})");
-        Require(SUCCEEDED(api.syncTabs(host,tabs,2,42, NextTabRevision(), &selected)), "prepare empty-group rotation fixture");
+        MenuPublish(
+            api, host,
+            LR"({"version":2,"publishOnly":true,"strip":{"version":2,"base":0,"revision":14,"rtl":false,"groupsLabel":"Groups","groups":[{"id":7,"name":"Research","headerText":"Research","label":"Research","collapsed":false}],"rows":[{"id":41,"detail":"","flags":0},{"id":42,"detail":"","flags":0}],"layout":[{"group":7,"tab":0},{"group":7,"tab":41},{"group":0,"tab":42}]}})");
+        Require(SUCCEEDED(api.syncTabs(host, tabs, 2, 42, NextTabRevision(), &selected)),
+                "prepare empty-group rotation fixture");
         settle();
-        MenuPublish(api,host,LR"({"version":2,"publishOnly":true,"strip":{"version":2,"base":0,"revision":15,"rtl":false,"groupsLabel":"Groups","groups":[{"id":7,"name":"Research","headerText":"Research","label":"Research","collapsed":true}],"rows":[{"id":42,"detail":"","flags":0}],"layout":[{"group":7,"tab":0},{"group":0,"tab":42}]}})");
-        Require(SUCCEEDED(api.syncTabs(host,tabs+1,1,42, NextTabRevision(), &selected)), "collapse every group member");
-        turned=false;
-        for (int i=0;i<12;++i) {
-            Pump(); Sleep(5);
-            auto button=find(view,L"FennInlineGroup-7");
+        MenuPublish(
+            api, host,
+            LR"({"version":2,"publishOnly":true,"strip":{"version":2,"base":0,"revision":15,"rtl":false,"groupsLabel":"Groups","groups":[{"id":7,"name":"Research","headerText":"Research","label":"Research","collapsed":true}],"rows":[{"id":42,"detail":"","flags":0}],"layout":[{"group":7,"tab":0},{"group":0,"tab":42}]}})");
+        Require(SUCCEEDED(api.syncTabs(host, tabs + 1, 1, 42, NextTabRevision(), &selected)),
+                "collapse every group member");
+        turned = false;
+        for (int i = 0; i < 12; ++i) {
+            Pump();
+            Sleep(5);
+            auto button = find(view, L"FennInlineGroup-7");
             if (!button || !button.IsLoaded()) continue;
-            auto rotor=button.Content().as<Controls::Grid>().Children().GetAt(1).as<Controls::Grid>();
-            const auto angle=rotor.RenderTransform().as<Media::RotateTransform>().Angle();
-            turned |= angle<0 && angle>-90;
+            auto rotor = button.Content().as<Controls::Grid>().Children().GetAt(1).as<Controls::Grid>();
+            const auto angle = rotor.RenderTransform().as<Media::RotateTransform>().Angle();
+            turned |= angle < 0 && angle > -90;
         }
         if (winrt::Windows::UI::ViewManagement::UISettings().AnimationsEnabled())
-            Require(turned,"empty-group arrow rotates down after header reattachment");
+            Require(turned, "empty-group arrow rotates down after header reattachment");
         settle();
-        motionState(16,false); settle();
-        auto dragged=view.TabItems().GetAt(0).as<Controls::TabViewItem>();
-        auto draggedActive=view.TabItems().GetAt(1).as<Controls::TabViewItem>();
-        auto borrowedContent=dragged.Header().as<UIElement>();
-        auto activeContent=draggedActive.Header();
-        const auto input=borrowedContent.IsHitTestVisible();
-        const auto accessibility=Automation::AutomationProperties::GetAccessibilityView(borrowedContent);
-        const auto automationId=Automation::AutomationProperties::GetAutomationId(borrowedContent);
-        for (bool early : {true,false}) {
-            Require(SUCCEEDED(motion(host,4,&ghosts)),"start temporary drag collapse with shared slide animation");
-            Require(dragged.Visibility()==Visibility::Collapsed && draggedActive.Visibility()==Visibility::Collapsed,
+        motionState(16, false);
+        settle();
+        auto dragged = view.TabItems().GetAt(0).as<Controls::TabViewItem>();
+        auto draggedActive = view.TabItems().GetAt(1).as<Controls::TabViewItem>();
+        auto borrowedContent = dragged.Header().as<UIElement>();
+        auto activeContent = draggedActive.Header();
+        const auto input = borrowedContent.IsHitTestVisible();
+        const auto accessibility = Automation::AutomationProperties::GetAccessibilityView(borrowedContent);
+        const auto automationId = Automation::AutomationProperties::GetAutomationId(borrowedContent);
+        for (bool early : {true, false}) {
+            Require(SUCCEEDED(motion(host, 4, &ghosts)), "start temporary drag collapse with shared slide animation");
+            Require(
+                dragged.Visibility() == Visibility::Collapsed && draggedActive.Visibility() == Visibility::Collapsed,
                 "drag collapse removes background and active rows from layout immediately");
             if (winrt::Windows::UI::ViewManagement::UISettings().AnimationsEnabled()) {
-                Require(ghosts==2 && !dragged.Header() && !draggedActive.Header(),"drag collapse slides both retained rows");
-                Require(!borrowedContent.IsHitTestVisible() && Automation::AutomationProperties::GetAccessibilityView(borrowedContent)==Automation::Peers::AccessibilityView::Raw,
-                    "borrowed drag visuals are excluded from input and accessibility");
+                Require(ghosts == 2 && !dragged.Header() && !draggedActive.Header(),
+                        "drag collapse slides both retained rows");
+                Require(!borrowedContent.IsHitTestVisible() &&
+                            Automation::AutomationProperties::GetAccessibilityView(borrowedContent) ==
+                                Automation::Peers::AccessibilityView::Raw,
+                        "borrowed drag visuals are excluded from input and accessibility");
             }
             if (!early) settle();
-            Require(SUCCEEDED(motion(host,5,&ghosts)) && ghosts==0,"drop or cancellation clears drag-collapse visuals");
+            Require(SUCCEEDED(motion(host, 5, &ghosts)) && ghosts == 0,
+                    "drop or cancellation clears drag-collapse visuals");
             settle();
-            Require(dragged.Header()==borrowedContent && draggedActive.Header()==activeContent &&
-                dragged.Visibility()==Visibility::Visible && draggedActive.Visibility()==Visibility::Visible,
-                "animation completion and early cancellation restore exact tab content");
-            Require(borrowedContent.IsHitTestVisible()==input && Automation::AutomationProperties::GetAccessibilityView(borrowedContent)==accessibility &&
-                Automation::AutomationProperties::GetAutomationId(borrowedContent)==automationId,
-                "restored tabs retain their input and automation properties");
-            Require(view.SelectedItem()==draggedActive,"drag animation preserves active tab selection");
+            Require(dragged.Header() == borrowedContent && draggedActive.Header() == activeContent &&
+                        dragged.Visibility() == Visibility::Visible &&
+                        draggedActive.Visibility() == Visibility::Visible,
+                    "animation completion and early cancellation restore exact tab content");
+            Require(borrowedContent.IsHitTestVisible() == input &&
+                        Automation::AutomationProperties::GetAccessibilityView(borrowedContent) == accessibility &&
+                        Automation::AutomationProperties::GetAutomationId(borrowedContent) == automationId,
+                    "restored tabs retain their input and automation properties");
+            Require(view.SelectedItem() == draggedActive, "drag animation preserves active tab selection");
         }
-        Require(SUCCEEDED(motion(host,4,&ghosts)),"start slide before incremental title update");
-        Require(SUCCEEDED(motion(host,6,&ghosts)) && ghosts==0 && dragged.Header()==borrowedContent,
-            "incremental title update returns borrowed content before editing it");
-        Require(Automation::AutomationProperties::GetName(dragged)==L"Updated during drag",
-            "title updates remain live during temporary collapse");
-        Require(SUCCEEDED(motion(host,5,&ghosts)),"restore group after incremental update");
+        Require(SUCCEEDED(motion(host, 4, &ghosts)), "start slide before incremental title update");
+        Require(SUCCEEDED(motion(host, 6, &ghosts)) && ghosts == 0 && dragged.Header() == borrowedContent,
+                "incremental title update returns borrowed content before editing it");
+        Require(Automation::AutomationProperties::GetName(dragged) == L"Updated during drag",
+                "title updates remain live during temporary collapse");
+        Require(SUCCEEDED(motion(host, 5, &ghosts)), "restore group after incremental update");
         settle();
-        Require(SUCCEEDED(motion(host,2,&ghosts)),"disable temporary drag motion");
-        Require(SUCCEEDED(motion(host,4,&ghosts)) && ghosts==0 && dragged.Header()==borrowedContent,
-            "reduced-motion drag collapse keeps original content without visual copies");
-        Require(SUCCEEDED(motion(host,5,&ghosts)),"restore reduced-motion drag collapse");
-        Require(SUCCEEDED(motion(host,3,&ghosts)),"restore animation preference after drag checks");
+        Require(SUCCEEDED(motion(host, 2, &ghosts)), "disable temporary drag motion");
+        Require(SUCCEEDED(motion(host, 4, &ghosts)) && ghosts == 0 && dragged.Header() == borrowedContent,
+                "reduced-motion drag collapse keeps original content without visual copies");
+        Require(SUCCEEDED(motion(host, 5, &ghosts)), "restore reduced-motion drag collapse");
+        Require(SUCCEEDED(motion(host, 3, &ghosts)), "restore animation preference after drag checks");
         // Publish independent colors without changing group or tab membership.
         Require(bottomGlow.Children().Count() == 0 && topGlow.Children().Count() == 0,
-            "group and container glows default off");
-        auto colored = winrt::Windows::Data::Json::JsonObject::Parse(LR"({"version":2,"publishOnly":true,"strip":{"version":2,"base":16,"revision":17,"groupGlow":true,"groupHalo":true,"containerGlow":true,"rows":[{"id":41,"containerName":"Personal","containerColor":4289934591}],"removed":[],"groups":[{"id":7,"name":"Research","label":"Research","collapsed":false,"color":4281558681}]}})");
-        MenuPublish(api,host,colored.Stringify().c_str()); settle();
+                "group and container glows default off");
+        auto colored = winrt::Windows::Data::Json::JsonObject::Parse(
+            LR"({"version":2,"publishOnly":true,"strip":{"version":2,"base":16,"revision":17,"groupGlow":true,"groupHalo":true,"containerGlow":true,"rows":[{"id":41,"containerName":"Personal","containerColor":4289934591}],"removed":[],"groups":[{"id":7,"name":"Research","label":"Research","collapsed":false,"color":4281558681}]}})");
+        MenuPublish(api, host, colored.Stringify().c_str());
+        settle();
         Require(bottomGlow.Children().Count() == 1 && topGlow.Children().Count() == 1,
-            "two grouped tabs share one bottom field and a container adds an independent top field");
+                "two grouped tabs share one bottom field and a container adds an independent top field");
         Require(edgeFade.ColorStops().GetAt(0).Color().A == 0 || edgeFade.ColorStops().GetAt(3).Color().A == 0,
-            "non-overflowing glow reaches zero alpha at the new-tab boundary");
+                "non-overflowing glow reaches zero alpha at the new-tab boundary");
         winrt::Microsoft::UI::Composition::ContainerVisual spill{nullptr};
-        for (auto visual : ambient.Children()) if (visual.Comment() == L"ambient-color-spill")
-            spill = visual.as<winrt::Microsoft::UI::Composition::ContainerVisual>();
+        for (auto visual : ambient.Children())
+            if (visual.Comment() == L"ambient-color-spill")
+                spill = visual.as<winrt::Microsoft::UI::Composition::ContainerVisual>();
         Require(spill && spill.Children().Count() == 1, "container corners do not add a central body cast");
         for (auto field : spill.Children()) {
             const bool isGroup = field.Comment() == L"group-spill:7";
             auto lobes = field.as<winrt::Microsoft::UI::Composition::SpriteVisual>();
             Require(lobes.Children().Count() == (isGroup ? 2 : 1),
-                "group spill has overlapping lobes while container spill follows its own tab");
+                    "group spill has overlapping lobes while container spill follows its own tab");
             for (auto lobe : lobes.Children()) {
-                auto brush = lobe.as<winrt::Microsoft::UI::Composition::SpriteVisual>().Brush()
-                    .as<winrt::Microsoft::UI::Composition::CompositionRadialGradientBrush>();
-                Require(brush.EllipseRadius().y > 1 && (isGroup ? brush.EllipseCenter().y > 1 : brush.EllipseCenter().y < 0),
-                    "weak casts reach across the tab from opposite edges");
-                for (auto stop : brush.ColorStops()) Require(stop.Color().A <= 8, "body spill never becomes a strong tint");
+                auto brush = lobe.as<winrt::Microsoft::UI::Composition::SpriteVisual>()
+                                 .Brush()
+                                 .as<winrt::Microsoft::UI::Composition::CompositionRadialGradientBrush>();
+                Require(brush.EllipseRadius().y > 1 &&
+                            (isGroup ? brush.EllipseCenter().y > 1 : brush.EllipseCenter().y < 0),
+                        "weak casts reach across the tab from opposite edges");
+                for (auto stop : brush.ColorStops())
+                    Require(stop.Color().A <= 8, "body spill never becomes a strong tint");
             }
         }
-        auto groupVisual = bottomGlow.Children().First().Current().as<winrt::Microsoft::UI::Composition::SpriteVisual>();
-        auto containerVisual = topGlow.Children().First().Current().as<winrt::Microsoft::UI::Composition::SpriteVisual>();
+        auto groupVisual =
+            bottomGlow.Children().First().Current().as<winrt::Microsoft::UI::Composition::SpriteVisual>();
+        auto containerVisual =
+            topGlow.Children().First().Current().as<winrt::Microsoft::UI::Composition::SpriteVisual>();
         auto a = view.TabItems().GetAt(0).as<Controls::TabViewItem>();
         auto b = view.TabItems().GetAt(1).as<Controls::TabViewItem>();
-        auto ar = a.TransformToVisual(ambientLayer).TransformBounds({0,0,float(a.ActualWidth()),float(a.ActualHeight())});
-        auto br = b.TransformToVisual(ambientLayer).TransformBounds({0,0,float(b.ActualWidth()),float(b.ActualHeight())});
+        auto ar =
+            a.TransformToVisual(ambientLayer).TransformBounds({0, 0, float(a.ActualWidth()), float(a.ActualHeight())});
+        auto br =
+            b.TransformToVisual(ambientLayer).TransformBounds({0, 0, float(b.ActualWidth()), float(b.ActualHeight())});
         auto nativeSeparator = [&](Controls::TabViewItem const& row) {
-            auto part = Media::VisualTreeHelper::GetChild(row, 0).as<FrameworkElement>()
-                .FindName(L"TabSeparator").try_as<Controls::Border>();
+            auto part = Media::VisualTreeHelper::GetChild(row, 0)
+                            .as<FrameworkElement>()
+                            .FindName(L"TabSeparator")
+                            .try_as<Controls::Border>();
             Require(bool(part), "stock tab template exposes its separator");
             return part;
         };
         auto separatorA = nativeSeparator(a);
         auto separatorColor = separatorA.Background().as<Media::SolidColorBrush>().Color();
         Require(separatorColor.A == 170 && separatorColor.R == ((4289934591u >> 16) & 255) &&
-            separatorColor.G == ((4289934591u >> 8) & 255) && separatorColor.B == (4289934591u & 255),
-            "unselected container tints its stock trailing divider with its own color");
-        Require(separatorA.Visibility() == Visibility::Visible && nativeSeparator(b).Visibility() == Visibility::Collapsed,
+                    separatorColor.G == ((4289934591u >> 8) & 255) && separatorColor.B == (4289934591u & 255),
+                "unselected container tints its stock trailing divider with its own color");
+        Require(
+            separatorA.Visibility() == Visibility::Visible && nativeSeparator(b).Visibility() == Visibility::Collapsed,
             "only the group's last member hides the divider beside the group outline");
         auto faceShape = [&](uint32_t id) {
             for (auto visual : faceRoot.Children()) {
                 if (visual.Comment() != L"tab-face:" + winrt::to_hstring(id)) continue;
-                return visual.as<winrt::Microsoft::UI::Composition::ShapeVisual>().Shapes().GetAt(0)
+                return visual.as<winrt::Microsoft::UI::Composition::ShapeVisual>()
+                    .Shapes()
+                    .GetAt(0)
                     .as<winrt::Microsoft::UI::Composition::CompositionSpriteShape>();
             }
             return winrt::Microsoft::UI::Composition::CompositionSpriteShape{nullptr};
         };
         Require(faceRoot.Children().Count() == 3 && faceShape(41) && faceShape(42),
-            "occlusion retains one contour per visible tab and an exterior");
-        auto faceFill = faceShape(41).FillBrush().as<winrt::Microsoft::UI::Composition::CompositionLinearGradientBrush>();
-        Require(faceFill.ColorStops().GetAt(0).Color().A == 255 &&
-            faceFill.ColorStops().GetAt(2).Color().A < 32 && faceFill.ColorStops().GetAt(5).Color().A == 255 &&
-            std::abs(faceFill.StartPoint().y - ar.Y) < 1 && std::abs(faceFill.EndPoint().y - ar.Y - ar.Height) < 1,
-            "post-blur face mask preserves edge light and attenuates the title region in tab coordinates");
-        auto glowHeader = find(view,L"FennInlineGroup-7");
-        auto hr = glowHeader.TransformToVisual(ambientLayer).TransformBounds(
-            {0,0,float(glowHeader.ActualWidth()),float(glowHeader.ActualHeight())});
+                "occlusion retains one contour per visible tab and an exterior");
+        auto faceFill =
+            faceShape(41).FillBrush().as<winrt::Microsoft::UI::Composition::CompositionLinearGradientBrush>();
+        Require(faceFill.ColorStops().GetAt(0).Color().A == 255 && faceFill.ColorStops().GetAt(2).Color().A < 32 &&
+                    faceFill.ColorStops().GetAt(5).Color().A == 255 && std::abs(faceFill.StartPoint().y - ar.Y) < 1 &&
+                    std::abs(faceFill.EndPoint().y - ar.Y - ar.Height) < 1,
+                "post-blur face mask preserves edge light and attenuates the title region in tab coordinates");
+        auto glowHeader = find(view, L"FennInlineGroup-7");
+        auto hr = glowHeader.TransformToVisual(ambientLayer)
+                      .TransformBounds({0, 0, float(glowHeader.ActualWidth()), float(glowHeader.ActualHeight())});
         winrt::Windows::Foundation::Numerics::float4 joinedFace{};
         faceShape(41).Properties().TryGetVector4(L"FaceBounds", joinedFace);
-        printf("Header join: header=%.1f+%.1f tab=%.1f+%.1f mask=%.1f+%.1f\n", hr.X, hr.Width, ar.X, ar.Width, joinedFace.x, joinedFace.z);
+        printf("Header join: header=%.1f+%.1f tab=%.1f+%.1f mask=%.1f+%.1f\n", hr.X, hr.Width, ar.X, ar.Width,
+               joinedFace.x, joinedFace.z);
         fflush(stdout);
         Require(faceShape(41).Properties().TryGetVector4(L"FaceBounds", joinedFace) ==
-            winrt::Microsoft::UI::Composition::CompositionGetValueStatus::Succeeded &&
-            std::abs(joinedFace.x - hr.X) < 1 && std::abs(joinedFace.x + joinedFace.z - ar.X - ar.Width) < 1,
-            "header and first inactive tab share a continuous face mask without a fabricated inner edge");
-        Require(SUCCEEDED(api.syncTabs(host,tabs,2,41, NextTabRevision(), &selected)), "activate the first grouped member for mask inspection");
+                        winrt::Microsoft::UI::Composition::CompositionGetValueStatus::Succeeded &&
+                    std::abs(joinedFace.x - hr.X) < 1 && std::abs(joinedFace.x + joinedFace.z - ar.X - ar.Width) < 1,
+                "header and first inactive tab share a continuous face mask without a fabricated inner edge");
+        Require(SUCCEEDED(api.syncTabs(host, tabs, 2, 41, NextTabRevision(), &selected)),
+                "activate the first grouped member for mask inspection");
         settle();
         winrt::Windows::Foundation::Numerics::float4 selectedGroupedFace{};
         faceShape(41).Properties().TryGetVector4(L"FaceBounds", selectedGroupedFace);
-        const auto selectedTabBounds = a.TransformToVisual(ambientLayer).TransformBounds(
-            {0, 0, float(a.ActualWidth()), float(a.ActualHeight())});
-        printf("Selected header join: face=%.1f+%.1f tab=%.1f+%.1f previous=%.1f+%.1f\n",
-            selectedGroupedFace.x, selectedGroupedFace.z, selectedTabBounds.X, selectedTabBounds.Width, ar.X, ar.Width);
+        const auto selectedTabBounds =
+            a.TransformToVisual(ambientLayer).TransformBounds({0, 0, float(a.ActualWidth()), float(a.ActualHeight())});
+        printf("Selected header join: face=%.1f+%.1f tab=%.1f+%.1f previous=%.1f+%.1f\n", selectedGroupedFace.x,
+               selectedGroupedFace.z, selectedTabBounds.X, selectedTabBounds.Width, ar.X, ar.Width);
         fflush(stdout);
         Require(faceShape(41).Properties().TryGetVector4(L"FaceBounds", selectedGroupedFace) ==
-            winrt::Microsoft::UI::Composition::CompositionGetValueStatus::Succeeded &&
-            std::abs(selectedGroupedFace.x - ar.X) < 1 && std::abs(selectedGroupedFace.z - ar.Width) < 1,
-            "selected first member keeps its separate native contour beside the group header");
+                        winrt::Microsoft::UI::Composition::CompositionGetValueStatus::Succeeded &&
+                    std::abs(selectedGroupedFace.x - ar.X) < 1 && std::abs(selectedGroupedFace.z - ar.Width) < 1,
+                "selected first member keeps its separate native contour beside the group header");
         for (auto stop : faceFill.ColorStops())
             Require(stop.Color().A == 0, "selected tab blocks the diffuse wash across its entire face");
-        auto selectedEdge = faceShape(41).StrokeBrush().as<winrt::Microsoft::UI::Composition::CompositionLinearGradientBrush>();
-        Require(selectedEdge.ColorStops().GetAt(0).Color().A == 180 && selectedEdge.ColorStops().GetAt(1).Color().A == 0 &&
-            std::abs(selectedEdge.EndPoint().y - (ar.Y + ar.Height - 4)) < 1 &&
-            faceShape(41).StrokeThickness() == 1.5f, "selected tab keeps top/side reflections but blocks its bottom flares");
-        Require(SUCCEEDED(api.syncTabs(host,tabs,2,42, NextTabRevision(), &selected)), "restore the second grouped member after mask inspection");
+        auto selectedEdge =
+            faceShape(41).StrokeBrush().as<winrt::Microsoft::UI::Composition::CompositionLinearGradientBrush>();
+        Require(selectedEdge.ColorStops().GetAt(0).Color().A == 180 &&
+                    selectedEdge.ColorStops().GetAt(1).Color().A == 0 &&
+                    std::abs(selectedEdge.EndPoint().y - (ar.Y + ar.Height - 4)) < 1 &&
+                    faceShape(41).StrokeThickness() == 1.5f,
+                "selected tab keeps top/side reflections but blocks its bottom flares");
+        Require(SUCCEEDED(api.syncTabs(host, tabs, 2, 42, NextTabRevision(), &selected)),
+                "restore the second grouped member after mask inspection");
         settle();
         Require(faceFill.ColorStops().GetAt(0).Color().A == 255 && faceFill.ColorStops().GetAt(2).Color().A == 24,
-            "deselection restores the retained face's inactive lighting");
-        Require(selectedEdge.ColorStops().GetAt(1).Color().A == 180,
-            "deselection restores the bottom edge reflection");
+                "deselection restores the retained face's inactive lighting");
+        Require(selectedEdge.ColorStops().GetAt(1).Color().A == 180, "deselection restores the bottom edge reflection");
         // A lone group reaches 5 DIP (the default large reach) past its
         // outer members on both sides.
         Require(std::abs(groupVisual.Offset().x - (hr.X - 5)) < 1 &&
-            std::abs(groupVisual.Size().x - (br.X + br.Width - hr.X + 10)) < 1 &&
-            std::abs(containerVisual.Size().x - ar.Width) < 1,
-            "bottom field includes the disclosure button and both tabs; container corners follow the full tab");
+                    std::abs(groupVisual.Size().x - (br.X + br.Width - hr.X + 10)) < 1 &&
+                    std::abs(containerVisual.Size().x - ar.Width) < 1,
+                "bottom field includes the disclosure button and both tabs; container corners follow the full tab");
         winrt::Microsoft::UI::Composition::SpriteVisual groupCenter{nullptr};
         for (auto child : groupVisual.Children())
-            if (child.Comment() == L"group-center") groupCenter = child.as<winrt::Microsoft::UI::Composition::SpriteVisual>();
+            if (child.Comment() == L"group-center")
+                groupCenter = child.as<winrt::Microsoft::UI::Composition::SpriteVisual>();
         Require(groupVisual.Children().Count() == 3 && groupCenter &&
-            std::abs(groupCenter.Size().x - (groupVisual.Size().x - 48)) < 1 && groupCenter.Offset().x == 24,
-            "rounded group caps taper only within 24 DIP of the outer corners");
+                    std::abs(groupCenter.Size().x - (groupVisual.Size().x - 48)) < 1 && groupCenter.Offset().x == 24,
+                "rounded group caps taper only within 24 DIP of the outer corners");
         auto lowerBrush = groupCenter.Brush().as<winrt::Microsoft::UI::Composition::CompositionRadialGradientBrush>();
         Require(containerVisual.Children().Count() == 1 && !containerVisual.Brush() &&
-            std::abs(containerVisual.Offset().x + containerVisual.Size().x / 2 - (ar.X + ar.Width / 2)) < 1,
-            "container glow has no central fill");
-        auto cornerShape = containerVisual.Children().First().Current().as<winrt::Microsoft::UI::Composition::ShapeVisual>();
+                    std::abs(containerVisual.Offset().x + containerVisual.Size().x / 2 - (ar.X + ar.Width / 2)) < 1,
+                "container glow has no central fill");
+        auto cornerShape =
+            containerVisual.Children().First().Current().as<winrt::Microsoft::UI::Composition::ShapeVisual>();
         Require(cornerShape.Shapes().Size() == 2, "each container has two independent open corner strokes");
-        auto cornerStroke = cornerShape.Shapes().GetAt(0).as<winrt::Microsoft::UI::Composition::CompositionSpriteShape>();
-        auto upperBrush = cornerStroke.StrokeBrush().as<winrt::Microsoft::UI::Composition::CompositionRadialGradientBrush>();
+        auto cornerStroke =
+            cornerShape.Shapes().GetAt(0).as<winrt::Microsoft::UI::Composition::CompositionSpriteShape>();
+        auto upperBrush =
+            cornerStroke.StrokeBrush().as<winrt::Microsoft::UI::Composition::CompositionRadialGradientBrush>();
         Require(std::abs(containerVisual.Offset().y - ar.Y) < 1 && ambientLayer.Clip().Rect().Y == 0 &&
-            !cornerStroke.FillBrush() && cornerStroke.StrokeThickness() == 3 &&
-            upperBrush.EllipseRadius().x <= 28 && upperBrush.EllipseRadius().y <= 16 &&
-            upperBrush.ColorStops().GetAt(3).Color().A == 0,
-            "corner strokes fade locally, leaving the top center and lower edge unpainted");
+                    !cornerStroke.FillBrush() && cornerStroke.StrokeThickness() == 3 &&
+                    upperBrush.EllipseRadius().x <= 28 && upperBrush.EllipseRadius().y <= 16 &&
+                    upperBrush.ColorStops().GetAt(3).Color().A == 0,
+                "corner strokes fade locally, leaving the top center and lower edge unpainted");
         Require(lowerBrush.EllipseCenter().y == 1 && lowerBrush.EllipseRadius().x == 1.f &&
-            upperBrush.EllipseCenter().y >= 0 &&
-            lowerBrush.ColorStops().GetAt(0).Color() != upperBrush.ColorStops().GetAt(0).Color(),
-            "combined state retains two independently colored opposite-edge gradients");
+                    upperBrush.EllipseCenter().y >= 0 &&
+                    lowerBrush.ColorStops().GetAt(0).Color() != upperBrush.ColorStops().GetAt(0).Color(),
+                "combined state retains two independently colored opposite-edge gradients");
         auto dot = a.Header().as<Controls::Grid>().Children().GetAt(4).as<Controls::Border>();
         Require(dot.Visibility() == Visibility::Collapsed && topGlow.Children().Count() == 1,
-            "container glow defaults on and dot defaults off");
+                "container glow defaults on and dot defaults off");
         auto rimCanvas = ambientLayer.Children().GetAt(0).as<Controls::Canvas>();
         Require(!rimCanvas.IsHitTestVisible() && Automation::AutomationProperties::GetAccessibilityView(rimCanvas) ==
-            Automation::Peers::AccessibilityView::Raw, "surface reflections are decorative only");
+                                                     Automation::Peers::AccessibilityView::Raw,
+                "surface reflections are decorative only");
         auto rimRoot = Hosting::ElementCompositionPreview::GetElementChildVisual(rimCanvas)
-            .as<winrt::Microsoft::UI::Composition::ContainerVisual>();
+                           .as<winrt::Microsoft::UI::Composition::ContainerVisual>();
         auto rim = [&](wchar_t const* name) {
             for (auto visual : rimRoot.Children())
                 if (visual.Comment() == name) return visual.as<winrt::Microsoft::UI::Composition::SpriteVisual>();
             return winrt::Microsoft::UI::Composition::SpriteVisual{nullptr};
         };
         Require(!rim(L"active-group-reflection") && !rim(L"group-shared-reflection") && !rim(L"group-outer-reflection"),
-            "group light no longer draws on individual tab contours or divider seams");
+                "group light no longer draws on individual tab contours or divider seams");
         Controls::Border outlineSurface{nullptr};
         for (auto child : root.Children().GetAt(3).as<Controls::Canvas>().Children())
             if (Automation::AutomationProperties::GetAutomationId(child) == L"FennGroupSurface-7")
                 outlineSurface = child.as<Controls::Border>();
         Require(bool(outlineSurface), "lit group has an actual outline surface");
         auto outlineLight = Hosting::ElementCompositionPreview::GetElementChildVisual(outlineSurface)
-            .as<winrt::Microsoft::UI::Composition::ShapeVisual>();
+                                .as<winrt::Microsoft::UI::Composition::ShapeVisual>();
         Require(outlineLight.Shapes().Size() == 6 && groupVisual.Opacity() == .65f,
-            "four corner highlights and two material light pools accompany the group wash");
-        auto roundedClip = groupVisual.Clip().as<winrt::Microsoft::UI::Composition::CompositionGeometricClip>()
-            .Geometry().as<winrt::Microsoft::UI::Composition::CompositionRoundedRectangleGeometry>();
-        Require(roundedClip.Size() == groupVisual.Size() && roundedClip.CornerRadius().x == outlineSurface.CornerRadius().TopLeft,
-            "group wash clips to the actual rounded surface");
+                "four corner highlights and two material light pools accompany the group wash");
+        auto roundedClip = groupVisual.Clip()
+                               .as<winrt::Microsoft::UI::Composition::CompositionGeometricClip>()
+                               .Geometry()
+                               .as<winrt::Microsoft::UI::Composition::CompositionRoundedRectangleGeometry>();
+        Require(roundedClip.Size() == groupVisual.Size() &&
+                    roundedClip.CornerRadius().x == outlineSurface.CornerRadius().TopLeft,
+                "group wash clips to the actual rounded surface");
         auto halo = haloDiffusion.Children().First().Current().as<winrt::Microsoft::UI::Composition::ContainerVisual>();
         Require(halo.Comment() == L"group-halo" && halo.Children().Count() == 1 &&
-            halo.Children().First().Current().Comment() == L"group-halo:7",
-            "a lit group has one outer halo in the halo diffusion layer");
+                    halo.Children().First().Current().Comment() == L"group-halo:7",
+                "a lit group has one outer halo in the halo diffusion layer");
         Require(diffusion.Clip() && !haloDiffusion.Clip() && !halo.Clip(),
-            "the active tab keeps its hard notch for other light but does not interrupt the halo");
+                "the active tab keeps its hard notch for other light but does not interrupt the halo");
         auto haloShape = halo.Children().First().Current().as<winrt::Microsoft::UI::Composition::ShapeVisual>();
         auto haloFollows = [&] {
             return std::abs(haloShape.Offset().x + 8 - groupVisual.Offset().x) < .5f &&
-                std::abs(haloShape.Size().x - 16 - groupVisual.Size().x) < .5f;
+                   std::abs(haloShape.Size().x - 16 - groupVisual.Size().x) < .5f;
         };
-        Require(haloFollows() && haloShape.Shapes().Size() == 8, "halo spans 8 DIP beyond the group with two pools of four rings");
+        Require(haloFollows() && haloShape.Shapes().Size() == 8,
+                "halo spans 8 DIP beyond the group with two pools of four rings");
         for (uint32_t index = 0; index < haloShape.Shapes().Size(); ++index) {
             auto ring = haloShape.Shapes().GetAt(index).as<winrt::Microsoft::UI::Composition::CompositionSpriteShape>();
-            auto geometry = ring.Geometry().as<winrt::Microsoft::UI::Composition::CompositionRoundedRectangleGeometry>();
+            auto geometry =
+                ring.Geometry().as<winrt::Microsoft::UI::Composition::CompositionRoundedRectangleGeometry>();
             // Ring i is centered 2i+1 DIP outside the outline; its inner stroke
             // edge only overlaps the outline by the anti-seam allowance.
             const float distance = 8 - geometry.Offset().x;
             Require(!ring.FillBrush() && std::abs(distance - (2.f * (index % 4) + 1)) < .01f &&
-                distance - ring.StrokeThickness() / 2 >= -.2f &&
-                std::abs(geometry.CornerRadius().x - (roundedClip.CornerRadius().x + distance)) < .01f,
-                "halo rings start at the outline and grow outward with concentric corners");
+                        distance - ring.StrokeThickness() / 2 >= -.2f &&
+                        std::abs(geometry.CornerRadius().x - (roundedClip.CornerRadius().x + distance)) < .01f,
+                    "halo rings start at the outline and grow outward with concentric corners");
             auto brush = ring.StrokeBrush().as<winrt::Microsoft::UI::Composition::CompositionRadialGradientBrush>();
-            Require(brush.MappingMode() == winrt::Microsoft::UI::Composition::CompositionMappingMode::Absolute &&
-                std::abs(brush.EllipseCenter().x - 8 - (index < 4 ? .22f : .82f) * groupVisual.Size().x) < .5f &&
-                brush.ColorStops().GetAt(0).Color().A <= 36 && brush.ColorStops().GetAt(2).Color().A == 0,
+            Require(
+                brush.MappingMode() == winrt::Microsoft::UI::Composition::CompositionMappingMode::Absolute &&
+                    std::abs(brush.EllipseCenter().x - 8 - (index < 4 ? .22f : .82f) * groupVisual.Size().x) < .5f &&
+                    brush.ColorStops().GetAt(0).Color().A <= 36 && brush.ColorStops().GetAt(2).Color().A == 0,
                 "halo continues the uneven interior pools, anchored in group coordinates and subtle");
-            if (index % 4) Require(brush.ColorStops().GetAt(0).Color().A <=
-                haloShape.Shapes().GetAt(index - 1).as<winrt::Microsoft::UI::Composition::CompositionSpriteShape>()
-                    .StrokeBrush().as<winrt::Microsoft::UI::Composition::CompositionRadialGradientBrush>()
-                    .ColorStops().GetAt(0).Color().A, "halo fades with distance from the group");
+            if (index % 4)
+                Require(brush.ColorStops().GetAt(0).Color().A <=
+                            haloShape.Shapes()
+                                .GetAt(index - 1)
+                                .as<winrt::Microsoft::UI::Composition::CompositionSpriteShape>()
+                                .StrokeBrush()
+                                .as<winrt::Microsoft::UI::Composition::CompositionRadialGradientBrush>()
+                                .ColorStops()
+                                .GetAt(0)
+                                .Color()
+                                .A,
+                        "halo fades with distance from the group");
         }
         for (auto shape : outlineLight.Shapes()) {
             auto stroke = shape.as<winrt::Microsoft::UI::Composition::CompositionSpriteShape>();
-            auto geometry = stroke.Geometry().as<winrt::Microsoft::UI::Composition::CompositionRoundedRectangleGeometry>();
+            auto geometry =
+                stroke.Geometry().as<winrt::Microsoft::UI::Composition::CompositionRoundedRectangleGeometry>();
             if (stroke.FillBrush()) {
                 auto fill = stroke.FillBrush().as<winrt::Microsoft::UI::Composition::CompositionRadialGradientBrush>();
                 Require(!stroke.StrokeBrush() && geometry.Size().x + 1 == outlineSurface.Width() &&
-                    fill.ColorStops().GetAt(0).Color().A > fill.ColorStops().GetAt(1).Color().A &&
-                    fill.ColorStops().GetAt(2).Color().A == 0 && fill.EllipseCenter().x != .5f,
-                    "asymmetric material lighting varies within the existing rounded group bounds");
+                            fill.ColorStops().GetAt(0).Color().A > fill.ColorStops().GetAt(1).Color().A &&
+                            fill.ColorStops().GetAt(2).Color().A == 0 && fill.EllipseCenter().x != .5f,
+                        "asymmetric material lighting varies within the existing rounded group bounds");
                 continue;
             }
             auto brush = stroke.StrokeBrush().as<winrt::Microsoft::UI::Composition::CompositionRadialGradientBrush>();
             Require(!stroke.FillBrush() && stroke.StrokeThickness() == 1 &&
-                std::abs(geometry.Size().x + 1 - outlineSurface.Width()) < .1 &&
-                geometry.CornerRadius().x + .5 == outlineSurface.CornerRadius().TopLeft &&
-                brush.EllipseRadius().x <= 48 && brush.ColorStops().GetAt(2).Color().A == 0,
-                "specular highlights follow the one-DIP outline and fade away from its corners");
-            for (auto stop : brush.ColorStops()) Require(stop.Color().A <= 84, "group specular highlights remain subtle");
+                        std::abs(geometry.Size().x + 1 - outlineSurface.Width()) < .1 &&
+                        geometry.CornerRadius().x + .5 == outlineSurface.CornerRadius().TopLeft &&
+                        brush.EllipseRadius().x <= 48 && brush.ColorStops().GetAt(2).Color().A == 0,
+                    "specular highlights follow the one-DIP outline and fade away from its corners");
+            for (auto stop : brush.ColorStops())
+                Require(stop.Color().A <= 84, "group specular highlights remain subtle");
         }
         // Glow geometry follows live controls immediately, without its own easing.
-        auto ambientRefresh = reinterpret_cast<HRESULT(WINAPI*)(HWND)>(
-            GetProcAddress(module,"WinUIPaneTestRefreshAmbient"));
+        auto ambientRefresh =
+            reinterpret_cast<HRESULT(WINAPI*)(HWND)>(GetProcAddress(module, "WinUIPaneTestRefreshAmbient"));
         Require(ambientRefresh != nullptr, "ambient refresh inspection available");
         auto refreshAmbient = [&] {
             Require(ambientRefresh(host) == S_OK, "stationary glow has no frame observer");
             Require(!groupVisual.ImplicitAnimations(), "group light has no independent transition");
-            for (auto field : spill.Children()) Require(!field.ImplicitAnimations(), "spill has no independent transition");
-            for (auto field : topGlow.Children()) Require(!field.ImplicitAnimations(), "container light has no independent transition");
+            for (auto field : spill.Children())
+                Require(!field.ImplicitAnimations(), "spill has no independent transition");
+            for (auto field : topGlow.Children())
+                Require(!field.ImplicitAnimations(), "container light has no independent transition");
         };
         refreshAmbient();
-        auto layoutPasses = reinterpret_cast<HRESULT(WINAPI*)(HWND, uint64_t*)>(
-            GetProcAddress(module, "WinUIPaneTestLayoutPasses"));
+        auto layoutPasses =
+            reinterpret_cast<HRESULT(WINAPI*)(HWND, uint64_t*)>(GetProcAddress(module, "WinUIPaneTestLayoutPasses"));
         Require(layoutPasses != nullptr, "native layout-work inspection available");
         auto passes = [&] {
             std::array<uint64_t, 4> counts{};
@@ -3986,66 +4623,87 @@ static void CheckInlineGroups(HMODULE module, WinUIPaneApi& api, HWND host, bool
         };
         settle();
         const auto settledPasses = passes();
-        auto titleLine = a.Header().as<Controls::Grid>().Children().GetAt(2)
-            .as<Controls::StackPanel>().Children().GetAt(0).as<Controls::TextBlock>();
+        auto titleLine = a.Header()
+                             .as<Controls::Grid>()
+                             .Children()
+                             .GetAt(2)
+                             .as<Controls::StackPanel>()
+                             .Children()
+                             .GetAt(0)
+                             .as<Controls::TextBlock>();
         const auto savedTitle = titleLine.Text();
         const auto savedWidth = a.ActualWidth();
         for (int i = 0; i < 3; ++i) {
             titleLine.Text(L"Layout-only title " + to_hstring(i));
             settle();
             const auto next = passes();
-            if (next != settledPasses) fprintf(stderr, "Layout scans: %llu/%llu %llu/%llu %llu/%llu %llu/%llu\n",
-                next[0], settledPasses[0], next[1], settledPasses[1], next[2], settledPasses[2], next[3], settledPasses[3]);
+            if (next != settledPasses)
+                fprintf(stderr, "Layout scans: %llu/%llu %llu/%llu %llu/%llu %llu/%llu\n", next[0], settledPasses[0],
+                        next[1], settledPasses[1], next[2], settledPasses[2], next[3], settledPasses[3]);
             Require(a.ActualWidth() == savedWidth && next == settledPasses,
-                "title-only layout skips width, ambient, separator and caption scans");
+                    "title-only layout skips width, ambient, separator and caption scans");
         }
         titleLine.Text(savedTitle);
         settle();
         const auto beforeGeometry = passes();
         const auto savedMargin = a.Margin();
-        auto movedMargin = savedMargin; movedMargin.Left += 8;
+        auto movedMargin = savedMargin;
+        movedMargin.Left += 8;
         a.Margin(movedMargin);
         settle();
         const auto afterGeometry = passes();
         for (size_t i = 0; i < afterGeometry.size(); ++i)
             Require(afterGeometry[i] > beforeGeometry[i], "changed geometry refreshes each layout consumer");
-        puts("CHECKS PASSED: title-only layout skips width/ambient/separator/caption work; changed geometry refreshes all four");
+        puts(
+            "CHECKS PASSED: title-only layout skips width/ambient/separator/caption work; changed geometry refreshes "
+            "all four");
         a.Margin(savedMargin);
         settle();
         auto aTransform = a.RenderTransform().as<Media::TranslateTransform>();
         auto bTransform = b.RenderTransform().as<Media::TranslateTransform>();
         const auto originalWidth = groupVisual.Size().x;
-        aTransform.X(48); bTransform.X(48);
+        aTransform.X(48);
+        bTransform.X(48);
         refreshAmbient();
         Require(groupVisual.Size().x > originalWidth + 40, "group light immediately reaches moved tabs");
-        aTransform.X(24); bTransform.X(72);
+        aTransform.X(24);
+        bTransform.X(72);
         refreshAmbient();
         Require(groupVisual.Size().x > originalWidth + 64 && bottomGlow.Children().First().Current() == groupVisual,
-            "rapid geometry changes update the retained light immediately");
+                "rapid geometry changes update the retained light immediately");
         Require(haloFollows() && halo.Children().First().Current() == haloShape,
-            "the retained halo follows live group geometry");
+                "the retained halo follows live group geometry");
         Require(!haloDiffusion.Clip(), "a moving active tab still does not interrupt the default halo");
         Require(Hosting::ElementCompositionPreview::GetElementChildVisual(outlineSurface) == outlineLight &&
-            std::abs(outlineLight.Size().x - outlineSurface.Width()) < .1,
-            "outline highlights are retained and follow live group geometry");
-        auto setAmbientDragging = reinterpret_cast<HRESULT(WINAPI*)(HWND,BOOL)>(
-            GetProcAddress(module,"WinUIPaneTestSetDragging"));
-        Require(setAmbientDragging && SUCCEEDED(setAmbientDragging(host,TRUE)), "start direct manipulation");
+                    std::abs(outlineLight.Size().x - outlineSurface.Width()) < .1,
+                "outline highlights are retained and follow live group geometry");
+        auto setAmbientDragging =
+            reinterpret_cast<HRESULT(WINAPI*)(HWND, BOOL)>(GetProcAddress(module, "WinUIPaneTestSetDragging"));
+        Require(setAmbientDragging && SUCCEEDED(setAmbientDragging(host, TRUE)), "start direct manipulation");
         Require(ambientRefresh(host) == S_FALSE && !groupVisual.ImplicitAnimations(),
-            "dragging only observes the existing gesture");
-        aTransform.X(40); bTransform.X(40);
+                "dragging only observes the existing gesture");
+        aTransform.X(40);
+        bTransform.X(40);
         Require(ambientRefresh(host) == S_FALSE && !groupVisual.ImplicitAnimations(),
-            "live drag coordinates never launch decorative easing");
-        Require(SUCCEEDED(setAmbientDragging(host,FALSE)), "end direct manipulation");
-        aTransform.X(0); bTransform.X(0); refreshAmbient();
-        for (int i=0;i<50;++i) { Pump(); Sleep(10); }
-        auto settledFace = faceShape(41).Geometry().as<winrt::Microsoft::UI::Composition::CompositionPathGeometry>().Path();
+                "live drag coordinates never launch decorative easing");
+        Require(SUCCEEDED(setAmbientDragging(host, FALSE)), "end direct manipulation");
+        aTransform.X(0);
+        bTransform.X(0);
         refreshAmbient();
-        Require(faceShape(41).Geometry().as<winrt::Microsoft::UI::Composition::CompositionPathGeometry>().Path() == settledFace,
-            "unchanged layout retains mask geometry without rebuilding the visual surface");
+        for (int i = 0; i < 50; ++i) {
+            Pump();
+            Sleep(10);
+        }
+        auto settledFace =
+            faceShape(41).Geometry().as<winrt::Microsoft::UI::Composition::CompositionPathGeometry>().Path();
+        refreshAmbient();
+        Require(faceShape(41).Geometry().as<winrt::Microsoft::UI::Composition::CompositionPathGeometry>().Path() ==
+                    settledFace,
+                "unchanged layout retains mask geometry without rebuilding the visual surface");
         puts("CHECKS PASSED: immediate glow geometry, retained visuals and bounded drag observation");
         auto toggleIndicators = [&](uint32_t revision, bool glow, bool showDot, bool withHalo = true) {
-            auto update = winrt::Windows::Data::Json::JsonObject::Parse(LR"({"version":2,"publishOnly":true,"strip":{"version":2,"rows":[],"removed":[]}})");
+            auto update = winrt::Windows::Data::Json::JsonObject::Parse(
+                LR"({"version":2,"publishOnly":true,"strip":{"version":2,"rows":[],"removed":[]}})");
             auto strip = update.GetNamedObject(L"strip");
             using Value = winrt::Windows::Data::Json::JsonValue;
             strip.SetNamedValue(L"base", Value::CreateNumberValue(revision - 1));
@@ -4054,68 +4712,79 @@ static void CheckInlineGroups(HMODULE module, WinUIPaneApi& api, HWND host, bool
             strip.SetNamedValue(L"groupGlow", Value::CreateBooleanValue(glow || showDot));
             strip.SetNamedValue(L"containerDot", Value::CreateBooleanValue(showDot));
             strip.SetNamedValue(L"groupHalo", Value::CreateBooleanValue(withHalo));
-            MenuPublish(api,host,update.Stringify().c_str()); settle();
+            MenuPublish(api, host, update.Stringify().c_str());
+            settle();
             Require(!haloDiffusion.Clip(), "glow option changes never notch the halo");
             Require(topGlow.Children().Count() == (glow ? 1 : 0) &&
-                dot.Visibility() == (showDot ? Visibility::Visible : Visibility::Collapsed) &&
-                bottomGlow.Children().Count() == (glow || showDot ? 1 : 0),
-                "live glow options remove and restore group and container visuals");
+                        dot.Visibility() == (showDot ? Visibility::Visible : Visibility::Collapsed) &&
+                        bottomGlow.Children().Count() == (glow || showDot ? 1 : 0),
+                    "live glow options remove and restore group and container visuals");
             Require(spill.Children().Count() == (glow || showDot ? 1 : 0), "disabled group glow releases its spill");
             Require(halo.Children().Count() == ((glow || showDot) && withHalo ? 1 : 0),
-                "disabling group glow or only the halo releases the halo; the group wash stays with glow");
-            Require(glow ? separatorA.Background().as<Media::SolidColorBrush>().Color().A == 170 :
-                bool(separatorA.GetBindingExpression(Controls::Border::BackgroundProperty())),
-                "disabling glow restores a live theme binding on the native divider");
-            Require(bool(Hosting::ElementCompositionPreview::GetElementChildVisual(outlineSurface)) == (glow || showDot),
+                    "disabling group glow or only the halo releases the halo; the group wash stays with glow");
+            Require(glow ? separatorA.Background().as<Media::SolidColorBrush>().Color().A == 170
+                         : bool(separatorA.GetBindingExpression(Controls::Border::BackgroundProperty())),
+                    "disabling glow restores a live theme binding on the native divider");
+            Require(
+                bool(Hosting::ElementCompositionPreview::GetElementChildVisual(outlineSurface)) == (glow || showDot),
                 "group lighting preference removes and restores outline highlights");
             Require(!rim(L"group-shared-reflection") && !rim(L"group-outer-reflection"),
-                "container options never restore obsolete group seam highlights");
+                    "container options never restore obsolete group seam highlights");
         };
         toggleIndicators(18, false, true);
         toggleIndicators(19, true, true, false);
         toggleIndicators(20, false, false);
         toggleIndicators(21, true, false);
-        MenuPublish(api,host,LR"({"version":2,"publishOnly":true,"strip":{"version":2,"base":21,"revision":22,"rows":[],"removed":[],"groups":[],"layout":[{"group":0,"tab":41},{"group":0,"tab":42}]}})");
-        Require(SUCCEEDED(api.syncTabs(host,tabs,2,42, NextTabRevision(), &selected)), "ungroup colored container tabs");
+        MenuPublish(
+            api, host,
+            LR"({"version":2,"publishOnly":true,"strip":{"version":2,"base":21,"revision":22,"rows":[],"removed":[],"groups":[],"layout":[{"group":0,"tab":41},{"group":0,"tab":42}]}})");
+        Require(SUCCEEDED(api.syncTabs(host, tabs, 2, 42, NextTabRevision(), &selected)),
+                "ungroup colored container tabs");
         settle();
         Require(bottomGlow.Children().Count() == 0 && topGlow.Children().Count() == 1 && halo.Children().Count() == 0,
-            "container glow survives tab realization after ungrouping; the group halo is released");
+                "container glow survives tab realization after ungrouping; the group halo is released");
         for (auto item : view.TabItems())
             Require(nativeSeparator(item.as<Controls::TabViewItem>()).Visibility() == Visibility::Visible,
-                "ungrouping restores the former group end's divider");
+                    "ungrouping restores the former group end's divider");
         Require(!rim(L"group-outer-reflection") && !rim(L"group-shared-reflection"),
-            "ungrouping releases group boundary reflections");
-        MenuPublish(api,host,LR"({"version":2,"publishOnly":true,"strip":{"version":2,"base":22,"revision":23,"rows":[{"id":42,"containerName":"Other identity, same color","containerColor":4289934591}],"removed":[]}})");
+                "ungrouping releases group boundary reflections");
+        MenuPublish(
+            api, host,
+            LR"({"version":2,"publishOnly":true,"strip":{"version":2,"base":22,"revision":23,"rows":[{"id":42,"containerName":"Other identity, same color","containerColor":4289934591}],"removed":[]}})");
         settle();
         a = view.TabItems().GetAt(0).as<Controls::TabViewItem>();
         b = view.TabItems().GetAt(1).as<Controls::TabViewItem>();
-        ar = a.TransformToVisual(ambientLayer).TransformBounds({0,0,float(a.ActualWidth()),float(a.ActualHeight())});
-        br = b.TransformToVisual(ambientLayer).TransformBounds({0,0,float(b.ActualWidth()),float(b.ActualHeight())});
+        ar = a.TransformToVisual(ambientLayer).TransformBounds({0, 0, float(a.ActualWidth()), float(a.ActualHeight())});
+        br = b.TransformToVisual(ambientLayer).TransformBounds({0, 0, float(b.ActualWidth()), float(b.ActualHeight())});
         auto joined = topGlow.Children().First().Current().as<winrt::Microsoft::UI::Composition::SpriteVisual>();
         Require(topGlow.Children().Count() == 2 && joined.Children().Count() == 1,
-            "same-color neighboring containers retain individual corner strokes");
+                "same-color neighboring containers retain individual corner strokes");
         auto upperRim = rim(L"active-container-reflection");
-        Require(upperRim && upperRim.IsVisible() && std::abs(upperRim.Size().x - br.Width) < 1 && upperRim.Children().Count() == 1 &&
-            std::abs(upperRim.Offset().y - br.Y) < 1 && !rim(L"active-group-reflection"),
-            "ungrouped active container has corner highlights and no bottom highlight");
+        Require(upperRim && upperRim.IsVisible() && std::abs(upperRim.Size().x - br.Width) < 1 &&
+                    upperRim.Children().Count() == 1 && std::abs(upperRim.Offset().y - br.Y) < 1 &&
+                    !rim(L"active-group-reflection"),
+                "ungrouped active container has corner highlights and no bottom highlight");
         auto activeClip = diffusion.Clip().as<winrt::Microsoft::UI::Composition::CompositionGeometricClip>();
-        Require(activeClip.Geometry().as<winrt::Microsoft::UI::Composition::CompositionPathGeometry>().Path() != nullptr,
+        Require(
+            activeClip.Geometry().as<winrt::Microsoft::UI::Composition::CompositionPathGeometry>().Path() != nullptr,
             "the active tab cuts a notch in the final diffused glow rather than changing the per-tab fields");
-        Require(SUCCEEDED(api.syncTabs(host,tabs,2,41, NextTabRevision(), &selected)), "activate the first container tab");
+        Require(SUCCEEDED(api.syncTabs(host, tabs, 2, 41, NextTabRevision(), &selected)),
+                "activate the first container tab");
         settle();
         Require(diffusion.Clip() != activeClip && topGlow.Children().First().Current() == joined,
-            "active-tab clipping follows selection without replacing the container glow");
+                "active-tab clipping follows selection without replacing the container glow");
         Require(std::abs(upperRim.Offset().x + upperRim.Size().x / 2 - (ar.X + ar.Width / 2)) < 1,
-            "the retained surface highlight follows active-tab changes");
+                "the retained surface highlight follows active-tab changes");
         Require(bool(nativeSeparator(a).GetBindingExpression(Controls::Border::BackgroundProperty())),
-            "activating a container restores its themed divider");
+                "activating a container restores its themed divider");
         winrt::Windows::Foundation::Numerics::float4 selectedFace{};
         Require(faceShape(41).Properties().TryGetVector4(L"FaceBounds", selectedFace) ==
-            winrt::Microsoft::UI::Composition::CompositionGetValueStatus::Succeeded && std::abs(selectedFace.x - ar.X) < 1 &&
-            std::abs(selectedFace.z - ar.Width) < 1,
-            "ungrouped selected tab retains its separate native contour");
+                        winrt::Microsoft::UI::Composition::CompositionGetValueStatus::Succeeded &&
+                    std::abs(selectedFace.x - ar.X) < 1 && std::abs(selectedFace.z - ar.Width) < 1,
+                "ungrouped selected tab retains its separate native contour");
         activeClip = diffusion.Clip().as<winrt::Microsoft::UI::Composition::CompositionGeometricClip>();
-        Require(SUCCEEDED(api.syncTabs(host,tabs,2,42, NextTabRevision(), &selected)), "restore the second active tab");
+        Require(SUCCEEDED(api.syncTabs(host, tabs, 2, 42, NextTabRevision(), &selected)),
+                "restore the second active tab");
         settle();
         Require(diffusion.Clip() != activeClip, "moving activation restores the former active tab's upper spill");
         {
@@ -4124,62 +4793,79 @@ static void CheckInlineGroups(HMODULE module, WinUIPaneApi& api, HWND host, bool
             Require(inspectContainerSelection != nullptr, "container selection inspection available");
             for (uint32_t id : {41u, 42u}) {
                 uint64_t before[4]{}, after[4]{};
-                Require(SUCCEEDED(inspectContainerSelection(host, before, TRUE)), "prepare full container decoration reference");
+                Require(SUCCEEDED(inspectContainerSelection(host, before, TRUE)),
+                        "prepare full container decoration reference");
                 Require(SUCCEEDED(inspectContainerSelection(host, before, FALSE)), "read container decoration counts");
-                const auto delta = L"{\"version\":1,\"base\":" + std::to_wstring(selected) +
-                    L",\"revision\":" + std::to_wstring(selected + 1) + L",\"titles\":[],\"selected\":" + std::to_wstring(id) + L"}";
-                Require(SUCCEEDED(api.applyTabDelta(host, delta.c_str(), &selected)), "apply container selection-only delta");
-                Require(SUCCEEDED(inspectContainerSelection(host, after, FALSE)), "read incremental container decoration counts");
-                fprintf(stderr, "Container selection %u: fast=%llu->%llu ambient=%llu->%llu separator=%llu->%llu flags=%llu->%llu\n",
-                    id, before[0], after[0], before[1], after[1], before[2], after[2], before[3], after[3]);
+                const auto delta = L"{\"version\":1,\"base\":" + std::to_wstring(selected) + L",\"revision\":" +
+                                   std::to_wstring(selected + 1) + L",\"titles\":[],\"selected\":" +
+                                   std::to_wstring(id) + L"}";
+                Require(SUCCEEDED(api.applyTabDelta(host, delta.c_str(), &selected)),
+                        "apply container selection-only delta");
+                Require(SUCCEEDED(inspectContainerSelection(host, after, FALSE)),
+                        "read incremental container decoration counts");
+                fprintf(stderr,
+                        "Container selection %u: fast=%llu->%llu ambient=%llu->%llu separator=%llu->%llu "
+                        "flags=%llu->%llu\n",
+                        id, before[0], after[0], before[1], after[1], before[2], after[2], before[3], after[3]);
                 Require(after[0] == before[0] + 1 && after[1] == before[1] && after[2] == before[2],
-                    "container selection updates only affected decorations and separators");
-                Require(SUCCEEDED(inspectContainerSelection(host, after, TRUE)), "incremental container decorations match full refresh");
+                        "container selection updates only affected decorations and separators");
+                Require(SUCCEEDED(inspectContainerSelection(host, after, TRUE)),
+                        "incremental container decorations match full refresh");
             }
         }
-        MenuPublish(api,host,LR"({"version":2,"publishOnly":true,"strip":{"version":2,"base":23,"revision":24,"rows":[{"id":42,"containerColor":4281558681}],"removed":[]}})");
+        MenuPublish(
+            api, host,
+            LR"({"version":2,"publishOnly":true,"strip":{"version":2,"base":23,"revision":24,"rows":[{"id":42,"containerColor":4281558681}],"removed":[]}})");
         settle();
         Require(topGlow.Children().Count() == 2, "different colors retain two independently composited fields");
         float leftEnd = 0, rightStart = 0;
         for (auto visual : topGlow.Children()) {
             Require(visual.as<winrt::Microsoft::UI::Composition::SpriteVisual>().Children().Count() == 1,
-                "neighboring color fields retain their own corner strokes");
+                    "neighboring color fields retain their own corner strokes");
             if (visual.Comment() == L"container:41") leftEnd = visual.Offset().x + visual.Size().x;
             if (visual.Comment() == L"container:42") rightStart = visual.Offset().x;
         }
         Require(std::abs(leftEnd - (ar.X + ar.Width)) < 1 && std::abs(rightStart - br.X) < 1,
-            "different-color corner fields track their own tab boundaries");
-        MenuPublish(api,host,LR"({"version":2,"publishOnly":true,"strip":{"version":2,"base":24,"revision":25,"rows":[{"id":42,"containerName":"","containerColor":0}],"removed":[]}})");
+                "different-color corner fields track their own tab boundaries");
+        MenuPublish(
+            api, host,
+            LR"({"version":2,"publishOnly":true,"strip":{"version":2,"base":24,"revision":25,"rows":[{"id":42,"containerName":"","containerColor":0}],"removed":[]}})");
         settle();
         auto isolated = topGlow.Children().First().Current().as<winrt::Microsoft::UI::Composition::SpriteVisual>();
         Require(topGlow.Children().Count() == 1 && isolated.Children().Count() == 1 &&
-            std::abs(isolated.Size().x - ar.Width) < 1,
-            "removing a neighbor container leaves the remaining corner glow unchanged");
+                    std::abs(isolated.Size().x - ar.Width) < 1,
+                "removing a neighbor container leaves the remaining corner glow unchanged");
         // Clear both color sources in the next full snapshot.
         // Regrouping retains decoration until Loaded or the bounded rendered-
         // frame realization wait completes. A fixed wall-clock pump is not a
         // completion signal. Observe natural cleanup without forcing refresh.
         const auto cleanupStarted = GetTickCount64();
-        motionState(26,false);
-        while ((bottomGlow.Children().Count() || topGlow.Children().Count() || spill.Children().Count() || halo.Children().Count()) &&
-               GetTickCount64()-cleanupStarted < 3000) { Pump(); Sleep(10); }
+        motionState(26, false);
+        while ((bottomGlow.Children().Count() || topGlow.Children().Count() || spill.Children().Count() ||
+                halo.Children().Count()) &&
+               GetTickCount64() - cleanupStarted < 3000) {
+            Pump();
+            Sleep(10);
+        }
         fprintf(stderr, "Metadata cleanup: ms=%llu bottom=%u top=%u spill=%u halo=%u\n",
-            GetTickCount64()-cleanupStarted, bottomGlow.Children().Count(), topGlow.Children().Count(), spill.Children().Count(), halo.Children().Count());
+                GetTickCount64() - cleanupStarted, bottomGlow.Children().Count(), topGlow.Children().Count(),
+                spill.Children().Count(), halo.Children().Count());
         Require(bottomGlow.Children().Count() == 0 && topGlow.Children().Count() == 0,
-            "removing color and container metadata releases both decorations");
+                "removing color and container metadata releases both decorations");
         Require(spill.Children().Count() == 0 && halo.Children().Count() == 0,
-            "clearing source metadata also removes all weak color spill and halos");
+                "clearing source metadata also removes all weak color spill and halos");
         Require(!rim(L"active-container-reflection").IsVisible() && !rim(L"active-group-reflection"),
-            "clearing glow sources also hides their surface reflections");
-        Require(SUCCEEDED(motion(host,2,&ghosts)), "disable motion for indicator selection checks");
-        auto reducedMarker = find(view,L"FennInlineGroup-7").Content().as<Controls::Grid>().Children().GetAt(0).as<FrameworkElement>();
-        Require(SUCCEEDED(api.syncTabs(host,tabs,2,0, NextTabRevision(), &selected)), "clear active group with reduced motion");
-        Require(reducedMarker.Width() == 6.0,
-            "reduced motion immediately shortens group indicator");
-        Require(SUCCEEDED(api.syncTabs(host,tabs,2,42, NextTabRevision(), &selected)), "restore active group with reduced motion");
-        Require(reducedMarker.Width() == 16.0,
-            "reduced motion immediately lengthens group indicator");
-        Require(SUCCEEDED(motion(host,3,&ghosts)), "restore motion after indicator selection checks");
+                "clearing glow sources also hides their surface reflections");
+        Require(SUCCEEDED(motion(host, 2, &ghosts)), "disable motion for indicator selection checks");
+        auto reducedMarker =
+            find(view, L"FennInlineGroup-7").Content().as<Controls::Grid>().Children().GetAt(0).as<FrameworkElement>();
+        Require(SUCCEEDED(api.syncTabs(host, tabs, 2, 0, NextTabRevision(), &selected)),
+                "clear active group with reduced motion");
+        Require(reducedMarker.Width() == 6.0, "reduced motion immediately shortens group indicator");
+        Require(SUCCEEDED(api.syncTabs(host, tabs, 2, 42, NextTabRevision(), &selected)),
+                "restore active group with reduced motion");
+        Require(reducedMarker.Width() == 16.0, "reduced motion immediately lengthens group indicator");
+        Require(SUCCEEDED(motion(host, 3, &ghosts)), "restore motion after indicator selection checks");
         {
             // Opening a tab after a trailing group whose member is active adds
             // a new ungrouped run, which resets the grouped source and detaches
@@ -4189,27 +4875,41 @@ static void CheckInlineGroups(HMODULE module, WinUIPaneApi& api, HWND host, bool
             // after a reset can exceed the 150 ms motion here, so intermediate
             // widths are not sampled.
             auto lastGroup = [&](uint32_t revision, bool withNewTab) {
-                auto state = winrt::Windows::Data::Json::JsonObject::Parse(LR"({"version":2,"publishOnly":true,"strip":{"version":2,"base":0,"revision":0,"rtl":false,"groupsLabel":"Groups","groupGlow":true,"groupHalo":true,"groups":[{"id":7,"name":"Research","label":"Research","collapsed":false,"color":4281558681}],"rows":[{"id":41,"detail":"","flags":0},{"id":42,"detail":"","flags":0},{"id":43,"detail":"","flags":0}],"layout":[{"group":0,"tab":41},{"group":7,"tab":0},{"group":7,"tab":42},{"group":0,"tab":43}]}})");
+                auto state = winrt::Windows::Data::Json::JsonObject::Parse(
+                    LR"({"version":2,"publishOnly":true,"strip":{"version":2,"base":0,"revision":0,"rtl":false,"groupsLabel":"Groups","groupGlow":true,"groupHalo":true,"groups":[{"id":7,"name":"Research","label":"Research","collapsed":false,"color":4281558681}],"rows":[{"id":41,"detail":"","flags":0},{"id":42,"detail":"","flags":0},{"id":43,"detail":"","flags":0}],"layout":[{"group":0,"tab":41},{"group":7,"tab":0},{"group":7,"tab":42},{"group":0,"tab":43}]}})");
                 auto strip = state.GetNamedObject(L"strip");
                 strip.SetNamedValue(L"revision", winrt::Windows::Data::Json::JsonValue::CreateNumberValue(revision));
-                if (!withNewTab) { strip.GetNamedArray(L"rows").RemoveAt(2); strip.GetNamedArray(L"layout").RemoveAt(3); }
-                MenuPublish(api,host,state.Stringify().c_str());
+                if (!withNewTab) {
+                    strip.GetNamedArray(L"rows").RemoveAt(2);
+                    strip.GetNamedArray(L"layout").RemoveAt(3);
+                }
+                MenuPublish(api, host, state.Stringify().c_str());
             };
-            WinUITab opened[]{{41,L"Home"},{42,L"Research page"},{43,L"New tab"}};
-            lastGroup(27,false);
-            Require(SUCCEEDED(api.syncTabs(host,opened,2,42, NextTabRevision(), &selected)), "activate the trailing group's member");
+            WinUITab opened[]{{41, L"Home"}, {42, L"Research page"}, {43, L"New tab"}};
+            lastGroup(27, false);
+            Require(SUCCEEDED(api.syncTabs(host, opened, 2, 42, NextTabRevision(), &selected)),
+                    "activate the trailing group's member");
             // The Window may realize the regrouped rows after several rendered frames.
             // Begin continuity assertions only once the initial light exists; never
             // force a refresh or relax the per-frame checks after the next mutation.
-            const auto litStarted=GetTickCount64();
-            while((bottomGlow.Children().Count()!=1 || halo.Children().Count()!=1) &&
-                  GetTickCount64()-litStarted<3000) { Pump(); Sleep(10); }
-            fprintf(stderr,"Trailing group readiness: ms=%llu bottom=%u halo=%u loaded=%d\n",
-                GetTickCount64()-litStarted,bottomGlow.Children().Count(),halo.Children().Count(),root.IsLoaded());
+            const auto litStarted = GetTickCount64();
+            while ((bottomGlow.Children().Count() != 1 || halo.Children().Count() != 1) &&
+                   GetTickCount64() - litStarted < 3000) {
+                Pump();
+                Sleep(10);
+            }
+            fprintf(stderr, "Trailing group readiness: ms=%llu bottom=%u halo=%u loaded=%d\n",
+                    GetTickCount64() - litStarted, bottomGlow.Children().Count(), halo.Children().Count(),
+                    root.IsLoaded());
             Require(bottomGlow.Children().Count() == 1 && halo.Children().Count() == 1, "trailing active group is lit");
             auto litGroup = bottomGlow.Children().First().Current();
             auto litHalo = halo.Children().First().Current();
-            auto openMarker = find(view,L"FennInlineGroup-7").Content().as<Controls::Grid>().Children().GetAt(0).as<FrameworkElement>();
+            auto openMarker = find(view, L"FennInlineGroup-7")
+                                  .Content()
+                                  .as<Controls::Grid>()
+                                  .Children()
+                                  .GetAt(0)
+                                  .as<FrameworkElement>();
             Require(openMarker.Width() == 16.0, "active trailing group has a long indicator");
             uint32_t reachRevisionStart = 28;
             int frames = 0, unlit = 0, replaced = 0, reversals = 0;
@@ -4223,66 +4923,91 @@ static void CheckInlineGroups(HMODULE module, WinUIPaneApi& api, HWND host, bool
             };
             auto sample = [&] {
                 ++frames;
-                if (bottomGlow.Children().Count() != 1 || halo.Children().Count() != 1) ++unlit;
-                else if (bottomGlow.Children().First().Current() != litGroup || halo.Children().First().Current() != litHalo) ++replaced;
+                if (bottomGlow.Children().Count() != 1 || halo.Children().Count() != 1)
+                    ++unlit;
+                else if (bottomGlow.Children().First().Current() != litGroup ||
+                         halo.Children().First().Current() != litHalo)
+                    ++replaced;
                 observeWidth();
             };
             auto token = Media::CompositionTarget::Rendering([&](auto&&, auto&&) { sample(); });
             auto layoutToken = root.LayoutUpdated([&](auto&&, auto&&) { observeWidth(); });
-            lastGroup(28,true);
+            lastGroup(28, true);
             sample();
-            Require(SUCCEEDED(api.syncTabs(host,opened,3,43, NextTabRevision(), &selected)), "open a new tab after the active group");
+            Require(SUCCEEDED(api.syncTabs(host, opened, 3, 43, NextTabRevision(), &selected)),
+                    "open a new tab after the active group");
             sample();
             const bool detached = !openMarker.IsLoaded();
             const auto heldWidth = openMarker.Width();
-            for (int i=0;i<200 && (!openMarker.IsLoaded() || openMarker.Width() != 6.0);++i) { Pump(); Sleep(10); }
+            for (int i = 0; i < 200 && (!openMarker.IsLoaded() || openMarker.Width() != 6.0); ++i) {
+                Pump();
+                Sleep(10);
+            }
             settle();
             Media::CompositionTarget::Rendering(token);
             root.LayoutUpdated(layoutToken);
-            printf("New tab after active group: frames=%d unlit=%d replaced=%d detached=%d held=%.1f width=%.1f reversals=%d\n",
+            printf(
+                "New tab after active group: frames=%d unlit=%d replaced=%d detached=%d held=%.1f width=%.1f "
+                "reversals=%d\n",
                 frames, unlit, replaced, detached, heldWidth, openMarker.Width(), reversals);
             fflush(stdout);
             Require(!unlit && !replaced, "opening a tab never drops or rebuilds the existing group light");
-            Require(!reversals, "the deferred indicator motion never shows its target before shortening from the held width");
+            Require(!reversals,
+                    "the deferred indicator motion never shows its target before shortening from the held width");
             Require(!detached || heldWidth == 16.0, "a detached indicator keeps its displayed width for the motion");
-            Require(openMarker.IsLoaded() && openMarker.Width() == 6.0, "leaving the group for a new tab shortens its indicator");
+            Require(openMarker.IsLoaded() && openMarker.Width() == 6.0,
+                    "leaving the group for a new tab shortens its indicator");
             {
                 // Closing the active ungrouped tab after a group must leave the
                 // group's last tab at the width a fresh layout would give it,
                 // not narrower until the next input forces another layout pass.
                 uint32_t revision = 29;
                 for (bool animated : {true, false}) {
-                    if (!animated) Require(SUCCEEDED(motion(host,2,&ghosts)), "disable motion for the close width check");
+                    if (!animated)
+                        Require(SUCCEEDED(motion(host, 2, &ghosts)), "disable motion for the close width check");
                     lastGroup(revision++, false);
-                    Require(SUCCEEDED(api.syncTabs(host,opened,2,42, NextTabRevision(), &selected)), "close the active ungrouped tab after a group");
-                    settle(); settle();
+                    Require(SUCCEEDED(api.syncTabs(host, opened, 2, 42, NextTabRevision(), &selected)),
+                            "close the active ungrouped tab after a group");
+                    settle();
+                    settle();
                     Controls::TabViewItem lastTab{nullptr};
                     for (auto item : view.TabItems())
-                        if (auto row = item.try_as<Controls::TabViewItem>(); row && row.Tag() && unbox_value_or<uint32_t>(row.Tag(), 0) == 42) lastTab = row;
+                        if (auto row = item.try_as<Controls::TabViewItem>();
+                            row && row.Tag() && unbox_value_or<uint32_t>(row.Tag(), 0) == 42)
+                            lastTab = row;
                     Require(bool(lastTab), "find the group's last tab");
                     const auto closedWidth = lastTab.ActualWidth();
                     auto widths = [&] {
                         std::wstring text;
                         for (auto item : view.TabItems())
                             if (auto row = item.try_as<Controls::TabViewItem>(); row && row.Tag())
-                                text += std::to_wstring(unbox_value_or<uint32_t>(row.Tag(), 0)) + L"=" + std::to_wstring(int(row.ActualWidth())) + L" ";
+                                text += std::to_wstring(unbox_value_or<uint32_t>(row.Tag(), 0)) + L"=" +
+                                        std::to_wstring(int(row.ActualWidth())) + L" ";
                         return text;
                     };
                     const auto beforeWidths = widths();
-                    view.InvalidateMeasure(); root.UpdateLayout(); settle();
-                    wprintf(L"Close after group (animated=%d): [%ls] -> after fresh layout [%ls]\n", int(animated), beforeWidths.c_str(), widths().c_str());
+                    view.InvalidateMeasure();
+                    root.UpdateLayout();
+                    settle();
+                    wprintf(L"Close after group (animated=%d): [%ls] -> after fresh layout [%ls]\n", int(animated),
+                            beforeWidths.c_str(), widths().c_str());
                     fflush(stdout);
-                    Require(std::abs(closedWidth - lastTab.ActualWidth()) < 1, "closing an ungrouped tab leaves the group's last tab at its settled width");
+                    Require(std::abs(closedWidth - lastTab.ActualWidth()) < 1,
+                            "closing an ungrouped tab leaves the group's last tab at its settled width");
                     // Equal mode gives every tab a numeric Width. NaN means TabView
                     // was left sizing tabs to their content, which is what made the
                     // group's last tab shrink until the pointer moved.
                     for (auto item : view.TabItems())
                         if (auto row = item.try_as<Controls::TabViewItem>(); row && row.Tag())
-                            Require(!std::isnan(row.Width()), "closing a tab leaves every tab with an Equal-mode width");
+                            Require(!std::isnan(row.Width()),
+                                    "closing a tab leaves every tab with an Equal-mode width");
                     lastGroup(revision++, true);
-                    Require(SUCCEEDED(api.syncTabs(host,opened,3,43, NextTabRevision(), &selected)), "reopen the ungrouped tab after the close width check");
-                    settle(); settle();
-                    if (!animated) Require(SUCCEEDED(motion(host,3,&ghosts)), "restore motion after the close width check");
+                    Require(SUCCEEDED(api.syncTabs(host, opened, 3, 43, NextTabRevision(), &selected)),
+                            "reopen the ungrouped tab after the close width check");
+                    settle();
+                    settle();
+                    if (!animated)
+                        Require(SUCCEEDED(motion(host, 3, &ghosts)), "restore motion after the close width check");
                 }
                 // Closing a tab before a group moves the group aside. Its tabs
                 // and header ease there with a composition Translation that
@@ -4290,21 +5015,29 @@ static void CheckInlineGroups(HMODULE module, WinUIPaneApi& api, HWND host, bool
                 // with the group's light) snapped to the end and then trailed
                 // back. It must move with them from where the group was.
                 if (winrt::Windows::UI::ViewManagement::UISettings().AnimationsEnabled()) {
-                    auto entry = reinterpret_cast<HRESULT(WINAPI*)(HWND, uint32_t, uint32_t*)>(GetProcAddress(module, "WinUIPaneTestEntryMotion"));
+                    auto entry = reinterpret_cast<HRESULT(WINAPI*)(HWND, uint32_t, uint32_t*)>(
+                        GetProcAddress(module, "WinUIPaneTestEntryMotion"));
                     Require(entry != nullptr, "entry motion inspector exists");
                     auto outline = [&] {
                         for (auto child : root.Children().GetAt(3).as<Controls::Canvas>().Children())
-                            if (Automation::AutomationProperties::GetAutomationId(child) == L"FennGroupSurface-7") return child.as<Controls::Border>();
+                            if (Automation::AutomationProperties::GetAutomationId(child) == L"FennGroupSurface-7")
+                                return child.as<Controls::Border>();
                         return Controls::Border{nullptr};
                     };
-                    auto left = [&] { auto border = outline(); return border ? Controls::Canvas::GetLeft(border) : std::nan(""); };
+                    auto left = [&] {
+                        auto border = outline();
+                        return border ? Controls::Canvas::GetLeft(border) : std::nan("");
+                    };
                     const double leftBefore = left();
                     Require(!std::isnan(leftBefore), "the lit group has an outline before the close");
-                    auto state = winrt::Windows::Data::Json::JsonObject::Parse(LR"({"version":2,"publishOnly":true,"strip":{"version":2,"base":0,"revision":0,"rtl":false,"groupsLabel":"Groups","groupGlow":true,"groupHalo":true,"groups":[{"id":7,"name":"Research","label":"Research","collapsed":false,"color":4281558681}],"rows":[{"id":42,"detail":"","flags":0},{"id":43,"detail":"","flags":0}],"layout":[{"group":7,"tab":0},{"group":7,"tab":42},{"group":0,"tab":43}]}})");
-                    state.GetNamedObject(L"strip").SetNamedValue(L"revision", winrt::Windows::Data::Json::JsonValue::CreateNumberValue(revision++));
-                    MenuPublish(api,host,state.Stringify().c_str());
-                    WinUITab remaining[]{{42,L"Research page"},{43,L"New tab"}};
-                    Require(SUCCEEDED(api.syncTabs(host,remaining,2,43, NextTabRevision(), &selected)), "close the ungrouped tab before the group");
+                    auto state = winrt::Windows::Data::Json::JsonObject::Parse(
+                        LR"({"version":2,"publishOnly":true,"strip":{"version":2,"base":0,"revision":0,"rtl":false,"groupsLabel":"Groups","groupGlow":true,"groupHalo":true,"groups":[{"id":7,"name":"Research","label":"Research","collapsed":false,"color":4281558681}],"rows":[{"id":42,"detail":"","flags":0},{"id":43,"detail":"","flags":0}],"layout":[{"group":7,"tab":0},{"group":7,"tab":42},{"group":0,"tab":43}]}})");
+                    state.GetNamedObject(L"strip").SetNamedValue(
+                        L"revision", winrt::Windows::Data::Json::JsonValue::CreateNumberValue(revision++));
+                    MenuPublish(api, host, state.Stringify().c_str());
+                    WinUITab remaining[]{{42, L"Research page"}, {43, L"New tab"}};
+                    Require(SUCCEEDED(api.syncTabs(host, remaining, 2, 43, NextTabRevision(), &selected)),
+                            "close the ungrouped tab before the group");
                     std::vector<double> lefts;
                     bool held = false;
                     for (int i = 0; i < 400; ++i) {
@@ -4312,18 +5045,22 @@ static void CheckInlineGroups(HMODULE module, WinUIPaneApi& api, HWND host, bool
                         Require(SUCCEEDED(entry(host, 0, out)), "inspect the close motion");
                         if (out[6]) held = true;
                         const double now = left();
-                        if (!std::isnan(now) && (lefts.empty() || std::abs(lefts.back() - now) > .01)) lefts.push_back(now);
+                        if (!std::isnan(now) && (lefts.empty() || std::abs(lefts.back() - now) > .01))
+                            lefts.push_back(now);
                         if (held && !out[4] && !out[5] && !out[6]) break;
                         Pump();
                         Sleep(2);
                     }
-                    settle(); settle();
+                    settle();
+                    settle();
                     const double leftAfter = left();
                     std::string trace;
                     for (auto value : lefts) trace += std::to_string(int(value)) + " ";
-                    printf("Group outline on close before it: before=%.1f after=%.1f held=%d path=[%s]\n", leftBefore, leftAfter, int(held), trace.c_str());
+                    printf("Group outline on close before it: before=%.1f after=%.1f held=%d path=[%s]\n", leftBefore,
+                           leftAfter, int(held), trace.c_str());
                     fflush(stdout);
-                    Require(held && leftAfter < leftBefore - 100, "closing a tab before a group eases the group into its place");
+                    Require(held && leftAfter < leftBefore - 100,
+                            "closing a tab before a group eases the group into its place");
                     bool between = false;
                     for (auto value : lefts) between |= value > leftAfter + 5 && value < leftBefore - 5;
                     Require(between, "the group's outline passes between its old and new place rather than jumping");
@@ -4331,54 +5068,64 @@ static void CheckInlineGroups(HMODULE module, WinUIPaneApi& api, HWND host, bool
                     for (size_t i = 1; i < lefts.size(); ++i) steady &= lefts[i] <= lefts[i - 1] + .5;
                     Require(steady, "the group's outline only moves toward its new place while the tabs ease there");
                     lastGroup(revision++, true);
-                    Require(SUCCEEDED(api.syncTabs(host,opened,3,43, NextTabRevision(), &selected)), "reopen the ungrouped tab after the outline check");
-                    settle(); settle();
+                    Require(SUCCEEDED(api.syncTabs(host, opened, 3, 43, NextTabRevision(), &selected)),
+                            "reopen the ungrouped tab after the outline check");
+                    settle();
+                    settle();
                 }
                 reachRevisionStart = revision - 1;
             }
             // Firefox's groupReach option sets how far the lone group reaches
             // past its outer members; live deltas resize it in place.
-            auto groupHeader = find(view,L"FennInlineGroup-7");
+            auto groupHeader = find(view, L"FennInlineGroup-7");
             auto reachSurface = [&] {
                 for (auto child : root.Children().GetAt(3).as<Controls::Canvas>().Children())
-                    if (Automation::AutomationProperties::GetAutomationId(child) == L"FennGroupSurface-7") return child.as<Controls::Border>();
+                    if (Automation::AutomationProperties::GetAutomationId(child) == L"FennGroupSurface-7")
+                        return child.as<Controls::Border>();
                 return Controls::Border{nullptr};
             };
             auto reachOf = [&] {
-                const auto at = groupHeader.TransformToVisual(root).TransformPoint({0,0});
+                const auto at = groupHeader.TransformToVisual(root).TransformPoint({0, 0});
                 return at.X - float(Controls::Canvas::GetLeft(reachSurface()));
             };
             Require(std::abs(reachOf() - 5) < .1f, "large group reach is the default");
             // Only the large reach moves New Tab, by exactly that reach.
-            auto addX = [&] { return addButton.TransformToVisual(root).TransformPoint({0,0}).X; };
+            auto addX = [&] { return addButton.TransformToVisual(root).TransformPoint({0, 0}).X; };
             const auto largeAddX = addX();
             uint32_t reachRevision = reachRevisionStart;
-            for (auto [name, expected] : {std::pair{L"none", 0.f}, {L"large", 5.f}, {L"small", 2.f}, {L"medium", 3.f}}) {
-                auto update = winrt::Windows::Data::Json::JsonObject::Parse(LR"({"version":2,"publishOnly":true,"strip":{"version":2,"rows":[],"removed":[]}})");
+            for (auto [name, expected] :
+                 {std::pair{L"none", 0.f}, {L"large", 5.f}, {L"small", 2.f}, {L"medium", 3.f}}) {
+                auto update = winrt::Windows::Data::Json::JsonObject::Parse(
+                    LR"({"version":2,"publishOnly":true,"strip":{"version":2,"rows":[],"removed":[]}})");
                 auto strip = update.GetNamedObject(L"strip");
                 using Value = winrt::Windows::Data::Json::JsonValue;
                 strip.SetNamedValue(L"base", Value::CreateNumberValue(reachRevision));
                 strip.SetNamedValue(L"revision", Value::CreateNumberValue(++reachRevision));
                 strip.SetNamedValue(L"groupReach", Value::CreateStringValue(name));
-                MenuPublish(api,host,update.Stringify().c_str()); settle();
+                MenuPublish(api, host, update.Stringify().c_str());
+                settle();
                 printf("Group reach %ls: %.1f\n", name, reachOf());
                 Require(std::abs(reachOf() - expected) < .1f, "group reach option resizes the group surface");
                 printf("New Tab at %ls: %.1f (large %.1f)\n", name, addX(), largeAddX);
                 Require(std::abs(addX() - (largeAddX - (expected == 5.f ? 0.f : 5.f))) < .5f &&
-                    addButton.Margin().Left == (expected == 5.f ? 5.0 : 0.0),
-                    "only the large reach moves New Tab, by that reach");
+                            addButton.Margin().Left == (expected == 5.f ? 5.0 : 0.0),
+                        "only the large reach moves New Tab, by that reach");
             }
-            const auto rejected = api.syncTabMenu(host, (LR"({"version":2,"publishOnly":true,"strip":{"version":2,"base":)" +
-                std::to_wstring(reachRevision) + LR"(,"revision":)" + std::to_wstring(reachRevision + 1) +
-                LR"(,"rows":[],"removed":[],"groupReach":"huge"}})").c_str());
+            const auto rejected = api.syncTabMenu(
+                host, (LR"({"version":2,"publishOnly":true,"strip":{"version":2,"base":)" +
+                       std::to_wstring(reachRevision) + LR"(,"revision":)" + std::to_wstring(reachRevision + 1) +
+                       LR"(,"rows":[],"removed":[],"groupReach":"huge"}})")
+                          .c_str());
             settle();
-            Require(FAILED(rejected) && std::abs(reachOf() - 3) < .1f, "an unknown group reach is rejected without changing the surface");
+            Require(FAILED(rejected) && std::abs(reachOf() - 3) < .1f,
+                    "an unknown group reach is rejected without changing the surface");
             {
                 // Opt-in glow light-up motion (Firefox's groupGlowAnimations).
                 // System animations are forced on here; the option still gates it.
                 namespace Comp = winrt::Microsoft::UI::Composition;
                 using Value = winrt::Windows::Data::Json::JsonValue;
-                auto glowMotion = reinterpret_cast<HRESULT(WINAPI*)(HWND,uint32_t,uint32_t,uint32_t*)>(GetProcAddress(module,"WinUIPaneTestGlowMotion"));
+                auto glowMotion = reinterpret_cast<HRESULT(WINAPI*)(HWND, uint32_t, uint32_t, uint32_t*)>(
+                    GetProcAddress(module, "WinUIPaneTestGlowMotion"));
                 Require(glowMotion != nullptr, "glow motion inspection hook exists");
                 auto query = [&](uint32_t operation, uint32_t argument = 7) {
                     uint32_t result{};
@@ -4386,122 +5133,159 @@ static void CheckInlineGroups(HMODULE module, WinUIPaneApi& api, HWND host, bool
                     return result;
                 };
                 auto glowDelta = [&](std::function<void(winrt::Windows::Data::Json::JsonObject const&)> fill) {
-                    auto update = winrt::Windows::Data::Json::JsonObject::Parse(LR"({"version":2,"publishOnly":true,"strip":{"version":2,"rows":[],"removed":[]}})");
+                    auto update = winrt::Windows::Data::Json::JsonObject::Parse(
+                        LR"({"version":2,"publishOnly":true,"strip":{"version":2,"rows":[],"removed":[]}})");
                     auto strip = update.GetNamedObject(L"strip");
                     strip.SetNamedValue(L"base", Value::CreateNumberValue(reachRevision));
                     strip.SetNamedValue(L"revision", Value::CreateNumberValue(++reachRevision));
                     fill(strip);
-                    MenuPublish(api,host,update.Stringify().c_str());
+                    MenuPublish(api, host, update.Stringify().c_str());
                 };
                 auto setOption = [&](wchar_t const* name, bool on) {
                     glowDelta([&](auto const& strip) { strip.SetNamedValue(name, Value::CreateBooleanValue(on)); });
                 };
                 auto waitFor = [&](std::function<bool()> done) {
-                    for (int i = 0; i < 300 && !done(); ++i) { Pump(); Sleep(10); }
+                    for (int i = 0; i < 300 && !done(); ++i) {
+                        Pump();
+                        Sleep(10);
+                    }
                     return done();
                 };
                 auto outline = [&] {
                     auto surface = reachSurface();
-                    auto visual = surface ? Hosting::ElementCompositionPreview::GetElementChildVisual(surface) : nullptr;
+                    auto visual =
+                        surface ? Hosting::ElementCompositionPreview::GetElementChildVisual(surface) : nullptr;
                     return visual ? visual.try_as<Comp::ShapeVisual>() : Comp::ShapeVisual{nullptr};
                 };
                 auto brushOf = [](Comp::ShapeVisual const& shapes, uint32_t index) {
                     auto sprite = shapes.Shapes().GetAt(index).as<Comp::CompositionSpriteShape>();
-                    return (sprite.FillBrush() ? sprite.FillBrush() : sprite.StrokeBrush()).as<Comp::CompositionRadialGradientBrush>();
+                    return (sprite.FillBrush() ? sprite.FillBrush() : sprite.StrokeBrush())
+                        .as<Comp::CompositionRadialGradientBrush>();
                 };
                 auto washStop = [&] {
                     auto wash = bottomGlow.Children().First().Current().as<Comp::SpriteVisual>();
-                    return wash.Children().First().Current().as<Comp::SpriteVisual>().Brush()
-                        .as<Comp::CompositionGradientBrush>().ColorStops().GetAt(0);
+                    return wash.Children()
+                        .First()
+                        .Current()
+                        .as<Comp::SpriteVisual>()
+                        .Brush()
+                        .as<Comp::CompositionGradientBrush>()
+                        .ColorStops()
+                        .GetAt(0);
                 };
                 constexpr uint32_t research = 4281558681, personal = 4289934591;
                 auto setColor = [&](uint32_t color) {
                     glowDelta([&](auto const& strip) {
-                        auto groups = winrt::Windows::Data::Json::JsonArray::Parse(LR"([{"id":7,"name":"Research","label":"Research","collapsed":false}])");
+                        auto groups = winrt::Windows::Data::Json::JsonArray::Parse(
+                            LR"([{"id":7,"name":"Research","label":"Research","collapsed":false}])");
                         groups.GetObjectAt(0).SetNamedValue(L"color", Value::CreateNumberValue(color));
                         strip.SetNamedValue(L"groups", groups);
                     });
                 };
                 Require(query(2, 1) == 0, "glow motion stays off until Firefox enables its option");
-                setOption(L"groupGlow", false); settle();
-                Require(bottomGlow.Children().Count() == 0 && halo.Children().Count() == 0 && query(1) == 0 && !outline(),
+                setOption(L"groupGlow", false);
+                settle();
+                Require(
+                    bottomGlow.Children().Count() == 0 && halo.Children().Count() == 0 && query(1) == 0 && !outline(),
                     "without the option, extinguished glow is released immediately");
-                setOption(L"groupGlow", true); settle();
+                setOption(L"groupGlow", true);
+                settle();
                 auto light = outline();
                 Require(bottomGlow.Children().Count() == 1 && !query(0) && light && light.Shapes().Size() == 6,
-                    "without the option, glow appears already lit");
+                        "without the option, glow appears already lit");
                 auto pool = brushOf(light, 4);
-                Require(pool.MappingMode() == Comp::CompositionMappingMode::Absolute &&
-                    std::abs(pool.EllipseCenter().x - .22f * light.Size().x) < .5f &&
-                    std::abs(pool.EllipseRadius().y - 1.2f * light.Size().y) < .5f && !pool.ImplicitAnimations(),
+                Require(
+                    pool.MappingMode() == Comp::CompositionMappingMode::Absolute &&
+                        std::abs(pool.EllipseCenter().x - .22f * light.Size().x) < .5f &&
+                        std::abs(pool.EllipseRadius().y - 1.2f * light.Size().y) < .5f && !pool.ImplicitAnimations(),
                     "material pools are placed in group coordinates and carry no implicit motion without the option");
-                setOption(L"groupGlowAnimations", true); settle();
+                setOption(L"groupGlowAnimations", true);
+                settle();
                 // The dim-out is its own opt-in; the checks below use it.
-                setOption(L"groupGlowFadeOut", true); settle();
-                Require(query(2, 1) == 1 && !query(0), "enabling glow motion does not light up groups that are already lit");
+                setOption(L"groupGlowFadeOut", true);
+                settle();
+                Require(query(2, 1) == 1 && !query(0),
+                        "enabling glow motion does not light up groups that are already lit");
                 Require(pool.ImplicitAnimations() && pool.ColorStops().GetAt(0).ImplicitAnimations() &&
-                    brushOf(light, 0).ImplicitAnimations() && washStop().ImplicitAnimations(),
-                    "lit glow trails geometry and cross-fades color once motion is on");
+                            brushOf(light, 0).ImplicitAnimations() && washStop().ImplicitAnimations(),
+                        "lit glow trails geometry and cross-fades color once motion is on");
                 setOption(L"groupGlow", false);
                 Require(waitFor([&] { return query(1) >= 4; }) && bottomGlow.Children().Count() == 1 &&
-                    spill.Children().Count() == 1 && halo.Children().Count() == 1 && outline() == light,
-                    "extinguished wash, spill, halo and outline light dim before release");
+                            spill.Children().Count() == 1 && halo.Children().Count() == 1 && outline() == light,
+                        "extinguished wash, spill, halo and outline light dim before release");
                 Require(waitFor([&] { return query(1) == 0; }) && bottomGlow.Children().Count() == 0 &&
-                    spill.Children().Count() == 0 && halo.Children().Count() == 0 && !outline(),
-                    "dimmed glow is released once its fade completes");
+                            spill.Children().Count() == 0 && halo.Children().Count() == 0 && !outline(),
+                        "dimmed glow is released once its fade completes");
                 setOption(L"groupGlow", true);
                 auto outlineChild = [&] {
                     auto surface = reachSurface();
-                    return surface ? Hosting::ElementCompositionPreview::GetElementChildVisual(surface) : Comp::Visual{nullptr};
+                    return surface ? Hosting::ElementCompositionPreview::GetElementChildVisual(surface)
+                                   : Comp::Visual{nullptr};
                 };
                 Require(waitFor([&] { return bottomGlow.Children().Count() == 1 && query(0) == 1 && outlineChild(); }),
-                    "a newly lit group lights up");
+                        "a newly lit group lights up");
                 // The light is at full strength; fronts growing from the
                 // primary pool reveal it, blurred light and outline alike.
                 Require(ambientMask.Mask().try_as<Comp::CompositionSurfaceBrush>() &&
-                    outlineChild().Comment() == L"group-outline-reveal",
-                    "the light spreads from its source through reveal masks");
+                            outlineChild().Comment() == L"group-outline-reveal",
+                        "the light spreads from its source through reveal masks");
                 auto tabContainer = [&](uint32_t id = 42) {
                     for (auto item : view.TabItems()) {
                         auto row = item.as<Controls::TabViewItem>();
                         if (unbox_value<uint32_t>(row.Tag()) == id)
-                            return Media::VisualTreeHelper::GetChild(row, 0).as<FrameworkElement>().FindName(L"TabContainer").as<Controls::Grid>();
+                            return Media::VisualTreeHelper::GetChild(row, 0)
+                                .as<FrameworkElement>()
+                                .FindName(L"TabContainer")
+                                .as<Controls::Grid>();
                     }
                     return Controls::Grid{nullptr};
                 };
                 Require(tabContainer().BackgroundTransition() &&
-                    tabContainer().BackgroundTransition().Duration() == std::chrono::milliseconds(400) &&
-                    !tabContainer(41).BackgroundTransition() && !tabContainer(43).BackgroundTransition(),
-                    "only the revealing group's tab fades between states");
+                            tabContainer().BackgroundTransition().Duration() == std::chrono::milliseconds(400) &&
+                            !tabContainer(41).BackgroundTransition() && !tabContainer(43).BackgroundTransition(),
+                        "only the revealing group's tab fades between states");
                 auto wash = bottomGlow.Children().First().Current().as<Comp::SpriteVisual>();
                 Require(wash.Opacity() == .65f && washStop().Color().A == 92,
-                    "the light-up leaves static properties at their final values");
+                        "the light-up leaves static properties at their final values");
                 Require(waitFor([&] { return query(0) == 0; }), "the light-up completes");
                 Require(waitFor([&] { return ambientMask.Mask() == edgeFade && outline(); }),
-                    "reveal masks are released once the light has spread");
-                Require(!tabContainer().BackgroundTransition(), "tab backgrounds snap between states again after the reveal");
-                light = outline(); pool = brushOf(light, 4);
+                        "reveal masks are released once the light has spread");
+                Require(!tabContainer().BackgroundTransition(),
+                        "tab backgrounds snap between states again after the reveal");
+                light = outline();
+                pool = brushOf(light, 4);
                 auto ring = halo.Children().First().Current().as<Comp::ShapeVisual>();
-                Require(pool.ColorStops().GetAt(0).Color().A == 48 && pool.Scale() == winrt::Windows::Foundation::Numerics::float2{1, 1} &&
-                    brushOf(light, 0).ColorStops().GetAt(0).Color().A == 84 && brushOf(ring, 0).ColorStops().GetAt(0).Color().A == 36 &&
-                    wash.Opacity() == .65f, "a completed light-up settles at the same light as a group lit without motion");
+                Require(pool.ColorStops().GetAt(0).Color().A == 48 &&
+                            pool.Scale() == winrt::Windows::Foundation::Numerics::float2{1, 1} &&
+                            brushOf(light, 0).ColorStops().GetAt(0).Color().A == 84 &&
+                            brushOf(ring, 0).ColorStops().GetAt(0).Color().A == 36 && wash.Opacity() == .65f,
+                        "a completed light-up settles at the same light as a group lit without motion");
                 // Continuous motion: positioned light follows geometry directly
                 // rather than restarting a trailing animation every frame.
-                auto dragHook = reinterpret_cast<HRESULT(WINAPI*)(HWND, BOOL)>(GetProcAddress(module,"WinUIPaneTestSetDragging"));
-                auto refreshHook = reinterpret_cast<HRESULT(WINAPI*)(HWND)>(GetProcAddress(module,"WinUIPaneTestRefreshAmbient"));
-                Require(dragHook && refreshHook && SUCCEEDED(dragHook(host, TRUE)), "simulate a drag for glow trailing");
+                auto dragHook =
+                    reinterpret_cast<HRESULT(WINAPI*)(HWND, BOOL)>(GetProcAddress(module, "WinUIPaneTestSetDragging"));
+                auto refreshHook =
+                    reinterpret_cast<HRESULT(WINAPI*)(HWND)>(GetProcAddress(module, "WinUIPaneTestRefreshAmbient"));
+                Require(dragHook && refreshHook && SUCCEEDED(dragHook(host, TRUE)),
+                        "simulate a drag for glow trailing");
                 refreshHook(host);
-                light = outline(); pool = brushOf(light, 4);
-                Require(!pool.ImplicitAnimations() && !brushOf(light, 0).ImplicitAnimations() && !brushOf(ring, 0).ImplicitAnimations() &&
-                    std::abs(pool.EllipseCenter().x - .22f * light.Size().x) < .5f && pool.ColorStops().GetAt(0).ImplicitAnimations(),
-                    "during continuous motion, light follows geometry directly while colors still cross-fade");
+                light = outline();
+                pool = brushOf(light, 4);
+                Require(!pool.ImplicitAnimations() && !brushOf(light, 0).ImplicitAnimations() &&
+                            !brushOf(ring, 0).ImplicitAnimations() &&
+                            std::abs(pool.EllipseCenter().x - .22f * light.Size().x) < .5f &&
+                            pool.ColorStops().GetAt(0).ImplicitAnimations(),
+                        "during continuous motion, light follows geometry directly while colors still cross-fade");
                 Require(SUCCEEDED(dragHook(host, FALSE)), "end the simulated drag");
-                refreshHook(host); settle();
-                light = outline(); pool = brushOf(light, 4);
+                refreshHook(host);
+                settle();
+                light = outline();
+                pool = brushOf(light, 4);
                 Require(pool.ImplicitAnimations() && brushOf(ring, 0).ImplicitAnimations() &&
-                    std::abs(pool.EllipseCenter().x - .22f * light.Size().x) < .5f,
-                    "once motion settles, one-off geometry changes trail again");
-                if (wchar_t framesPath[MAX_PATH]{}; GetEnvironmentVariableW(L"WINUI_PANE_GLOW_FRAMES", framesPath, MAX_PATH)) {
+                            std::abs(pool.EllipseCenter().x - .22f * light.Size().x) < .5f,
+                        "once motion settles, one-off geometry changes trail again");
+                if (wchar_t framesPath[MAX_PATH]{};
+                    GetEnvironmentVariableW(L"WINUI_PANE_GLOW_FRAMES", framesPath, MAX_PATH)) {
                     // Diagnostic: record what reaches the screen during a
                     // light-up and a dim-out, frame by frame.
                     auto surface = reachSurface();
@@ -4510,8 +5294,8 @@ static void CheckInlineGroups(HMODULE module, WinUIPaneApi& api, HWND host, bool
                     const LONG left = LONG(at.X * scale), top = LONG(at.Y * scale);
                     const LONG width = LONG(surface.Width() * scale), height = LONG(surface.Height() * scale);
                     std::vector<RECT> regions{{left, top, left + width, top + height},
-                        {left, top + height / 2, left + width / 4, top + height},
-                        {left + width / 2, top, left + width, top + height / 3}};
+                                              {left, top + height / 2, left + width / 4, top + height},
+                                              {left + width / 2, top, left + width, top + height / 3}};
                     // WINUI_GLOW_PIXELS: also sample single pixels every 2 px
                     // along the row at that fraction (percent) of the height.
                     if (wchar_t row[8]{}; GetEnvironmentVariableW(L"WINUI_GLOW_PIXELS", row, 8)) {
@@ -4519,24 +5303,39 @@ static void CheckInlineGroups(HMODULE module, WinUIPaneApi& api, HWND host, bool
                         for (LONG x = left; x < left + width; x += 2) regions.push_back({x, y, x + 1, y + 1});
                     }
                     setOption(L"groupGlow", false);
-                    Require(waitFor([&] { return query(1) == 0 && bottomGlow.Children().Count() == 0; }), "glow is out before recording");
+                    Require(waitFor([&] { return query(1) == 0 && bottomGlow.Children().Count() == 0; }),
+                            "glow is out before recording");
                     GlowFrameProbe probe;
                     probe.Start(host, regions);
-                    for (int i = 0; i < 30; ++i) { Pump(); Sleep(10); }
+                    for (int i = 0; i < 30; ++i) {
+                        Pump();
+                        Sleep(10);
+                    }
                     LARGE_INTEGER frequency{}, counter{};
                     QueryPerformanceFrequency(&frequency);
-                    auto now = [&] { QueryPerformanceCounter(&counter); return counter.QuadPart * 1000.0 / frequency.QuadPart; };
+                    auto now = [&] {
+                        QueryPerformanceCounter(&counter);
+                        return counter.QuadPart * 1000.0 / frequency.QuadPart;
+                    };
                     const double lightAt = now();
                     setOption(L"groupGlow", true);
                     const double lightPublished = now();
-                    for (const auto until = GetTickCount64() + 2000; GetTickCount64() < until;) { Pump(); Sleep(1); }
+                    for (const auto until = GetTickCount64() + 2000; GetTickCount64() < until;) {
+                        Pump();
+                        Sleep(1);
+                    }
                     const double dimAt = now();
                     setOption(L"groupGlow", false);
-                    for (const auto until = GetTickCount64() + 700; GetTickCount64() < until;) { Pump(); Sleep(1); }
+                    for (const auto until = GetTickCount64() + 700; GetTickCount64() < until;) {
+                        Pump();
+                        Sleep(1);
+                    }
                     auto samples = probe.Stop();
                     if (FILE* file{}; _wfopen_s(&file, framesPath, L"w") == 0 && file) {
-                        fprintf(file, "# region px: whole %ld,%ld %ldx%ld; scale %.2f\n", left, top, width, height, scale);
-                        fprintf(file, "# light-up published at 0 (publish took %.1f ms); dim-out at %.1f\n", lightPublished - lightAt, dimAt - lightAt);
+                        fprintf(file, "# region px: whole %ld,%ld %ldx%ld; scale %.2f\n", left, top, width, height,
+                                scale);
+                        fprintf(file, "# light-up published at 0 (publish took %.1f ms); dim-out at %.1f\n",
+                                lightPublished - lightAt, dimAt - lightAt);
                         fprintf(file, "ms,whole,lowerLeft,upperRight");
                         for (size_t i = 3; i < regions.size(); ++i) fprintf(file, ",x%ld", regions[i].left);
                         fprintf(file, "\n");
@@ -4550,121 +5349,162 @@ static void CheckInlineGroups(HMODULE module, WinUIPaneApi& api, HWND host, bool
                     printf("Glow frames: %zu recorded to %ls\n", samples.size(), framesPath);
                     fflush(stdout);
                     setOption(L"groupGlow", true);
-                    Require(waitFor([&] { return bottomGlow.Children().Count() == 1 && query(0) == 0; }), "glow restored after recording");
-                    light = outline(); pool = brushOf(light, 4);
+                    Require(waitFor([&] { return bottomGlow.Children().Count() == 1 && query(0) == 0; }),
+                            "glow restored after recording");
+                    light = outline();
+                    pool = brushOf(light, 4);
                 }
                 setColor(personal);
                 Require(waitFor([&] { return query(0) == 1; }) && bottomGlow.Children().Count() == 2 &&
-                    spill.Children().Count() == 2 && outlineChild() && outlineChild().Comment() == L"group-outline-recolor",
-                    "a recolor spreads the new color over copies in the old color from the primary pool");
+                            spill.Children().Count() == 2 && outlineChild() &&
+                            outlineChild().Comment() == L"group-outline-recolor",
+                        "a recolor spreads the new color over copies in the old color from the primary pool");
                 Require(waitFor([&] { return query(0) == 0; }), "the recolor completes");
                 settle();
-                Require(query(1) == 0 && bottomGlow.Children().Count() == 1 && spill.Children().Count() == 1 && outline() &&
-                    washStop().Color().R == ((personal >> 16) & 0xff) && washStop().ImplicitAnimations() &&
-                    pool.ColorStops().GetAt(0).Color().G == ((personal >> 8) & 0xff) && pool.ColorStops().GetAt(0).Color().A == 48,
+                Require(
+                    query(1) == 0 && bottomGlow.Children().Count() == 1 && spill.Children().Count() == 1 && outline() &&
+                        washStop().Color().R == ((personal >> 16) & 0xff) && washStop().ImplicitAnimations() &&
+                        pool.ColorStops().GetAt(0).Color().G == ((personal >> 8) & 0xff) &&
+                        pool.ColorStops().GetAt(0).Color().A == 48,
                     "after a recolor only the new color remains, at its usual strength, with cross-fades reattached");
                 setColor(research);
-                Require(waitFor([&] { return query(0) == 0 && bottomGlow.Children().Count() == 1; }), "the color is restored");
+                Require(waitFor([&] { return query(0) == 0 && bottomGlow.Children().Count() == 1; }),
+                        "the color is restored");
                 settle();
                 setOption(L"groupHalo", false);
-                Require(waitFor([&] { return query(1) >= 1; }) && halo.Children().Count() == 1 && bottomGlow.Children().Count() == 1,
-                    "turning the halo off dims only the halo");
-                Require(waitFor([&] { return query(1) == 0; }) && halo.Children().Count() == 0, "the dimmed halo is released");
+                Require(waitFor([&] { return query(1) >= 1; }) && halo.Children().Count() == 1 &&
+                            bottomGlow.Children().Count() == 1,
+                        "turning the halo off dims only the halo");
+                Require(waitFor([&] { return query(1) == 0; }) && halo.Children().Count() == 0,
+                        "the dimmed halo is released");
                 setOption(L"groupHalo", true);
-                Require(waitFor([&] { return halo.Children().Count() == 1; }) && query(0) == 1, "turning the halo on lights up only the halo");
+                Require(waitFor([&] { return halo.Children().Count() == 1; }) && query(0) == 1,
+                        "turning the halo on lights up only the halo");
                 Require(waitFor([&] { return query(0) == 0; }), "the halo light-up completes");
                 // Settled growth re-catches the moved edge's highlights.
                 // A full snapshot keeps lit groups lit, so it cannot light up.
                 auto layout = [&](bool joined) {
-                    auto state = winrt::Windows::Data::Json::JsonObject::Parse(LR"({"version":2,"publishOnly":true,"strip":{"version":2,"base":0,"revision":0,"rtl":false,"groupsLabel":"Groups","groupGlow":true,"groupHalo":true,"groupGlowAnimations":true,"groupGlowFadeOut":true,"groups":[{"id":7,"name":"Research","label":"Research","collapsed":false,"color":4281558681}],"rows":[{"id":41,"detail":"","flags":0},{"id":42,"detail":"","flags":0},{"id":43,"detail":"","flags":0}],"layout":[{"group":0,"tab":41},{"group":7,"tab":0},{"group":7,"tab":42},{"group":0,"tab":43}]}})");
+                    auto state = winrt::Windows::Data::Json::JsonObject::Parse(
+                        LR"({"version":2,"publishOnly":true,"strip":{"version":2,"base":0,"revision":0,"rtl":false,"groupsLabel":"Groups","groupGlow":true,"groupHalo":true,"groupGlowAnimations":true,"groupGlowFadeOut":true,"groups":[{"id":7,"name":"Research","label":"Research","collapsed":false,"color":4281558681}],"rows":[{"id":41,"detail":"","flags":0},{"id":42,"detail":"","flags":0},{"id":43,"detail":"","flags":0}],"layout":[{"group":0,"tab":41},{"group":7,"tab":0},{"group":7,"tab":42},{"group":0,"tab":43}]}})");
                     auto strip = state.GetNamedObject(L"strip");
                     strip.SetNamedValue(L"revision", Value::CreateNumberValue(++reachRevision));
-                    if (joined) strip.GetNamedArray(L"layout").GetObjectAt(3).SetNamedValue(L"group", Value::CreateNumberValue(7));
-                    MenuPublish(api,host,state.Stringify().c_str());
-                    Require(SUCCEEDED(api.syncTabs(host,opened,3,43, NextTabRevision(), &selected)), "sync glow growth layout");
+                    if (joined)
+                        strip.GetNamedArray(L"layout").GetObjectAt(3).SetNamedValue(L"group",
+                                                                                    Value::CreateNumberValue(7));
+                    MenuPublish(api, host, state.Stringify().c_str());
+                    Require(SUCCEEDED(api.syncTabs(host, opened, 3, 43, NextTabRevision(), &selected)),
+                            "sync glow growth layout");
                 };
-                layout(false); settle(); settle();
+                layout(false);
+                settle();
+                settle();
                 const auto recatches = query(3);
                 const auto narrow = reachSurface().Width();
                 layout(true);
                 const bool recaught = waitFor([&] { return query(3) > recatches; });
-                printf("Glow growth: width %.1f -> %.1f, re-catches %u -> %u\n", narrow, reachSurface().Width(), recatches, query(3));
+                printf("Glow growth: width %.1f -> %.1f, re-catches %u -> %u\n", narrow, reachSurface().Width(),
+                       recatches, query(3));
                 fflush(stdout);
                 Require(recaught && !query(0) && query(1) == 0,
-                    "a group that settles wider re-catches its highlights without lighting up again");
-                const auto expandedWidth=reachSurface().Width();
-                layout(false); settle();
+                        "a group that settles wider re-catches its highlights without lighting up again");
+                const auto expandedWidth = reachSurface().Width();
+                layout(false);
+                settle();
                 // Ungrouping removes the outline surface, which hosts the color
                 // pools: it must dim with them rather than vanish at once.
-                auto ungrouped = winrt::Windows::Data::Json::JsonObject::Parse(LR"({"version":2,"publishOnly":true,"strip":{"version":2,"base":0,"revision":0,"rtl":false,"groupsLabel":"Groups","groupGlow":true,"groupHalo":true,"groupGlowAnimations":true,"groupGlowFadeOut":true,"groups":[],"rows":[{"id":41,"detail":"","flags":0},{"id":42,"detail":"","flags":0},{"id":43,"detail":"","flags":0}],"layout":[{"group":0,"tab":41},{"group":0,"tab":42},{"group":0,"tab":43}]}})");
-                ungrouped.GetNamedObject(L"strip").SetNamedValue(L"revision", Value::CreateNumberValue(++reachRevision));
-                MenuPublish(api,host,ungrouped.Stringify().c_str());
-                Require(SUCCEEDED(api.syncTabs(host,opened,3,43, NextTabRevision(), &selected)), "ungroup the lit group");
-                Require(waitFor([&] { return query(1) >= 4; }) && reachSurface() && outline() && bottomGlow.Children().Count() == 1,
-                    "ungrouping keeps the outline, its color pools and the wash while they dim");
-                Require(waitFor([&] { return query(1) == 0; }) && !reachSurface() && bottomGlow.Children().Count() == 0 &&
-                    halo.Children().Count() == 0, "the dimmed outline and light are released once their fade completes");
+                auto ungrouped = winrt::Windows::Data::Json::JsonObject::Parse(
+                    LR"({"version":2,"publishOnly":true,"strip":{"version":2,"base":0,"revision":0,"rtl":false,"groupsLabel":"Groups","groupGlow":true,"groupHalo":true,"groupGlowAnimations":true,"groupGlowFadeOut":true,"groups":[],"rows":[{"id":41,"detail":"","flags":0},{"id":42,"detail":"","flags":0},{"id":43,"detail":"","flags":0}],"layout":[{"group":0,"tab":41},{"group":0,"tab":42},{"group":0,"tab":43}]}})");
+                ungrouped.GetNamedObject(L"strip").SetNamedValue(L"revision",
+                                                                 Value::CreateNumberValue(++reachRevision));
+                MenuPublish(api, host, ungrouped.Stringify().c_str());
+                Require(SUCCEEDED(api.syncTabs(host, opened, 3, 43, NextTabRevision(), &selected)),
+                        "ungroup the lit group");
+                Require(waitFor([&] { return query(1) >= 4; }) && reachSurface() && outline() &&
+                            bottomGlow.Children().Count() == 1,
+                        "ungrouping keeps the outline, its color pools and the wash while they dim");
+                Require(waitFor([&] { return query(1) == 0; }) && !reachSurface() &&
+                            bottomGlow.Children().Count() == 0 && halo.Children().Count() == 0,
+                        "the dimmed outline and light are released once their fade completes");
                 layout(false);
                 const bool regrouped = waitFor([&] { return reachSurface() && outline(); });
-                printf("Glow regroup: surface=%d outline=%d lighting=%u\n", int(bool(reachSurface())), int(bool(outline())), query(0));
+                printf("Glow regroup: surface=%d outline=%d lighting=%u\n", int(bool(reachSurface())),
+                       int(bool(outline())), query(0));
                 fflush(stdout);
                 Require(regrouped && !query(0), "regrouping in a full snapshot shows the group already lit");
                 // Keep one realized member in the group when the other leaves
                 // during the reveal below.
                 layout(true);
-                Require(waitFor([&] { return reachSurface() &&
-                    std::abs(reachSurface().Width()-expandedWidth)<1 && !query(0) && !query(1); }),
-                    "regrouped Window rows settle before testing immediate option changes");
+                Require(waitFor([&] {
+                            return reachSurface() && std::abs(reachSurface().Width() - expandedWidth) < 1 &&
+                                   !query(0) && !query(1);
+                        }),
+                        "regrouped Window rows settle before testing immediate option changes");
                 // groupGlowFadeOut off (its default): glow still lights up, but goes at once.
-                setOption(L"groupGlowFadeOut", false); settle();
-                setOption(L"groupGlow", false); settle();
-                fprintf(stderr,"Immediate glow release: bottom=%u spill=%u halo=%u fading=%u outline=%d\n",
-                    bottomGlow.Children().Count(),spill.Children().Count(),halo.Children().Count(),query(1),bool(outline()));
-                Require(bottomGlow.Children().Count() == 0 && spill.Children().Count() == 0 && halo.Children().Count() == 0 &&
-                    query(1) == 0 && !outline(), "without the fade-out, extinguished glow is released at once");
+                setOption(L"groupGlowFadeOut", false);
+                settle();
+                setOption(L"groupGlow", false);
+                settle();
+                fprintf(stderr, "Immediate glow release: bottom=%u spill=%u halo=%u fading=%u outline=%d\n",
+                        bottomGlow.Children().Count(), spill.Children().Count(), halo.Children().Count(), query(1),
+                        bool(outline()));
+                Require(bottomGlow.Children().Count() == 0 && spill.Children().Count() == 0 &&
+                            halo.Children().Count() == 0 && query(1) == 0 && !outline(),
+                        "without the fade-out, extinguished glow is released at once");
                 setOption(L"groupGlow", true);
                 Require(waitFor([&] { return bottomGlow.Children().Count() == 1 && query(0) == 1; }),
-                    "without the fade-out, a newly lit group still lights up");
+                        "without the fade-out, a newly lit group still lights up");
                 glowDelta([&](auto const& strip) {
-                    strip.SetNamedValue(L"layout", winrt::Windows::Data::Json::JsonArray::Parse(
-                        LR"([{"group":0,"tab":41},{"group":0,"tab":42},{"group":7,"tab":0},{"group":7,"tab":43}])"));
+                    strip.SetNamedValue(
+                        L"layout",
+                        winrt::Windows::Data::Json::JsonArray::Parse(
+                            LR"([{"group":0,"tab":41},{"group":0,"tab":42},{"group":7,"tab":0},{"group":7,"tab":43}])"));
                 });
                 root.UpdateLayout();
                 fprintf(stderr, "Reveal membership: active=%u fades=%d/%d/%d\n", query(0),
-                    int(bool(tabContainer(41).BackgroundTransition())), int(bool(tabContainer(42).BackgroundTransition())),
-                    int(bool(tabContainer(43).BackgroundTransition())));
+                        int(bool(tabContainer(41).BackgroundTransition())),
+                        int(bool(tabContainer(42).BackgroundTransition())),
+                        int(bool(tabContainer(43).BackgroundTransition())));
                 Require(tabContainer(43).BackgroundTransition() && !tabContainer(42).BackgroundTransition() &&
-                    !tabContainer(41).BackgroundTransition(),
-                    "a revealing group fades only its current members and releases a departing member's fade");
+                            !tabContainer(41).BackgroundTransition(),
+                        "a revealing group fades only its current members and releases a departing member's fade");
                 Require(waitFor([&] { return query(0) == 0; }), "the light-up completes without the fade-out");
-                setOption(L"groupGlowFadeOut", true); settle();
+                setOption(L"groupGlowFadeOut", true);
+                settle();
                 // Reduced motion: every change applies at once and motion detaches.
                 Require(query(2, 0) == 0, "simulate reduced-motion preference for glow");
-                setOption(L"groupGlow", false); settle();
+                setOption(L"groupGlow", false);
+                settle();
                 Require(bottomGlow.Children().Count() == 0 && query(1) == 0, "reduced motion releases glow at once");
-                setOption(L"groupGlow", true); settle();
-                Require(bottomGlow.Children().Count() == 1 && !query(0) && !brushOf(outline(), 4).ImplicitAnimations() &&
-                    !washStop().ImplicitAnimations(), "reduced motion lights glow at once without implicit motion");
+                setOption(L"groupGlow", true);
+                settle();
+                Require(bottomGlow.Children().Count() == 1 && !query(0) &&
+                            !brushOf(outline(), 4).ImplicitAnimations() && !washStop().ImplicitAnimations(),
+                        "reduced motion lights glow at once without implicit motion");
                 query(2, 2);
-                setOption(L"groupGlowAnimations", false); settle();
+                setOption(L"groupGlowAnimations", false);
+                settle();
             }
             if (winrt::Windows::UI::ViewManagement::UISettings().AnimationsEnabled()) {
                 // Opening a group into a full strip narrows the other tabs with
                 // the group's motion instead of snapping them to the new width.
                 using Value = winrt::Windows::Data::Json::JsonValue;
-                WinUITab crowded[]{{41,L"One"},{42,L"Two"},{43,L"Three"},{44,L"Four"},{45,L"Five"},{46,L"Six"},{47,L"Seven"},{48,L"Eight"}};
+                WinUITab crowded[]{{41, L"One"},  {42, L"Two"}, {43, L"Three"}, {44, L"Four"},
+                                   {45, L"Five"}, {46, L"Six"}, {47, L"Seven"}, {48, L"Eight"}};
                 bool crowdRtl = false;
                 auto crowd = [&](bool collapsed) {
-                    auto state = winrt::Windows::Data::Json::JsonObject::Parse(LR"({"version":2,"publishOnly":true,"strip":{"version":2,"base":0,"revision":0,"rtl":false,"groupsLabel":"Groups","groupGlow":false,"groups":[{"id":7,"name":"Research","label":"Research","collapsed":false}],"rows":[],"layout":[]}})");
+                    auto state = winrt::Windows::Data::Json::JsonObject::Parse(
+                        LR"({"version":2,"publishOnly":true,"strip":{"version":2,"base":0,"revision":0,"rtl":false,"groupsLabel":"Groups","groupGlow":false,"groups":[{"id":7,"name":"Research","label":"Research","collapsed":false}],"rows":[],"layout":[]}})");
                     auto strip = state.GetNamedObject(L"strip");
                     strip.SetNamedValue(L"revision", Value::CreateNumberValue(++reachRevision));
                     strip.SetNamedValue(L"rtl", Value::CreateBooleanValue(crowdRtl));
-                    strip.GetNamedArray(L"groups").GetObjectAt(0).SetNamedValue(L"collapsed", Value::CreateBooleanValue(collapsed));
+                    strip.GetNamedArray(L"groups").GetObjectAt(0).SetNamedValue(L"collapsed",
+                                                                                Value::CreateBooleanValue(collapsed));
                     auto rows = strip.GetNamedArray(L"rows");
                     auto slots = strip.GetNamedArray(L"layout");
                     const uint32_t count = collapsed ? 3 : 8;
                     for (uint32_t i = 0; i < 8; ++i) {
-                        if (i == 3) slots.Append(winrt::Windows::Data::Json::JsonObject::Parse(LR"({"group":7,"tab":0})"));
+                        if (i == 3)
+                            slots.Append(winrt::Windows::Data::Json::JsonObject::Parse(LR"({"group":7,"tab":0})"));
                         if (i >= count) continue;
                         auto row = winrt::Windows::Data::Json::JsonObject::Parse(LR"({"detail":"","flags":0})");
                         row.SetNamedValue(L"id", Value::CreateNumberValue(crowded[i].id));
@@ -4674,14 +5514,21 @@ static void CheckInlineGroups(HMODULE module, WinUIPaneApi& api, HWND host, bool
                         slot.SetNamedValue(L"tab", Value::CreateNumberValue(crowded[i].id));
                         slots.Append(slot);
                     }
-                    MenuPublish(api,host,state.Stringify().c_str());
-                    Require(SUCCEEDED(api.syncTabs(host,crowded,count,41, NextTabRevision(), &selected)), "sync crowded group fixture");
+                    MenuPublish(api, host, state.Stringify().c_str());
+                    Require(SUCCEEDED(api.syncTabs(host, crowded, count, 41, NextTabRevision(), &selected)),
+                            "sync crowded group fixture");
                 };
-                auto left = [&](FrameworkElement const& element) { return element.TransformToVisual(root).TransformPoint({0,0}).X; };
-                crowd(true); settle(); settle();
+                auto left = [&](FrameworkElement const& element) {
+                    return element.TransformToVisual(root).TransformPoint({0, 0}).X;
+                };
+                crowd(true);
+                settle();
+                settle();
                 std::function<FrameworkElement(DependencyObject const&, hstring const&)> findTab =
                     [&](DependencyObject const& node, hstring const& id) -> FrameworkElement {
-                    if (auto item = node.try_as<Controls::TabViewItem>(); item && Automation::AutomationProperties::GetAutomationId(item) == id) return item;
+                    if (auto item = node.try_as<Controls::TabViewItem>();
+                        item && Automation::AutomationProperties::GetAutomationId(item) == id)
+                        return item;
                     for (int i = 0; i < Media::VisualTreeHelper::GetChildrenCount(node); ++i)
                         if (auto found = findTab(Media::VisualTreeHelper::GetChild(node, i), id)) return found;
                     return nullptr;
@@ -4691,55 +5538,66 @@ static void CheckInlineGroups(HMODULE module, WinUIPaneApi& api, HWND host, bool
                     loose.push_back(findTab(view, id));
                     Require(loose.back() != nullptr, "find the crowded fixture's ungrouped tabs");
                 }
-                auto crowdHeader = find(view,L"FennInlineGroup-7").as<FrameworkElement>();
+                auto crowdHeader = find(view, L"FennInlineGroup-7").as<FrameworkElement>();
                 const double wide = loose[0].ActualWidth(), headerBefore = left(crowdHeader);
                 crowd(false);
                 uint32_t resizing{}, paused{};
-                Require(SUCCEEDED(motion(host,9,&resizing)) && resizing == 1, "opening a group into a full strip animates tab widths");
+                Require(SUCCEEDED(motion(host, 9, &resizing)) && resizing == 1,
+                        "opening a group into a full strip animates tab widths");
                 // Halfway through, CubicEase out has covered 1 - 0.5^3 of the motion.
-                Require(SUCCEEDED(motion(host,10,&paused)) && paused == 1, "pause the width motion halfway");
+                Require(SUCCEEDED(motion(host, 10, &paused)) && paused == 1, "pause the width motion halfway");
                 root.UpdateLayout();
                 std::vector<double> midway;
                 for (auto const& tab : loose) midway.push_back(tab.ActualWidth());
                 const double headerMidway = left(crowdHeader);
-                Require(SUCCEEDED(motion(host,11,&paused)), "resume the width motion");
-                for (int i = 0; i < 100 && SUCCEEDED(motion(host,9,&resizing)) && resizing; ++i) { Pump(); Sleep(10); }
-                settle(); settle();
+                Require(SUCCEEDED(motion(host, 11, &paused)), "resume the width motion");
+                for (int i = 0; i < 100 && SUCCEEDED(motion(host, 9, &resizing)) && resizing; ++i) {
+                    Pump();
+                    Sleep(10);
+                }
+                settle();
+                settle();
                 const double narrow = loose[0].ActualWidth(), headerAfter = left(crowdHeader);
                 const double progress = 1 - .5 * .5 * .5;
-                printf("Group width motion: tabs %.1f -> %.1f/%.1f/%.1f -> %.1f, header %.1f -> %.1f -> %.1f\n",
-                    wide, midway[0], midway[1], midway[2], narrow, headerBefore, headerMidway, headerAfter);
+                printf("Group width motion: tabs %.1f -> %.1f/%.1f/%.1f -> %.1f, header %.1f -> %.1f -> %.1f\n", wide,
+                       midway[0], midway[1], midway[2], narrow, headerBefore, headerMidway, headerAfter);
                 fflush(stdout);
                 Require(narrow < wide - 10, "the crowded fixture narrows the other tabs");
                 for (auto width : midway)
                     // Layout rounding can move a tab by up to a DIP either side of the ideal.
                     Require(std::abs(width - (wide + (narrow - wide) * progress)) < 1.5,
-                        "every remaining tab passes through the eased intermediate width instead of snapping");
+                            "every remaining tab passes through the eased intermediate width instead of snapping");
                 Require(std::abs(headerMidway - (headerBefore + (headerAfter - headerBefore) * progress)) < 1.5,
-                    "the group header follows one eased path while the widths before it animate");
-                Require(SUCCEEDED(motion(host,9,&resizing)) && !resizing, "width motion ends with the group motion");
+                        "the group header follows one eased path while the widths before it animate");
+                Require(SUCCEEDED(motion(host, 9, &resizing)) && !resizing, "width motion ends with the group motion");
                 // Reverse a paused collapse, then reverse the expansion again.
                 // Seeking the replacement to zero exposes a snap that waiting
                 // for completion would hide, independent of guest frame rate.
-                for (bool rightToLeft : {false, true}) for (bool collapseFirst : {true, false}) {
-                    crowdRtl = rightToLeft;
-                    crowd(!collapseFirst); settle(); settle();
-                    crowd(collapseFirst);
-                    Require(SUCCEEDED(motion(host,10,&paused)) && paused, "pause group motion before reversing");
-                    root.UpdateLayout();
-                    const auto shownWidth = loose[0].ActualWidth();
-                    const auto shownHeader = left(crowdHeader);
-                    crowd(!collapseFirst);
-                    Require(SUCCEEDED(motion(host,12,&paused)) && paused, "inspect reversed group motion at its start");
-                    root.UpdateLayout();
-                    fprintf(stderr, "Group reversal rtl=%d collapseFirst=%d width=%.1f->%.1f header=%.1f->%.1f\n",
-                        int(rightToLeft), int(collapseFirst), shownWidth, loose[0].ActualWidth(), shownHeader, left(crowdHeader));
-                    Require(std::abs(loose[0].ActualWidth() - shownWidth) < 1.5 &&
-                        std::abs(left(crowdHeader) - shownHeader) < 1.5,
-                        "group reversal preserves displayed tab width and header position");
-                    Require(SUCCEEDED(motion(host,11,&paused)), "resume reversed group motion");
-                    settle(); settle();
-                }
+                for (bool rightToLeft : {false, true})
+                    for (bool collapseFirst : {true, false}) {
+                        crowdRtl = rightToLeft;
+                        crowd(!collapseFirst);
+                        settle();
+                        settle();
+                        crowd(collapseFirst);
+                        Require(SUCCEEDED(motion(host, 10, &paused)) && paused, "pause group motion before reversing");
+                        root.UpdateLayout();
+                        const auto shownWidth = loose[0].ActualWidth();
+                        const auto shownHeader = left(crowdHeader);
+                        crowd(!collapseFirst);
+                        Require(SUCCEEDED(motion(host, 12, &paused)) && paused,
+                                "inspect reversed group motion at its start");
+                        root.UpdateLayout();
+                        fprintf(stderr, "Group reversal rtl=%d collapseFirst=%d width=%.1f->%.1f header=%.1f->%.1f\n",
+                                int(rightToLeft), int(collapseFirst), shownWidth, loose[0].ActualWidth(), shownHeader,
+                                left(crowdHeader));
+                        Require(std::abs(loose[0].ActualWidth() - shownWidth) < 1.5 &&
+                                    std::abs(left(crowdHeader) - shownHeader) < 1.5,
+                                "group reversal preserves displayed tab width and header position");
+                        Require(SUCCEEDED(motion(host, 11, &paused)), "resume reversed group motion");
+                        settle();
+                        settle();
+                    }
             }
         }
         puts("CHECKS PASSED: group motion cancellation, reduced motion and navigation exclusion");
@@ -4758,19 +5616,22 @@ static void CheckInlineGroups(HMODULE module, WinUIPaneApi& api, HWND host, bool
 // here can never take the rest of the suite down with it.
 static void CheckAttachedTabAppearance(winrt::Microsoft::UI::Xaml::Controls::TabViewItem const& row) {
     using namespace winrt::Microsoft::UI::Xaml;
-    std::function<FrameworkElement(DependencyObject const&)> find = [&](DependencyObject const& node) -> FrameworkElement {
-        if (auto element = node.try_as<FrameworkElement>(); element && element.Name() == L"TabDragVisualContainer") return element;
-        for (int i=0; i<Media::VisualTreeHelper::GetChildrenCount(node); ++i)
-            if (auto found = find(Media::VisualTreeHelper::GetChild(node,i))) return found;
+    std::function<FrameworkElement(DependencyObject const&)> find =
+        [&](DependencyObject const& node) -> FrameworkElement {
+        if (auto element = node.try_as<FrameworkElement>(); element && element.Name() == L"TabDragVisualContainer")
+            return element;
+        for (int i = 0; i < Media::VisualTreeHelper::GetChildrenCount(node); ++i)
+            if (auto found = find(Media::VisualTreeHelper::GetChild(node, i))) return found;
         return nullptr;
     };
     auto floating = find(row);
-    Require(floating && floating.Visibility() == Visibility::Collapsed, "released or cancelled tab restores the attached template state");
-    auto root = Media::VisualTreeHelper::GetChild(row,0).as<FrameworkElement>();
+    Require(floating && floating.Visibility() == Visibility::Collapsed,
+            "released or cancelled tab restores the attached template state");
+    auto root = Media::VisualTreeHelper::GetChild(row, 0).as<FrameworkElement>();
     auto container = root.FindName(L"TabContainer").as<Controls::Grid>();
     auto corners = container.CornerRadius();
     Require(corners.BottomLeft == 0 && corners.BottomRight == 0 &&
-            container.GetBindingExpression(Controls::Grid::CornerRadiusProperty()),
+                container.GetBindingExpression(Controls::Grid::CornerRadiusProperty()),
             "capture restores the attached bottom corners and their live template binding");
 }
 
@@ -4779,9 +5640,12 @@ static void CheckFloatingDragBitmap(HMODULE module, bool dark = false) {
     auto copy = reinterpret_cast<HRESULT(WINAPI*)(HBITMAP*)>(GetProcAddress(module, "WinUIPaneTestCopyDragBitmap"));
     Require(copy != nullptr, "drag bitmap inspection available");
     HBITMAP bitmap{};
-    for (int i=0; i<300 && !bitmap; ++i) {
+    for (int i = 0; i < 300 && !bitmap; ++i) {
         Require(SUCCEEDED(copy(&bitmap)), "copy drag bitmap");
-        if (!bitmap) { Pump(); Sleep(10); }
+        if (!bitmap) {
+            Pump();
+            Sleep(10);
+        }
     }
     Require(bitmap != nullptr, "floating drag bitmap rendered");
     DIBSECTION dib{};
@@ -4793,14 +5657,14 @@ static void CheckFloatingDragBitmap(HMODULE module, bool dark = false) {
     };
     // RenderTargetBitmap can include transparent padding at non-unit island
     // scales. Measure the painted body rather than assuming it fills the bitmap.
-    int top=0, bottom=height-1, left=0, right=width-1;
-    while (top < height && alpha(width/2,top) < 200) ++top;
-    while (bottom > top && alpha(width/2,bottom) < 200) --bottom;
-    Require(bottom-top > 12, "floating tab has a filled vertical body");
-    const int middle = (top+bottom)/2;
-    while (left < width && alpha(left,middle) < 200) ++left;
-    while (right > left && alpha(right,middle) < 200) --right;
-    Require(right-left > 16, "floating tab has an opaque body");
+    int top = 0, bottom = height - 1, left = 0, right = width - 1;
+    while (top < height && alpha(width / 2, top) < 200) ++top;
+    while (bottom > top && alpha(width / 2, bottom) < 200) --bottom;
+    Require(bottom - top > 12, "floating tab has a filled vertical body");
+    const int middle = (top + bottom) / 2;
+    while (left < width && alpha(left, middle) < 200) ++left;
+    while (right > left && alpha(right, middle) < 200) --right;
+    Require(right - left > 16, "floating tab has an opaque body");
     // Save the same pixels for visual review alongside the automated alpha checks.
     BITMAPV4HEADER header{};
     header.bV4Size = sizeof(header);
@@ -4819,30 +5683,29 @@ static void CheckFloatingDragBitmap(HMODULE module, bool dark = false) {
     fileHeader.bfSize = fileHeader.bfOffBits + dib.dsBm.bmWidthBytes * height;
     FILE* output{};
     CreateDirectoryW(L"artifacts/setup", nullptr);
-    if (fopen_s(&output, dark ? "artifacts/setup/tab-floating-dark.bmp" : "artifacts/setup/tab-floating-light.bmp", "wb") == 0) {
-        fwrite(&fileHeader,sizeof(fileHeader),1,output);
-        fwrite(&header,sizeof(header),1,output);
-        fwrite(dib.dsBm.bmBits,dib.dsBm.bmWidthBytes,height,output);
+    if (fopen_s(&output, dark ? "artifacts/setup/tab-floating-dark.bmp" : "artifacts/setup/tab-floating-light.bmp",
+                "wb") == 0) {
+        fwrite(&fileHeader, sizeof(fileHeader), 1, output);
+        fwrite(&header, sizeof(header), 1, output);
+        fwrite(dib.dsBm.bmBits, dib.dsBm.bmWidthBytes, height, output);
         fclose(output);
     }
-    fprintf(stderr, "Floating corner alpha: %u, %u\n", alpha(left+1,bottom-1), alpha(right-1,bottom-1));
+    fprintf(stderr, "Floating corner alpha: %u, %u\n", alpha(left + 1, bottom - 1), alpha(right - 1, bottom - 1));
     // A stock rounded edge is anti-aliased: depending on the row width/theme,
     // the second-row edge pixel ranges from nearly transparent to partially
     // covered. An attached-tab foot instead fills the bottom edge. Require two
     // transparent bottom-row pixels on each side and keep the second-row edge
     // below half coverage, rather than mistaking valid antialiasing for a foot.
     auto roundedBottom = [&](auto&& sample) {
-        return sample(left,bottom) == 0 && sample(left+1,bottom) <= 16 &&
-               sample(right-1,bottom) <= 16 && sample(right,bottom) == 0 &&
-               sample(left+1,bottom-1) < 128 && sample(right-1,bottom-1) < 128;
+        return sample(left, bottom) == 0 && sample(left + 1, bottom) <= 16 && sample(right - 1, bottom) <= 16 &&
+               sample(right, bottom) == 0 && sample(left + 1, bottom - 1) < 128 && sample(right - 1, bottom - 1) < 128;
     };
-    Require(roundedBottom(alpha),
-            "floating bitmap has rounded bottom corners without attached tab feet");
+    Require(roundedBottom(alpha), "floating bitmap has rounded bottom corners without attached tab feet");
     // Mutation control: the same captured image must fail the predicate when
     // its bottom corners are made opaque, as an attached-tab foot would do.
     auto withAttachedFoot = [&](int x, int y) {
-        if (y == bottom && (x <= left+1 || x >= right-1)) return static_cast<unsigned char>(255);
-        return alpha(x,y);
+        if (y == bottom && (x <= left + 1 || x >= right - 1)) return static_cast<unsigned char>(255);
+        return alpha(x, y);
     };
     Require(!roundedBottom(withAttachedFoot), "floating-corner check rejects an attached-foot regression");
     DeleteObject(bitmap);
@@ -4859,9 +5722,12 @@ static RECT TabScreenBounds(HWND window, wchar_t const* id) {
         {
             ComPtr<IUIAutomation> automation;
             Require(SUCCEEDED(CoCreateInstance(CLSID_CUIAutomation, nullptr, CLSCTX_INPROC_SERVER,
-                                               IID_PPV_ARGS(&automation))), "bounds UIA client");
+                                               IID_PPV_ARGS(&automation))),
+                    "bounds UIA client");
             ComPtr<IUIAutomationElement> root, row;
-            Require(SUCCEEDED(window ? automation->ElementFromHandle(window, &root) : automation->GetRootElement(&root)), "bounds UIA host");
+            Require(
+                SUCCEEDED(window ? automation->ElementFromHandle(window, &root) : automation->GetRootElement(&root)),
+                "bounds UIA host");
             VARIANT value{};
             value.vt = VT_BSTR;
             value.bstrVal = SysAllocString(id);
@@ -4874,15 +5740,16 @@ static RECT TabScreenBounds(HWND window, wchar_t const* id) {
                 value.lVal = GetCurrentProcessId();
                 ComPtr<IUIAutomationCondition> process, scoped;
                 Require(SUCCEEDED(automation->CreatePropertyCondition(UIA_ProcessIdPropertyId, value, &process)) &&
-                        SUCCEEDED(automation->CreateAndCondition(condition.Get(), process.Get(), &scoped)), "scope popup UIA to fixture process");
+                            SUCCEEDED(automation->CreateAndCondition(condition.Get(), process.Get(), &scoped)),
+                        "scope popup UIA to fixture process");
                 condition = scoped;
             }
             for (int attempt = 0; attempt < 100 && !row; ++attempt) {
-                const auto result=root->FindFirst(TreeScope_Descendants, condition.Get(), &row);
+                const auto result = root->FindFirst(TreeScope_Descendants, condition.Get(), &row);
                 if (FAILED(result)) {
                     // A provider can be briefly unavailable while WinUI swaps
                     // grouped containers. Keep the same bounded lookup window.
-                    if (attempt==99) fprintf(stderr,"UIA row query failed: 0x%08lx\n",result);
+                    if (attempt == 99) fprintf(stderr, "UIA row query failed: 0x%08lx\n", result);
                     row.Reset();
                 }
                 if (!row) Sleep(20);
@@ -4914,13 +5781,14 @@ static RECT TabScreenBounds(HWND window, wchar_t const* id) {
     Require(done, "bounds UIA completes without deadlock");
     client.join();
     if (bounds.right <= bounds.left || bounds.bottom <= bounds.top)
-        fwprintf(stderr, L"UIA bounds of %ls: (%ld,%ld,%ld,%ld)\n", id, bounds.left, bounds.top, bounds.right, bounds.bottom);
+        fwprintf(stderr, L"UIA bounds of %ls: (%ld,%ld,%ld,%ld)\n", id, bounds.left, bounds.top, bounds.right,
+                 bounds.bottom);
     Require(bounds.right > bounds.left && bounds.bottom > bounds.top, "UIA reports nonempty screen bounds");
     return bounds;
 }
 
-struct UpdateCostFixture : winrt::implements<UpdateCostFixture,
-    winrt::Windows::Networking::Connectivity::IConnectionCost> {
+struct UpdateCostFixture
+    : winrt::implements<UpdateCostFixture, winrt::Windows::Networking::Connectivity::IConnectionCost> {
     using CostType = winrt::Windows::Networking::Connectivity::NetworkCostType;
     CostType type;
     bool roaming, overLimit;
@@ -4938,7 +5806,8 @@ static void CheckPackageUpdates(HWND owner) {
     for (auto type : {CostType::Unknown, CostType::Unrestricted, CostType::Fixed, CostType::Variable}) {
         auto plain = winrt::make<UpdateCostFixture>(type, false, false);
         Require(Updates::DeferFeedDownload(plain) == (type == CostType::Fixed || type == CostType::Variable),
-                "fixed and variable plans defer optional HTTPS update staging; ordinary unknown/unrestricted preserve existing behavior");
+                "fixed and variable plans defer optional HTTPS update staging; ordinary unknown/unrestricted preserve "
+                "existing behavior");
         for (auto flags : {std::pair{true, false}, std::pair{false, true}, std::pair{true, true}}) {
             auto flagged = winrt::make<UpdateCostFixture>(type, flags.first, flags.second);
             Require(Updates::DeferFeedDownload(flagged),
@@ -4947,15 +5816,21 @@ static void CheckPackageUpdates(HWND owner) {
     }
     using namespace winrt::Microsoft::UI::Xaml;
     Require(Updates::Select(true, true) == Updates::Source::Store &&
-            Updates::Select(true, false) == Updates::Source::Store &&
-            Updates::Select(false, true) == Updates::Source::Feed &&
-            Updates::Select(false, false) == Updates::Source::None, "update source follows package provenance");
+                Updates::Select(true, false) == Updates::Source::Store &&
+                Updates::Select(false, true) == Updates::Source::Feed &&
+                Updates::Select(false, false) == Updates::Source::None,
+            "update source follows package provenance");
     Updates::Labels labels;
-    for (auto key : {L"title", L"checking", L"current", L"available-store", L"available-feed",
-                     L"unavailable", L"failed", L"open-store", L"open-feed", L"close",
-                     L"downloading", L"ready", L"install", L"installing"})
+    for (auto key :
+         {L"title", L"checking", L"current", L"available-store", L"available-feed", L"unavailable", L"failed",
+          L"open-store", L"open-feed", L"close", L"downloading", L"ready", L"install", L"installing"})
         labels.emplace(key, winrt::hstring(std::wstring(L"Localized ") + key));
-    auto settle = [] { for (int i = 0; i < 30; ++i) { Pump(); Sleep(10); } };
+    auto settle = [] {
+        for (int i = 0; i < 30; ++i) {
+            Pump();
+            Sleep(10);
+        }
+    };
     auto state = std::make_shared<Updates>();
     state->owner = owner;
     state->download = [](HWND, std::shared_ptr<Updates::Result>) -> Updates::Action { co_return; };
@@ -4969,7 +5844,10 @@ static void CheckPackageUpdates(HWND owner) {
             result->source = wcscmp(status, L"available-store") == 0 ? Updates::Source::Store : Updates::Source::Feed;
             co_return;
         };
-        state->launch = [&](std::shared_ptr<Updates::Result>) -> Updates::Action { ++launches; co_return; };
+        state->launch = [&](std::shared_ptr<Updates::Result>) -> Updates::Action {
+            ++launches;
+            co_return;
+        };
         Updates::Check(state, labels);
         settle();
         Require(bool(state->window), "update window opens outside the narrow toolbar island");
@@ -4997,8 +5875,9 @@ static void CheckPackageUpdates(HWND owner) {
             Require(SendInput(2, keys, sizeof(INPUT)) == 2, "physical keyboard update handoff");
             settle();
             Require(launches == before + 1, "keyboard activation requests exactly one Windows handoff");
-        } else Require(panel.Children().GetAt(1).Visibility() == Visibility::Collapsed,
-                       "no install action for no-update, unavailable or failed checks");
+        } else
+            Require(panel.Children().GetAt(1).Visibility() == Visibility::Collapsed,
+                    "no install action for no-update, unavailable or failed checks");
         const auto bounds = TabScreenBounds(hwnd, L"FennUpdateClose");
         SetForegroundWindow(hwnd);
         SetCursorPos((bounds.left + bounds.right) / 2, (bounds.top + bounds.bottom) / 2);
@@ -5009,10 +5888,12 @@ static void CheckPackageUpdates(HWND owner) {
         Require(SendInput(2, mouse, sizeof(INPUT)) == 2, "physical close click");
         settle();
         Require(!state->window && !state->running, "mouse dismissal releases the update window");
-        state->Cancel(); // Next scenario must not inherit the result cooldown.
+        state->Cancel();  // Next scenario must not inherit the result cooldown.
     }
     state->query = [](HWND, std::shared_ptr<Updates::Result> result) -> Updates::Action {
-        result->available = true; result->source = Updates::Source::Store; result->status = L"available-store";
+        result->available = true;
+        result->source = Updates::Source::Store;
+        result->status = L"available-store";
         co_return;
     };
     state->launch = [](std::shared_ptr<Updates::Result>) -> Updates::Action {
@@ -5040,10 +5921,15 @@ static void CheckPackageUpdates(HWND owner) {
     Require(!state->window && !state->running, "late failed check cannot reopen a detached window");
     auto result = std::make_shared<Updates::Result>();
     auto query = Updates::Query(owner, result);
-    for (int i = 0; i < 100 && query.Status() == winrt::Windows::Foundation::AsyncStatus::Started; ++i) { Pump(); Sleep(10); }
+    for (int i = 0; i < 100 && query.Status() == winrt::Windows::Foundation::AsyncStatus::Started; ++i) {
+        Pump();
+        Sleep(10);
+    }
     query.GetResults();
     Require(result->status == L"unavailable", "unpackaged test host has no real Windows update source");
-    puts("CHECKS PASSED: update provenance, localized outcomes, duplicate activation, UIA bounds, physical keyboard/mouse, deferred teardown");
+    puts(
+        "CHECKS PASSED: update provenance, localized outcomes, duplicate activation, UIA bounds, physical "
+        "keyboard/mouse, deferred teardown");
 }
 
 static RECT ElementScreenBounds(winrt::Microsoft::UI::Xaml::FrameworkElement const& element) {
@@ -5051,7 +5937,8 @@ static RECT ElementScreenBounds(winrt::Microsoft::UI::Xaml::FrameworkElement con
         {0, 0, float(element.ActualWidth()), float(element.ActualHeight())});
     const auto screen = element.XamlRoot().ContentIsland().CoordinateConverter().ConvertLocalToScreen(local);
     RECT bounds{LONG(screen.X), LONG(screen.Y), LONG(screen.X + screen.Width), LONG(screen.Y + screen.Height)};
-    Require(bounds.right > bounds.left && bounds.bottom > bounds.top, "island converter reports nonempty screen bounds");
+    Require(bounds.right > bounds.left && bounds.bottom > bounds.top,
+            "island converter reports nonempty screen bounds");
     return bounds;
 }
 
@@ -5067,19 +5954,29 @@ static void CheckInlinePackageUpdates(HMODULE module, HWND owner) {
     auto savedPrepare = state->prepare;
     state->prepare = []() -> Updates::Action { co_return; };
     auto wait = [&](auto predicate, char const* message) {
-        for (int i = 0; i < 500 && !predicate(); ++i) { Pump(); Sleep(10); }
+        for (int i = 0; i < 500 && !predicate(); ++i) {
+            Pump();
+            Sleep(10);
+        }
         Require(predicate(), message);
     };
     auto escape = [&] {
-        INPUT keys[2]{}; keys[0].type = keys[1].type = INPUT_KEYBOARD;
-        keys[0].ki.wVk = keys[1].ki.wVk = VK_ESCAPE; keys[1].ki.dwFlags = KEYEVENTF_KEYUP;
+        INPUT keys[2]{};
+        keys[0].type = keys[1].type = INPUT_KEYBOARD;
+        keys[0].ki.wVk = keys[1].ki.wVk = VK_ESCAPE;
+        keys[1].ki.dwFlags = KEYEVENTF_KEYUP;
         Require(SendInput(2, keys, sizeof(INPUT)) == 2, "dismiss inline flyout with keyboard");
-        for (int i = 0; i < 30; ++i) { Pump(); Sleep(10); }
+        for (int i = 0; i < 30; ++i) {
+            Pump();
+            Sleep(10);
+        }
     };
     auto click = [&](RECT bounds) {
         SetCursorPos((bounds.left + bounds.right) / 2, (bounds.top + bounds.bottom) / 2);
-        INPUT mouse[2]{}; mouse[0].type = mouse[1].type = INPUT_MOUSE;
-        mouse[0].mi.dwFlags = MOUSEEVENTF_LEFTDOWN; mouse[1].mi.dwFlags = MOUSEEVENTF_LEFTUP;
+        INPUT mouse[2]{};
+        mouse[0].type = mouse[1].type = INPUT_MOUSE;
+        mouse[0].mi.dwFlags = MOUSEEVENTF_LEFTDOWN;
+        mouse[1].mi.dwFlags = MOUSEEVENTF_LEFTUP;
         Require(SendInput(2, mouse, sizeof(INPUT)) == 2, "physical inline update click");
         Pump();
     };
@@ -5087,12 +5984,17 @@ static void CheckInlinePackageUpdates(HMODULE module, HWND owner) {
         Controls::MenuFlyoutItem before{nullptr};
         Require(SUCCEEDED(inspect(owner, &raw, winrt::put_abi(before))), "inspect previous update item");
         SetForegroundWindow(owner);
-        for (int i = 0; i < 20; ++i) { Pump(); Sleep(10); }
+        for (int i = 0; i < 20; ++i) {
+            Pump();
+            Sleep(10);
+        }
         click(TabScreenBounds(owner, L"FennProductMenu"));
-        wait([&] {
-            Controls::MenuFlyoutItem after{nullptr};
-            return SUCCEEDED(inspect(owner, &raw, winrt::put_abi(after))) && after && after != before;
-        }, "physical menu click creates the current flyout item");
+        wait(
+            [&] {
+                Controls::MenuFlyoutItem after{nullptr};
+                return SUCCEEDED(inspect(owner, &raw, winrt::put_abi(after))) && after && after != before;
+            },
+            "physical menu click creates the current flyout item");
     };
     auto readItem = [&] {
         item = nullptr;
@@ -5100,8 +6002,11 @@ static void CheckInlinePackageUpdates(HMODULE module, HWND owner) {
     };
     int queries = 0, downloads = 0, installs = 0;
     state->query = [&](HWND, std::shared_ptr<Updates::Result> result) -> Updates::Action {
-        ++queries; result->available = true; result->source = Updates::Source::Store;
-        result->status = L"available-store"; co_return;
+        ++queries;
+        result->available = true;
+        result->source = Updates::Source::Store;
+        result->status = L"available-store";
+        co_return;
     };
     auto finish = std::make_shared<std::atomic_bool>(false);
     state->download = [&, finish](HWND, std::shared_ptr<Updates::Result> result) -> Updates::Action {
@@ -5112,14 +6017,19 @@ static void CheckInlinePackageUpdates(HMODULE module, HWND owner) {
         co_await ui;
         if (!result->revoked) result->ready = true;
     };
-    state->install = [&](HWND, std::shared_ptr<Updates::Result>) -> Updates::Action { ++installs; co_return; };
+    state->install = [&](HWND, std::shared_ptr<Updates::Result>) -> Updates::Action {
+        ++installs;
+        co_return;
+    };
     open();
     wait([&] { return state->checking && state->current && state->current->status == L"downloading"; },
          "opening product menu starts background download");
     readItem();
     Require(!state->window && item.Text() == L"downloading" && !item.IsEnabled(),
             "downloading uses the localized disabled menu item without a separate window");
-    escape(); open(); readItem();
+    escape();
+    open();
+    readItem();
     Require(queries == 1 && downloads == 1, "reopening while downloading coalesces the servicing operation");
     auto retainedItem = item;
     *finish = true;
@@ -5134,7 +6044,10 @@ static void CheckInlinePackageUpdates(HMODULE module, HWND owner) {
     Require(!state->window && !state->installing && !state->current->ready,
             "inline install does not create the Fenn update window");
     state->current->ready = true;
-    state->prepare = []() -> Updates::Action { winrt::throw_hresult(E_ABORT); co_return; };
+    state->prepare = []() -> Updates::Action {
+        winrt::throw_hresult(E_ABORT);
+        co_return;
+    };
     Updates::InstallReady(state);
     wait([&] { return !state->installing; }, "refused session preparation completes");
     Require(installs == 1 && state->current->ready && state->current->status == L"failed",
@@ -5161,7 +6074,9 @@ static void CheckInlinePackageUpdates(HMODULE module, HWND owner) {
     Require(!state->showingResult && !state->resultTimer && item.Text() == L"Check for updates" && item.IsEnabled(),
             "automatic no-update completion is silent and creates no result timer");
     *finishCheck = false;
-    escape(); open(); readItem();
+    escape();
+    open();
+    readItem();
     wait([&] { return state->checking; }, "reopening begins another quiet check");
     const auto checksBeforeAdoption = queries;
     click(TabScreenBounds(nullptr, L"FennProductMenu-check-updates"));
@@ -5174,7 +6089,9 @@ static void CheckInlinePackageUpdates(HMODULE module, HWND owner) {
             "no-update result stays inline during the cooldown");
     const auto resultAt = GetTickCount64();
     const auto countBeforeReopen = queries;
-    escape(); open(); readItem();
+    escape();
+    open();
+    readItem();
     Require(queries == countBeforeReopen && item.Text() == L"current", "reopening preserves the result cooldown");
     wait([&] { return !state->showingResult; }, "no-update notice expires");
     Require(GetTickCount64() - resultAt >= 2500 && item.Text() == L"Check for updates" && item.IsEnabled(),
@@ -5184,7 +6101,10 @@ static void CheckInlinePackageUpdates(HMODULE module, HWND owner) {
     const auto checkBounds = TabScreenBounds(nullptr, L"FennProductMenu-check-updates");
     click(checkBounds);
     wait([&] { return state->checking; }, "explicit click checks inline");
-    for (int i = 0; i < 3; ++i) { click(checkBounds); Updates::Probe(state); }
+    for (int i = 0; i < 3; ++i) {
+        click(checkBounds);
+        Updates::Probe(state);
+    }
     Require(queries == checksBeforeClick + 1 && !state->window && item.Text() == L"checking" && !item.IsEnabled(),
             "repeated activation starts exactly one check and creates no window");
     Require(item.IsLoaded() && item.ActualWidth() > 0, "explicit check retains the visible menu item");
@@ -5193,96 +6113,130 @@ static void CheckInlinePackageUpdates(HMODULE module, HWND owner) {
     escape();
     state->Cancel();
     // No retained callbacks may refer to this test's stack after host teardown.
-    state->query = Updates::Query; state->download = Updates::Download; state->install = Updates::Install;
+    state->query = Updates::Query;
+    state->download = Updates::Download;
+    state->install = Updates::Install;
     state->prepare = savedPrepare;
-    puts("CHECKS PASSED: product-menu background download, in-place localized progress, reopen coalescing, physical install, inline checks and timed no-update feedback");
+    puts(
+        "CHECKS PASSED: product-menu background download, in-place localized progress, reopen coalescing, physical "
+        "install, inline checks and timed no-update feedback");
 }
 
 static void CheckGroupNeighbors(WinUIPaneApi& api, HWND host) {
     using namespace winrt::Windows::Data::Json;
-    auto settle=[] { for (int i=0;i<35;++i) { Pump(); Sleep(10); } };
-    RECT rect{0,0,1100,40};
-    SetWindowPos(host,nullptr,100,100,1140,400,SWP_NOZORDER);
-    Require(SUCCEEDED(api.updateTabStrip(host,&rect,TRUE)),"neighbor strip");
-    ShowWindow(host,SW_SHOW);
+    auto settle = [] {
+        for (int i = 0; i < 35; ++i) {
+            Pump();
+            Sleep(10);
+        }
+    };
+    RECT rect{0, 0, 1100, 40};
+    SetWindowPos(host, nullptr, 100, 100, 1140, 400, SWP_NOZORDER);
+    Require(SUCCEEDED(api.updateTabStrip(host, &rect, TRUE)), "neighbor strip");
+    ShowWindow(host, SW_SHOW);
     SetForegroundWindow(host);
     settle();
-    for (bool rtl : {false,true}) {
-        auto state=JsonObject::Parse(LR"({"version":2,"publishOnly":true,"strip":{"version":2,"base":0,"revision":100,"groupsLabel":"Groups","groups":[{"id":7,"name":"First","label":"First","collapsed":false},{"id":8,"name":"Second","label":"Second","collapsed":false}],"rows":[{"id":11,"detail":"","flags":0},{"id":22,"detail":"","flags":0},{"id":33,"detail":"","flags":0},{"id":44,"detail":"","flags":0}],"layout":[{"group":7,"tab":0},{"group":7,"tab":11},{"group":7,"tab":22},{"group":8,"tab":0},{"group":8,"tab":33},{"group":8,"tab":44}]}})");
-        auto strip=state.GetNamedObject(L"strip");
-        strip.SetNamedValue(L"rtl",JsonValue::CreateBooleanValue(rtl));
-        strip.SetNamedValue(L"revision",JsonValue::CreateNumberValue(rtl ? 200 : 100));
-        MenuPublish(api,host,state.Stringify().c_str());
-        WinUITab tabs[]{{11,L"One"},{22,L"Two"},{33,L"Three"},{44,L"Four"}};
+    for (bool rtl : {false, true}) {
+        auto state = JsonObject::Parse(
+            LR"({"version":2,"publishOnly":true,"strip":{"version":2,"base":0,"revision":100,"groupsLabel":"Groups","groups":[{"id":7,"name":"First","label":"First","collapsed":false},{"id":8,"name":"Second","label":"Second","collapsed":false}],"rows":[{"id":11,"detail":"","flags":0},{"id":22,"detail":"","flags":0},{"id":33,"detail":"","flags":0},{"id":44,"detail":"","flags":0}],"layout":[{"group":7,"tab":0},{"group":7,"tab":11},{"group":7,"tab":22},{"group":8,"tab":0},{"group":8,"tab":33},{"group":8,"tab":44}]}})");
+        auto strip = state.GetNamedObject(L"strip");
+        strip.SetNamedValue(L"rtl", JsonValue::CreateBooleanValue(rtl));
+        strip.SetNamedValue(L"revision", JsonValue::CreateNumberValue(rtl ? 200 : 100));
+        MenuPublish(api, host, state.Stringify().c_str());
+        WinUITab tabs[]{{11, L"One"}, {22, L"Two"}, {33, L"Three"}, {44, L"Four"}};
         uint32_t selected{};
-        Require(SUCCEEDED(api.syncTabs(host,tabs,4,33, NextTabRevision(), &selected)),"neighbor tabs");
+        Require(SUCCEEDED(api.syncTabs(host, tabs, 4, 33, NextTabRevision(), &selected)), "neighbor tabs");
         settle();
-        for (int pass=0;pass<3;++pass) {
-            fprintf(stderr,"Start neighbor rtl=%d pass=%d\n",rtl,pass);
-            auto source=TabScreenBounds(host,L"FennInlineGroup-7");
-            const auto y=(source.top+source.bottom)/2;
-            SetCursorPos((source.left+source.right)/2,y);
-            INPUT mouse{}; mouse.type=INPUT_MOUSE; mouse.mi.dwFlags=MOUSEEVENTF_LEFTDOWN;
-            SendInput(1,&mouse,sizeof(mouse)); settle();
-            SetCursorPos((source.left+source.right)/2+(rtl ? -8 : 8),y); settle();
+        for (int pass = 0; pass < 3; ++pass) {
+            fprintf(stderr, "Start neighbor rtl=%d pass=%d\n", rtl, pass);
+            auto source = TabScreenBounds(host, L"FennInlineGroup-7");
+            const auto y = (source.top + source.bottom) / 2;
+            SetCursorPos((source.left + source.right) / 2, y);
+            INPUT mouse{};
+            mouse.type = INPUT_MOUSE;
+            mouse.mi.dwFlags = MOUSEEVENTF_LEFTDOWN;
+            SendInput(1, &mouse, sizeof(mouse));
+            settle();
+            SetCursorPos((source.left + source.right) / 2 + (rtl ? -8 : 8), y);
+            settle();
             // The lifted group's collapse can still be landing here, and the
             // three reads are separate UIA round trips: the header can come
             // from the frame before it and the members from the frame after.
             // Take the baseline once two consecutive reads agree.
-            RECT header{},first{},last{};
-            for (int attempt=0;attempt<40;++attempt) {
-                const auto h=TabScreenBounds(host,L"FennInlineGroup-8");
-                const auto a=TabScreenBounds(host,L"FennTab-33");
-                const auto b=TabScreenBounds(host,L"FennTab-44");
-                const bool same=h.left==header.left && a.left==first.left && b.left==last.left;
-                header=h; first=a; last=b;
+            RECT header{}, first{}, last{};
+            for (int attempt = 0; attempt < 40; ++attempt) {
+                const auto h = TabScreenBounds(host, L"FennInlineGroup-8");
+                const auto a = TabScreenBounds(host, L"FennTab-33");
+                const auto b = TabScreenBounds(host, L"FennTab-44");
+                const bool same = h.left == header.left && a.left == first.left && b.left == last.left;
+                header = h;
+                first = a;
+                last = b;
                 if (same) break;
                 settle();
             }
-            for (int sweep=0;sweep<4;++sweep) {
-                const auto midpoint=rtl ? (last.left+header.right)/2 : (header.left+last.right)/2;
-                auto x=midpoint+(sweep%2 ? -8 : 8)*(rtl ? -1 : 1);
-                SetCursorPos(x,y);
-                LONG previous=TabScreenBounds(host,L"FennInlineGroup-8").left;
-                for (int frame=0;frame<20;++frame) {
-                    Pump(); Sleep(16);
-                    auto current=TabScreenBounds(host,L"FennInlineGroup-8").left;
-                    const auto direction=(sweep%2 ? 1 : -1)*(rtl ? -1 : 1);
-                    if ((current-previous)*direction < -2) fprintf(stderr,"Reversed while held: rtl=%d sweep=%d previous=%ld current=%ld\n",rtl,sweep,previous,current);
-                    Require((current-previous)*direction>=-2,"neighbor preview never reverses while pointer is stationary near midpoint");
-                    previous=current;
+            for (int sweep = 0; sweep < 4; ++sweep) {
+                const auto midpoint = rtl ? (last.left + header.right) / 2 : (header.left + last.right) / 2;
+                auto x = midpoint + (sweep % 2 ? -8 : 8) * (rtl ? -1 : 1);
+                SetCursorPos(x, y);
+                LONG previous = TabScreenBounds(host, L"FennInlineGroup-8").left;
+                for (int frame = 0; frame < 20; ++frame) {
+                    Pump();
+                    Sleep(16);
+                    auto current = TabScreenBounds(host, L"FennInlineGroup-8").left;
+                    const auto direction = (sweep % 2 ? 1 : -1) * (rtl ? -1 : 1);
+                    if ((current - previous) * direction < -2)
+                        fprintf(stderr, "Reversed while held: rtl=%d sweep=%d previous=%ld current=%ld\n", rtl, sweep,
+                                previous, current);
+                    Require((current - previous) * direction >= -2,
+                            "neighbor preview never reverses while pointer is stationary near midpoint");
+                    previous = current;
                 }
                 settle();
-                auto h=TabScreenBounds(host,L"FennInlineGroup-8");
-                auto a=TabScreenBounds(host,L"FennTab-33");
-                auto b=TabScreenBounds(host,L"FennTab-44");
-                fprintf(stderr,"Neighbor rtl=%d pass=%d sweep=%d offsets=%ld,%ld,%ld\n",rtl,pass,sweep,h.left-header.left,a.left-first.left,b.left-last.left);
-                Require(std::abs((h.left-header.left)-(a.left-first.left))<=2 && std::abs((a.left-first.left)-(b.left-last.left))<=2,"neighbor header and both members move as one block");
+                auto h = TabScreenBounds(host, L"FennInlineGroup-8");
+                auto a = TabScreenBounds(host, L"FennTab-33");
+                auto b = TabScreenBounds(host, L"FennTab-44");
+                fprintf(stderr, "Neighbor rtl=%d pass=%d sweep=%d offsets=%ld,%ld,%ld\n", rtl, pass, sweep,
+                        h.left - header.left, a.left - first.left, b.left - last.left);
+                Require(std::abs((h.left - header.left) - (a.left - first.left)) <= 2 &&
+                            std::abs((a.left - first.left) - (b.left - last.left)) <= 2,
+                        "neighbor header and both members move as one block");
                 settle();
-                auto held=TabScreenBounds(host,L"FennInlineGroup-8");
-                Require(std::abs(held.left-h.left)<=2,"stationary group target stays stable");
+                auto held = TabScreenBounds(host, L"FennInlineGroup-8");
+                Require(std::abs(held.left - h.left) <= 2, "stationary group target stays stable");
             }
-            INPUT escape[2]{}; escape[0].type=escape[1].type=INPUT_KEYBOARD;
-            escape[0].ki.wVk=escape[1].ki.wVk=VK_ESCAPE; escape[1].ki.dwFlags=KEYEVENTF_KEYUP;
-            SendInput(1,escape,sizeof(INPUT)); settle(); SendInput(1,escape+1,sizeof(INPUT));
-            mouse.mi.dwFlags=MOUSEEVENTF_LEFTUP; SendInput(1,&mouse,sizeof(mouse)); settle();
-            auto restored=TabScreenBounds(host,L"FennInlineGroup-7");
-            Require(std::abs(restored.left-source.left)<=2,"source disclosure restored after repeated group crossings");
-        }
-        for (int move=0;move<12;++move) {
-            strip.SetNamedValue(L"revision",JsonValue::CreateNumberValue((rtl ? 200 : 100)+move+1));
-            const bool reverse=(move%2)==0;
-            strip.SetNamedValue(L"layout",JsonArray::Parse(reverse
-                ? LR"([{"group":8,"tab":0},{"group":8,"tab":33},{"group":8,"tab":44},{"group":7,"tab":0},{"group":7,"tab":11},{"group":7,"tab":22}])"
-                : LR"([{"group":7,"tab":0},{"group":7,"tab":11},{"group":7,"tab":22},{"group":8,"tab":0},{"group":8,"tab":33},{"group":8,"tab":44}])"));
-            MenuPublish(api,host,state.Stringify().c_str());
-            WinUITab reversed[]{{33,L"Three"},{44,L"Four"},{11,L"One"},{22,L"Two"}};
-            Require(SUCCEEDED(api.syncTabs(host,reverse ? reversed : tabs,4,33, NextTabRevision(), &selected)),"acknowledge neighbor reorder");
+            INPUT escape[2]{};
+            escape[0].type = escape[1].type = INPUT_KEYBOARD;
+            escape[0].ki.wVk = escape[1].ki.wVk = VK_ESCAPE;
+            escape[1].ki.dwFlags = KEYEVENTF_KEYUP;
+            SendInput(1, escape, sizeof(INPUT));
             settle();
-            fprintf(stderr,"Check disclosures rtl=%d move=%d\n",rtl,move);
-            for (auto id : {L"FennInlineGroup-7",L"FennInlineGroup-8"}) {
-                auto header=TabScreenBounds(host,id);
-                Require(header.right-header.left>=32,"both retained disclosures remain visible after reorder");
+            SendInput(1, escape + 1, sizeof(INPUT));
+            mouse.mi.dwFlags = MOUSEEVENTF_LEFTUP;
+            SendInput(1, &mouse, sizeof(mouse));
+            settle();
+            auto restored = TabScreenBounds(host, L"FennInlineGroup-7");
+            Require(std::abs(restored.left - source.left) <= 2,
+                    "source disclosure restored after repeated group crossings");
+        }
+        for (int move = 0; move < 12; ++move) {
+            strip.SetNamedValue(L"revision", JsonValue::CreateNumberValue((rtl ? 200 : 100) + move + 1));
+            const bool reverse = (move % 2) == 0;
+            strip.SetNamedValue(
+                L"layout",
+                JsonArray::Parse(
+                    reverse
+                        ? LR"([{"group":8,"tab":0},{"group":8,"tab":33},{"group":8,"tab":44},{"group":7,"tab":0},{"group":7,"tab":11},{"group":7,"tab":22}])"
+                        : LR"([{"group":7,"tab":0},{"group":7,"tab":11},{"group":7,"tab":22},{"group":8,"tab":0},{"group":8,"tab":33},{"group":8,"tab":44}])"));
+            MenuPublish(api, host, state.Stringify().c_str());
+            WinUITab reversed[]{{33, L"Three"}, {44, L"Four"}, {11, L"One"}, {22, L"Two"}};
+            Require(SUCCEEDED(api.syncTabs(host, reverse ? reversed : tabs, 4, 33, NextTabRevision(), &selected)),
+                    "acknowledge neighbor reorder");
+            settle();
+            fprintf(stderr, "Check disclosures rtl=%d move=%d\n", rtl, move);
+            for (auto id : {L"FennInlineGroup-7", L"FennInlineGroup-8"}) {
+                auto header = TabScreenBounds(host, id);
+                Require(header.right - header.left >= 32, "both retained disclosures remain visible after reorder");
             }
         }
     }
@@ -5290,192 +6244,233 @@ static void CheckGroupNeighbors(WinUIPaneApi& api, HWND host) {
 
 static void CheckTabGroupHeaderShift(HMODULE module, WinUIPaneApi& api, HWND host) {
     using namespace winrt::Microsoft::UI::Xaml;
-    auto settle = [] { for (int i=0;i<40;++i) { Pump(); Sleep(10); } };
-    RECT rect{0,0,1000,40};
-    SetWindowPos(host,nullptr,200,200,1040,400,SWP_NOZORDER);
-    Require(SUCCEEDED(api.updateTabStrip(host,&rect,TRUE)), "group gap strip geometry");
-    auto inspect = reinterpret_cast<HRESULT(WINAPI*)(HWND, void**)>(GetProcAddress(module,"WinUIPaneTestGetContent"));
+    auto settle = [] {
+        for (int i = 0; i < 40; ++i) {
+            Pump();
+            Sleep(10);
+        }
+    };
+    RECT rect{0, 0, 1000, 40};
+    SetWindowPos(host, nullptr, 200, 200, 1040, 400, SWP_NOZORDER);
+    Require(SUCCEEDED(api.updateTabStrip(host, &rect, TRUE)), "group gap strip geometry");
+    auto inspect = reinterpret_cast<HRESULT(WINAPI*)(HWND, void**)>(GetProcAddress(module, "WinUIPaneTestGetContent"));
     UIElement content{nullptr};
-    Require(SUCCEEDED(inspect(host,winrt::put_abi(content))),"inspect group gap strip");
-    auto view=content.as<Controls::Grid>().Children().GetAt(0).as<Controls::TabView>();
+    Require(SUCCEEDED(inspect(host, winrt::put_abi(content))), "inspect group gap strip");
+    auto view = content.as<Controls::Grid>().Children().GetAt(0).as<Controls::TabView>();
     SetForegroundWindow(host);
-    for (uint32_t scenario=0;scenario<6;++scenario) {
+    for (uint32_t scenario = 0; scenario < 6; ++scenario) {
         const bool rtl = (scenario & 1) != 0, joining = scenario >= 2;
-        auto state = winrt::Windows::Data::Json::JsonObject::Parse(LR"({"version":2,"publishOnly":true,"strip":{"version":2,"base":0,"revision":70,"rtl":false,"groupsLabel":"Groups","groups":[{"id":7,"name":"Research","label":"Research","collapsed":false}],"rows":[{"id":11,"detail":"","flags":0},{"id":22,"detail":"","flags":0},{"id":44,"detail":"","flags":0},{"id":33,"detail":"","flags":0}],"layout":[{"group":0,"tab":11},{"group":7,"tab":0},{"group":7,"tab":22},{"group":7,"tab":44},{"group":0,"tab":33}]}})");
-        state.GetNamedObject(L"strip").SetNamedValue(L"rtl",winrt::Windows::Data::Json::JsonValue::CreateBooleanValue(rtl));
-        state.GetNamedObject(L"strip").SetNamedValue(L"revision",winrt::Windows::Data::Json::JsonValue::CreateNumberValue(70 + scenario));
-        state.GetNamedObject(L"strip").GetNamedArray(L"groups").GetAt(0).GetObject()
-            .SetNamedValue(L"headerText",winrt::Windows::Data::Json::JsonValue::CreateStringValue(scenario>=4 ? L"" : L"Research"));
+        auto state = winrt::Windows::Data::Json::JsonObject::Parse(
+            LR"({"version":2,"publishOnly":true,"strip":{"version":2,"base":0,"revision":70,"rtl":false,"groupsLabel":"Groups","groups":[{"id":7,"name":"Research","label":"Research","collapsed":false}],"rows":[{"id":11,"detail":"","flags":0},{"id":22,"detail":"","flags":0},{"id":44,"detail":"","flags":0},{"id":33,"detail":"","flags":0}],"layout":[{"group":0,"tab":11},{"group":7,"tab":0},{"group":7,"tab":22},{"group":7,"tab":44},{"group":0,"tab":33}]}})");
+        state.GetNamedObject(L"strip").SetNamedValue(L"rtl",
+                                                     winrt::Windows::Data::Json::JsonValue::CreateBooleanValue(rtl));
+        state.GetNamedObject(L"strip").SetNamedValue(
+            L"revision", winrt::Windows::Data::Json::JsonValue::CreateNumberValue(70 + scenario));
+        state.GetNamedObject(L"strip").GetNamedArray(L"groups").GetAt(0).GetObject().SetNamedValue(
+            L"headerText", winrt::Windows::Data::Json::JsonValue::CreateStringValue(scenario >= 4 ? L"" : L"Research"));
         for (auto value : state.GetNamedObject(L"strip").GetNamedArray(L"rows"))
-            value.GetObject().SetNamedValue(L"groupSource",winrt::Windows::Data::Json::JsonValue::CreateBooleanValue(joining));
-        MenuPublish(api,host,state.Stringify().c_str());
-        WinUITab tabs[]{{11,L"Before"},{22,L"Group member"},{44,L"Second member"},{33,L"After"}};
+            value.GetObject().SetNamedValue(L"groupSource",
+                                            winrt::Windows::Data::Json::JsonValue::CreateBooleanValue(joining));
+        MenuPublish(api, host, state.Stringify().c_str());
+        WinUITab tabs[]{{11, L"Before"}, {22, L"Group member"}, {44, L"Second member"}, {33, L"After"}};
         uint32_t selected{};
-        Require(SUCCEEDED(api.syncTabs(host,tabs,4,11, NextTabRevision(), &selected)), "group gap tabs");
+        Require(SUCCEEDED(api.syncTabs(host, tabs, 4, 11, NextTabRevision(), &selected)), "group gap tabs");
         settle();
-        for (bool backward : {false,true}) {
-            auto source=TabScreenBounds(host,backward ? L"FennTab-33" : L"FennTab-11");
-            auto member=TabScreenBounds(host,L"FennTab-22");
-            auto header=TabScreenBounds(host,L"FennInlineGroup-7");
-            SetCursorPos((source.left+source.right)/2,(source.top+source.bottom)/2);
+        for (bool backward : {false, true}) {
+            auto source = TabScreenBounds(host, backward ? L"FennTab-33" : L"FennTab-11");
+            auto member = TabScreenBounds(host, L"FennTab-22");
+            auto header = TabScreenBounds(host, L"FennInlineGroup-7");
+            SetCursorPos((source.left + source.right) / 2, (source.top + source.bottom) / 2);
             settle();
-            INPUT mouse{}; mouse.type=INPUT_MOUSE; mouse.mi.dwFlags=MOUSEEVENTF_LEFTDOWN;
-            Require(SendInput(1,&mouse,sizeof(mouse))==1,"press tab for group gap");
+            INPUT mouse{};
+            mouse.type = INPUT_MOUSE;
+            mouse.mi.dwFlags = MOUSEEVENTF_LEFTDOWN;
+            Require(SendInput(1, &mouse, sizeof(mouse)) == 1, "press tab for group gap");
             settle();
-            auto target = backward != rtl ? member.left+16 : member.right-16;
-            SetCursorPos(target,(member.top+member.bottom)/2);
+            auto target = backward != rtl ? member.left + 16 : member.right - 16;
+            SetCursorPos(target, (member.top + member.bottom) / 2);
             settle();
-            auto sourceWidth=view.TabItems().GetAt(backward ? 3 : 0).as<Controls::TabViewItem>().ActualWidth()
-                * content.XamlRoot().RasterizationScale();
-            LONG headerDelta{},memberDelta{};
-            for (int attempt=0;attempt<20;++attempt) {
-                auto shiftedHeader=TabScreenBounds(host,L"FennInlineGroup-7");
-                auto shiftedMember=TabScreenBounds(host,L"FennTab-22");
-                headerDelta=shiftedHeader.left-header.left;
-                memberDelta=shiftedMember.left-member.left;
+            auto sourceWidth = view.TabItems().GetAt(backward ? 3 : 0).as<Controls::TabViewItem>().ActualWidth() *
+                               content.XamlRoot().RasterizationScale();
+            LONG headerDelta{}, memberDelta{};
+            for (int attempt = 0; attempt < 20; ++attempt) {
+                auto shiftedHeader = TabScreenBounds(host, L"FennInlineGroup-7");
+                auto shiftedMember = TabScreenBounds(host, L"FennTab-22");
+                headerDelta = shiftedHeader.left - header.left;
+                memberDelta = shiftedMember.left - member.left;
                 const auto expectedHeader = joining && backward ? 0 : memberDelta;
-                if (std::abs(headerDelta-expectedHeader)<=2 && std::abs(std::abs(memberDelta)-sourceWidth)<=2) break;
+                if (std::abs(headerDelta - expectedHeader) <= 2 && std::abs(std::abs(memberDelta) - sourceWidth) <= 2)
+                    break;
                 settle();
             }
-            fprintf(stderr,"Group gap rtl=%d backward=%d joining=%d header=%ld member=%ld width=%ld\n",rtl,backward,joining,headerDelta,memberDelta,source.right-source.left);
-            Require(std::abs(headerDelta-(joining && backward ? 0 : memberDelta))<=2,
-                "physical join keeps the header before the gap; outside reorder shifts the whole group");
-            Require(std::abs(std::abs(memberDelta)-sourceWidth)<=2,
-                "group gap transfers tab width without consuming header space");
+            fprintf(stderr, "Group gap rtl=%d backward=%d joining=%d header=%ld member=%ld width=%ld\n", rtl, backward,
+                    joining, headerDelta, memberDelta, source.right - source.left);
+            Require(std::abs(headerDelta - (joining && backward ? 0 : memberDelta)) <= 2,
+                    "physical join keeps the header before the gap; outside reorder shifts the whole group");
+            Require(std::abs(std::abs(memberDelta) - sourceWidth) <= 2,
+                    "group gap transfers tab width without consuming header space");
             settle();
-            auto held=TabScreenBounds(host,L"FennTab-22");
-            Require(std::abs((held.left-member.left)-memberDelta)<=2,
-                "stationary direct group hover retains the open insertion gap");
-            Require(content.as<Controls::Grid>().Children().GetAt(2).as<Controls::Border>().Visibility() == Visibility::Collapsed,
-                "joining an existing group never shows the new-group creation outline");
+            auto held = TabScreenBounds(host, L"FennTab-22");
+            Require(std::abs((held.left - member.left) - memberDelta) <= 2,
+                    "stationary direct group hover retains the open insertion gap");
+            Require(content.as<Controls::Grid>().Children().GetAt(2).as<Controls::Border>().Visibility() ==
+                        Visibility::Collapsed,
+                    "joining an existing group never shows the new-group creation outline");
             if (joining) {
-                const auto direction=rtl ? -1 : 1;
-                const auto firstGap=(rtl ? member.right : member.left) - (backward ? 0 : direction*sourceWidth);
-                auto pointAt=[&](double distance) {
-                    SetCursorPos(LONG(firstGap+direction*distance),(member.top+member.bottom)/2);
+                const auto direction = rtl ? -1 : 1;
+                const auto firstGap = (rtl ? member.right : member.left) - (backward ? 0 : direction * sourceWidth);
+                auto pointAt = [&](double distance) {
+                    SetCursorPos(LONG(firstGap + direction * distance), (member.top + member.bottom) / 2);
                     settle();
                 };
                 pointAt(16);
-                pointAt(sourceWidth*.75);
-                auto firstSlot=TabScreenBounds(host,L"FennTab-22");
-                Require(std::abs(firstSlot.left-member.left-(backward ? direction*sourceWidth : 0))<=2,
-                    "the full first insertion gap retains slot one, including beyond its former midpoint");
-                pointAt(sourceWidth*1.6);
-                auto secondSlot=TabScreenBounds(host,L"FennTab-22");
-                Require(std::abs(secondSlot.left-member.left-(backward ? 0 : -direction*sourceWidth))<=2,
-                    "crossing the preview member midpoint advances to slot two");
-                pointAt(sourceWidth*.25);
-                firstSlot=TabScreenBounds(host,L"FennTab-22");
-                Require(std::abs(firstSlot.left-member.left-(backward ? direction*sourceWidth : 0))<=2,
-                    "reverse movement returns to slot one at the preview midpoint");
-                const auto secondBefore=TabScreenBounds(host,L"FennTab-44");
-                for (int crossing=0;crossing<3;++crossing) {
-                    const auto disclosure=TabScreenBounds(host,L"FennInlineGroup-7");
-                    SetCursorPos((disclosure.left+disclosure.right)/2,(member.top+member.bottom)/2);
+                pointAt(sourceWidth * .75);
+                auto firstSlot = TabScreenBounds(host, L"FennTab-22");
+                Require(std::abs(firstSlot.left - member.left - (backward ? direction * sourceWidth : 0)) <= 2,
+                        "the full first insertion gap retains slot one, including beyond its former midpoint");
+                pointAt(sourceWidth * 1.6);
+                auto secondSlot = TabScreenBounds(host, L"FennTab-22");
+                Require(std::abs(secondSlot.left - member.left - (backward ? 0 : -direction * sourceWidth)) <= 2,
+                        "crossing the preview member midpoint advances to slot two");
+                pointAt(sourceWidth * .25);
+                firstSlot = TabScreenBounds(host, L"FennTab-22");
+                Require(std::abs(firstSlot.left - member.left - (backward ? direction * sourceWidth : 0)) <= 2,
+                        "reverse movement returns to slot one at the preview midpoint");
+                const auto secondBefore = TabScreenBounds(host, L"FennTab-44");
+                for (int crossing = 0; crossing < 3; ++crossing) {
+                    const auto disclosure = TabScreenBounds(host, L"FennInlineGroup-7");
+                    SetCursorPos((disclosure.left + disclosure.right) / 2, (member.top + member.bottom) / 2);
                     settle();
-                    auto overHeader=TabScreenBounds(host,L"FennTab-22");
-                    auto secondAfter=TabScreenBounds(host,L"FennTab-44");
-                    Require(std::abs(overHeader.left-firstSlot.left)<=2 && std::abs(secondAfter.left-secondBefore.left)<=2,
-                        "crossing the disclosure retains the first gap without jumping past either member");
-                    pointAt(sourceWidth*.25);
+                    auto overHeader = TabScreenBounds(host, L"FennTab-22");
+                    auto secondAfter = TabScreenBounds(host, L"FennTab-44");
+                    Require(std::abs(overHeader.left - firstSlot.left) <= 2 &&
+                                std::abs(secondAfter.left - secondBefore.left) <= 2,
+                            "crossing the disclosure retains the first gap without jumping past either member");
+                    pointAt(sourceWidth * .25);
                 }
                 // Past the last member the group's surface opens toward the
                 // gap, then closes again when the tab returns inside.
-                auto layer=content.as<Controls::Grid>().Children().GetAt(3).as<Controls::Canvas>();
-                auto lastMember=view.TabItems().GetAt(2).as<Controls::TabViewItem>();
-                auto overhang=[&] {
+                auto layer = content.as<Controls::Grid>().Children().GetAt(3).as<Controls::Canvas>();
+                auto lastMember = view.TabItems().GetAt(2).as<Controls::TabViewItem>();
+                auto overhang = [&] {
                     Controls::Border surface{nullptr};
                     for (auto child : layer.Children())
-                        if (Automation::AutomationProperties::GetAutomationId(child) == L"FennGroupSurface-7") surface = child.as<Controls::Border>();
+                        if (Automation::AutomationProperties::GetAutomationId(child) == L"FennGroupSurface-7")
+                            surface = child.as<Controls::Border>();
                     Require(surface != nullptr, "the joined group keeps its shared surface");
-                    const float left=float(Controls::Canvas::GetLeft(surface)), right=left+float(surface.Width());
-                    const auto at=lastMember.TransformToVisual(layer).TransformBounds({0,0,float(lastMember.ActualWidth()),float(lastMember.ActualHeight())});
-                    return rtl ? at.X-left : right-(at.X+float(lastMember.ActualWidth()));
+                    const float left = float(Controls::Canvas::GetLeft(surface)), right = left + float(surface.Width());
+                    const auto at = lastMember.TransformToVisual(layer).TransformBounds(
+                        {0, 0, float(lastMember.ActualWidth()), float(lastMember.ActualHeight())});
+                    return rtl ? at.X - left : right - (at.X + float(lastMember.ActualWidth()));
                 };
-                const float gapWidth=float(view.TabItems().GetAt(backward ? 3 : 0).as<Controls::TabViewItem>().ActualWidth());
-                Require(overhang()<=8.f,"an interior insertion gap leaves the group surface at its normal reach");
+                const float gapWidth =
+                    float(view.TabItems().GetAt(backward ? 3 : 0).as<Controls::TabViewItem>().ActualWidth());
+                Require(overhang() <= 8.f, "an interior insertion gap leaves the group surface at its normal reach");
                 // Empty slots inside the surface get a stand-in tab face, so
                 // light there matches the neighboring faces.
-                auto glowMotion=reinterpret_cast<HRESULT(WINAPI*)(HWND,uint32_t,uint32_t,uint32_t*)>(GetProcAddress(module,"WinUIPaneTestGlowMotion"));
-                auto slotWidth=[&] { uint32_t width{}; Require(SUCCEEDED(glowMotion(host,4,0,&width)),"inspect drag slot faces"); return float(width); };
-                const auto dragged=TabScreenBounds(host,L"FennTab-22");
-                fprintf(stderr,"Slot faces interior rtl=%d backward=%d width=%.1f gap=%.1f dragged=%ld..%ld\n",rtl,backward,slotWidth(),gapWidth,dragged.left,dragged.right);
-                Require(slotWidth()>=gapWidth-2.f,"an interior insertion gap gets a stand-in tab face");
-                auto tail=TabScreenBounds(host,L"FennTab-44");
-                SetCursorPos(rtl ? tail.left+8 : tail.right-8,(tail.top+tail.bottom)/2);
+                auto glowMotion = reinterpret_cast<HRESULT(WINAPI*)(HWND, uint32_t, uint32_t, uint32_t*)>(
+                    GetProcAddress(module, "WinUIPaneTestGlowMotion"));
+                auto slotWidth = [&] {
+                    uint32_t width{};
+                    Require(SUCCEEDED(glowMotion(host, 4, 0, &width)), "inspect drag slot faces");
+                    return float(width);
+                };
+                const auto dragged = TabScreenBounds(host, L"FennTab-22");
+                fprintf(stderr, "Slot faces interior rtl=%d backward=%d width=%.1f gap=%.1f dragged=%ld..%ld\n", rtl,
+                        backward, slotWidth(), gapWidth, dragged.left, dragged.right);
+                Require(slotWidth() >= gapWidth - 2.f, "an interior insertion gap gets a stand-in tab face");
+                auto tail = TabScreenBounds(host, L"FennTab-44");
+                SetCursorPos(rtl ? tail.left + 8 : tail.right - 8, (tail.top + tail.bottom) / 2);
                 settle();
-                fprintf(stderr,"Join tail rtl=%d backward=%d overhang=%.1f gap=%.1f slot faces=%.1f\n",rtl,backward,overhang(),gapWidth,slotWidth());
-                Require(overhang()>=gapWidth-2.f,"the group surface extends to the tab's insertion gap past its last member");
-                Require(slotWidth()>=gapWidth-2.f,"the opened tail gets a stand-in tab face instead of unattenuated light");
-                pointAt(sourceWidth*.25);
-                Require(overhang()<=8.f,"the group surface closes again once the gap returns inside the group");
+                fprintf(stderr, "Join tail rtl=%d backward=%d overhang=%.1f gap=%.1f slot faces=%.1f\n", rtl, backward,
+                        overhang(), gapWidth, slotWidth());
+                Require(overhang() >= gapWidth - 2.f,
+                        "the group surface extends to the tab's insertion gap past its last member");
+                Require(slotWidth() >= gapWidth - 2.f,
+                        "the opened tail gets a stand-in tab face instead of unattenuated light");
+                pointAt(sourceWidth * .25);
+                Require(overhang() <= 8.f, "the group surface closes again once the gap returns inside the group");
                 // Releasing over the end gap keeps the surface in place until
                 // Firefox publishes the join (never here), then lets it settle.
-                SetCursorPos(rtl ? tail.left+8 : tail.right-8,(tail.top+tail.bottom)/2);
+                SetCursorPos(rtl ? tail.left + 8 : tail.right - 8, (tail.top + tail.bottom) / 2);
                 settle();
-                Require(overhang()>=gapWidth-2.f,"the surface reopens before the drop");
-                auto surfaceNow=[&] {
+                Require(overhang() >= gapWidth - 2.f, "the surface reopens before the drop");
+                auto surfaceNow = [&] {
                     for (auto child : layer.Children())
                         if (Automation::AutomationProperties::GetAutomationId(child) == L"FennGroupSurface-7")
-                            return std::pair{float(Controls::Canvas::GetLeft(child)),float(child.as<Controls::Border>().Width())};
-                    return std::pair{0.f,0.f};
+                            return std::pair{float(Controls::Canvas::GetLeft(child)),
+                                             float(child.as<Controls::Border>().Width())};
+                    return std::pair{0.f, 0.f};
                 };
-                const auto beforeDrop=surfaceNow();
-                mouse.mi.dwFlags=MOUSEEVENTF_LEFTUP; SendInput(1,&mouse,sizeof(mouse));
+                const auto beforeDrop = surfaceNow();
+                mouse.mi.dwFlags = MOUSEEVENTF_LEFTUP;
+                SendInput(1, &mouse, sizeof(mouse));
                 settle();
-                const auto afterDrop=surfaceNow();
-                Require(std::abs(afterDrop.first-beforeDrop.first)<=.5f && std::abs(afterDrop.second-beforeDrop.second)<=.5f,
-                    "the group surface stays in place after the drop");
-                for (int i=0;i<6;++i) settle();
-                Require(surfaceNow().second<beforeDrop.second-gapWidth/2,"an unacknowledged drop releases the held surface");
-                Require(slotWidth()==0,"no stand-in faces remain once the drag and its held surface end");
+                const auto afterDrop = surfaceNow();
+                Require(std::abs(afterDrop.first - beforeDrop.first) <= .5f &&
+                            std::abs(afterDrop.second - beforeDrop.second) <= .5f,
+                        "the group surface stays in place after the drop");
+                for (int i = 0; i < 6; ++i) settle();
+                Require(surfaceNow().second < beforeDrop.second - gapWidth / 2,
+                        "an unacknowledged drop releases the held surface");
+                Require(slotWidth() == 0, "no stand-in faces remain once the drag and its held surface end");
             }
             INPUT escape[2]{};
-            escape[0].type=escape[1].type=INPUT_KEYBOARD;
-            escape[0].ki.wVk=escape[1].ki.wVk=VK_ESCAPE;
-            escape[1].ki.dwFlags=KEYEVENTF_KEYUP;
-            SendInput(1,escape,sizeof(INPUT));
+            escape[0].type = escape[1].type = INPUT_KEYBOARD;
+            escape[0].ki.wVk = escape[1].ki.wVk = VK_ESCAPE;
+            escape[1].ki.dwFlags = KEYEVENTF_KEYUP;
+            SendInput(1, escape, sizeof(INPUT));
             settle();
-            SendInput(1,escape+1,sizeof(INPUT));
-            mouse.mi.dwFlags=MOUSEEVENTF_LEFTUP; SendInput(1,&mouse,sizeof(mouse));
+            SendInput(1, escape + 1, sizeof(INPUT));
+            mouse.mi.dwFlags = MOUSEEVENTF_LEFTUP;
+            SendInput(1, &mouse, sizeof(mouse));
             settle();
-            auto restored=TabScreenBounds(host,L"FennInlineGroup-7");
-            Require(std::abs(restored.left-header.left)<=2,"Escape restores group header geometry");
-            restored=TabScreenBounds(host,L"FennTab-22");
-            Require(std::abs(restored.left-member.left)<=2,"Escape restores group member geometry");
+            auto restored = TabScreenBounds(host, L"FennInlineGroup-7");
+            Require(std::abs(restored.left - header.left) <= 2, "Escape restores group header geometry");
+            restored = TabScreenBounds(host, L"FennTab-22");
+            Require(std::abs(restored.left - member.left) <= 2, "Escape restores group member geometry");
         }
     }
     // Lifting a member keeps the group's surface while the pointer stays
     // inside the group's original extent.
-    auto layer=content.as<Controls::Grid>().Children().GetAt(3).as<Controls::Canvas>();
-    auto surfaceSpan=[&] {
+    auto layer = content.as<Controls::Grid>().Children().GetAt(3).as<Controls::Canvas>();
+    auto surfaceSpan = [&] {
         for (auto child : layer.Children())
             if (Automation::AutomationProperties::GetAutomationId(child) == L"FennGroupSurface-7")
-                return std::pair{float(Controls::Canvas::GetLeft(child)),float(child.as<Controls::Border>().Width())};
-        return std::pair{0.f,0.f};
+                return std::pair{float(Controls::Canvas::GetLeft(child)), float(child.as<Controls::Border>().Width())};
+        return std::pair{0.f, 0.f};
     };
     settle();
-    const auto restingSpan=surfaceSpan();
-    auto lifted=TabScreenBounds(host,L"FennTab-44");
-    auto inner=TabScreenBounds(host,L"FennTab-22");
-    SetCursorPos((lifted.left+lifted.right)/2,(lifted.top+lifted.bottom)/2);
+    const auto restingSpan = surfaceSpan();
+    auto lifted = TabScreenBounds(host, L"FennTab-44");
+    auto inner = TabScreenBounds(host, L"FennTab-22");
+    SetCursorPos((lifted.left + lifted.right) / 2, (lifted.top + lifted.bottom) / 2);
     settle();
-    INPUT press{}; press.type=INPUT_MOUSE; press.mi.dwFlags=MOUSEEVENTF_LEFTDOWN;
-    Require(SendInput(1,&press,sizeof(press))==1,"press a group member");
+    INPUT press{};
+    press.type = INPUT_MOUSE;
+    press.mi.dwFlags = MOUSEEVENTF_LEFTDOWN;
+    Require(SendInput(1, &press, sizeof(press)) == 1, "press a group member");
     settle();
-    SetCursorPos((inner.left+inner.right)/2,(inner.top+inner.bottom)/2);
+    SetCursorPos((inner.left + inner.right) / 2, (inner.top + inner.bottom) / 2);
     settle();
-    const auto liftedSpan=surfaceSpan();
-    Require(std::abs(liftedSpan.first-restingSpan.first)<=1.f && std::abs(liftedSpan.second-restingSpan.second)<=1.f,
-        "the group surface stays while a lifted member remains within the group");
-    INPUT escape[2]{}; escape[0].type=escape[1].type=INPUT_KEYBOARD;
-    escape[0].ki.wVk=escape[1].ki.wVk=VK_ESCAPE; escape[1].ki.dwFlags=KEYEVENTF_KEYUP;
-    SendInput(1,escape,sizeof(INPUT)); settle(); SendInput(1,escape+1,sizeof(INPUT));
-    press.mi.dwFlags=MOUSEEVENTF_LEFTUP; SendInput(1,&press,sizeof(press));
+    const auto liftedSpan = surfaceSpan();
+    Require(std::abs(liftedSpan.first - restingSpan.first) <= 1.f &&
+                std::abs(liftedSpan.second - restingSpan.second) <= 1.f,
+            "the group surface stays while a lifted member remains within the group");
+    INPUT escape[2]{};
+    escape[0].type = escape[1].type = INPUT_KEYBOARD;
+    escape[0].ki.wVk = escape[1].ki.wVk = VK_ESCAPE;
+    escape[1].ki.dwFlags = KEYEVENTF_KEYUP;
+    SendInput(1, escape, sizeof(INPUT));
+    settle();
+    SendInput(1, escape + 1, sizeof(INPUT));
+    press.mi.dwFlags = MOUSEEVENTF_LEFTUP;
+    SendInput(1, &press, sizeof(press));
     settle();
 }
 
-static void CheckTabStripDrag(HMODULE module, WinUIPaneApi& api, HWND host, bool reject = false, bool inactive = false, bool rearm = false, bool grouping = false) {
+static void CheckTabStripDrag(HMODULE module, WinUIPaneApi& api, HWND host, bool reject = false, bool inactive = false,
+                              bool rearm = false, bool grouping = false) {
     using namespace winrt;
     using namespace winrt::Microsoft::UI::Xaml;
     RECT rect{0, 0, 600, 48};
@@ -5493,7 +6488,9 @@ static void CheckTabStripDrag(HMODULE module, WinUIPaneApi& api, HWND host, bool
     root.RequestedTheme(reject ? ElementTheme::Dark : ElementTheme::Light);
     auto view = root.Children().GetAt(0).as<Controls::TabView>();
     if (grouping) {
-        MenuPublish(api,host,LR"({"version":2,"publishOnly":true,"strip":{"version":2,"base":0,"revision":50,"rtl":false,"groupsLabel":"Groups","groups":[],"windowDragSession":1,"rows":[{"id":11,"detail":"","flags":0,"groupSource":true},{"id":22,"detail":"","flags":0,"groupTarget":true}],"layout":[{"group":0,"tab":11},{"group":0,"tab":22}]}})");
+        MenuPublish(
+            api, host,
+            LR"({"version":2,"publishOnly":true,"strip":{"version":2,"base":0,"revision":50,"rtl":false,"groupsLabel":"Groups","groups":[],"windowDragSession":1,"rows":[{"id":11,"detail":"","flags":0,"groupSource":true},{"id":22,"detail":"","flags":0,"groupTarget":true}],"layout":[{"group":0,"tab":11},{"group":0,"tab":22}]}})");
     }
     auto first = view.TabItems().GetAt(0).as<Controls::TabViewItem>();
     for (int i = 0; i < 300 && (!first.IsLoaded() || first.ActualWidth() == 0); ++i) {
@@ -5568,11 +6565,10 @@ static void CheckTabStripDrag(HMODULE module, WinUIPaneApi& api, HWND host, bool
     // A reorder to the end holds the pointer at the strip's right edge, as a
     // user would: rows that overflow the viewport scroll into reach there, and
     // the last tab's own UIA bounds are clipped to the viewport.
-    const auto viewLocal = view.TransformToVisual(nullptr).TransformBounds(
-        {0, 0, float(view.ActualWidth()), float(view.ActualHeight())});
+    const auto viewLocal =
+        view.TransformToVisual(nullptr).TransformBounds({0, 0, float(view.ActualWidth()), float(view.ActualHeight())});
     const auto viewScreen = view.XamlRoot().ContentIsland().CoordinateConverter().ConvertLocalToScreen(viewLocal);
-    const LONG endX = grouping ? (lastBounds.left + lastBounds.right) / 2
-                               : LONG(viewScreen.X + viewScreen.Width) - 8;
+    const LONG endX = grouping ? (lastBounds.left + lastBounds.right) / 2 : LONG(viewScreen.X + viewScreen.Width) - 8;
     for (int step = 1; step <= 25; ++step) {
         moveTo(client.x + (endX - client.x) * step / 25, client.y);
         settle(5);
@@ -5580,7 +6576,7 @@ static void CheckTabStripDrag(HMODULE module, WinUIPaneApi& api, HWND host, bool
     if (grouping) {
         settle(100);
         Require(root.Children().GetAt(2).as<Controls::Border>().Visibility() == Visibility::Visible,
-            "new-group creation dwell retains its selection outline");
+                "new-group creation dwell retains its selection outline");
     }
     CheckFloatingDragBitmap(module, reject);
     if (rearm) {
@@ -5589,8 +6585,9 @@ static void CheckTabStripDrag(HMODULE module, WinUIPaneApi& api, HWND host, bool
         auto popups = DragPreviewWindows();
         Require(popups.size() == 1, "reentrant creation leaves exactly one owned drag popup");
         const auto popup = popups.front();
-        auto restart = reinterpret_cast<HRESULT(WINAPI*)(HWND,uint32_t)>(GetProcAddress(module,"WinUIPaneTestRearmDrag"));
-        Require(restart && SUCCEEDED(restart(host,22)), "new press replaces a still-live drag session");
+        auto restart =
+            reinterpret_cast<HRESULT(WINAPI*)(HWND, uint32_t)>(GetProcAddress(module, "WinUIPaneTestRearmDrag"));
+        Require(restart && SUCCEEDED(restart(host, 22)), "new press replaces a still-live drag session");
         Require(!IsWindow(popup) && DragPreviewWindows().empty(),
                 "rearming destroys the old popup instead of losing its handle");
         Require(first.Opacity() == 1, "rearming restores the previous source tab");
@@ -5605,10 +6602,14 @@ static void CheckTabStripDrag(HMODULE module, WinUIPaneApi& api, HWND host, bool
     puts("Drag gesture completed without crashing");
     CheckAttachedTabAppearance(first);
     if (grouping) {
-        auto action = NextRequest(api,host,5,L"strip-create-group").GetNamedObject(L"action");
-        Require(action.GetNamedNumber(L"id") == 11 && action.GetNamedNumber(L"targetId") == 22, "physical dwell creates group");
-        MenuPublish(api,host,LR"({"version":2,"publishOnly":true,"strip":{"version":2,"base":50,"revision":51,"rows":[],"removed":[],"groups":[{"id":7,"name":"New group","label":"New group","collapsed":false}],"layout":[{"group":7,"tab":0},{"group":7,"tab":11},{"group":7,"tab":22}]}})");
-        Require(SUCCEEDED(api.syncTabs(host,tabs,2,11, NextTabRevision(), &selected)), "Firefox confirms created group");
+        auto action = NextRequest(api, host, 5, L"strip-create-group").GetNamedObject(L"action");
+        Require(action.GetNamedNumber(L"id") == 11 && action.GetNamedNumber(L"targetId") == 22,
+                "physical dwell creates group");
+        MenuPublish(
+            api, host,
+            LR"({"version":2,"publishOnly":true,"strip":{"version":2,"base":50,"revision":51,"rows":[],"removed":[],"groups":[{"id":7,"name":"New group","label":"New group","collapsed":false}],"layout":[{"group":7,"tab":0},{"group":7,"tab":11},{"group":7,"tab":22}]}})");
+        Require(SUCCEEDED(api.syncTabs(host, tabs, 2, 11, NextTabRevision(), &selected)),
+                "Firefox confirms created group");
         settle(100);
         // Raw capture can deprive TabViewItem of PointerReleased. Re-enter the
         // retained source after grouping, without another press or selection.
@@ -5618,13 +6619,13 @@ static void CheckTabStripDrag(HMODULE module, WinUIPaneApi& api, HWND host, bool
         moveTo(groupedBounds.right - 48, (groupedBounds.top + groupedBounds.bottom) / 2);
         settle();
         CheckAttachedTabAppearance(first);
-        auto templateRoot = Media::VisualTreeHelper::GetChild(first,0).as<FrameworkElement>();
+        auto templateRoot = Media::VisualTreeHelper::GetChild(first, 0).as<FrameworkElement>();
         auto background = templateRoot.FindName(L"SelectedBackgroundPath").as<FrameworkElement>();
         Require(first.IsSelected() && background.Visibility() == Visibility::Visible && background.Opacity() == 1,
                 "grouped active tab immediately has its attached selected background");
         return;
     }
-    auto event = NextRequest(api, host, 5, L"strip-reorder",40,reject ? 2 : 1).GetNamedObject(L"action", nullptr);
+    auto event = NextRequest(api, host, 5, L"strip-reorder", 40, reject ? 2 : 1).GetNamedObject(L"action", nullptr);
     Require(event && event.Size() && event.GetNamedNumber(L"id") == 11 && event.GetNamedNumber(L"beforeId") == 0,
             "a real pointer drag past the last tab queues a validated move-to-end request");
     if (reject) {
@@ -5635,11 +6636,13 @@ static void CheckTabStripDrag(HMODULE module, WinUIPaneApi& api, HWND host, bool
     const auto pendingOffset = first.RenderTransform().as<Media::TranslateTransform>().X();
     Require(first.Opacity() == 1 && pendingOffset > first.ActualWidth() / 2,
             "released tab is revealed at the destination while awaiting Firefox");
-    Require(SUCCEEDED(api.syncTabs(host,tabs,2,11, NextTabRevision(), &selected)), "unrelated old-order snapshot while reorder is pending");
+    Require(SUCCEEDED(api.syncTabs(host, tabs, 2, 11, NextTabRevision(), &selected)),
+            "unrelated old-order snapshot while reorder is pending");
     Require(first.RenderTransform().as<Media::TranslateTransform>().X() == pendingOffset,
             "old-order snapshot does not flash the released tab at its original slot");
-    WinUITab confirmed[]{{22,L"Second tab"},{11,L"First tab"}};
-    Require(SUCCEEDED(api.syncTabs(host,confirmed,2,11, NextTabRevision(), &selected)), "Firefox confirms move to end");
+    WinUITab confirmed[]{{22, L"Second tab"}, {11, L"First tab"}};
+    Require(SUCCEEDED(api.syncTabs(host, confirmed, 2, 11, NextTabRevision(), &selected)),
+            "Firefox confirms move to end");
     Require(view.TabItems().GetAt(1) == first && first.RenderTransform().as<Media::TranslateTransform>().X() == 0,
             "confirmed order replaces the temporary offset without a settle animation");
 }
@@ -5658,21 +6661,32 @@ static void CheckTabStripOverflowDrag(HMODULE module, WinUIPaneApi& api, HWND ho
     std::vector<WinUITab> tabs{{11, L"First tab"}};
     for (uint32_t id = 101; id <= 113; ++id) tabs.push_back({id, L"Overflow tab"});
     uint32_t selected{};
-    Require(SUCCEEDED(api.syncTabs(host, tabs.data(), uint32_t(tabs.size()), 11, NextTabRevision(), &selected)), "sync overflowing strip");
+    Require(SUCCEEDED(api.syncTabs(host, tabs.data(), uint32_t(tabs.size()), 11, NextTabRevision(), &selected)),
+            "sync overflowing strip");
     auto inspect = reinterpret_cast<HRESULT(WINAPI*)(HWND, void**)>(GetProcAddress(module, "WinUIPaneTestGetContent"));
     UIElement content{nullptr};
     Require(SUCCEEDED(inspect(host, put_abi(content))), "inspect overflowing strip");
     auto view = content.as<Controls::Grid>().Children().GetAt(0).as<Controls::TabView>();
     auto first = view.TabItems().GetAt(0).as<Controls::TabViewItem>();
-    for (int i = 0; i < 300 && (!first.IsLoaded() || first.ActualWidth() == 0); ++i) { Pump(); Sleep(10); }
+    for (int i = 0; i < 300 && (!first.IsLoaded() || first.ActualWidth() == 0); ++i) {
+        Pump();
+        Sleep(10);
+    }
     Require(first.IsLoaded() && first.ActualWidth() > 0, "overflow tab realized before drag");
     SetForegroundWindow(host);
-    auto settle = [&](int iterations = 30) { for (int i = 0; i < iterations; ++i) { Pump(); Sleep(10); } };
+    auto settle = [&](int iterations = 30) {
+        for (int i = 0; i < iterations; ++i) {
+            Pump();
+            Sleep(10);
+        }
+    };
     settle();
     // The strip keeps the active tab revealed, which can leave the first tab
     // mostly scrolled away. Start from the left so it is fully under the pointer.
-    std::function<Controls::ScrollViewer(DependencyObject const&)> findScroller = [&](DependencyObject const& node) -> Controls::ScrollViewer {
-        if (auto scroll = node.try_as<Controls::ScrollViewer>(); scroll && scroll.Name() == L"ScrollViewer") return scroll;
+    std::function<Controls::ScrollViewer(DependencyObject const&)> findScroller =
+        [&](DependencyObject const& node) -> Controls::ScrollViewer {
+        if (auto scroll = node.try_as<Controls::ScrollViewer>(); scroll && scroll.Name() == L"ScrollViewer")
+            return scroll;
         for (int i = 0; i < Media::VisualTreeHelper::GetChildrenCount(node); ++i)
             if (auto found = findScroller(Media::VisualTreeHelper::GetChild(node, i))) return found;
         return nullptr;
@@ -5687,7 +6701,12 @@ static void CheckTabStripOverflowDrag(HMODULE module, WinUIPaneApi& api, HWND ho
     const LONG endX = viewLeft + LONG(view.ActualWidth()) - 8;
     Require(SetCursorPos(client.x, client.y) != 0, "position cursor over first overflow tab");
     settle();
-    auto send = [](DWORD flags) { INPUT input{}; input.type = INPUT_MOUSE; input.mi.dwFlags = flags; SendInput(1, &input, sizeof(INPUT)); };
+    auto send = [](DWORD flags) {
+        INPUT input{};
+        input.type = INPUT_MOUSE;
+        input.mi.dwFlags = flags;
+        SendInput(1, &input, sizeof(INPUT));
+    };
     auto moveTo = [&](LONG x, LONG y) {
         int vx = GetSystemMetrics(SM_XVIRTUALSCREEN), vy = GetSystemMetrics(SM_YVIRTUALSCREEN);
         int vw = GetSystemMetrics(SM_CXVIRTUALSCREEN), vh = GetSystemMetrics(SM_CYVIRTUALSCREEN);
@@ -5700,7 +6719,10 @@ static void CheckTabStripOverflowDrag(HMODULE module, WinUIPaneApi& api, HWND ho
     };
     send(MOUSEEVENTF_LEFTDOWN);
     settle();
-    for (int step = 1; step <= 25; ++step) { moveTo(client.x + (endX - client.x) * step / 25, client.y); settle(5); }
+    for (int step = 1; step <= 25; ++step) {
+        moveTo(client.x + (endX - client.x) * step / 25, client.y);
+        settle(5);
+    }
     // Hold still at the edge: only the drag's own scrolling can change anything.
     settle(400);
     send(MOUSEEVENTF_LEFTUP);
@@ -5712,7 +6734,8 @@ static void CheckTabStripOverflowDrag(HMODULE module, WinUIPaneApi& api, HWND ho
     WinUITab order[14];
     for (uint32_t i = 0; i < 13; ++i) order[i] = tabs[i + 1];
     order[13] = tabs[0];
-    Require(SUCCEEDED(api.syncTabs(host, order, 14, 11, NextTabRevision(), &selected)), "Firefox confirms overflow move to end");
+    Require(SUCCEEDED(api.syncTabs(host, order, 14, 11, NextTabRevision(), &selected)),
+            "Firefox confirms overflow move to end");
     WinUITab restored[]{{11, L"First tab"}, {22, L"Second tab"}};
     Require(SUCCEEDED(api.syncTabs(host, restored, 2, 11, NextTabRevision(), &selected)), "restore the two-tab strip");
     settle();
@@ -5721,19 +6744,23 @@ static void CheckTabStripOverflowDrag(HMODULE module, WinUIPaneApi& api, HWND ho
 
 // The innermost element with `id` inside the stock TabListView. Group header
 // IDs also occur outside it, so a whole-tree search can return the wrong one.
-static winrt::Microsoft::UI::Xaml::FrameworkElement FindInTabList(winrt::Microsoft::UI::Xaml::Controls::TabView const& view,
-                                                                 winrt::hstring const& id) {
+static winrt::Microsoft::UI::Xaml::FrameworkElement FindInTabList(
+    winrt::Microsoft::UI::Xaml::Controls::TabView const& view, winrt::hstring const& id) {
     using namespace winrt::Microsoft::UI::Xaml;
-    std::function<FrameworkElement(DependencyObject const&)> list = [&](DependencyObject const& node) -> FrameworkElement {
+    std::function<FrameworkElement(DependencyObject const&)> list =
+        [&](DependencyObject const& node) -> FrameworkElement {
         if (auto element = node.try_as<FrameworkElement>(); element && element.Name() == L"TabListView") return element;
         for (int i = 0; i < Media::VisualTreeHelper::GetChildrenCount(node); ++i)
             if (auto found = list(Media::VisualTreeHelper::GetChild(node, i))) return found;
         return nullptr;
     };
-    std::function<FrameworkElement(DependencyObject const&)> find = [&](DependencyObject const& node) -> FrameworkElement {
+    std::function<FrameworkElement(DependencyObject const&)> find =
+        [&](DependencyObject const& node) -> FrameworkElement {
         for (int i = 0; i < Media::VisualTreeHelper::GetChildrenCount(node); ++i)
             if (auto found = find(Media::VisualTreeHelper::GetChild(node, i))) return found;
-        if (auto element = node.try_as<FrameworkElement>(); element && Automation::AutomationProperties::GetAutomationId(element) == id) return element;
+        if (auto element = node.try_as<FrameworkElement>();
+            element && Automation::AutomationProperties::GetAutomationId(element) == id)
+            return element;
         return nullptr;
     };
     auto root = list(view);
@@ -5749,7 +6776,9 @@ static bool GroupHiddenWhileLeaving(winrt::Microsoft::UI::Xaml::Controls::TabVie
     for (uint32_t i = 0; i < view.TabItems().Size(); ++i) {
         auto row = view.TabItems().GetAt(i).as<Controls::TabViewItem>();
         const auto tag = winrt::unbox_value<uint32_t>(row.Tag());
-        if (std::find(members.begin(), members.end(), tag) != members.end() && row.Visibility() != Visibility::Collapsed) return false;
+        if (std::find(members.begin(), members.end(), tag) != members.end() &&
+            row.Visibility() != Visibility::Collapsed)
+            return false;
     }
     return true;
 }
@@ -5763,35 +6792,57 @@ static bool GroupHiddenWhileLeaving(winrt::Microsoft::UI::Xaml::Controls::TabVie
 static void CheckGroupCrossWindowAdopt(HMODULE module, WinUIPaneApi& api, bool accept, bool overlap = false) {
     using namespace winrt;
     using namespace winrt::Microsoft::UI::Xaml;
-    auto settle = [](int n = 30) { for (int i = 0; i < n; ++i) { Pump(); Sleep(10); } };
-    auto send = [](DWORD f) { INPUT i{}; i.type = INPUT_MOUSE; i.mi.dwFlags = f; SendInput(1, &i, sizeof(i)); };
+    auto settle = [](int n = 30) {
+        for (int i = 0; i < n; ++i) {
+            Pump();
+            Sleep(10);
+        }
+    };
+    auto send = [](DWORD f) {
+        INPUT i{};
+        i.type = INPUT_MOUSE;
+        i.mi.dwFlags = f;
+        SendInput(1, &i, sizeof(i));
+    };
     auto moveTo = [](LONG x, LONG y) {
-        int vx = GetSystemMetrics(SM_XVIRTUALSCREEN), vy = GetSystemMetrics(SM_YVIRTUALSCREEN), vw = GetSystemMetrics(SM_CXVIRTUALSCREEN), vh = GetSystemMetrics(SM_CYVIRTUALSCREEN);
-        INPUT i{}; i.type = INPUT_MOUSE; i.mi.dwFlags = MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_VIRTUALDESK;
-        i.mi.dx = AbsoluteMouse(x - vx, vw); i.mi.dy = AbsoluteMouse(y - vy, vh); SendInput(1, &i, sizeof(i));
+        int vx = GetSystemMetrics(SM_XVIRTUALSCREEN), vy = GetSystemMetrics(SM_YVIRTUALSCREEN),
+            vw = GetSystemMetrics(SM_CXVIRTUALSCREEN), vh = GetSystemMetrics(SM_CYVIRTUALSCREEN);
+        INPUT i{};
+        i.type = INPUT_MOUSE;
+        i.mi.dwFlags = MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_VIRTUALDESK;
+        i.mi.dx = AbsoluteMouse(x - vx, vw);
+        i.mi.dy = AbsoluteMouse(y - vy, vh);
+        SendInput(1, &i, sizeof(i));
     };
     RECT rect{0, 0, 600, 48};
     // Fresh windows clear of the shared host, which still carries earlier group fixtures.
     HWND host = CreateFixtureWindow(0, L"STATIC", L"Group drag source", WS_OVERLAPPEDWINDOW, 1000, 200, 640, 240,
-                                nullptr, nullptr, GetModuleHandleW(nullptr), nullptr);
+                                    nullptr, nullptr, GetModuleHandleW(nullptr), nullptr);
     Require(host != nullptr, "source window for cross-window group drag");
     Require(SUCCEEDED(api.updateTabStrip(host, &rect, TRUE)), "source strip for cross-window group drag");
     ShowWindow(host, SW_SHOW);
     WinUITab tabs[]{{11, L"One"}, {22, L"Two"}, {101, L"Loose"}};
     uint32_t selected{};
-    Require(SUCCEEDED(api.syncTabs(host, tabs, 3, 11, NextTabRevision(), &selected)), "source tabs for cross-window group drag");
-    MenuPublish(api, host, (L"{\"version\":2,\"publishOnly\":true,\"strip\":{\"version\":2,\"base\":0,\"revision\":" + std::to_wstring(1) +
-        L",\"rtl\":false,\"windowDragSession\":5,\"groupsLabel\":\"Groups\",\"groups\":[{\"id\":7,\"name\":\"First\",\"label\":\"First\",\"collapsed\":false}],"
-        L"\"rows\":[{\"id\":11,\"detail\":\"\",\"flags\":0},{\"id\":22,\"detail\":\"\",\"flags\":0},{\"id\":101,\"detail\":\"\",\"flags\":0}],"
-        L"\"layout\":[{\"group\":7,\"tab\":0},{\"group\":7,\"tab\":11},{\"group\":7,\"tab\":22},{\"group\":0,\"tab\":101}]}}").c_str());
+    Require(SUCCEEDED(api.syncTabs(host, tabs, 3, 11, NextTabRevision(), &selected)),
+            "source tabs for cross-window group drag");
+    MenuPublish(
+        api, host,
+        (L"{\"version\":2,\"publishOnly\":true,\"strip\":{\"version\":2,\"base\":0,\"revision\":" + std::to_wstring(1) +
+         L",\"rtl\":false,\"windowDragSession\":5,\"groupsLabel\":\"Groups\",\"groups\":[{\"id\":7,\"name\":\"First\","
+         L"\"label\":\"First\",\"collapsed\":false}],"
+         L"\"rows\":[{\"id\":11,\"detail\":\"\",\"flags\":0},{\"id\":22,\"detail\":\"\",\"flags\":0},{\"id\":101,"
+         L"\"detail\":\"\",\"flags\":0}],"
+         L"\"layout\":[{\"group\":7,\"tab\":0},{\"group\":7,\"tab\":11},{\"group\":7,\"tab\":22},{\"group\":0,\"tab\":"
+         L"101}]}}")
+            .c_str());
 
     HWND host2 = CreateFixtureWindow(0, L"STATIC", L"Group drop target", WS_OVERLAPPEDWINDOW, 1000, 480, 640, 240,
-                                  nullptr, nullptr, GetModuleHandleW(nullptr), nullptr);
+                                     nullptr, nullptr, GetModuleHandleW(nullptr), nullptr);
     Require(host2 != nullptr, "destination window for cross-window group drag");
     HWND covered{};
     if (overlap) {
-        HWND candidate = CreateFixtureWindow(0, L"STATIC", L"Covered group drop target", WS_OVERLAPPEDWINDOW,
-                                         1000, 480, 640, 240, nullptr, nullptr, GetModuleHandleW(nullptr), nullptr);
+        HWND candidate = CreateFixtureWindow(0, L"STATIC", L"Covered group drop target", WS_OVERLAPPEDWINDOW, 1000, 480,
+                                             640, 240, nullptr, nullptr, GetModuleHandleW(nullptr), nullptr);
         Require(candidate != nullptr, "covered destination window for overlapping group drag");
         // state().panes is ordered by numeric HWND. Make that first candidate
         // the covered window so the regression deterministically exercises the
@@ -5808,21 +6859,31 @@ static void CheckGroupCrossWindowAdopt(HMODULE module, WinUIPaneApi& api, bool a
         ShowWindow(covered, SW_SHOWNOACTIVATE);
         WinUITab coveredTabs[]{{301, L"Covered"}};
         uint32_t coveredSelected{};
-        Require(SUCCEEDED(api.syncTabs(covered, coveredTabs, 1, 301, NextTabRevision(), &coveredSelected)), "covered destination tabs");
-        MenuPublish(api, covered, LR"({"version":2,"publishOnly":true,"strip":{"version":2,"base":0,"revision":100,"rtl":false,"windowDragSession":18,"groupsLabel":"Groups","groups":[],"rows":[{"id":301,"detail":"","flags":0}],"layout":[{"group":0,"tab":301}]}})");
+        Require(SUCCEEDED(api.syncTabs(covered, coveredTabs, 1, 301, NextTabRevision(), &coveredSelected)),
+                "covered destination tabs");
+        MenuPublish(
+            api, covered,
+            LR"({"version":2,"publishOnly":true,"strip":{"version":2,"base":0,"revision":100,"rtl":false,"windowDragSession":18,"groupsLabel":"Groups","groups":[],"rows":[{"id":301,"detail":"","flags":0}],"layout":[{"group":0,"tab":301}]}})");
     }
     Require(SUCCEEDED(api.updateTabStrip(host2, &rect, TRUE)), "destination strip for cross-window group drag");
     ShowWindow(host2, SW_SHOWNOACTIVATE);
-    if (covered)
-        SetWindowPos(host2, HWND_TOP, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+    if (covered) SetWindowPos(host2, HWND_TOP, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
     WinUITab tabs2[]{{201, L"Here"}, {203, L"Grouped"}, {202, L"There"}};
     uint32_t selected2{};
     Require(SUCCEEDED(api.syncTabs(host2, tabs2, 3, 201, NextTabRevision(), &selected2)), "destination tabs");
     auto publish2 = [&](uint32_t revision, std::wstring const& extraGroup, std::wstring const& extraLayout) {
-        MenuPublish(api, host2, (L"{\"version\":2,\"publishOnly\":true,\"strip\":{\"version\":2,\"base\":0,\"revision\":" + std::to_wstring(revision) +
-            L",\"rtl\":false,\"windowDragSession\":8,\"groupsLabel\":\"Groups\",\"groups\":[{\"id\":9,\"name\":\"Ninth\",\"label\":\"Ninth\",\"collapsed\":false}" + extraGroup + L"],"
-            L"\"rows\":[{\"id\":201,\"detail\":\"\",\"flags\":0},{\"id\":203,\"detail\":\"\",\"flags\":0},{\"id\":202,\"detail\":\"\",\"flags\":0}],"
-            L"\"layout\":[{\"group\":0,\"tab\":201}" + extraLayout + L",{\"group\":9,\"tab\":0},{\"group\":9,\"tab\":203},{\"group\":0,\"tab\":202}]}}").c_str());
+        MenuPublish(api, host2,
+                    (L"{\"version\":2,\"publishOnly\":true,\"strip\":{\"version\":2,\"base\":0,\"revision\":" +
+                     std::to_wstring(revision) +
+                     L",\"rtl\":false,\"windowDragSession\":8,\"groupsLabel\":\"Groups\",\"groups\":[{\"id\":9,"
+                     L"\"name\":\"Ninth\",\"label\":\"Ninth\",\"collapsed\":false}" +
+                     extraGroup +
+                     L"],"
+                     L"\"rows\":[{\"id\":201,\"detail\":\"\",\"flags\":0},{\"id\":203,\"detail\":\"\",\"flags\":0},{"
+                     L"\"id\":202,\"detail\":\"\",\"flags\":0}],"
+                     L"\"layout\":[{\"group\":0,\"tab\":201}" +
+                     extraLayout + L",{\"group\":9,\"tab\":0},{\"group\":9,\"tab\":203},{\"group\":0,\"tab\":202}]}}")
+                        .c_str());
     };
     publish2(100, L"", L"");
     settle(60);
@@ -5846,28 +6907,36 @@ static void CheckGroupCrossWindowAdopt(HMODULE module, WinUIPaneApi& api, bool a
     AwaitLiveTree(header);
     SetWindowPos(host, HWND_TOP, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
     SetForegroundWindow(host);
-    for (int attempt = 0; attempt < 30 && GetForegroundWindow() != host; ++attempt) { SetForegroundWindow(host); settle(10); }
+    for (int attempt = 0; attempt < 30 && GetForegroundWindow() != host; ++attempt) {
+        SetForegroundWindow(host);
+        settle(10);
+    }
     Require(GetForegroundWindow() == host, "source window owns foreground before the group drag");
     // Use the Window's live XAML converter rather than reconstructing its
     // screen origin from the host client area and a historical island offset.
     auto screenAt = [&](Controls::TabView const& view, wchar_t const* id, double fx) {
         auto element = FindInTabList(view, id);
         Require(element != nullptr, "group header realized for screen mapping");
-        const auto local = element.TransformToVisual(nullptr).TransformPoint({float(element.ActualWidth() * fx), float(element.ActualHeight() / 2)});
+        const auto local = element.TransformToVisual(nullptr).TransformPoint(
+            {float(element.ActualWidth() * fx), float(element.ActualHeight() / 2)});
         const auto screen = view.XamlRoot().ContentIsland().CoordinateConverter().ConvertLocalToScreen(local);
         return POINT{screen.X, screen.Y};
     };
     // Both strips overflow; scroll each to its start so the headers are in view.
-    std::function<Controls::ScrollViewer(DependencyObject const&)> scrollerOf = [&](DependencyObject const& n) -> Controls::ScrollViewer {
+    std::function<Controls::ScrollViewer(DependencyObject const&)> scrollerOf =
+        [&](DependencyObject const& n) -> Controls::ScrollViewer {
         if (auto sc = n.try_as<Controls::ScrollViewer>(); sc && sc.Name() == L"ScrollViewer") return sc;
-        for (int i = 0; i < Media::VisualTreeHelper::GetChildrenCount(n); ++i) if (auto r = scrollerOf(Media::VisualTreeHelper::GetChild(n, i))) return r;
+        for (int i = 0; i < Media::VisualTreeHelper::GetChildrenCount(n); ++i)
+            if (auto r = scrollerOf(Media::VisualTreeHelper::GetChild(n, i))) return r;
         return nullptr;
     };
     for (auto view : {view1, view2})
         if (auto scroller = scrollerOf(view))
-            scroller.ChangeView(winrt::box_value(0.0).as<winrt::Windows::Foundation::IReference<double>>(), nullptr, nullptr, true);
+            scroller.ChangeView(winrt::box_value(0.0).as<winrt::Windows::Foundation::IReference<double>>(), nullptr,
+                                nullptr, true);
     settle(30);
-    const double ninthLeft = leftOf(L"FennInlineGroup-9"), memberLeft = leftOf(L"FennTab-203"), firstLeft = leftOf(L"FennTab-201");
+    const double ninthLeft = leftOf(L"FennInlineGroup-9"), memberLeft = leftOf(L"FennTab-203"),
+                 firstLeft = leftOf(L"FennTab-201");
     const POINT start = screenAt(view1, L"FennInlineGroup-7", .5);
     {
         POINT origin{rect.left, rect.top};
@@ -5885,11 +6954,12 @@ static void CheckGroupCrossWindowAdopt(HMODULE module, WinUIPaneApi& api, bool a
     RECT arrival{};
     Require(GetWindowRect(host, &arrival), "source bounds for physical pointer arrival");
     const LONG width = arrival.right - arrival.left, height = arrival.bottom - arrival.top;
-    for (const POINT point : {POINT{width/2,height/2}, POINT{width/2,60}, POINT{width/2,20},
-                             POINT{width/3,20}, POINT{width/2,60}, POINT{width/2,height/2},
-                             POINT{width/2+100,height/2+100}}) {
+    for (const POINT point :
+         {POINT{width / 2, height / 2}, POINT{width / 2, 60}, POINT{width / 2, 20}, POINT{width / 3, 20},
+          POINT{width / 2, 60}, POINT{width / 2, height / 2}, POINT{width / 2 + 100, height / 2 + 100}}) {
         for (LONG nudge = 0; nudge < 8; ++nudge) {
-            moveTo(arrival.left + point.x + nudge, arrival.top + point.y); settle(3);
+            moveTo(arrival.left + point.x + nudge, arrival.top + point.y);
+            settle(3);
         }
         settle(40);
     }
@@ -5897,32 +6967,43 @@ static void CheckGroupCrossWindowAdopt(HMODULE module, WinUIPaneApi& api, bool a
     const auto pointerStarted = GetTickCount64();
     auto headerButton = header.as<Controls::Primitives::ButtonBase>();
     while (!headerButton.IsPointerOver() && GetTickCount64() - pointerStarted < LiveTreeTimeoutMs) {
-        Pump(); Sleep(10);
+        Pump();
+        Sleep(10);
     }
     Require(headerButton.IsPointerOver(), "group header receives physical pointer entry before pickup");
-    send(MOUSEEVENTF_LEFTDOWN); settle();
-    moveTo(start.x + 12, start.y); settle();
-    for (int step = 1; step <= 20; ++step) { moveTo(start.x + 12 + (drop.x - start.x - 12) * step / 20, start.y + (drop.y - start.y) * step / 20); settle(5); }
+    send(MOUSEEVENTF_LEFTDOWN);
+    settle();
+    moveTo(start.x + 12, start.y);
+    settle();
+    for (int step = 1; step <= 20; ++step) {
+        moveTo(start.x + 12 + (drop.x - start.x - 12) * step / 20, start.y + (drop.y - start.y) * step / 20);
+        settle(5);
+    }
     settle(40);
     auto previews = DragPreviewWindows();
-    Require(previews.size() == 1 && IsWindowVisible(previews[0]), "over another window's strip the group still follows the cursor");
+    Require(previews.size() == 1 && IsWindowVisible(previews[0]),
+            "over another window's strip the group still follows the cursor");
     const auto shown = AwaitDragPreview(previews[0]);
     if (!overlap)
         Require(shown.top < drop.y && shown.bottom > drop.y && shown.left <= drop.x && shown.right >= drop.x,
                 "the floating group sits in the destination strip's row band under the cursor");
-    settle(20); // the gap eases in
+    settle(20);  // the gap eases in
     const double gap = leftOf(L"FennInlineGroup-9") - ninthLeft;
     Require(gap > 8 && std::abs(leftOf(L"FennTab-203") - memberLeft - gap) < .5,
             "the destination opens a gap before its whole group, moving header and member together");
     Require(std::abs(leftOf(L"FennTab-201") - firstLeft) < .5, "blocks before the insertion point stay put");
-    send(MOUSEEVENTF_LEFTUP); settle();
+    send(MOUSEEVENTF_LEFTUP);
+    settle();
     Require(DragPreviewWindows().empty(), "release over another strip destroys the floating group");
-    auto event = NextRequest(api, host2, 5, L"strip-group-adopt", 40, accept ? 1 : 2).GetNamedObject(L"action", nullptr);
+    auto event =
+        NextRequest(api, host2, 5, L"strip-group-adopt", 40, accept ? 1 : 2).GetNamedObject(L"action", nullptr);
     Require(event && event.GetNamedNumber(L"sourceHwnd") == double(reinterpret_cast<uintptr_t>(host)) &&
-            event.GetNamedNumber(L"sourceSession") == 5 && event.GetNamedNumber(L"session") == 8 &&
-            event.GetNamedNumber(L"group") == 7 && event.GetNamedNumber(L"beforeGroup") == 9 && event.GetNamedNumber(L"beforeTab") == 0,
+                event.GetNamedNumber(L"sourceSession") == 5 && event.GetNamedNumber(L"session") == 8 &&
+                event.GetNamedNumber(L"group") == 7 && event.GetNamedNumber(L"beforeGroup") == 9 &&
+                event.GetNamedNumber(L"beforeTab") == 0,
             "the destination asks Firefox to adopt the source's group before its whole group");
-    Require(!NextRequest(api, host, 5, L"strip-group-detach", 10).Size() && !NextRequest(api, host, 5, L"strip-group-reorder", 10).Size(),
+    Require(!NextRequest(api, host, 5, L"strip-group-detach", 10).Size() &&
+                !NextRequest(api, host, 5, L"strip-group-reorder", 10).Size(),
             "the source neither detaches nor reorders a group dropped on another window");
     if (covered)
         Require(!NextRequest(api, covered, 18, L"strip-group-adopt", 10).Size(),
@@ -5933,7 +7014,8 @@ static void CheckGroupCrossWindowAdopt(HMODULE module, WinUIPaneApi& api, bool a
                 "the source keeps the group hidden while the other window adopts it");
     } else {
         auto button = FindInTabList(view1, L"FennInlineGroup-7");
-        Require(button && button.Opacity() == 1 && button.IsHitTestVisible() && !GroupHiddenWhileLeaving(view1, L"FennInlineGroup-7", {11, 22}),
+        Require(button && button.Opacity() == 1 && button.IsHitTestVisible() &&
+                    !GroupHiddenWhileLeaving(view1, L"FennInlineGroup-7", {11, 22}),
                 "a refused adopt shows the group in its own window again");
         for (uint32_t i = 0; i < view1.TabItems().Size(); ++i)
             Require(view1.TabItems().GetAt(i).as<Controls::TabViewItem>().Visibility() == Visibility::Visible,
@@ -5944,17 +7026,21 @@ static void CheckGroupCrossWindowAdopt(HMODULE module, WinUIPaneApi& api, bool a
     if (accept) {
         Require(std::abs(held - gap) < .5, "an accepted adopt keeps the gap until Firefox publishes the group");
         // Firefox's adoption arrives as a new layout with the group in place.
-        publish2(101, L",{\"id\":12,\"name\":\"First\",\"label\":\"First\",\"collapsed\":true}", L",{\"group\":12,\"tab\":0}");
+        publish2(101, L",{\"id\":12,\"name\":\"First\",\"label\":\"First\",\"collapsed\":true}",
+                 L",{\"group\":12,\"tab\":0}");
         settle(40);
         auto landed = FindInTabList(view2, L"FennInlineGroup-12");
         Require(landed && landed.ActualWidth() > 0 &&
-                leftOf(L"FennInlineGroup-12") + landed.ActualWidth() <= leftOf(L"FennInlineGroup-9") + .5,
+                    leftOf(L"FennInlineGroup-12") + landed.ActualWidth() <= leftOf(L"FennInlineGroup-9") + .5,
                 "the published group replaces the held gap");
         Require(GroupHiddenWhileLeaving(view1, L"FennInlineGroup-7", {11, 22}),
                 "the source group stays hidden until its own window publishes without it");
         WinUITab rest[]{{101, L"Loose"}};
-        MenuPublish(api, host, LR"({"version":2,"publishOnly":true,"strip":{"version":2,"base":0,"revision":2,"rtl":false,"windowDragSession":5,"groupsLabel":"Groups","groups":[],"rows":[{"id":101,"detail":"","flags":0}],"layout":[{"group":0,"tab":101}]}})");
-        Require(SUCCEEDED(api.syncTabs(host, rest, 1, 101, NextTabRevision(), &selected)), "the group's tabs leave the source");
+        MenuPublish(
+            api, host,
+            LR"({"version":2,"publishOnly":true,"strip":{"version":2,"base":0,"revision":2,"rtl":false,"windowDragSession":5,"groupsLabel":"Groups","groups":[],"rows":[{"id":101,"detail":"","flags":0}],"layout":[{"group":0,"tab":101}]}})");
+        Require(SUCCEEDED(api.syncTabs(host, rest, 1, 101, NextTabRevision(), &selected)),
+                "the group's tabs leave the source");
         settle();
         Require(!FindInTabList(view1, L"FennInlineGroup-7"), "the source's publication removes the departed group");
         puts(overlap ? "CHECKS PASSED: an overlapping group drop selects only the visible destination"
@@ -5998,70 +7084,118 @@ static void CheckGroupDragEdgeScroll(HMODULE module, WinUIPaneApi& api, HWND hos
     for (uint32_t id = 101; id <= 112; ++id) {
         tabs.push_back({id, L"Overflow"});
         rows += L",{\"id\":" + std::to_wstring(id) + L",\"detail\":\"\",\"flags\":0}";
-        layout += L",{\"group\":" + std::wstring(detach == GroupDetach::Sole ? L"7" : L"0") + L",\"tab\":" + std::to_wstring(id) + L"}";
+        layout += L",{\"group\":" + std::wstring(detach == GroupDetach::Sole ? L"7" : L"0") + L",\"tab\":" +
+                  std::to_wstring(id) + L"}";
     }
     uint32_t selected{};
-    Require(SUCCEEDED(api.syncTabs(host, tabs.data(), uint32_t(tabs.size()), pickup ? 112 : 11, NextTabRevision(), &selected)), "group edge tabs");
-    MenuPublish(api, host, (L"{\"version\":2,\"publishOnly\":true,\"strip\":{\"version\":2,\"base\":0,\"revision\":" + std::to_wstring(5000 + (pickup ? 1 : 0) + 4 * int(detach)) + L",\"rtl\":false" + std::wstring(detach != GroupDetach::None ? L",\"groupGlow\":true" : L"") + L",\"groupsLabel\":\"Groups\",\"groups\":[{\"id\":7,\"name\":\"First\",\"label\":\"First\",\"collapsed\":false,\"color\":4281558681}],\"rows\":[" + rows + L"],\"layout\":[" + layout + L"]}}").c_str());
+    Require(SUCCEEDED(api.syncTabs(host, tabs.data(), uint32_t(tabs.size()), pickup ? 112 : 11, NextTabRevision(),
+                                   &selected)),
+            "group edge tabs");
+    MenuPublish(api, host,
+                (L"{\"version\":2,\"publishOnly\":true,\"strip\":{\"version\":2,\"base\":0,\"revision\":" +
+                 std::to_wstring(5000 + (pickup ? 1 : 0) + 4 * int(detach)) + L",\"rtl\":false" +
+                 std::wstring(detach != GroupDetach::None ? L",\"groupGlow\":true" : L"") +
+                 L",\"groupsLabel\":\"Groups\",\"groups\":[{\"id\":7,\"name\":\"First\",\"label\":\"First\","
+                 L"\"collapsed\":false,\"color\":4281558681}],\"rows\":[" +
+                 rows + L"],\"layout\":[" + layout + L"]}}")
+                    .c_str());
     auto inspect = reinterpret_cast<HRESULT(WINAPI*)(HWND, void**)>(GetProcAddress(module, "WinUIPaneTestGetContent"));
     UIElement content{nullptr};
     Require(SUCCEEDED(inspect(host, put_abi(content))), "inspect group edge strip");
     auto view = content.as<Controls::Grid>().Children().GetAt(0).as<Controls::TabView>();
-    auto settle = [&](int n = 30) { for (int i = 0; i < n; ++i) { Pump(); Sleep(10); } };
+    auto settle = [&](int n = 30) {
+        for (int i = 0; i < n; ++i) {
+            Pump();
+            Sleep(10);
+        }
+    };
     SetForegroundWindow(host);
     settle(60);
-    std::function<Controls::ScrollViewer(DependencyObject const&)> find = [&](DependencyObject const& n) -> Controls::ScrollViewer {
+    std::function<Controls::ScrollViewer(DependencyObject const&)> find =
+        [&](DependencyObject const& n) -> Controls::ScrollViewer {
         if (auto sc = n.try_as<Controls::ScrollViewer>(); sc && sc.Name() == L"ScrollViewer") return sc;
-        for (int i = 0; i < Media::VisualTreeHelper::GetChildrenCount(n); ++i) if (auto r = find(Media::VisualTreeHelper::GetChild(n, i))) return r;
+        for (int i = 0; i < Media::VisualTreeHelper::GetChildrenCount(n); ++i)
+            if (auto r = find(Media::VisualTreeHelper::GetChild(n, i))) return r;
         return nullptr;
     };
     auto scroller = find(view);
-    scroller.ChangeView(winrt::box_value(0.0).as<winrt::Windows::Foundation::IReference<double>>(), nullptr, nullptr, true);
+    scroller.ChangeView(winrt::box_value(0.0).as<winrt::Windows::Foundation::IReference<double>>(), nullptr, nullptr,
+                        true);
     settle();
     auto header = TabScreenBounds(host, L"FennInlineGroup-7");
-    const auto vp = scroller.TransformToVisual(view).TransformBounds({0, 0, float(scroller.ActualWidth()), float(scroller.ActualHeight())});
+    const auto vp = scroller.TransformToVisual(view).TransformBounds(
+        {0, 0, float(scroller.ActualWidth()), float(scroller.ActualHeight())});
     Require(scroller.ScrollableWidth() > 0 && vp.X + vp.Width < view.ActualWidth() - 4,
             "overflowing strip has trailing controls beyond the scroller viewport");
     const POINT start{(header.left + header.right) / 2, (header.top + header.bottom) / 2};
-    SetCursorPos(start.x, start.y); settle();
-    auto send = [](DWORD f) { INPUT i{}; i.type = INPUT_MOUSE; i.mi.dwFlags = f; SendInput(1, &i, sizeof(i)); };
-    auto moveTo = [&](LONG x, LONG y) {
-        int vx = GetSystemMetrics(SM_XVIRTUALSCREEN), vy = GetSystemMetrics(SM_YVIRTUALSCREEN), vw = GetSystemMetrics(SM_CXVIRTUALSCREEN), vh = GetSystemMetrics(SM_CYVIRTUALSCREEN);
-        INPUT i{}; i.type = INPUT_MOUSE; i.mi.dwFlags = MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_VIRTUALDESK;
-        i.mi.dx = AbsoluteMouse(x - vx, vw); i.mi.dy = AbsoluteMouse(y - vy, vh); SendInput(1, &i, sizeof(i));
+    SetCursorPos(start.x, start.y);
+    settle();
+    auto send = [](DWORD f) {
+        INPUT i{};
+        i.type = INPUT_MOUSE;
+        i.mi.dwFlags = f;
+        SendInput(1, &i, sizeof(i));
     };
-    send(MOUSEEVENTF_LEFTDOWN); settle();
-    moveTo(start.x + 12, start.y); settle();
+    auto moveTo = [&](LONG x, LONG y) {
+        int vx = GetSystemMetrics(SM_XVIRTUALSCREEN), vy = GetSystemMetrics(SM_YVIRTUALSCREEN),
+            vw = GetSystemMetrics(SM_CXVIRTUALSCREEN), vh = GetSystemMetrics(SM_CYVIRTUALSCREEN);
+        INPUT i{};
+        i.type = INPUT_MOUSE;
+        i.mi.dwFlags = MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_VIRTUALDESK;
+        i.mi.dx = AbsoluteMouse(x - vx, vw);
+        i.mi.dy = AbsoluteMouse(y - vy, vh);
+        SendInput(1, &i, sizeof(i));
+    };
+    send(MOUSEEVENTF_LEFTDOWN);
+    settle();
+    moveTo(start.x + 12, start.y);
+    settle();
     if (detach != GroupDetach::None) {
-        auto glowMotion = reinterpret_cast<HRESULT(WINAPI*)(HWND, uint32_t, uint32_t, uint32_t*)>(GetProcAddress(module, "WinUIPaneTestGlowMotion"));
-        auto decoration = [&] { uint32_t drawn{}; Require(glowMotion && SUCCEEDED(glowMotion(host, 5, 7, &drawn)), "inspect group decoration"); return drawn; };
+        auto glowMotion = reinterpret_cast<HRESULT(WINAPI*)(HWND, uint32_t, uint32_t, uint32_t*)>(
+            GetProcAddress(module, "WinUIPaneTestGlowMotion"));
+        auto decoration = [&] {
+            uint32_t drawn{};
+            Require(glowMotion && SUCCEEDED(glowMotion(host, 5, 7, &drawn)), "inspect group decoration");
+            return drawn;
+        };
         Require(decoration() == 3, "a group lifted inside the strip keeps its outline and glow");
         const POINT away{start.x + 40, start.y + 160};
-        for (int step = 1; step <= 10; ++step) { moveTo(start.x + 12 + (away.x - start.x - 12) * step / 10, start.y + (away.y - start.y) * step / 10); settle(5); }
+        for (int step = 1; step <= 10; ++step) {
+            moveTo(start.x + 12 + (away.x - start.x - 12) * step / 10, start.y + (away.y - start.y) * step / 10);
+            settle(5);
+        }
         settle(40);
         auto previews = DragPreviewWindows();
         if (const auto drawn = decoration())
             fprintf(stderr, "Torn-off group decoration still drawn: %u (1 outline, 2 glow)\n", drawn);
         Require(decoration() == 0, "a torn-off group leaves no outline or glow in the strip");
         {
-            Require(previews.size() == 1 && IsWindowVisible(previews[0]), "a group pulled off the strip follows the cursor in a floating window");
+            Require(previews.size() == 1 && IsWindowVisible(previews[0]),
+                    "a group pulled off the strip follows the cursor in a floating window");
             const auto shown = AwaitDragPreview(previews[0]);
             Require(shown.right - shown.left > 8 && shown.top < away.y && shown.bottom > away.y &&
-                    shown.left <= away.x && shown.right >= away.x, "the floating group stays under the cursor at its grab point");
+                        shown.left <= away.x && shown.right >= away.x,
+                    "the floating group stays under the cursor at its grab point");
         }
         if (detach == GroupDetach::Return) {
-            for (int step = 1; step <= 10; ++step) { moveTo(away.x, away.y + (start.y - away.y) * step / 10); settle(5); }
+            for (int step = 1; step <= 10; ++step) {
+                moveTo(away.x, away.y + (start.y - away.y) * step / 10);
+                settle(5);
+            }
             settle(20);
             previews = DragPreviewWindows();
-            Require(previews.empty() || !IsWindowVisible(previews[0]), "returning over the strip hides the floating group");
+            Require(previews.empty() || !IsWindowVisible(previews[0]),
+                    "returning over the strip hides the floating group");
             Require(decoration() == 3, "returning over the strip restores the group's outline and glow");
         }
-        send(MOUSEEVENTF_LEFTUP); settle();
+        send(MOUSEEVENTF_LEFTUP);
+        settle();
         Require(DragPreviewWindows().empty(), "release destroys the floating group window");
-        auto event = NextRequest(api, host, 5, L"strip-group-detach", detach == GroupDetach::Return ? 10 : 40).GetNamedObject(L"action", nullptr);
+        auto event = NextRequest(api, host, 5, L"strip-group-detach", detach == GroupDetach::Return ? 10 : 40)
+                         .GetNamedObject(L"action", nullptr);
         if (detach != GroupDetach::Return) {
             Require(event && event.GetNamedNumber(L"group") == 7 && event.GetNamedNumber(L"session") >= 0 &&
-                    event.GetNamedNumber(L"screenX") == away.x && event.GetNamedNumber(L"screenY") == away.y,
+                        event.GetNamedNumber(L"screenX") == away.x && event.GetNamedNumber(L"screenY") == away.y,
                     "releasing a torn-off group asks Firefox to move it to a new window at the release point");
             settle();
             if (detach == GroupDetach::Sole) {
@@ -6080,26 +7214,40 @@ static void CheckGroupDragEdgeScroll(HMODULE module, WinUIPaneApi& api, HWND hos
                 std::vector<WinUITab> rest(tabs.begin() + 2, tabs.end());
                 std::wstring restRows, restLayout;
                 for (auto const& tab : rest) {
-                    restRows += std::wstring(restRows.empty() ? L"" : L",") + L"{\"id\":" + std::to_wstring(tab.id) + L",\"detail\":\"\",\"flags\":0}";
-                    restLayout += std::wstring(restLayout.empty() ? L"" : L",") + L"{\"group\":0,\"tab\":" + std::to_wstring(tab.id) + L"}";
+                    restRows += std::wstring(restRows.empty() ? L"" : L",") + L"{\"id\":" + std::to_wstring(tab.id) +
+                                L",\"detail\":\"\",\"flags\":0}";
+                    restLayout += std::wstring(restLayout.empty() ? L"" : L",") + L"{\"group\":0,\"tab\":" +
+                                  std::to_wstring(tab.id) + L"}";
                 }
                 // Firefox publishes the strip before its tabs, as the fixtures above do.
-                MenuPublish(api, host, (L"{\"version\":2,\"publishOnly\":true,\"strip\":{\"version\":2,\"base\":0,\"revision\":5005,\"rtl\":false,\"groupsLabel\":\"Groups\",\"groups\":[],\"rows\":[" +
-                    restRows + L"],\"layout\":[" + restLayout + L"]}}").c_str());
-                Require(SUCCEEDED(api.syncTabs(host, rest.data(), uint32_t(rest.size()), rest[0].id, NextTabRevision(), &selected)), "the group's tabs leave");
+                MenuPublish(api, host,
+                            (L"{\"version\":2,\"publishOnly\":true,\"strip\":{\"version\":2,\"base\":0,\"revision\":"
+                             L"5005,\"rtl\":false,\"groupsLabel\":\"Groups\",\"groups\":[],\"rows\":[" +
+                             restRows + L"],\"layout\":[" + restLayout + L"]}}")
+                                .c_str());
+                Require(SUCCEEDED(api.syncTabs(host, rest.data(), uint32_t(rest.size()), rest[0].id, NextTabRevision(),
+                                               &selected)),
+                        "the group's tabs leave");
                 settle();
                 Require(!FindInTabList(view, L"FennInlineGroup-7"), "the published layout removes the departed group");
                 for (uint32_t i = 0; i < view.TabItems().Size(); ++i)
                     Require(view.TabItems().GetAt(i).as<Controls::TabViewItem>().Visibility() == Visibility::Visible,
                             "no remaining row stays hidden after the group leaves");
                 // Put the departed tabs back for the following scenarios.
-                MenuPublish(api, host, (L"{\"version\":2,\"publishOnly\":true,\"strip\":{\"version\":2,\"base\":0,\"revision\":5006,\"rtl\":false,\"groupsLabel\":\"Groups\",\"groups\":[],\"rows\":[" +
-                    rows + L"],\"layout\":[{\"group\":0,\"tab\":11},{\"group\":0,\"tab\":22}," + restLayout + L"]}}").c_str());
-                Require(SUCCEEDED(api.syncTabs(host, tabs.data(), uint32_t(tabs.size()), 11, NextTabRevision(), &selected)), "the departed tabs return");
+                MenuPublish(
+                    api, host,
+                    (L"{\"version\":2,\"publishOnly\":true,\"strip\":{\"version\":2,\"base\":0,\"revision\":5006,"
+                     L"\"rtl\":false,\"groupsLabel\":\"Groups\",\"groups\":[],\"rows\":[" +
+                     rows + L"],\"layout\":[{\"group\":0,\"tab\":11},{\"group\":0,\"tab\":22}," + restLayout + L"]}}")
+                        .c_str());
+                Require(
+                    SUCCEEDED(api.syncTabs(host, tabs.data(), uint32_t(tabs.size()), 11, NextTabRevision(), &selected)),
+                    "the departed tabs return");
                 settle();
             }
-            puts(detach == GroupDetach::Sole ? "CHECKS PASSED: a group holding every tab asks Firefox to move its window"
-                                             : "CHECKS PASSED: group tear-off requests a new window");
+            puts(detach == GroupDetach::Sole
+                     ? "CHECKS PASSED: a group holding every tab asks Firefox to move its window"
+                     : "CHECKS PASSED: group tear-off requests a new window");
         } else {
             Require(!event, "a group released over the strip is not detached");
             puts("CHECKS PASSED: a group brought back over the strip does not detach");
@@ -6109,22 +7257,39 @@ static void CheckGroupDragEdgeScroll(HMODULE module, WinUIPaneApi& api, HWND hos
     if (pickup) {
         settle(60);
         const auto held = scroller.HorizontalOffset();
-        INPUT esc[2]{}; esc[0].type = esc[1].type = INPUT_KEYBOARD; esc[0].ki.wVk = esc[1].ki.wVk = VK_ESCAPE; esc[1].ki.dwFlags = KEYEVENTF_KEYUP;
-        SendInput(1, esc, sizeof(INPUT)); settle(); SendInput(1, esc + 1, sizeof(INPUT));
-        send(MOUSEEVENTF_LEFTUP); settle();
-        Require(held < 40, "picking up a group leaves the strip scrolled where it was instead of jumping to the active tab");
+        INPUT esc[2]{};
+        esc[0].type = esc[1].type = INPUT_KEYBOARD;
+        esc[0].ki.wVk = esc[1].ki.wVk = VK_ESCAPE;
+        esc[1].ki.dwFlags = KEYEVENTF_KEYUP;
+        SendInput(1, esc, sizeof(INPUT));
+        settle();
+        SendInput(1, esc + 1, sizeof(INPUT));
+        send(MOUSEEVENTF_LEFTUP);
+        settle();
+        Require(held < 40,
+                "picking up a group leaves the strip scrolled where it was instead of jumping to the active tab");
         puts("CHECKS PASSED: group pickup keeps the scroll position");
         return;
     }
     const LONG targetX = 300 + LONG(view.ActualWidth()) - 2;
-    for (int step = 1; step <= 20; ++step) { moveTo(start.x + (targetX - start.x) * step / 20, start.y); settle(5); }
+    for (int step = 1; step <= 20; ++step) {
+        moveTo(start.x + (targetX - start.x) * step / 20, start.y);
+        settle(5);
+    }
     settle(300);
     const auto offset = scroller.HorizontalOffset();
     const auto scrollable = scroller.ScrollableWidth();
-    INPUT esc[2]{}; esc[0].type = esc[1].type = INPUT_KEYBOARD; esc[0].ki.wVk = esc[1].ki.wVk = VK_ESCAPE; esc[1].ki.dwFlags = KEYEVENTF_KEYUP;
-    SendInput(1, esc, sizeof(INPUT)); settle(); SendInput(1, esc + 1, sizeof(INPUT));
-    send(MOUSEEVENTF_LEFTUP); settle();
-    Require(scrollable > 0 && offset >= scrollable - 1, "holding a group drag past the viewport edge scrolls the strip to its end");
+    INPUT esc[2]{};
+    esc[0].type = esc[1].type = INPUT_KEYBOARD;
+    esc[0].ki.wVk = esc[1].ki.wVk = VK_ESCAPE;
+    esc[1].ki.dwFlags = KEYEVENTF_KEYUP;
+    SendInput(1, esc, sizeof(INPUT));
+    settle();
+    SendInput(1, esc + 1, sizeof(INPUT));
+    send(MOUSEEVENTF_LEFTUP);
+    settle();
+    Require(scrollable > 0 && offset >= scrollable - 1,
+            "holding a group drag past the viewport edge scrolls the strip to its end");
     puts("CHECKS PASSED: group drag edge scroll");
 }
 
@@ -6221,11 +7386,13 @@ static void CheckTabStripDetach(HMODULE module, WinUIPaneApi& api, HWND host, bo
     puts("Detach gesture completed without crashing");
     Require(tab.Opacity() == 0, "detach release keeps the real source tab hidden");
     CheckAttachedTabAppearance(tab);
-    Require(SUCCEEDED(api.syncTabs(host,tabs,1,55, NextTabRevision(), &selected)), "old source snapshot during detach");
+    Require(SUCCEEDED(api.syncTabs(host, tabs, 1, 55, NextTabRevision(), &selected)),
+            "old source snapshot during detach");
     Require(tab.Opacity() == 0, "a departing last tab is not mistaken for a confirmed move to end");
-    auto detachEvent = NextRequest(api, host, 5, L"strip-detach",40,reject ? 2 : 1).GetNamedObject(L"action");
+    auto detachEvent = NextRequest(api, host, 5, L"strip-detach", 40, reject ? 2 : 1).GetNamedObject(L"action");
     Require(tab.Opacity() == (reject ? 1 : 0), "detach outcome restores rejected tabs but preserves accepted handoff");
-    Require(SUCCEEDED(api.syncTabs(host,nullptr,0,0, NextTabRevision(), &selected)), "source removal confirms detach");
+    Require(SUCCEEDED(api.syncTabs(host, nullptr, 0, 0, NextTabRevision(), &selected)),
+            "source removal confirms detach");
     Require(detachEvent.Size() && detachEvent.GetNamedNumber(L"id") == 55,
             "dragging a tab outside every open window's bounds queues a validated detach request");
     if (horizontal) {
@@ -6244,10 +7411,20 @@ static void CheckTabStripDetach(HMODULE module, WinUIPaneApi& api, HWND host, bo
 // landing on a DIFFERENT window's
 // strip resolves there. Same real-pointer-gesture technique as
 // CheckTabStripDrag above.
-enum class AdoptScenario { Drop, RejectDrop, CloseAfterDrop, CloseSourceAfterDrop, CloseTarget, CloseSource, ChangeThenClose, ChangeThenDrop, Offset };
+enum class AdoptScenario {
+    Drop,
+    RejectDrop,
+    CloseAfterDrop,
+    CloseSourceAfterDrop,
+    CloseTarget,
+    CloseSource,
+    ChangeThenClose,
+    ChangeThenDrop,
+    Offset
+};
 
 static void CheckTabStripCrossWindowAdopt(HMODULE module, WinUIPaneApi& api, HWND host,
-                                         AdoptScenario scenario = AdoptScenario::Drop, bool secondGap = false) {
+                                          AdoptScenario scenario = AdoptScenario::Drop, bool secondGap = false) {
     using namespace winrt;
     using namespace winrt::Microsoft::UI::Xaml;
     auto inspect = reinterpret_cast<HRESULT(WINAPI*)(HWND, void**)>(GetProcAddress(module, "WinUIPaneTestGetContent"));
@@ -6294,7 +7471,7 @@ static void CheckTabStripCrossWindowAdopt(HMODULE module, WinUIPaneApi& api, HWN
     settle(30);
 
     HWND host2 = CreateFixtureWindow(0, L"STATIC", L"Cross-window drop target", WS_OVERLAPPEDWINDOW, 680, 0, 820, 260,
-                                  nullptr, nullptr, GetModuleHandleW(nullptr), nullptr);
+                                     nullptr, nullptr, GetModuleHandleW(nullptr), nullptr);
     Require(host2 != nullptr, "second host for cross-window adopt test");
     RECT rect2 = scenario == AdoptScenario::Offset ? RECT{20, 70, 780, secondGap ? 166 : 118} : RECT{0, 0, 400, 48};
     Require(SUCCEEDED(api.updateTabStrip(host2, &rect2, TRUE)), "create strip presentation on second host");
@@ -6314,14 +7491,16 @@ static void CheckTabStripCrossWindowAdopt(HMODULE module, WinUIPaneApi& api, HWN
         Sleep(10);
     }
     Require(destTab.IsLoaded() && destTab.ActualWidth() > 0, "destination tab realized before adopt drag");
-    auto overlap = reinterpret_cast<HRESULT(WINAPI*)(HWND, HWND, uint32_t)>(GetProcAddress(module, "WinUIPaneTestTransferOverlap"));
+    auto overlap = reinterpret_cast<HRESULT(WINAPI*)(HWND, HWND, uint32_t)>(
+        GetProcAddress(module, "WinUIPaneTestTransferOverlap"));
     Require(overlap && SUCCEEDED(overlap(host, host2, 33)),
             "old adoption rejection cannot reveal a newer source departure; latest rejection restores it");
     settle(30);
 
     POINT sourceClient{(sourceBounds.left + sourceBounds.right) / 2, (sourceBounds.top + sourceBounds.bottom) / 2};
     auto destBounds = TabScreenBounds(host2, secondGap ? L"FennTab-55" : L"FennTab-44");
-    POINT destPoint{destBounds.left + (secondGap ? (destBounds.right - destBounds.left) * 2 / 5 : 5), (destBounds.top + destBounds.bottom) / 2};
+    POINT destPoint{destBounds.left + (secondGap ? (destBounds.right - destBounds.left) * 2 / 5 : 5),
+                    (destBounds.top + destBounds.bottom) / 2};
     fprintf(stderr, "Adopt test: dragging from (%ld,%ld) toward (%ld,%ld)\n", sourceClient.x, sourceClient.y,
             destPoint.x, destPoint.y);
 
@@ -6347,8 +7526,7 @@ static void CheckTabStripCrossWindowAdopt(HMODULE module, WinUIPaneApi& api, HWN
         Require(SUCCEEDED(api.updateTabStrip(host2, &rect2, TRUE)), "move target island during drag");
         settle();
         destBounds = TabScreenBounds(host2, L"FennTab-55");
-        destPoint = {(destBounds.left * 3 + destBounds.right * 2) / 5,
-                     (destBounds.top + destBounds.bottom) / 2};
+        destPoint = {(destBounds.left * 3 + destBounds.right * 2) / 5, (destBounds.top + destBounds.bottom) / 2};
     }
     // A single thread throughout -- see CheckTabStripDrag's own comment on
     // why nothing here needs to block. This thread IS the STA that owns the
@@ -6374,8 +7552,8 @@ static void CheckTabStripCrossWindowAdopt(HMODULE module, WinUIPaneApi& api, HWN
     for (int i = 0; i < 300 && sourceTab.Opacity() != 0; ++i) settle(1);
     Require(sourceTab.Opacity() == 0, "fixture has a hidden source row before destination mutation");
     if (changeTarget) {
-        WinUITab changed[]{{66, L"Moved destination tab"}, {77, L"New destination tab"},
-                           {88, L"Replacement destination tab"}};
+        WinUITab changed[]{
+            {66, L"Moved destination tab"}, {77, L"New destination tab"}, {88, L"Replacement destination tab"}};
         // Closing covers shrinkage; dropping covers a same-count replacement
         // and reorder, which a count-only invalidation would miss.
         uint32_t changedCount = scenario == AdoptScenario::ChangeThenDrop ? 3 : 2;
@@ -6435,12 +7613,14 @@ static void CheckTabStripCrossWindowAdopt(HMODULE module, WinUIPaneApi& api, HWN
     // independent rather than one shared list.
     Require(sourceTab.Opacity() == 0, "foreign drop does not reveal the original source slot");
     CheckAttachedTabAppearance(sourceTab);
-    Require(SUCCEEDED(api.syncTabs(host,tabs,1,33, NextTabRevision(), &selected)), "old source snapshot during adoption");
+    Require(SUCCEEDED(api.syncTabs(host, tabs, 1, 33, NextTabRevision(), &selected)),
+            "old source snapshot during adoption");
     Require(sourceTab.Opacity() == 0, "old source snapshot preserves pending departure");
     if (!changeTarget && !secondGap) {
         Require(destTab.RenderTransform().as<Media::TranslateTransform>().X() > 0,
                 "destination gap survives release until adoption is published");
-        Require(SUCCEEDED(api.syncTabs(host2,tabs2,targetCount,44, NextTabRevision(), &selected2)), "old destination snapshot during adoption");
+        Require(SUCCEEDED(api.syncTabs(host2, tabs2, targetCount, 44, NextTabRevision(), &selected2)),
+                "old destination snapshot during adoption");
         Require(destTab.RenderTransform().as<Media::TranslateTransform>().X() > 0,
                 "old destination snapshot does not close the pending gap");
     }
@@ -6452,13 +7632,14 @@ static void CheckTabStripCrossWindowAdopt(HMODULE module, WinUIPaneApi& api, HWN
     }
     if (scenario == AdoptScenario::CloseSourceAfterDrop) {
         Require(SUCCEEDED(api.destroy(host)), "source closes before adoption outcome");
-        Require(NextRequest(api,host2,5,L"strip-adopt",40,2).Size(), "pending outcome survives source teardown");
-        Require(destTab.RenderTransform().as<Media::TranslateTransform>().X() == 0, "failed adoption clears gap after source teardown");
+        Require(NextRequest(api, host2, 5, L"strip-adopt", 40, 2).Size(), "pending outcome survives source teardown");
+        Require(destTab.RenderTransform().as<Media::TranslateTransform>().X() == 0,
+                "failed adoption clears gap after source teardown");
         Require(SUCCEEDED(api.destroy(host2)), "destroy pending target");
         DestroyFixtureWindow(host2);
         return;
     }
-    auto adoptRequest = NextRequest(api, host2, 5, L"strip-adopt",40,scenario == AdoptScenario::RejectDrop ? 2 : 1);
+    auto adoptRequest = NextRequest(api, host2, 5, L"strip-adopt", 40, scenario == AdoptScenario::RejectDrop ? 2 : 1);
     Require(adoptRequest.Size(), "adopt reaches the destination window's request queue");
     Require(adoptRequest.GetNamedNumber(L"tab") == 0,
             "an incoming adopt names no tab in the destination window's own id space");
@@ -6466,18 +7647,23 @@ static void CheckTabStripCrossWindowAdopt(HMODULE module, WinUIPaneApi& api, HWN
     Require(adoptEvent.GetNamedNumber(L"id") == 33 &&
                 adoptEvent.GetNamedNumber(L"sourceHwnd") == double(reinterpret_cast<uintptr_t>(host)),
             "dropping a tab onto another window's strip queues a validated adopt request there");
-    if (secondGap) Require(adoptEvent.GetNamedNumber(L"index") == 1, "secondGap drop resolves the UIA-targeted second tab gap");
+    if (secondGap)
+        Require(adoptEvent.GetNamedNumber(L"index") == 1, "secondGap drop resolves the UIA-targeted second tab gap");
     if (scenario == AdoptScenario::ChangeThenDrop)
         Require(adoptEvent.GetNamedNumber(L"index") == 0, "drop uses the refreshed destination insertion index");
     if (scenario == AdoptScenario::RejectDrop) {
         Require(sourceTab.Opacity() == 1, "rejected adoption restores source visibility");
-        Require(destTab.RenderTransform().as<Media::TranslateTransform>().X() == 0, "rejected adoption closes destination gap");
+        Require(destTab.RenderTransform().as<Media::TranslateTransform>().X() == 0,
+                "rejected adoption closes destination gap");
     } else {
         Require(sourceTab.Opacity() == 0, "accepted adoption waits for source removal");
-        WinUITab adopted[]{{77,L"Adopted tab"},{44,L"Other window's tab"}};
-        Require(SUCCEEDED(api.syncTabs(host2,adopted,2,77, NextTabRevision(), &selected2)), "destination publishes adopted tab");
-        Require(destTab.RenderTransform().as<Media::TranslateTransform>().X() == 0, "adopted layout replaces preview gap");
-        Require(SUCCEEDED(api.syncTabs(host,nullptr,0,0, NextTabRevision(), &selected)), "source publishes departure");
+        WinUITab adopted[]{{77, L"Adopted tab"}, {44, L"Other window's tab"}};
+        Require(SUCCEEDED(api.syncTabs(host2, adopted, 2, 77, NextTabRevision(), &selected2)),
+                "destination publishes adopted tab");
+        Require(destTab.RenderTransform().as<Media::TranslateTransform>().X() == 0,
+                "adopted layout replaces preview gap");
+        Require(SUCCEEDED(api.syncTabs(host, nullptr, 0, 0, NextTabRevision(), &selected)),
+                "source publishes departure");
     }
     Require(SUCCEEDED(api.destroy(host2)), "destroy second host's pane");
     DestroyFixtureWindow(host2);
@@ -6491,7 +7677,10 @@ static int RecordFrames(wchar_t** argv) {
     const auto hwnd = reinterpret_cast<HWND>(static_cast<uintptr_t>(wcstoull(argv[2], nullptr, 16)));
     const auto duration = _wtoi(argv[3]);
     RECT client{};
-    if (!IsWindow(hwnd) || !GetClientRect(hwnd, &client)) { fputs("FAIL: no such window\n", stderr); return 2; }
+    if (!IsWindow(hwnd) || !GetClientRect(hwnd, &client)) {
+        fputs("FAIL: no such window\n", stderr);
+        return 2;
+    }
     // WINUI_GLOW_PIXELS=y samples single pixels every 4 px along row y instead.
     std::vector<RECT> bands;
     wchar_t row[16]{};
@@ -6528,8 +7717,8 @@ static void JoinWindowsAppRuntime(const wchar_t* paneDll) {
     Require(length && length < std::size(full) && name, "resolve the pane directory");
     *name = L'\0';
     const std::wstring path = std::wstring(full) + WINUI_PANE_RUNTIME_BOOTSTRAP_DLL;
-    HMODULE bootstrap = LoadLibraryExW(path.c_str(), nullptr,
-                                       LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR | LOAD_LIBRARY_SEARCH_SYSTEM32);
+    HMODULE bootstrap =
+        LoadLibraryExW(path.c_str(), nullptr, LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR | LOAD_LIBRARY_SEARCH_SYSTEM32);
     Require(bootstrap != nullptr, "load the Windows App SDK bootstrapper beside the pane");
     using InitializeFn = HRESULT(WINAPI*)(UINT32, PCWSTR, PACKAGE_VERSION, UINT32);
     const auto initialize = reinterpret_cast<InitializeFn>(GetProcAddress(bootstrap, "MddBootstrapInitialize2"));
@@ -6550,8 +7739,9 @@ static HWND CreateCompositorSibling(HWND parent) {
         return RegisterClassExW(&type) != 0;
     }();
     Require(registered, "register the simulated compositor class");
-    return CreateWindowExW(0, L"MozillaCompositorWindowClass", L"Simulated compositor", WS_CHILD | WS_VISIBLE | WS_DISABLED, 0, 0,
-                           640, 480, parent, nullptr, GetModuleHandleW(nullptr), nullptr);
+    return CreateWindowExW(0, L"MozillaCompositorWindowClass", L"Simulated compositor",
+                           WS_CHILD | WS_VISIBLE | WS_DISABLED, 0, 0, 640, 480, parent, nullptr,
+                           GetModuleHandleW(nullptr), nullptr);
 }
 static HWND IslandOf(HWND host) {
     for (HWND child = GetWindow(host, GW_CHILD); child; child = GetWindow(child, GW_HWNDNEXT)) {
@@ -6577,7 +7767,8 @@ int wmain(int argc, wchar_t** argv) {
         // The engine process of the composition probe's "+xproc" mode: <FennPaneTest.dll> <host pid> <mapping name>
         Require(SUCCEEDED(CoInitializeEx(nullptr, COINIT_MULTITHREADED)), "MTA initialization");
         JoinWindowsAppRuntime(argv[2]);
-        HMODULE module = LoadLibraryExW(argv[2], nullptr,
+        HMODULE module = LoadLibraryExW(
+            argv[2], nullptr,
             LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR | LOAD_LIBRARY_SEARCH_APPLICATION_DIR | LOAD_LIBRARY_SEARCH_SYSTEM32);
         Require(module != nullptr, "load pane DLL");
         using EngineFn = HRESULT(WINAPI*)(uint32_t, const wchar_t*);
@@ -6589,7 +7780,8 @@ int wmain(int argc, wchar_t** argv) {
         // Stage A of the composition-hosting direction: --composition-probe <FennPaneTest.dll> <mode> [duration-ms]
         Require(SUCCEEDED(CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED)), "STA initialization");
         JoinWindowsAppRuntime(argv[2]);
-        HMODULE module = LoadLibraryExW(argv[2], nullptr,
+        HMODULE module = LoadLibraryExW(
+            argv[2], nullptr,
             LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR | LOAD_LIBRARY_SEARCH_APPLICATION_DIR | LOAD_LIBRARY_SEARCH_SYSTEM32);
         Require(module != nullptr, "load pane DLL");
         using ProbeFn = HRESULT(WINAPI*)(const wchar_t*, uint32_t);
@@ -6625,11 +7817,24 @@ int wmain(int argc, wchar_t** argv) {
                     return EXCEPTION_CONTINUE_SEARCH;
                 }) != nullptr,
             "install teardown exception guard");
-    Require(argc == 2 || (argc == 3 && (wcscmp(argv[2], L"--late-drop") == 0 || wcscmp(argv[2], L"--local-startup") == 0 || wcscmp(argv[2], L"--startup-thread") == 0 || wcscmp(argv[2], L"--startup-thread-cancel") == 0 || wcscmp(argv[2], L"--startup-surface") == 0 || wcscmp(argv[2], L"--startup-host") == 0 || wcscmp(argv[2], L"--window-host") == 0 || wcscmp(argv[2], L"--chrome-layout") == 0 || wcscmp(argv[2], L"--popup-lifecycle") == 0 || wcscmp(argv[2], L"--page-input") == 0 || wcscmp(argv[2], L"--inspect") == 0 || wcscmp(argv[2], L"--address") == 0 || wcscmp(argv[2], L"--address-host") == 0 ||
-                                        wcscmp(argv[2], L"--menu") == 0 || wcscmp(argv[2], L"--updates") == 0 || wcscmp(argv[2], L"--strip") == 0 || wcscmp(argv[2], L"--inline") == 0 || wcscmp(argv[2], L"--selection-decorations") == 0 || wcscmp(argv[2], L"--selection-reentrancy") == 0 ||
-                                        wcscmp(argv[2], L"--drag") == 0 || wcscmp(argv[2], L"--reorder") == 0 || wcscmp(argv[2], L"--transfers") == 0 || wcscmp(argv[2], L"--drag-close") == 0 ||
-                                        wcscmp(argv[2], L"--drag-change") == 0 || wcscmp(argv[2], L"--drag-offset") == 0 || (wcscmp(argv[2], L"--group-drop") == 0 || wcscmp(argv[2], L"--group-neighbors") == 0 || wcscmp(argv[2], L"--group-cross") == 0 || wcscmp(argv[2], L"--group-detach") == 0))),
-            "DLL path and optional --inspect required");
+    Require(
+        argc == 2 || (argc == 3 &&
+                      (wcscmp(argv[2], L"--late-drop") == 0 || wcscmp(argv[2], L"--local-startup") == 0 ||
+                       wcscmp(argv[2], L"--startup-thread") == 0 || wcscmp(argv[2], L"--startup-thread-cancel") == 0 ||
+                       wcscmp(argv[2], L"--startup-surface") == 0 || wcscmp(argv[2], L"--startup-host") == 0 ||
+                       wcscmp(argv[2], L"--window-host") == 0 || wcscmp(argv[2], L"--chrome-layout") == 0 ||
+                       wcscmp(argv[2], L"--popup-lifecycle") == 0 || wcscmp(argv[2], L"--page-input") == 0 ||
+                       wcscmp(argv[2], L"--inspect") == 0 || wcscmp(argv[2], L"--address") == 0 ||
+                       wcscmp(argv[2], L"--address-host") == 0 || wcscmp(argv[2], L"--menu") == 0 ||
+                       wcscmp(argv[2], L"--updates") == 0 || wcscmp(argv[2], L"--strip") == 0 ||
+                       wcscmp(argv[2], L"--inline") == 0 || wcscmp(argv[2], L"--selection-decorations") == 0 ||
+                       wcscmp(argv[2], L"--selection-reentrancy") == 0 || wcscmp(argv[2], L"--drag") == 0 ||
+                       wcscmp(argv[2], L"--reorder") == 0 || wcscmp(argv[2], L"--transfers") == 0 ||
+                       wcscmp(argv[2], L"--drag-close") == 0 || wcscmp(argv[2], L"--drag-change") == 0 ||
+                       wcscmp(argv[2], L"--drag-offset") == 0 ||
+                       (wcscmp(argv[2], L"--group-drop") == 0 || wcscmp(argv[2], L"--group-neighbors") == 0 ||
+                        wcscmp(argv[2], L"--group-cross") == 0 || wcscmp(argv[2], L"--group-detach") == 0))),
+        "DLL path and optional --inspect required");
     // Before the DLL loads, because the pane reads this once. Without it the
     // request path's stages are counted but never timed, and the assertions
     // below would be asserting on a switched-off instrument.
@@ -6653,117 +7858,202 @@ int wmain(int argc, wchar_t** argv) {
     Require(get(WINUI_PANE_ABI_VERSION, sizeof(api) - 1, &api) == E_NOINTERFACE, "reject size");
     Require(get(WINUI_PANE_ABI_VERSION, sizeof(api), nullptr) == E_POINTER, "reject null output");
     Require(SUCCEEDED(get(WINUI_PANE_ABI_VERSION, sizeof(api), &api)), "ABI handshake");
-    fixtureApi=api;
+    fixtureApi = api;
     {
-        HWND output=reinterpret_cast<HWND>(1);
-        const std::wstring oversized(32769,L'x');
-        Require(api.startIndependentHost(nullptr,oversized.c_str(),&output)==E_INVALIDARG && !output,
+        HWND output = reinterpret_cast<HWND>(1);
+        const std::wstring oversized(32769, L'x');
+        Require(api.startIndependentHost(nullptr, oversized.c_str(), &output) == E_INVALIDARG && !output,
                 "reject oversized initial presentation before creating a native thread");
-        using Json=winrt::Windows::Data::Json::JsonObject;
-        using Value=winrt::Windows::Data::Json::JsonValue;
-        auto data=Json::Parse(LR"({"version":2,"locale":"ar","rtl":true,"labels":{"newTab":"new","pending":"pending","full":"full","composition":"composition","address":"address","unavailable":"unavailable","recovery":"recovery","recoveryAction":"action"}})");
-        Require(NativeStartupLabels::Parse(data.Stringify()).GetNamedBoolean(L"rtl"),"initial RTL presentation accepted");
-        auto recovery=Json::Parse(data.Stringify());recovery.Insert(L"version",Value::CreateNumberValue(3));
-        bool missingRecovery=false;try{NativeStartupLabels::Parse(recovery.Stringify());}catch(...){missingRecovery=true;}
-        Require(missingRecovery,"new cache requires complete recovery labels");
-        for(auto key:{L"engineTitle",L"engineMessage",L"engineRetry",L"engineClose",L"engineWaiting",L"engineDraft"})
-            recovery.GetNamedObject(L"labels").Insert(key,Value::CreateStringValue(L"localized"));
-        Require(NativeStartupLabels::Parse(recovery.Stringify()).GetNamedBoolean(L"rtl"),"recovery cache preserves direction");
-        recovery.GetNamedObject(L"labels").Insert(L"engineRetry",Value::CreateStringValue(L""));
-        missingRecovery=false;try{NativeStartupLabels::Parse(recovery.Stringify());}catch(...){missingRecovery=true;}
-        Require(missingRecovery,"empty recovery label rejected");
-        data.Insert(L"toolbar",Json::Parse(LR"({"controls":["back","address","extensions","profile"],"productMenu":true,"menuLabel":"menu","menuTooltip":"tip"})"));
-        Require(NativeStartupLabels::Parse(data.Stringify()).HasKey(L"toolbar"),"bounded initial toolbar accepted");
-        wchar_t temporary[MAX_PATH]{};Require(GetTempPathW(MAX_PATH,temporary)!=0,"startup cache temp directory");
-        const auto directory=std::wstring(temporary)+L"FennStartupPreview-"+std::to_wstring(GetCurrentProcessId());
-        Require(CreateDirectoryW(directory.c_str(),nullptr)!=0,"isolated startup cache directory");
-        const auto cachePath=directory+L"\\fenn-startup-labels.json";
-        const auto bytes=winrt::to_string(data.Stringify());
-        HANDLE cache=CreateFileW(cachePath.c_str(),GENERIC_WRITE,0,nullptr,CREATE_NEW,FILE_ATTRIBUTE_NORMAL,nullptr);
-        Require(cache!=INVALID_HANDLE_VALUE,"create startup cache");DWORD written{};
-        Require(WriteFile(cache,bytes.data(),DWORD(bytes.size()),&written,nullptr) && written==bytes.size(),"write startup cache");CloseHandle(cache);
-        auto saved=NativeStartupLabels::Read(directory.c_str());
-        Require(saved && saved.GetNamedObject(L"toolbar").Stringify()==data.GetNamedObject(L"toolbar").Stringify(),"validated toolbar preview survives profile cache read");
+        using Json = winrt::Windows::Data::Json::JsonObject;
+        using Value = winrt::Windows::Data::Json::JsonValue;
+        auto data = Json::Parse(
+            LR"({"version":2,"locale":"ar","rtl":true,"labels":{"newTab":"new","pending":"pending","full":"full","composition":"composition","address":"address","unavailable":"unavailable","recovery":"recovery","recoveryAction":"action"}})");
+        Require(NativeStartupLabels::Parse(data.Stringify()).GetNamedBoolean(L"rtl"),
+                "initial RTL presentation accepted");
+        auto recovery = Json::Parse(data.Stringify());
+        recovery.Insert(L"version", Value::CreateNumberValue(3));
+        bool missingRecovery = false;
+        try {
+            NativeStartupLabels::Parse(recovery.Stringify());
+        } catch (...) {
+            missingRecovery = true;
+        }
+        Require(missingRecovery, "new cache requires complete recovery labels");
+        for (auto key :
+             {L"engineTitle", L"engineMessage", L"engineRetry", L"engineClose", L"engineWaiting", L"engineDraft"})
+            recovery.GetNamedObject(L"labels").Insert(key, Value::CreateStringValue(L"localized"));
+        Require(NativeStartupLabels::Parse(recovery.Stringify()).GetNamedBoolean(L"rtl"),
+                "recovery cache preserves direction");
+        recovery.GetNamedObject(L"labels").Insert(L"engineRetry", Value::CreateStringValue(L""));
+        missingRecovery = false;
+        try {
+            NativeStartupLabels::Parse(recovery.Stringify());
+        } catch (...) {
+            missingRecovery = true;
+        }
+        Require(missingRecovery, "empty recovery label rejected");
+        data.Insert(
+            L"toolbar",
+            Json::Parse(
+                LR"({"controls":["back","address","extensions","profile"],"productMenu":true,"menuLabel":"menu","menuTooltip":"tip"})"));
+        Require(NativeStartupLabels::Parse(data.Stringify()).HasKey(L"toolbar"), "bounded initial toolbar accepted");
+        wchar_t temporary[MAX_PATH]{};
+        Require(GetTempPathW(MAX_PATH, temporary) != 0, "startup cache temp directory");
+        const auto directory =
+            std::wstring(temporary) + L"FennStartupPreview-" + std::to_wstring(GetCurrentProcessId());
+        Require(CreateDirectoryW(directory.c_str(), nullptr) != 0, "isolated startup cache directory");
+        const auto cachePath = directory + L"\\fenn-startup-labels.json";
+        const auto bytes = winrt::to_string(data.Stringify());
+        HANDLE cache =
+            CreateFileW(cachePath.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_NEW, FILE_ATTRIBUTE_NORMAL, nullptr);
+        Require(cache != INVALID_HANDLE_VALUE, "create startup cache");
+        DWORD written{};
+        Require(WriteFile(cache, bytes.data(), DWORD(bytes.size()), &written, nullptr) && written == bytes.size(),
+                "write startup cache");
+        CloseHandle(cache);
+        auto saved = NativeStartupLabels::Read(directory.c_str());
+        Require(saved && saved.GetNamedObject(L"toolbar").Stringify() == data.GetNamedObject(L"toolbar").Stringify(),
+                "validated toolbar preview survives profile cache read");
         bool direction{};
-        Require(!NativeStartupLabels::Resolve(LR"({"version":2,"locale":"en-US","rtl":false})",directory.c_str(),direction),"locale mismatch refuses cached preview");
-        Require(DeleteFileW(cachePath.c_str()) && RemoveDirectoryW(directory.c_str()),"remove isolated startup cache");
-        for(auto invalid:{LR"(["address","address"])",LR"(["execute-command","address"])",LR"(["back"])",LR"([1])"}) {
-            data.GetNamedObject(L"toolbar").Insert(L"controls",winrt::Windows::Data::Json::JsonArray::Parse(invalid));
-            bool bad=false;try{NativeStartupLabels::Parse(data.Stringify());}catch(...){bad=true;}
-            Require(bad,"invalid initial toolbar refused before showing controls");
+        Require(!NativeStartupLabels::Resolve(LR"({"version":2,"locale":"en-US","rtl":false})", directory.c_str(),
+                                              direction),
+                "locale mismatch refuses cached preview");
+        Require(DeleteFileW(cachePath.c_str()) && RemoveDirectoryW(directory.c_str()), "remove isolated startup cache");
+        for (auto invalid :
+             {LR"(["address","address"])", LR"(["execute-command","address"])", LR"(["back"])", LR"([1])"}) {
+            data.GetNamedObject(L"toolbar").Insert(L"controls", winrt::Windows::Data::Json::JsonArray::Parse(invalid));
+            bool bad = false;
+            try {
+                NativeStartupLabels::Parse(data.Stringify());
+            } catch (...) {
+                bad = true;
+            }
+            Require(bad, "invalid initial toolbar refused before showing controls");
         }
         data.Remove(L"toolbar");
-        data.Insert(L"rtl",Value::CreateStringValue(L"true"));
-        bool rejected=false;try{NativeStartupLabels::Parse(data.Stringify());}catch(...){rejected=true;}
-        Require(rejected,"reject malformed direction before presentation");
-        data.Insert(L"version",Value::CreateNumberValue(1));data.Remove(L"rtl");
-        Require(bool(NativeStartupLabels::Parse(data.Stringify())),"legacy label cache remains readable");
-        data.GetNamedObject(L"labels").Insert(L"address",Value::CreateStringValue(L""));
-        rejected=false;try{NativeStartupLabels::Parse(data.Stringify());}catch(...){rejected=true;}
-        Require(rejected,"reject incomplete startup labels");
+        data.Insert(L"rtl", Value::CreateStringValue(L"true"));
+        bool rejected = false;
+        try {
+            NativeStartupLabels::Parse(data.Stringify());
+        } catch (...) {
+            rejected = true;
+        }
+        Require(rejected, "reject malformed direction before presentation");
+        data.Insert(L"version", Value::CreateNumberValue(1));
+        data.Remove(L"rtl");
+        Require(bool(NativeStartupLabels::Parse(data.Stringify())), "legacy label cache remains readable");
+        data.GetNamedObject(L"labels").Insert(L"address", Value::CreateStringValue(L""));
+        rejected = false;
+        try {
+            NativeStartupLabels::Parse(data.Stringify());
+        } catch (...) {
+            rejected = true;
+        }
+        Require(rejected, "reject incomplete startup labels");
     }
     translatePane = api.translate;
-    if(argc==3 && !wcscmp(argv[2],L"--local-startup")) {
-        auto test=reinterpret_cast<HRESULT(WINAPI*)(void(WINAPI*)(HWND))>(GetProcAddress(module,"WinUIPaneTestLocalStartup"));
+    if (argc == 3 && !wcscmp(argv[2], L"--local-startup")) {
+        auto test = reinterpret_cast<HRESULT(WINAPI*)(void(WINAPI*)(HWND))>(
+            GetProcAddress(module, "WinUIPaneTestLocalStartup"));
         Require(test && SUCCEEDED(test([](HWND hwnd) {
-            const auto until=GetTickCount64()+300;
-            while(GetTickCount64()<until){Pump();Sleep(5);}
-            Require(IsWindowVisible(hwnd),"local startup uses a visible native host");
-            TabScreenBounds(hwnd,L"FennAddress");
-            TabScreenBounds(hwnd,L"FennTab-1");
-            Require(SetForegroundWindow(hwnd) || GetForegroundWindow()==hwnd,"startup owns guest foreground");
-            auto pump=[] {const auto end=GetTickCount64()+150;while(GetTickCount64()<end){Pump();Sleep(5);}};
-            auto key=[&](WORD code,bool ctrl=false,bool shift=false) {
-                std::vector<INPUT> events;
-                auto add=[&](WORD value,DWORD flags){INPUT e{};e.type=INPUT_KEYBOARD;e.ki.wVk=value;e.ki.dwFlags=flags;events.push_back(e);};
-                if(ctrl)add(VK_CONTROL,0);if(shift)add(VK_SHIFT,0);
-                add(code,0);add(code,KEYEVENTF_KEYUP);
-                if(shift)add(VK_SHIFT,KEYEVENTF_KEYUP);if(ctrl)add(VK_CONTROL,KEYEVENTF_KEYUP);
-                Require(SendInput(UINT(events.size()),events.data(),sizeof(INPUT))==events.size(),"startup physical shortcut");pump();
-            };
-            key('L',true);key('T',true);
-            for(wchar_t unit:std::wstring(L"keyboard search")) {
-                INPUT input[2]{};
-                for(auto& e:input){e.type=INPUT_KEYBOARD;e.ki.wScan=unit;e.ki.dwFlags=KEYEVENTF_UNICODE;}
-                input[1].ki.dwFlags|=KEYEVENTF_KEYUP;
-                Require(SendInput(2,input,sizeof(INPUT))==2,"startup physical text");
-            }
-            pump();key(VK_RETURN);key(VK_TAB,true,true);key(VK_TAB,true);
-            TabScreenBounds(hwnd,L"FennTab-3");
-            key('T',true);TabScreenBounds(hwnd,L"FennTab-4");key('W',true);
-        })),"real unbound controls retain drafts, queued submissions and control identity");
+                    const auto until = GetTickCount64() + 300;
+                    while (GetTickCount64() < until) {
+                        Pump();
+                        Sleep(5);
+                    }
+                    Require(IsWindowVisible(hwnd), "local startup uses a visible native host");
+                    TabScreenBounds(hwnd, L"FennAddress");
+                    TabScreenBounds(hwnd, L"FennTab-1");
+                    Require(SetForegroundWindow(hwnd) || GetForegroundWindow() == hwnd,
+                            "startup owns guest foreground");
+                    auto pump = [] {
+                        const auto end = GetTickCount64() + 150;
+                        while (GetTickCount64() < end) {
+                            Pump();
+                            Sleep(5);
+                        }
+                    };
+                    auto key = [&](WORD code, bool ctrl = false, bool shift = false) {
+                        std::vector<INPUT> events;
+                        auto add = [&](WORD value, DWORD flags) {
+                            INPUT e{};
+                            e.type = INPUT_KEYBOARD;
+                            e.ki.wVk = value;
+                            e.ki.dwFlags = flags;
+                            events.push_back(e);
+                        };
+                        if (ctrl) add(VK_CONTROL, 0);
+                        if (shift) add(VK_SHIFT, 0);
+                        add(code, 0);
+                        add(code, KEYEVENTF_KEYUP);
+                        if (shift) add(VK_SHIFT, KEYEVENTF_KEYUP);
+                        if (ctrl) add(VK_CONTROL, KEYEVENTF_KEYUP);
+                        Require(SendInput(UINT(events.size()), events.data(), sizeof(INPUT)) == events.size(),
+                                "startup physical shortcut");
+                        pump();
+                    };
+                    key('L', true);
+                    key('T', true);
+                    for (wchar_t unit : std::wstring(L"keyboard search")) {
+                        INPUT input[2]{};
+                        for (auto& e : input) {
+                            e.type = INPUT_KEYBOARD;
+                            e.ki.wScan = unit;
+                            e.ki.dwFlags = KEYEVENTF_UNICODE;
+                        }
+                        input[1].ki.dwFlags |= KEYEVENTF_KEYUP;
+                        Require(SendInput(2, input, sizeof(INPUT)) == 2, "startup physical text");
+                    }
+                    pump();
+                    key(VK_RETURN);
+                    key(VK_TAB, true, true);
+                    key(VK_TAB, true);
+                    TabScreenBounds(hwnd, L"FennTab-3");
+                    key('T', true);
+                    TabScreenBounds(hwnd, L"FennTab-4");
+                    key('W', true);
+                })),
+                "real unbound controls retain drafts, queued submissions and control identity");
         puts("PASS: local startup controls and bounded drafts without Firefox");
-        CoUninitialize();return 0;
-    }
-    if(argc==3 && !wcscmp(argv[2],L"--page-input")) {
-        auto test=reinterpret_cast<HRESULT(WINAPI*)()>(GetProcAddress(module,"WinUIPaneTestPageInput"));
-        Require(test && SUCCEEDED(test()),"page TSF direct replacement, backward selection and invalid-range isolation");
-        puts("PASS: page TSF direct replacement and backward-selection contracts");
-        CoUninitialize();return 0;
-    }
-    auto threadedStartup = reinterpret_cast<HRESULT(WINAPI*)(void(WINAPI*)(HWND),BOOL)>(GetProcAddress(module,"WinUIPaneTestThreadedStartup"));
-    Require((threadedStartup != nullptr) == (argc == 3), "threaded startup fixture exists only in test DLL");
-    if (argc==3 && (!wcscmp(argv[2],L"--startup-thread") || !wcscmp(argv[2],L"--startup-thread-cancel"))) {
-        // The DLL's XAML objects belong to the independent native thread.
-        // The inspection thread must not run that thread's pane translator.
-        translatePane=nullptr;
-        Require(SUCCEEDED(threadedStartup([](HWND hwnd) {
-            TabScreenBounds(hwnd,L"FennStartupProgress");
-        },!wcscmp(argv[2],L"--startup-thread-cancel"))), "native window remains responsive with a blocked browser endpoint");
         CoUninitialize();
         return 0;
     }
-    auto startupSurface = reinterpret_cast<HRESULT(WINAPI*)(void(WINAPI*)(HWND))>(GetProcAddress(module, "WinUIPaneTestStartupSurface"));
+    if (argc == 3 && !wcscmp(argv[2], L"--page-input")) {
+        auto test = reinterpret_cast<HRESULT(WINAPI*)()>(GetProcAddress(module, "WinUIPaneTestPageInput"));
+        Require(test && SUCCEEDED(test()),
+                "page TSF direct replacement, backward selection and invalid-range isolation");
+        puts("PASS: page TSF direct replacement and backward-selection contracts");
+        CoUninitialize();
+        return 0;
+    }
+    auto threadedStartup = reinterpret_cast<HRESULT(WINAPI*)(void(WINAPI*)(HWND), BOOL)>(
+        GetProcAddress(module, "WinUIPaneTestThreadedStartup"));
+    Require((threadedStartup != nullptr) == (argc == 3), "threaded startup fixture exists only in test DLL");
+    if (argc == 3 && (!wcscmp(argv[2], L"--startup-thread") || !wcscmp(argv[2], L"--startup-thread-cancel"))) {
+        // The DLL's XAML objects belong to the independent native thread.
+        // The inspection thread must not run that thread's pane translator.
+        translatePane = nullptr;
+        Require(SUCCEEDED(threadedStartup([](HWND hwnd) { TabScreenBounds(hwnd, L"FennStartupProgress"); },
+                                          !wcscmp(argv[2], L"--startup-thread-cancel"))),
+                "native window remains responsive with a blocked browser endpoint");
+        CoUninitialize();
+        return 0;
+    }
+    auto startupSurface =
+        reinterpret_cast<HRESULT(WINAPI*)(void(WINAPI*)(HWND))>(GetProcAddress(module, "WinUIPaneTestStartupSurface"));
     Require((startupSurface != nullptr) == (argc == 3), "startup surface fixture exists only in test DLL");
     if (argc == 3 && wcscmp(argv[2], L"--startup-surface") == 0) {
         Require(SUCCEEDED(startupSurface([](HWND hwnd) {
-            auto bounds = TabScreenBounds(hwnd, L"FennStartupProgress");
-            RECT client{}; GetClientRect(hwnd, &client);
-            POINT origin{}; ClientToScreen(hwnd, &origin);
-            Require(bounds.left >= origin.x && bounds.top >= origin.y &&
-                    bounds.right <= origin.x+client.right && bounds.bottom <= origin.y+client.bottom,
-                    "startup progress has accessible physical bounds inside host");
-        })), "early native loading surface lifecycle and UIA");
+                    auto bounds = TabScreenBounds(hwnd, L"FennStartupProgress");
+                    RECT client{};
+                    GetClientRect(hwnd, &client);
+                    POINT origin{};
+                    ClientToScreen(hwnd, &origin);
+                    Require(bounds.left >= origin.x && bounds.top >= origin.y &&
+                                bounds.right <= origin.x + client.right && bounds.bottom <= origin.y + client.bottom,
+                            "startup progress has accessible physical bounds inside host");
+                })),
+                "early native loading surface lifecycle and UIA");
         Require(SUCCEEDED(api.shutdown()), "startup surface clean shutdown");
         CoUninitialize();
         return 0;
@@ -6776,10 +8066,12 @@ int wmain(int argc, wchar_t** argv) {
         CoUninitialize();
         return 0;
     }
-    auto windowHost = reinterpret_cast<HRESULT(WINAPI*)(const WinUIPaneApi*, void(WINAPI*)(HWND))>(GetProcAddress(module, "WinUIPaneTestWindowHost"));
+    auto windowHost = reinterpret_cast<HRESULT(WINAPI*)(const WinUIPaneApi*, void(WINAPI*)(HWND))>(
+        GetProcAddress(module, "WinUIPaneTestWindowHost"));
     Require((windowHost != nullptr) == (argc == 3), "native window-host fixture exists only in test DLL");
     if (argc == 3 && wcscmp(argv[2], L"--window-host") == 0) {
-        Require(SUCCEEDED(windowHost(&api, InspectWindowHost)), "distinct native shell/content binding, deferred close and teardown");
+        Require(SUCCEEDED(windowHost(&api, InspectWindowHost)),
+                "distinct native shell/content binding, deferred close and teardown");
         winrt::clear_factory_cache();
         Require(SUCCEEDED(api.shutdown()), "window-host fixture clean shutdown");
         CoUninitialize();
@@ -6799,12 +8091,13 @@ int wmain(int argc, wchar_t** argv) {
             "stage-counter export exists only in the test DLL");
     RECT rect{0, 0, 640, 40};
     Require(api.updateTabStrip(nullptr, &rect, TRUE) == E_INVALIDARG, "reject null HWND");
-    HWND stock=CreateWindowExW(0,L"STATIC",L"Rejected host-off fixture",WS_OVERLAPPEDWINDOW,0,0,640,480,nullptr,nullptr,GetModuleHandleW(nullptr),nullptr);
-    Require(stock && api.updateTabStrip(stock,&rect,TRUE)==E_INVALIDARG,"reject host-off island attachment");
-    Require(!GetWindow(stock,GW_CHILD),"rejected host has no XAML island");
+    HWND stock = CreateWindowExW(0, L"STATIC", L"Rejected host-off fixture", WS_OVERLAPPEDWINDOW, 0, 0, 640, 480,
+                                 nullptr, nullptr, GetModuleHandleW(nullptr), nullptr);
+    Require(stock && api.updateTabStrip(stock, &rect, TRUE) == E_INVALIDARG, "reject host-off island attachment");
+    Require(!GetWindow(stock, GW_CHILD), "rejected host has no XAML island");
     DestroyWindow(stock);
     HWND first = CreateFixtureWindow(0, L"STATIC", L"Pane contract test", WS_OVERLAPPEDWINDOW, 0, 0, 640, 480, nullptr,
-                                 nullptr, GetModuleHandleW(nullptr), nullptr);
+                                     nullptr, GetModuleHandleW(nullptr), nullptr);
     Require(first != nullptr, "first host");
     HWND compositor = CreateCompositorSibling(first);
     Require(compositor != nullptr, "compositor sibling");
@@ -6814,20 +8107,25 @@ int wmain(int argc, wchar_t** argv) {
     chrome.fits = 77;
     const auto untouchedChrome = chrome;
     Require(api.measureChromeLayout(first, 41, TRUE, 4, &chrome) == E_INVALIDARG &&
-            memcmp(&chrome, &untouchedChrome, sizeof(chrome)) == 0, "invalid native layout is atomic");
+                memcmp(&chrome, &untouchedChrome, sizeof(chrome)) == 0,
+            "invalid native layout is atomic");
     Require(api.measureChromeLayout(first, 40, TRUE, 4, nullptr) == E_POINTER, "native layout rejects null output");
     Require(SUCCEEDED(api.measureChromeLayout(first, 40, TRUE, 4, &chrome)), "production native layout measurement");
     if (argc == 3 && wcscmp(argv[2], L"--late-drop") == 0) {
-        ShowWindow(first, SW_SHOW); Pump();
+        ShowWindow(first, SW_SHOW);
+        Pump();
         using Target = winrt::Microsoft::UI::Input::DragDrop::IDropOperationTarget;
         using Operation = winrt::Windows::ApplicationModel::DataTransfer::DataPackageOperation;
-        auto capture = reinterpret_cast<HRESULT(WINAPI*)(HWND, void**)>(GetProcAddress(module, "WinUIPaneTestGetDropTarget"));
+        auto capture =
+            reinterpret_cast<HRESULT(WINAPI*)(HWND, void**)>(GetProcAddress(module, "WinUIPaneTestGetDropTarget"));
         auto retired = reinterpret_cast<BOOL(WINAPI*)(void*)>(GetProcAddress(module, "WinUIPaneTestDropTargetRetired"));
         Target old{nullptr};
         Require(capture != nullptr, "drop target inspection available");
-        HRESULT captured=E_PENDING;
-        for(int i=0;i<200 && captured==E_PENDING;++i) {
-            Pump(); Sleep(10); captured=capture(first,winrt::put_abi(old));
+        HRESULT captured = E_PENDING;
+        for (int i = 0; i < 200 && captured == E_PENDING; ++i) {
+            Pump();
+            Sleep(10);
+            captured = capture(first, winrt::put_abi(old));
         }
         Require(SUCCEEDED(captured), "retain loaded Window region drop route");
         Require(retired && !retired(winrt::get_abi(old)), "held route is live before destruction");
@@ -6836,12 +8134,15 @@ int wmain(int argc, wchar_t** argv) {
         Require(SUCCEEDED(api.updateTabStrip(first, &rect, TRUE)), "replacement pane on same host");
         Pump();
         Target fresh{nullptr};
-        captured=E_PENDING;
-        for(int i=0;i<200 && captured==E_PENDING;++i) {
-            Pump(); Sleep(10); captured=capture(first,winrt::put_abi(fresh));
+        captured = E_PENDING;
+        for (int i = 0; i < 200 && captured == E_PENDING; ++i) {
+            Pump();
+            Sleep(10);
+            captured = capture(first, winrt::put_abi(fresh));
         }
         Require(SUCCEEDED(captured), "fresh loaded region has its own drop target");
-        Require(retired(winrt::get_abi(old)) && !retired(winrt::get_abi(fresh)), "old route expired; replacement owns a different live route");
+        Require(retired(winrt::get_abi(old)) && !retired(winrt::get_abi(fresh)),
+                "old route expired; replacement owns a different live route");
         for (int i = 0; i != 3; ++i) {
             Require(old.EnterAsync(nullptr, nullptr).GetResults() == Operation::None, "late enter rejected");
             Require(old.OverAsync(nullptr, nullptr).GetResults() == Operation::None, "late over rejected");
@@ -6849,11 +8150,15 @@ int wmain(int argc, wchar_t** argv) {
             Require(old.DropAsync(nullptr).GetResults() == Operation::None, "late drop rejected after replacement");
         }
         Require(fresh.DropAsync(nullptr).GetResults() == Operation::None, "fresh route preserves external rejection");
-        old = nullptr; fresh = nullptr;
+        old = nullptr;
+        fresh = nullptr;
         Require(SUCCEEDED(api.destroy(first)), "destroy replacement pane");
-        DestroyFixtureWindow(first); winrt::clear_factory_cache();
+        DestroyFixtureWindow(first);
+        winrt::clear_factory_cache();
         Require(SUCCEEDED(api.shutdown()), "late target clean shutdown");
-        CoUninitialize(); puts("PASS: retained chrome target rejects late callbacks after pane replacement"); return 0;
+        CoUninitialize();
+        puts("PASS: retained chrome target rejects late callbacks after pane replacement");
+        return 0;
     }
     if (argc == 3 && wcscmp(argv[2], L"--chrome-layout") == 0) {
         CheckNativeChromeLayout(module, api, first, compositor);
@@ -6869,27 +8174,31 @@ int wmain(int argc, wchar_t** argv) {
         Pump();
         RECT addressRect{0, 44, 640, 84};
         Require(SUCCEEDED(api.updateAddress(first, &addressRect, TRUE)), "update-menu address host");
-        auto snapshot = winrt::Windows::Data::Json::JsonObject::Parse(LR"({"version":1,"enabled":true,"navigationToolbar":true,"session":"updates-model","revision":1,"sequence":1,"text":"initial","rows":[],"navigation":{"back":{"enabled":false},"forward":{"enabled":false},"reload":{"enabled":true},"productMenu":{"enabled":true,"items":[{"kind":"item","id":"check-updates","label":"Check for updates"}]}}})");
-        Require(FAILED(api.syncAddress(first, snapshot.Stringify().c_str())), "update command requires localized labels");
+        auto snapshot = winrt::Windows::Data::Json::JsonObject::Parse(
+            LR"({"version":1,"enabled":true,"navigationToolbar":true,"session":"updates-model","revision":1,"sequence":1,"text":"initial","rows":[],"navigation":{"back":{"enabled":false},"forward":{"enabled":false},"reload":{"enabled":true},"productMenu":{"enabled":true,"items":[{"kind":"item","id":"check-updates","label":"Check for updates"}]}}})");
+        Require(FAILED(api.syncAddress(first, snapshot.Stringify().c_str())),
+                "update command requires localized labels");
         auto menu = snapshot.GetNamedObject(L"navigation").GetNamedObject(L"productMenu");
         winrt::Windows::Data::Json::JsonObject labels;
-        for (auto key : {L"title", L"checking", L"current", L"available-store", L"available-feed",
-                         L"unavailable", L"failed", L"open-store", L"open-feed", L"close",
-                     L"downloading", L"ready", L"install", L"installing"})
+        for (auto key :
+             {L"title", L"checking", L"current", L"available-store", L"available-feed", L"unavailable", L"failed",
+              L"open-store", L"open-feed", L"close", L"downloading", L"ready", L"install", L"installing"})
             labels.SetNamedValue(key, winrt::Windows::Data::Json::JsonValue::CreateStringValue(key));
         menu.SetNamedValue(L"updateLabels", labels);
         auto navigation = snapshot.GetNamedObject(L"navigation");
         navigation.SetNamedValue(L"productMenu", menu);
         snapshot.SetNamedValue(L"navigation", navigation);
         const auto accepted = api.syncAddress(first, snapshot.Stringify().c_str());
-        if (FAILED(accepted)) fwprintf(stderr, L"Update model hr=0x%08lx JSON=%s\n", accepted, snapshot.Stringify().c_str());
+        if (FAILED(accepted))
+            fwprintf(stderr, L"Update model hr=0x%08lx JSON=%s\n", accepted, snapshot.Stringify().c_str());
         Require(SUCCEEDED(accepted), "accept fully localized update menu");
         labels.SetNamedValue(L"title", winrt::Windows::Data::Json::JsonValue::CreateNumberValue(42));
         menu.SetNamedValue(L"updateLabels", labels);
         navigation.SetNamedValue(L"productMenu", menu);
         snapshot.SetNamedValue(L"navigation", navigation);
         snapshot.SetNamedValue(L"sequence", winrt::Windows::Data::Json::JsonValue::CreateNumberValue(2));
-        Require(FAILED(api.syncAddress(first, snapshot.Stringify().c_str())), "reject malformed update label before native mutation");
+        Require(FAILED(api.syncAddress(first, snapshot.Stringify().c_str())),
+                "reject malformed update label before native mutation");
         CheckInlinePackageUpdates(module, first);
         Require(SUCCEEDED(api.updateAddress(first, &addressRect, FALSE)), "detach update-menu fixture host");
         CheckPackageUpdates(first);
@@ -6902,181 +8211,302 @@ int wmain(int argc, wchar_t** argv) {
     }
     if (argc == 3 && wcscmp(argv[2], L"--address-host") == 0) {
         using namespace winrt::Microsoft::UI::Xaml;
-        RECT stripRect{0,0,640,40}, addressRect{0,40,640,88};
+        RECT stripRect{0, 0, 640, 40}, addressRect{0, 40, 640, 88};
         ShowWindow(first, SW_SHOW);
-        Require(SUCCEEDED(api.updateTabStrip(first,&stripRect,TRUE)), "strip host");
-        auto inspect = reinterpret_cast<HRESULT(WINAPI*)(HWND,void**)>(GetProcAddress(module,"WinUIPaneTestGetAddressContent"));
+        Require(SUCCEEDED(api.updateTabStrip(first, &stripRect, TRUE)), "strip host");
+        auto inspect =
+            reinterpret_cast<HRESULT(WINAPI*)(HWND, void**)>(GetProcAddress(module, "WinUIPaneTestGetAddressContent"));
         Require(inspect != nullptr, "address host inspection");
-        auto inspectBackdrop = reinterpret_cast<HRESULT(WINAPI*)(HWND,void**)>(GetProcAddress(module,"WinUIPaneTestGetAddressBackdrop"));
+        auto inspectBackdrop =
+            reinterpret_cast<HRESULT(WINAPI*)(HWND, void**)>(GetProcAddress(module, "WinUIPaneTestGetAddressBackdrop"));
         Require(inspectBackdrop != nullptr, "address backdrop inspection");
         auto addressBackdrop = [&] {
             Media::SystemBackdrop value{nullptr};
-            Require(SUCCEEDED(inspectBackdrop(first,winrt::put_abi(value))), "read address backdrop");
+            Require(SUCCEEDED(inspectBackdrop(first, winrt::put_abi(value))), "read address backdrop");
             return value;
         };
         try {
-        for (int cycle=0; cycle<5; ++cycle) {
-            Require(SUCCEEDED(api.updateAddress(first,&addressRect,TRUE)), "independent address attach");
-            Require(SUCCEEDED(api.syncAddress(first, LR"({"version":1,"enabled":true,"navigationToolbar":true,"session":"toolbar-contract","revision":1,"editId":0,"sequence":1,"open":false,"text":"initial","rows":[]})")), "toolbar publication");
-            UIElement content{nullptr};
-            Require(SUCCEEDED(inspect(first,winrt::put_abi(content))), "address content");
-            auto toolbarRoot=content.as<Controls::Grid>();
-            Require(bool(addressBackdrop()), "full navigation row has its system backdrop from first publication");
-            // The navigation row's panels join the grid only once Firefox
-            // publishes them, so reach the address root through its field.
-            std::function<FrameworkElement(DependencyObject const&)> findField = [&](DependencyObject const& node) -> FrameworkElement {
-                if (auto element = node.try_as<FrameworkElement>();
-                    element && Automation::AutomationProperties::GetAutomationId(element) == L"FennAddress")
-                    return element;
-                for (int i = 0; i < Media::VisualTreeHelper::GetChildrenCount(node); ++i)
-                    if (auto found = findField(Media::VisualTreeHelper::GetChild(node, i))) return found;
-                return nullptr;
-            };
-            AwaitLiveTree(toolbarRoot);
-            auto addressField = findField(toolbarRoot);
-            Require(addressField != nullptr, "toolbar address field");
-            auto root = addressField.Parent().as<FrameworkElement>().Parent().as<Controls::StackPanel>();
-            AwaitLiveTree(root);
-            auto header=root.Children().GetAt(0).as<Controls::Grid>();
-            auto field=header.Children().GetAt(2).as<Controls::TextBox>();
-            Require(Controls::Grid::GetColumnSpan(field)==5, "stock editor spans embedded omnibar controls");
-            Require(header.Children().GetAt(1).as<Controls::DropDownButton>().Height()==24, "embedded search selector is compact");
-            auto layoutStart = GetTickCount64();
-            while (field.ActualHeight()<32 && GetTickCount64()-layoutStart<5000) {
-                root.UpdateLayout();
+            for (int cycle = 0; cycle < 5; ++cycle) {
+                Require(SUCCEEDED(api.updateAddress(first, &addressRect, TRUE)), "independent address attach");
+                Require(
+                    SUCCEEDED(api.syncAddress(
+                        first,
+                        LR"({"version":1,"enabled":true,"navigationToolbar":true,"session":"toolbar-contract","revision":1,"editId":0,"sequence":1,"open":false,"text":"initial","rows":[]})")),
+                    "toolbar publication");
+                UIElement content{nullptr};
+                Require(SUCCEEDED(inspect(first, winrt::put_abi(content))), "address content");
+                auto toolbarRoot = content.as<Controls::Grid>();
+                Require(bool(addressBackdrop()), "full navigation row has its system backdrop from first publication");
+                // The navigation row's panels join the grid only once Firefox
+                // publishes them, so reach the address root through its field.
+                std::function<FrameworkElement(DependencyObject const&)> findField =
+                    [&](DependencyObject const& node) -> FrameworkElement {
+                    if (auto element = node.try_as<FrameworkElement>();
+                        element && Automation::AutomationProperties::GetAutomationId(element) == L"FennAddress")
+                        return element;
+                    for (int i = 0; i < Media::VisualTreeHelper::GetChildrenCount(node); ++i)
+                        if (auto found = findField(Media::VisualTreeHelper::GetChild(node, i))) return found;
+                    return nullptr;
+                };
+                AwaitLiveTree(toolbarRoot);
+                auto addressField = findField(toolbarRoot);
+                Require(addressField != nullptr, "toolbar address field");
+                auto root = addressField.Parent().as<FrameworkElement>().Parent().as<Controls::StackPanel>();
+                AwaitLiveTree(root);
+                auto header = root.Children().GetAt(0).as<Controls::Grid>();
+                auto field = header.Children().GetAt(2).as<Controls::TextBox>();
+                Require(Controls::Grid::GetColumnSpan(field) == 5, "stock editor spans embedded omnibar controls");
+                Require(header.Children().GetAt(1).as<Controls::DropDownButton>().Height() == 24,
+                        "embedded search selector is compact");
+                auto layoutStart = GetTickCount64();
+                while (field.ActualHeight() < 32 && GetTickCount64() - layoutStart < 5000) {
+                    root.UpdateLayout();
+                    Pump();
+                    Sleep(5);
+                }
+                fwprintf(stderr, L"Toolbar field text=%s height=%.1f\n", field.Text().c_str(), field.ActualHeight());
+                Require(field.Text() == L"initial" && field.ActualHeight() >= 32, "stock toolbar editor");
+                Require(
+                    FAILED(api.syncAddress(
+                        first,
+                        LR"({"version":1,"enabled":true,"session":"toolbar-contract","revision":1,"sequence":2,"text":"bad","rows":[{"id":"same","title":"one"},{"id":"same","title":"two"}]})")),
+                    "reject invalid toolbar rows");
+                Require(field.Text() == L"initial", "invalid publication is atomic");
+                Require(
+                    FAILED(api.syncAddress(
+                        first,
+                        LR"({"version":1,"enabled":true,"session":"toolbar-contract","revision":1,"editId":0,"sequence":2,"text":"bad","rows":[],"clipboard":{"serial":1,"editId":0,"start":0,"end":99,"before":"initial","replaceStart":0,"replaceEnd":7,"replacement":"bad"}})")),
+                    "reject clipboard caret outside text");
+                Require(
+                    FAILED(api.syncAddress(
+                        first,
+                        LR"({"version":1,"enabled":true,"session":"toolbar-contract","revision":1,"editId":0,"sequence":2,"text":"bad","rows":[],"clipboard":{"serial":1,"editId":0,"start":0,"end":0,"before":"initial","replaceStart":0,"replaceEnd":7,"replacement":"different"}})")),
+                    "reject inconsistent clipboard replacement");
+                Require(field.Text() == L"initial", "invalid clipboard publication is atomic");
+                RECT navigationRect{0, 40, 640, 88};
+                Require(SUCCEEDED(api.updateAddress(first, &navigationRect, TRUE)), "full navigation row geometry");
+                Require(
+                    SUCCEEDED(api.syncAddress(
+                        first,
+                        LR"({"version":1,"enabled":true,"navigationToolbar":true,"session":"toolbar-contract","revision":1,"sequence":2,"text":"initial","rows":[]})")),
+                    "navigation publication");
+                toolbarRoot.UpdateLayout();
                 Pump();
-                Sleep(5);
-            }
-            fwprintf(stderr,L"Toolbar field text=%s height=%.1f\n",field.Text().c_str(),field.ActualHeight());
-            Require(field.Text()==L"initial" && field.ActualHeight()>=32, "stock toolbar editor");
-            Require(FAILED(api.syncAddress(first, LR"({"version":1,"enabled":true,"session":"toolbar-contract","revision":1,"sequence":2,"text":"bad","rows":[{"id":"same","title":"one"},{"id":"same","title":"two"}]})")), "reject invalid toolbar rows");
-            Require(field.Text()==L"initial", "invalid publication is atomic");
-            Require(FAILED(api.syncAddress(first, LR"({"version":1,"enabled":true,"session":"toolbar-contract","revision":1,"editId":0,"sequence":2,"text":"bad","rows":[],"clipboard":{"serial":1,"editId":0,"start":0,"end":99,"before":"initial","replaceStart":0,"replaceEnd":7,"replacement":"bad"}})")), "reject clipboard caret outside text");
-            Require(FAILED(api.syncAddress(first, LR"({"version":1,"enabled":true,"session":"toolbar-contract","revision":1,"editId":0,"sequence":2,"text":"bad","rows":[],"clipboard":{"serial":1,"editId":0,"start":0,"end":0,"before":"initial","replaceStart":0,"replaceEnd":7,"replacement":"different"}})")), "reject inconsistent clipboard replacement");
-            Require(field.Text()==L"initial", "invalid clipboard publication is atomic");
-            RECT navigationRect{0,40,640,88};
-            Require(SUCCEEDED(api.updateAddress(first,&navigationRect,TRUE)), "full navigation row geometry");
-            Require(SUCCEEDED(api.syncAddress(first, LR"({"version":1,"enabled":true,"navigationToolbar":true,"session":"toolbar-contract","revision":1,"sequence":2,"text":"initial","rows":[]})")), "navigation publication");
-            toolbarRoot.UpdateLayout();
-            Pump();
-            Require(root.Margin().Left == 8 && root.Margin().Right == 8 &&
-                    root.Margin().Top == 4 && root.Margin().Bottom == 4 && field.ActualHeight() >= 32,
-                    "navigation row retains stock editor with native padding");
-            Require(toolbarRoot.Children().GetAt(0).Visibility() == Visibility::Visible,
-                    "navigation surface owns its background");
-            Require(FAILED(api.syncAddress(first, LR"({"version":1,"enabled":true,"navigationToolbar":"invalid","session":"toolbar-contract","revision":1,"sequence":3,"text":"bad","rows":[]})")), "reject invalid navigation presentation");
-            Require(field.Text()==L"initial" && root.Margin().Left == 8, "invalid presentation preserves native state");
-            Require(SUCCEEDED(api.syncAddress(first, LR"({"version":1,"enabled":true,"navigationToolbar":true,"session":"toolbar-contract","revision":1,"sequence":3,"text":"initial","rows":[],"navigation":{"back":{"enabled":false,"label":"Localized back"},"forward":{"enabled":true,"label":"Localized forward"},"reload":{"enabled":true,"label":"Localized reload"},"profile":{"enabled":true,"label":"Localized account"},"extensions":{"enabled":true,"label":"Localized extensions"},"appmenu":{"enabled":true,"label":"Localized menu"},"omnibarLeft":[{"id":"action-contract","label":"Site information","enabled":true,"background":[0,0,0,0],"foreground":[0,0,0,255]}],"pinned":[{"id":"pinned-contract","label":"Localized extension","enabled":true,"badge":"7","background":[180,0,0,255],"foreground":[255,255,255,255],"image":{"width":1,"height":1,"pixels":"0000ffff"}}]}})")), "publish navigation buttons");
-            auto embedded=header.Children().GetAt(0).as<Controls::StackPanel>();
-            Require(embedded.Children().Size()==1 && embedded.Children().GetAt(0).as<Controls::Button>().Width()==28, "embedded site button published");
-            // The customization-aware toolbar lays out controls individually.
-            // Find their stable identities instead of assuming old wrapper panels.
-            std::function<FrameworkElement(DependencyObject const&, wchar_t const*)> findControl =
-                [&](DependencyObject const& node, wchar_t const* id) -> FrameworkElement {
-                    if (auto element = node.try_as<FrameworkElement>(); element &&
-                        Automation::AutomationProperties::GetAutomationId(element) == id) return element;
+                Require(root.Margin().Left == 8 && root.Margin().Right == 8 && root.Margin().Top == 4 &&
+                            root.Margin().Bottom == 4 && field.ActualHeight() >= 32,
+                        "navigation row retains stock editor with native padding");
+                Require(toolbarRoot.Children().GetAt(0).Visibility() == Visibility::Visible,
+                        "navigation surface owns its background");
+                Require(
+                    FAILED(api.syncAddress(
+                        first,
+                        LR"({"version":1,"enabled":true,"navigationToolbar":"invalid","session":"toolbar-contract","revision":1,"sequence":3,"text":"bad","rows":[]})")),
+                    "reject invalid navigation presentation");
+                Require(field.Text() == L"initial" && root.Margin().Left == 8,
+                        "invalid presentation preserves native state");
+                Require(
+                    SUCCEEDED(api.syncAddress(
+                        first,
+                        LR"({"version":1,"enabled":true,"navigationToolbar":true,"session":"toolbar-contract","revision":1,"sequence":3,"text":"initial","rows":[],"navigation":{"back":{"enabled":false,"label":"Localized back"},"forward":{"enabled":true,"label":"Localized forward"},"reload":{"enabled":true,"label":"Localized reload"},"profile":{"enabled":true,"label":"Localized account"},"extensions":{"enabled":true,"label":"Localized extensions"},"appmenu":{"enabled":true,"label":"Localized menu"},"omnibarLeft":[{"id":"action-contract","label":"Site information","enabled":true,"background":[0,0,0,0],"foreground":[0,0,0,255]}],"pinned":[{"id":"pinned-contract","label":"Localized extension","enabled":true,"badge":"7","background":[180,0,0,255],"foreground":[255,255,255,255],"image":{"width":1,"height":1,"pixels":"0000ffff"}}]}})")),
+                    "publish navigation buttons");
+                auto embedded = header.Children().GetAt(0).as<Controls::StackPanel>();
+                Require(embedded.Children().Size() == 1 &&
+                            embedded.Children().GetAt(0).as<Controls::Button>().Width() == 28,
+                        "embedded site button published");
+                // The customization-aware toolbar lays out controls individually.
+                // Find their stable identities instead of assuming old wrapper panels.
+                std::function<FrameworkElement(DependencyObject const&, wchar_t const*)> findControl =
+                    [&](DependencyObject const& node, wchar_t const* id) -> FrameworkElement {
+                    if (auto element = node.try_as<FrameworkElement>();
+                        element && Automation::AutomationProperties::GetAutomationId(element) == id)
+                        return element;
                     for (int i = 0; i < Media::VisualTreeHelper::GetChildrenCount(node); ++i)
                         if (auto found = findControl(Media::VisualTreeHelper::GetChild(node, i), id)) return found;
                     return nullptr;
                 };
-            auto button = [&](wchar_t const* id) {
-                auto element = findControl(toolbarRoot, id);
-                Require(element != nullptr, "published toolbar control exists by AutomationId");
-                return element.as<Controls::Button>();
-            };
-            auto back = button(L"FennBack"), forward = button(L"FennForward"), reload = button(L"FennReload");
-            auto profile = button(L"FennProfile"), extensions = button(L"FennExtensions"), appMenu = button(L"FennAppMenu");
-            auto pinnedButton = button(L"FennExtension-pinned-contract");
-            auto pinned = pinnedButton.Parent().as<Controls::StackPanel>();
-            const std::vector<FrameworkElement> ordered{back, forward, reload, root, profile, extensions, pinned, appMenu};
-            for (size_t i = 1; i < ordered.size(); ++i)
-                Require(Controls::Grid::GetColumn(ordered[i - 1]) < Controls::Grid::GetColumn(ordered[i]),
-                        "navigation, address, menu and pinned controls retain their published order");
-            Require(Automation::AutomationProperties::GetName(profile)==L"Localized account" &&
-                    Automation::AutomationProperties::GetName(appMenu)==L"Localized menu", "Firefox menu labels applied");
-            Require(pinned.Children().Size()==1, "pinned extension appears between Extensions and Application menu");
-            Require(Automation::AutomationProperties::GetName(pinnedButton)==L"Localized extension" &&
-                    Automation::AutomationProperties::GetItemStatus(pinnedButton)==L"7", "extension title and badge accessible");
-            Require(pinnedButton.Content().as<Controls::Grid>().Children().GetAt(0).as<Controls::Image>().Source()!=nullptr,
-                    "extension raw pixels decoded by native presentation");
-            for (auto const& control : {back, forward, reload})
-                Require(control.Visibility()==Visibility::Visible && control.Parent()==toolbarRoot &&
-                        control.Width()==32 && control.Height()==32, "three native navigation buttons retain stock targets");
-            auto mica = addressBackdrop().try_as<Media::MicaBackdrop>();
-            Require(mica && mica.Kind()==winrt::Microsoft::UI::Composition::SystemBackdrops::MicaKind::BaseAlt,
-                    "navigation toolbar shares default strip Mica Alt material");
-            Require(!back.IsEnabled() && forward.IsEnabled(), "Firefox controls navigation availability");
-            Require(Automation::AutomationProperties::GetName(reload)==L"Localized reload", "Firefox navigation label");
-            Require(FAILED(api.syncAddress(first, LR"({"version":1,"enabled":true,"navigationToolbar":true,"session":"toolbar-contract","revision":1,"sequence":4,"text":"bad","rows":[],"navigation":{"back":{"enabled":"bad"}}})")), "reject malformed navigation atomically");
-            Require(field.Text()==L"initial" && forward.IsEnabled(), "malformed navigation preserves editor and buttons");
-            {
-                auto productMenu=[](wchar_t const* body,int sequence) {
-                    return std::wstring(L"{\"version\":1,\"enabled\":true,\"navigationToolbar\":true,\"session\":\"toolbar-contract\",\"revision\":1,\"sequence\":")+
-                        std::to_wstring(sequence)+L",\"text\":\"initial\",\"rows\":[],\"navigation\":{\"back\":{\"enabled\":false},\"forward\":{\"enabled\":true},\"reload\":{\"enabled\":true},\"productMenu\":"+body+L"}}";
+                auto button = [&](wchar_t const* id) {
+                    auto element = findControl(toolbarRoot, id);
+                    Require(element != nullptr, "published toolbar control exists by AutomationId");
+                    return element.as<Controls::Button>();
                 };
-                Require(FAILED(api.syncAddress(first, productMenu(LR"({"enabled":true,"items":[{"kind":"item","id":"Bad Id","label":"x"}]})",4).c_str())), "reject a malformed product menu id");
-                Require(FAILED(api.syncAddress(first, productMenu(LR"({"enabled":true,"items":[{"kind":"item","id":"a","label":"x"},{"kind":"item","id":"a","label":"y"}]})",5).c_str())), "reject duplicate product menu ids");
-                Require(FAILED(api.syncAddress(first, productMenu(LR"({"enabled":true,"items":[{"kind":"submenu","id":"a","label":"x","items":[]}]})",6).c_str())), "reject an empty submenu");
-                Require(FAILED(api.syncAddress(first, productMenu(LR"({"enabled":true,"items":[{"kind":"submenu","id":"a","label":"a","items":[{"kind":"submenu","id":"b","label":"b","items":[{"kind":"submenu","id":"c","label":"c","items":[{"kind":"item","id":"d","label":"d"}]}]}]}]})",7).c_str())), "reject a product menu nested beyond its depth");
-                Require(SUCCEEDED(api.syncAddress(first, productMenu(LR"({"enabled":true,"label":"Fenn","items":[{"kind":"item","id":"new-tab","label":"New Tab","shortcut":"Ctrl+T","image":{"width":1,"height":1,"pixels":"204080ff"}},{"kind":"separator"},{"kind":"submenu","id":"bookmarks","label":"Bookmarks","items":[{"kind":"item","id":"bookmarks-toolbar-never","label":"Never Show","checked":true}]}]})",8).c_str())), "publish a valid product menu");
-                auto artwork = winrt::Windows::Data::Json::JsonObject::Parse(LR"({"enabled":true,"items":[{"kind":"submenu","id":"extensions","label":"Extensions","items":[{"kind":"item","id":"entry-1","label":"Extension","image":{"width":1,"height":1,"pixels":"204080ff"}}]}]})");
-                auto icon = artwork.GetNamedArray(L"items").GetObjectAt(0).GetNamedArray(L"items").GetObjectAt(0).GetNamedObject(L"image");
-                icon.SetNamedValue(L"pixels", winrt::Windows::Data::Json::JsonValue::CreateStringValue(L"zzzzzzzz"));
-                Require(FAILED(api.syncAddress(first, productMenu(artwork.Stringify().c_str(),9).c_str())), "reject malformed nested extension icon pixels");
-                icon.SetNamedValue(L"width", winrt::Windows::Data::Json::JsonValue::CreateNumberValue(33));
-                Require(FAILED(api.syncAddress(first, productMenu(artwork.Stringify().c_str(),9).c_str())), "reject oversized extension icons");
-                auto crowded = winrt::Windows::Data::Json::JsonObject::Parse(LR"({"enabled":true,"items":[]})");
-                auto groups = crowded.GetNamedArray(L"items");
-                for (int group=0; group<2; ++group) {
-                    auto submenu = winrt::Windows::Data::Json::JsonObject::Parse(LR"({"kind":"submenu","label":"Collection","items":[]})");
-                    submenu.SetNamedValue(L"id", winrt::Windows::Data::Json::JsonValue::CreateStringValue(L"collection-"+winrt::to_hstring(group)));
-                    auto entries = submenu.GetNamedArray(L"items");
-                    for (int i=0; i<21; ++i) {
-                        auto entry = winrt::Windows::Data::Json::JsonObject::Parse(LR"({"kind":"item","label":"Site","image":{"width":32,"height":32}})");
-                        entry.SetNamedValue(L"id", winrt::Windows::Data::Json::JsonValue::CreateStringValue(L"entry-"+winrt::to_hstring(group*21+i)));
-                        entry.GetNamedObject(L"image").SetNamedValue(L"pixels", winrt::Windows::Data::Json::JsonValue::CreateStringValue(std::wstring(8192,L'0')));
-                        entries.Append(entry);
+                auto back = button(L"FennBack"), forward = button(L"FennForward"), reload = button(L"FennReload");
+                auto profile = button(L"FennProfile"), extensions = button(L"FennExtensions"),
+                     appMenu = button(L"FennAppMenu");
+                auto pinnedButton = button(L"FennExtension-pinned-contract");
+                auto pinned = pinnedButton.Parent().as<Controls::StackPanel>();
+                const std::vector<FrameworkElement> ordered{back,    forward,    reload, root,
+                                                            profile, extensions, pinned, appMenu};
+                for (size_t i = 1; i < ordered.size(); ++i)
+                    Require(Controls::Grid::GetColumn(ordered[i - 1]) < Controls::Grid::GetColumn(ordered[i]),
+                            "navigation, address, menu and pinned controls retain their published order");
+                Require(Automation::AutomationProperties::GetName(profile) == L"Localized account" &&
+                            Automation::AutomationProperties::GetName(appMenu) == L"Localized menu",
+                        "Firefox menu labels applied");
+                Require(pinned.Children().Size() == 1,
+                        "pinned extension appears between Extensions and Application menu");
+                Require(Automation::AutomationProperties::GetName(pinnedButton) == L"Localized extension" &&
+                            Automation::AutomationProperties::GetItemStatus(pinnedButton) == L"7",
+                        "extension title and badge accessible");
+                Require(
+                    pinnedButton.Content().as<Controls::Grid>().Children().GetAt(0).as<Controls::Image>().Source() !=
+                        nullptr,
+                    "extension raw pixels decoded by native presentation");
+                for (auto const& control : {back, forward, reload})
+                    Require(control.Visibility() == Visibility::Visible && control.Parent() == toolbarRoot &&
+                                control.Width() == 32 && control.Height() == 32,
+                            "three native navigation buttons retain stock targets");
+                auto mica = addressBackdrop().try_as<Media::MicaBackdrop>();
+                Require(mica && mica.Kind() == winrt::Microsoft::UI::Composition::SystemBackdrops::MicaKind::BaseAlt,
+                        "navigation toolbar shares default strip Mica Alt material");
+                Require(!back.IsEnabled() && forward.IsEnabled(), "Firefox controls navigation availability");
+                Require(Automation::AutomationProperties::GetName(reload) == L"Localized reload",
+                        "Firefox navigation label");
+                Require(
+                    FAILED(api.syncAddress(
+                        first,
+                        LR"({"version":1,"enabled":true,"navigationToolbar":true,"session":"toolbar-contract","revision":1,"sequence":4,"text":"bad","rows":[],"navigation":{"back":{"enabled":"bad"}}})")),
+                    "reject malformed navigation atomically");
+                Require(field.Text() == L"initial" && forward.IsEnabled(),
+                        "malformed navigation preserves editor and buttons");
+                {
+                    auto productMenu = [](wchar_t const* body, int sequence) {
+                        return std::wstring(
+                                   L"{\"version\":1,\"enabled\":true,\"navigationToolbar\":true,\"session\":\"toolbar-"
+                                   L"contract\",\"revision\":1,\"sequence\":") +
+                               std::to_wstring(sequence) +
+                               L",\"text\":\"initial\",\"rows\":[],\"navigation\":{\"back\":{\"enabled\":false},"
+                               L"\"forward\":{\"enabled\":true},\"reload\":{\"enabled\":true},\"productMenu\":" +
+                               body + L"}}";
+                    };
+                    Require(
+                        FAILED(api.syncAddress(
+                            first,
+                            productMenu(LR"({"enabled":true,"items":[{"kind":"item","id":"Bad Id","label":"x"}]})", 4)
+                                .c_str())),
+                        "reject a malformed product menu id");
+                    Require(
+                        FAILED(api.syncAddress(
+                            first,
+                            productMenu(
+                                LR"({"enabled":true,"items":[{"kind":"item","id":"a","label":"x"},{"kind":"item","id":"a","label":"y"}]})",
+                                5)
+                                .c_str())),
+                        "reject duplicate product menu ids");
+                    Require(
+                        FAILED(api.syncAddress(
+                            first,
+                            productMenu(
+                                LR"({"enabled":true,"items":[{"kind":"submenu","id":"a","label":"x","items":[]}]})", 6)
+                                .c_str())),
+                        "reject an empty submenu");
+                    Require(
+                        FAILED(api.syncAddress(
+                            first,
+                            productMenu(
+                                LR"({"enabled":true,"items":[{"kind":"submenu","id":"a","label":"a","items":[{"kind":"submenu","id":"b","label":"b","items":[{"kind":"submenu","id":"c","label":"c","items":[{"kind":"item","id":"d","label":"d"}]}]}]}]})",
+                                7)
+                                .c_str())),
+                        "reject a product menu nested beyond its depth");
+                    Require(
+                        SUCCEEDED(api.syncAddress(
+                            first,
+                            productMenu(
+                                LR"({"enabled":true,"label":"Fenn","items":[{"kind":"item","id":"new-tab","label":"New Tab","shortcut":"Ctrl+T","image":{"width":1,"height":1,"pixels":"204080ff"}},{"kind":"separator"},{"kind":"submenu","id":"bookmarks","label":"Bookmarks","items":[{"kind":"item","id":"bookmarks-toolbar-never","label":"Never Show","checked":true}]}]})",
+                                8)
+                                .c_str())),
+                        "publish a valid product menu");
+                    auto artwork = winrt::Windows::Data::Json::JsonObject::Parse(
+                        LR"({"enabled":true,"items":[{"kind":"submenu","id":"extensions","label":"Extensions","items":[{"kind":"item","id":"entry-1","label":"Extension","image":{"width":1,"height":1,"pixels":"204080ff"}}]}]})");
+                    auto icon = artwork.GetNamedArray(L"items")
+                                    .GetObjectAt(0)
+                                    .GetNamedArray(L"items")
+                                    .GetObjectAt(0)
+                                    .GetNamedObject(L"image");
+                    icon.SetNamedValue(L"pixels",
+                                       winrt::Windows::Data::Json::JsonValue::CreateStringValue(L"zzzzzzzz"));
+                    Require(FAILED(api.syncAddress(first, productMenu(artwork.Stringify().c_str(), 9).c_str())),
+                            "reject malformed nested extension icon pixels");
+                    icon.SetNamedValue(L"width", winrt::Windows::Data::Json::JsonValue::CreateNumberValue(33));
+                    Require(FAILED(api.syncAddress(first, productMenu(artwork.Stringify().c_str(), 9).c_str())),
+                            "reject oversized extension icons");
+                    auto crowded = winrt::Windows::Data::Json::JsonObject::Parse(LR"({"enabled":true,"items":[]})");
+                    auto groups = crowded.GetNamedArray(L"items");
+                    for (int group = 0; group < 2; ++group) {
+                        auto submenu = winrt::Windows::Data::Json::JsonObject::Parse(
+                            LR"({"kind":"submenu","label":"Collection","items":[]})");
+                        submenu.SetNamedValue(L"id", winrt::Windows::Data::Json::JsonValue::CreateStringValue(
+                                                         L"collection-" + winrt::to_hstring(group)));
+                        auto entries = submenu.GetNamedArray(L"items");
+                        for (int i = 0; i < 21; ++i) {
+                            auto entry = winrt::Windows::Data::Json::JsonObject::Parse(
+                                LR"({"kind":"item","label":"Site","image":{"width":32,"height":32}})");
+                            entry.SetNamedValue(L"id", winrt::Windows::Data::Json::JsonValue::CreateStringValue(
+                                                           L"entry-" + winrt::to_hstring(group * 21 + i)));
+                            entry.GetNamedObject(L"image").SetNamedValue(
+                                L"pixels",
+                                winrt::Windows::Data::Json::JsonValue::CreateStringValue(std::wstring(8192, L'0')));
+                            entries.Append(entry);
+                        }
+                        groups.Append(submenu);
                     }
-                    groups.Append(submenu);
+                    auto entries = groups.GetObjectAt(1).GetNamedArray(L"items");
+                    auto overflow = winrt::Windows::Data::Json::JsonObject::Parse(entries.GetObjectAt(0).Stringify());
+                    overflow.SetNamedValue(L"id",
+                                           winrt::Windows::Data::Json::JsonValue::CreateStringValue(L"entry-overflow"));
+                    entries.Append(overflow);
+                    Require(FAILED(api.syncAddress(first, productMenu(crowded.Stringify().c_str(), 9).c_str())),
+                            "reject aggregate product-menu icon pixel overflow");
+                    Require(SUCCEEDED(api.syncAddress(first, productMenu(LR"({"enabled":false})", 9).c_str())),
+                            "disable the product menu");
                 }
-                auto entries = groups.GetObjectAt(1).GetNamedArray(L"items");
-                auto overflow = winrt::Windows::Data::Json::JsonObject::Parse(entries.GetObjectAt(0).Stringify());
-                overflow.SetNamedValue(L"id", winrt::Windows::Data::Json::JsonValue::CreateStringValue(L"entry-overflow"));
-                entries.Append(overflow);
-                Require(FAILED(api.syncAddress(first, productMenu(crowded.Stringify().c_str(),9).c_str())), "reject aggregate product-menu icon pixel overflow");
-                Require(SUCCEEDED(api.syncAddress(first, productMenu(LR"({"enabled":false})",9).c_str())), "disable the product menu");
+                {
+                    auto status = winrt::Windows::Data::Json::JsonObject::Parse(
+                        LR"({"version":1,"enabled":true,"navigationToolbar":true,"session":"toolbar-contract","revision":1,"sequence":10,"rows":[],"navigation":{"back":{"enabled":false},"forward":{"enabled":false},"reload":{"enabled":true},"indicators":{"private":{"shown":true,"enabled":false,"label":"Localized private"},"analysis":{"shown":true,"enabled":true,"label":"Enterprise agent"}}}})");
+                    Require(SUCCEEDED(api.syncAddress(first, status.Stringify().c_str())),
+                            "publish window status indicators");
+                    auto label = findControl(toolbarRoot, L"FennPrivateIndicatorLabel");
+                    auto analysis = button(L"FennContentAnalysisIndicator");
+                    Require(label && label.as<Controls::TextBlock>().Text() == L"Localized private",
+                            "legacy private status is localized text");
+                    Require(analysis.IsEnabled() &&
+                                Automation::AutomationProperties::GetName(analysis) == L"Enterprise agent",
+                            "analysis indicator has Firefox label");
+                    auto indicators = status.GetNamedObject(L"navigation").GetNamedObject(L"indicators");
+                    indicators.GetNamedObject(L"private")
+                        .SetNamedValue(L"enabled", winrt::Windows::Data::Json::JsonValue::CreateBooleanValue(true));
+                    status.SetNamedValue(L"sequence", winrt::Windows::Data::Json::JsonValue::CreateNumberValue(11));
+                    Require(SUCCEEDED(api.syncAddress(first, status.Stringify().c_str())),
+                            "publish private info button");
+                    auto privateButton = button(L"FennPrivateIndicator");
+                    Require(!label.Parent() && privateButton.IsEnabled(), "private info mode replaces static label");
+                    for (auto key : {L"private", L"analysis"})
+                        indicators.GetNamedObject(key).SetNamedValue(
+                            L"shown", winrt::Windows::Data::Json::JsonValue::CreateBooleanValue(false));
+                    status.SetNamedValue(L"sequence", winrt::Windows::Data::Json::JsonValue::CreateNumberValue(12));
+                    Require(SUCCEEDED(api.syncAddress(first, status.Stringify().c_str())), "revoke status indicators");
+                    Require(!privateButton.Parent() && !analysis.Parent() && !privateButton.IsEnabled() &&
+                                !analysis.IsEnabled(),
+                            "inactive status detaches and disables buttons");
+                }
+                auto sharedBackdrop = addressBackdrop();
+                Require(SUCCEEDED(api.syncAddress(first, LR"({"version":1,"enabled":false})")),
+                        "disable navigation with address");
+                Require(sharedBackdrop && addressBackdrop() == sharedBackdrop,
+                        "disabling one region preserves the shared Window backdrop");
+                for (auto const& control : {profile, extensions, appMenu})
+                    Require(!control.Parent() && !control.IsEnabled(),
+                            "disable detaches and revokes trailing menu buttons");
+                Require(pinned.Children().Size() == 0 && embedded.Children().Size() == 0,
+                        "disable revokes pinned and embedded controls");
+                for (auto const& control : {back, forward, reload})
+                    Require(!control.Parent() && !control.IsEnabled(),
+                            "disable detaches and revokes navigation controls");
+                Require(SUCCEEDED(api.updateAddress(first, &addressRect, FALSE)), "address-only detach");
+                Require(SUCCEEDED(api.updateTabStrip(first, &stripRect, TRUE)), "strip survives address teardown");
+                Require(inspect(first, winrt::put_abi(content)) == E_NOT_VALID_STATE,
+                        "detached host no longer publishes");
+                Require(SUCCEEDED(api.updateAddress(first, &addressRect, FALSE)), "idempotent address teardown");
             }
-            {
-                auto status=winrt::Windows::Data::Json::JsonObject::Parse(LR"({"version":1,"enabled":true,"navigationToolbar":true,"session":"toolbar-contract","revision":1,"sequence":10,"rows":[],"navigation":{"back":{"enabled":false},"forward":{"enabled":false},"reload":{"enabled":true},"indicators":{"private":{"shown":true,"enabled":false,"label":"Localized private"},"analysis":{"shown":true,"enabled":true,"label":"Enterprise agent"}}}})");
-                Require(SUCCEEDED(api.syncAddress(first,status.Stringify().c_str())), "publish window status indicators");
-                auto label=findControl(toolbarRoot,L"FennPrivateIndicatorLabel");
-                auto analysis=button(L"FennContentAnalysisIndicator");
-                Require(label && label.as<Controls::TextBlock>().Text()==L"Localized private", "legacy private status is localized text");
-                Require(analysis.IsEnabled() && Automation::AutomationProperties::GetName(analysis)==L"Enterprise agent", "analysis indicator has Firefox label");
-                auto indicators=status.GetNamedObject(L"navigation").GetNamedObject(L"indicators");
-                indicators.GetNamedObject(L"private").SetNamedValue(L"enabled",winrt::Windows::Data::Json::JsonValue::CreateBooleanValue(true));
-                status.SetNamedValue(L"sequence",winrt::Windows::Data::Json::JsonValue::CreateNumberValue(11));
-                Require(SUCCEEDED(api.syncAddress(first,status.Stringify().c_str())), "publish private info button");
-                auto privateButton=button(L"FennPrivateIndicator");
-                Require(!label.Parent() && privateButton.IsEnabled(), "private info mode replaces static label");
-                for(auto key:{L"private",L"analysis"})indicators.GetNamedObject(key).SetNamedValue(L"shown",winrt::Windows::Data::Json::JsonValue::CreateBooleanValue(false));
-                status.SetNamedValue(L"sequence",winrt::Windows::Data::Json::JsonValue::CreateNumberValue(12));
-                Require(SUCCEEDED(api.syncAddress(first,status.Stringify().c_str())), "revoke status indicators");
-                Require(!privateButton.Parent() && !analysis.Parent() && !privateButton.IsEnabled() && !analysis.IsEnabled(), "inactive status detaches and disables buttons");
-            }
-            auto sharedBackdrop=addressBackdrop();
-            Require(SUCCEEDED(api.syncAddress(first, LR"({"version":1,"enabled":false})")), "disable navigation with address");
-            Require(sharedBackdrop && addressBackdrop()==sharedBackdrop, "disabling one region preserves the shared Window backdrop");
-            for (auto const& control : {profile, extensions, appMenu})
-                Require(!control.Parent() && !control.IsEnabled(), "disable detaches and revokes trailing menu buttons");
-            Require(pinned.Children().Size()==0 && embedded.Children().Size()==0, "disable revokes pinned and embedded controls");
-            for (auto const& control : {back, forward, reload})
-                Require(!control.Parent() && !control.IsEnabled(), "disable detaches and revokes navigation controls");
-            Require(SUCCEEDED(api.updateAddress(first,&addressRect,FALSE)), "address-only detach");
-            Require(SUCCEEDED(api.updateTabStrip(first,&stripRect,TRUE)), "strip survives address teardown");
-            Require(inspect(first,winrt::put_abi(content))==E_NOT_VALID_STATE, "detached host no longer publishes");
-            Require(SUCCEEDED(api.updateAddress(first,&addressRect,FALSE)), "idempotent address teardown");
-        }
         } catch (winrt::hresult_error const& error) {
             fwprintf(stderr, L"Address host HRESULT 0x%08X: %s\n", unsigned(error.code()), error.message().c_str());
             return 1;
@@ -7086,10 +8516,13 @@ int wmain(int argc, wchar_t** argv) {
         winrt::clear_factory_cache();
         Require(SUCCEEDED(api.shutdown()), "dual host clean shutdown");
         CoUninitialize();
-        puts("CHECKS PASSED: independent address attach/detach, stock TextBox, validation atomicity, retained strip, clean shutdown");
+        puts(
+            "CHECKS PASSED: independent address attach/detach, stock TextBox, validation atomicity, retained strip, "
+            "clean shutdown");
         return 0;
     }
-    if (argc == 3 && (wcscmp(argv[2], L"--selection-decorations") == 0 || wcscmp(argv[2], L"--selection-reentrancy") == 0)) {
+    if (argc == 3 &&
+        (wcscmp(argv[2], L"--selection-decorations") == 0 || wcscmp(argv[2], L"--selection-reentrancy") == 0)) {
         // Keep the synchronous selection burst separate from the subsequent
         // resize/animation fixture and its asynchronous island layout.
         CheckTabStrip(module, api, first, true, wcscmp(argv[2], L"--selection-reentrancy") == 0);
@@ -7102,10 +8535,10 @@ int wmain(int argc, wchar_t** argv) {
     }
     if (argc == 3 && (wcscmp(argv[2], L"--strip") == 0 || wcscmp(argv[2], L"--inline") == 0)) {
         if (wcscmp(argv[2], L"--strip") == 0) {
-        CheckTabStrip(module, api, first);
-        Require(SUCCEEDED(api.destroy(first)), "destroy strip before host");
-        Require(!GetPropW(first, WINUI_PANE_SYSTEM_CAPTION_PROPERTY), "destroy releases native caption ownership");
-        Require(SUCCEEDED(api.updateTabStrip(first, &rect, TRUE)), "recreate island for inline group checks");
+            CheckTabStrip(module, api, first);
+            Require(SUCCEEDED(api.destroy(first)), "destroy strip before host");
+            Require(!GetPropW(first, WINUI_PANE_SYSTEM_CAPTION_PROPERTY), "destroy releases native caption ownership");
+            Require(SUCCEEDED(api.updateTabStrip(first, &rect, TRUE)), "recreate island for inline group checks");
         }
         CheckInlineGroups(module, api, first, wcscmp(argv[2], L"--inline") == 0);
         Require(SUCCEEDED(api.destroy(first)), "destroy inline groups before host");
@@ -7116,8 +8549,11 @@ int wmain(int argc, wchar_t** argv) {
         puts("CHECKS PASSED: TabView layout, stable IDs, selection, menus, theme, hide/show, teardown");
         return 0;
     }
-    if (argc == 3 && (wcscmp(argv[2], L"--drag") == 0 || wcscmp(argv[2], L"--reorder") == 0 || wcscmp(argv[2], L"--transfers") == 0 || wcscmp(argv[2], L"--drag-close") == 0 ||
-                      wcscmp(argv[2], L"--drag-change") == 0 || wcscmp(argv[2], L"--drag-offset") == 0 || (wcscmp(argv[2], L"--group-drop") == 0 || wcscmp(argv[2], L"--group-neighbors") == 0 || wcscmp(argv[2], L"--group-cross") == 0 || wcscmp(argv[2], L"--group-detach") == 0))) {
+    if (argc == 3 && (wcscmp(argv[2], L"--drag") == 0 || wcscmp(argv[2], L"--reorder") == 0 ||
+                      wcscmp(argv[2], L"--transfers") == 0 || wcscmp(argv[2], L"--drag-close") == 0 ||
+                      wcscmp(argv[2], L"--drag-change") == 0 || wcscmp(argv[2], L"--drag-offset") == 0 ||
+                      (wcscmp(argv[2], L"--group-drop") == 0 || wcscmp(argv[2], L"--group-neighbors") == 0 ||
+                       wcscmp(argv[2], L"--group-cross") == 0 || wcscmp(argv[2], L"--group-detach") == 0))) {
         auto dragTicks = [&] {
             auto counts = reinterpret_cast<HRESULT(WINAPI*)(const wchar_t*, uint64_t*)>(
                 GetProcAddress(module, "WinUIPaneTestGetEntryCalls"));
@@ -7127,7 +8563,7 @@ int wmain(int argc, wchar_t** argv) {
             return value;
         };
         if (wcscmp(argv[2], L"--group-neighbors") == 0) {
-            CheckGroupNeighbors(api,first);
+            CheckGroupNeighbors(api, first);
         } else if (wcscmp(argv[2], L"--group-detach") == 0) {
             CheckGroupDragEdgeScroll(module, api, first, false, GroupDetach::Release);
             CheckGroupDragEdgeScroll(module, api, first, false, GroupDetach::Return);
@@ -7155,15 +8591,19 @@ int wmain(int argc, wchar_t** argv) {
             CheckTabStripDrag(module, api, first, false, true);
             CheckTabStripDrag(module, api, first, true, true);
             CheckTabStripDrag(module, api, first, false, false, true);
-            auto groupSlide = reinterpret_cast<HRESULT(WINAPI*)(HWND,uint32_t)>(GetProcAddress(module,"WinUIPaneTestGroupSlide"));
-            Require(groupSlide && SUCCEEDED(groupSlide(first,0)), "start a real slide with grouping dwell pending");
-            Require(SUCCEEDED(groupSlide(first,1)), "expired dwell leaves the running storyboard and reorder destination intact");
+            auto groupSlide =
+                reinterpret_cast<HRESULT(WINAPI*)(HWND, uint32_t)>(GetProcAddress(module, "WinUIPaneTestGroupSlide"));
+            Require(groupSlide && SUCCEEDED(groupSlide(first, 0)), "start a real slide with grouping dwell pending");
+            Require(SUCCEEDED(groupSlide(first, 1)),
+                    "expired dwell leaves the running storyboard and reorder destination intact");
             HRESULT settled = E_PENDING;
             for (int i = 0; i < 100 && settled == E_PENDING; ++i) {
-                Pump(); Sleep(10);
-                settled = groupSlide(first,2);
+                Pump();
+                Sleep(10);
+                settled = groupSlide(first, 2);
             }
-            Require(SUCCEEDED(settled), "after sliding, group only at the actual tab position without resetting its offset");
+            Require(SUCCEEDED(settled),
+                    "after sliding, group only at the actual tab position without resetting its offset");
         } else if (wcscmp(argv[2], L"--drag-offset") == 0) {
             CheckTabStripCrossWindowAdopt(module, api, first, AdoptScenario::Offset);
             CheckTabStripCrossWindowAdopt(module, api, first, AdoptScenario::Offset, true);
@@ -7226,8 +8666,8 @@ int wmain(int argc, wchar_t** argv) {
             // Its own endpoint: the panic check deliberately poisons a core and
             // drops the pane to its snapshot-only fallback, which must not leak
             // into the other fixtures.
-            HWND core = CreateFixtureWindow(0, L"STATIC", L"Shell core host", WS_OVERLAPPEDWINDOW, 0, 0, 640, 480, nullptr,
-                                        nullptr, GetModuleHandleW(nullptr), nullptr);
+            HWND core = CreateFixtureWindow(0, L"STATIC", L"Shell core host", WS_OVERLAPPEDWINDOW, 0, 0, 640, 480,
+                                            nullptr, nullptr, GetModuleHandleW(nullptr), nullptr);
             Require(core && SUCCEEDED(api.updateTabStrip(core, &rect, TRUE)), "shell core island");
             ShowWindow(core, SW_SHOW);
             Pump();
@@ -7258,7 +8698,7 @@ int wmain(int argc, wchar_t** argv) {
         }
         for (int cycle = 0; cycle < 20; ++cycle) {
             HWND second = CreateFixtureWindow(0, L"STATIC", L"Menu lifecycle host", WS_OVERLAPPEDWINDOW, 0, 0, 640, 480,
-                                          nullptr, nullptr, GetModuleHandleW(nullptr), nullptr);
+                                              nullptr, nullptr, GetModuleHandleW(nullptr), nullptr);
             Require(second && SUCCEEDED(api.updateTabStrip(second, &rect, TRUE)), "menu secondary island");
             if (!cycle) {
                 ShowWindow(second, SW_SHOW);
@@ -7313,36 +8753,24 @@ int wmain(int argc, wchar_t** argv) {
         Require(!selected, "closing a tab does not emit a selection");
     };
     WinUITab tabs[]{{11, L"First tab"}, {22, L"Unicode tab \u65e5\u672c\u8a9e"}};
-    Require(
-        SUCCEEDED(api.syncTabs(first, tabs, 2, 11, NextTabRevision(), &requested)) &&
-            advancedRevision() && noSelectionRequest(first),
-        "initial tabs do not emit user selection, and the snapshot reports a model revision");
+    Require(SUCCEEDED(api.syncTabs(first, tabs, 2, 11, NextTabRevision(), &requested)) && advancedRevision() &&
+                noSelectionRequest(first),
+            "initial tabs do not emit user selection, and the snapshot reports a model revision");
     tabs[0].title = L"Renamed tab";
-    Require(
-        SUCCEEDED(api.syncTabs(first, tabs, 2, 22, NextTabRevision(), &requested)) &&
-            advancedRevision() && noSelectionRequest(first),
-        "title and Firefox selection updates do not echo");
+    Require(SUCCEEDED(api.syncTabs(first, tabs, 2, 22, NextTabRevision(), &requested)) && advancedRevision() &&
+                noSelectionRequest(first),
+            "title and Firefox selection updates do not echo");
     WinUITab reordered[]{{22, L"Moved tab"}, {11, L"Renamed tab"}};
-    Require(SUCCEEDED(api.syncTabs(first, reordered, 2, 22, NextTabRevision(), &requested)),
-            "reorder tabs");
-    Require(SUCCEEDED(api.syncTabs(first, reordered, 1, 22, NextTabRevision(), &requested)),
-            "close tab");
-    Require(api.syncTabs(first, tabs, 2, 99, NextTabRevision(), &requested) ==
-                E_INVALIDARG,
+    Require(SUCCEEDED(api.syncTabs(first, reordered, 2, 22, NextTabRevision(), &requested)), "reorder tabs");
+    Require(SUCCEEDED(api.syncTabs(first, reordered, 1, 22, NextTabRevision(), &requested)), "close tab");
+    Require(api.syncTabs(first, tabs, 2, 99, NextTabRevision(), &requested) == E_INVALIDARG,
             "reject missing selected tab");
-    Require(api.syncTabs(first, nullptr, 2, 0, NextTabRevision(), &requested) ==
-                E_INVALIDARG,
-            "reject null snapshot");
+    Require(api.syncTabs(first, nullptr, 2, 0, NextTabRevision(), &requested) == E_INVALIDARG, "reject null snapshot");
     WinUITab duplicate[]{{11, L"One"}, {11, L"Two"}};
-    Require(api.syncTabs(first, duplicate, 2, 11, NextTabRevision(), &requested) ==
-                E_INVALIDARG,
+    Require(api.syncTabs(first, duplicate, 2, 11, NextTabRevision(), &requested) == E_INVALIDARG,
             "reject duplicate identities");
-    Require(
-        SUCCEEDED(api.syncTabs(first, nullptr, 0, 0, NextTabRevision(), &requested)),
-        "empty list");
-    Require(
-        SUCCEEDED(api.syncTabs(first, tabs, 2, 11, NextTabRevision(), &requested)),
-        "restore tabs");
+    Require(SUCCEEDED(api.syncTabs(first, nullptr, 0, 0, NextTabRevision(), &requested)), "empty list");
+    Require(SUCCEEDED(api.syncTabs(first, tabs, 2, 11, NextTabRevision(), &requested)), "restore tabs");
     HWND island = IslandOf(first);
     Require(island != nullptr && Above(compositor, island), "shared XAML bridge below compositor sibling");
     ShowWindow(first, SW_SHOWNOACTIVATE);
@@ -7352,26 +8780,28 @@ int wmain(int argc, wchar_t** argv) {
     }
 
     if (argc == 3 && wcscmp(argv[2], L"--popup-lifecycle") == 0) {
-        CheckStockFlyout(module,first);
-        for(int cycle=0;cycle<3;++cycle) {
-            fprintf(stderr,"Address popup lifecycle cycle=%d\n",cycle);
-            CheckAddress(api,module,first);
-            CheckStockFlyout(module,first);
-            HWND second=CreateFixtureWindow(0,L"STATIC",L"Popup lifecycle sibling",WS_OVERLAPPEDWINDOW,80,80,640,480,nullptr,nullptr,GetModuleHandleW(nullptr),nullptr);
-            Require(second && SUCCEEDED(api.updateTabStrip(second,&rect,TRUE)),"create popup lifecycle sibling");
-            ShowWindow(second,SW_SHOW);
-            Require(SUCCEEDED(api.syncTabs(second,tabs,2,11,NextTabRevision(),&requested)),"publish sibling tabs after address close");
-            auto row=StripRow(StripView(module,second),11);
-            CheckStockFlyout(module,second);
-            Require(SUCCEEDED(api.destroy(second)),"destroy popup lifecycle sibling");
+        CheckStockFlyout(module, first);
+        for (int cycle = 0; cycle < 3; ++cycle) {
+            fprintf(stderr, "Address popup lifecycle cycle=%d\n", cycle);
+            CheckAddress(api, module, first);
+            CheckStockFlyout(module, first);
+            HWND second = CreateFixtureWindow(0, L"STATIC", L"Popup lifecycle sibling", WS_OVERLAPPEDWINDOW, 80, 80,
+                                              640, 480, nullptr, nullptr, GetModuleHandleW(nullptr), nullptr);
+            Require(second && SUCCEEDED(api.updateTabStrip(second, &rect, TRUE)), "create popup lifecycle sibling");
+            ShowWindow(second, SW_SHOW);
+            Require(SUCCEEDED(api.syncTabs(second, tabs, 2, 11, NextTabRevision(), &requested)),
+                    "publish sibling tabs after address close");
+            auto row = StripRow(StripView(module, second), 11);
+            CheckStockFlyout(module, second);
+            Require(SUCCEEDED(api.destroy(second)), "destroy popup lifecycle sibling");
             DestroyFixtureWindow(second);
-            CheckStockFlyout(module,first);
+            CheckStockFlyout(module, first);
         }
-        CheckContextMenu(module,api,first);
-        Require(SUCCEEDED(api.destroy(first)),"destroy popup lifecycle host");
+        CheckContextMenu(module, api, first);
+        Require(SUCCEEDED(api.destroy(first)), "destroy popup lifecycle host");
         DestroyFixtureWindow(first);
         winrt::clear_factory_cache();
-        Require(SUCCEEDED(api.shutdown()),"popup lifecycle shutdown");
+        Require(SUCCEEDED(api.shutdown()), "popup lifecycle shutdown");
         CoUninitialize();
         puts("CHECKS PASSED: address source close/recreate, surviving and new-island popups, loaded rows, shutdown");
         return 0;
@@ -7423,9 +8853,8 @@ int wmain(int argc, wchar_t** argv) {
         Require(request.Size() && request.GetNamedObject(L"action").GetNamedNumber(L"tab") == 11,
                 "the reverse keyboard selection is its own request");
     }
-    Require(
-        SUCCEEDED(api.syncTabs(first, tabs, 2, 11, NextTabRevision(), &requested)),
-        "restore after keyboard selection");
+    Require(SUCCEEDED(api.syncTabs(first, tabs, 2, 11, NextTabRevision(), &requested)),
+            "restore after keyboard selection");
     WithTab(first, tabs[1].title, tabs[1].title, true);
     {
         auto request = NextRequest(api, first, 1);
@@ -7434,9 +8863,8 @@ int wmain(int argc, wchar_t** argv) {
     }
     // A strip tab's close button is shown on the selected tab, so the close
     // checks below act on the tab Firefox has selected.
-    Require(
-        SUCCEEDED(api.syncTabs(first, tabs, 2, 22, NextTabRevision(), &requested)),
-        "select the tab whose close is exercised");
+    Require(SUCCEEDED(api.syncTabs(first, tabs, 2, 22, NextTabRevision(), &requested)),
+            "select the tab whose close is exercised");
     WithTab(first, tabs[1].title, tabs[1].title, false, true);
     closeWithoutSelection(first, 22, 200);
     // Since ABI v14 a close is a request on the shared queue, not something
@@ -7464,7 +8892,8 @@ int wmain(int argc, wchar_t** argv) {
     // Two different tabs, two requests, in the order they were clicked. The
     // queue never collapses them: each is a command the user gave.
     WithTab(first, tabs[1].title, tabs[1].title, false, true);
-    Require(SUCCEEDED(api.syncTabs(first, tabs, 2, 11, NextTabRevision(), &requested)), "select the second close target");
+    Require(SUCCEEDED(api.syncTabs(first, tabs, 2, 11, NextTabRevision(), &requested)),
+            "select the second close target");
     WithTab(first, tabs[0].title, tabs[0].title, false, true);
     std::vector<uint32_t> closed;
     for (int attempt = 0; attempt < 40 && closed.size() < 2; ++attempt) {
@@ -7483,14 +8912,14 @@ int wmain(int argc, wchar_t** argv) {
     Require(closed == std::vector<uint32_t>({22, 11}), "both queued closes arrive, in order");
     // A stock TabView close button is not a keyboard stop; keyboard closing
     // is Firefox's Ctrl+W, covered by the Firefox integration suite.
-    Require(SUCCEEDED(api.syncTabs(first, tabs, 2, 11, NextTabRevision(), &requested)), "restore selection after close checks");
+    Require(SUCCEEDED(api.syncTabs(first, tabs, 2, 11, NextTabRevision(), &requested)),
+            "restore selection after close checks");
     Require(api.syncTabs(first, tabs, 2, 11, NextTabRevision(), nullptr) == E_POINTER, "reject null revision output");
     for (int input : {0, 2, 3}) {
         WithTab(first, L"FennStripNewTab", L"New tab", false, false, input);
         Require(NextRequest(api, first, 4, nullptr).Size(),
                 "UIA/Space/Enter requests a new tab without inventing rows");
-        Require(!NextRequest(api, first, 4, nullptr, 3).Size(),
-                "new-tab request delivered exactly once");
+        Require(!NextRequest(api, first, 4, nullptr, 3).Size(), "new-tab request delivered exactly once");
         Require(noSelectionRequest(first), "requesting a new tab does not select a row");
     }
     WithTab(first, L"FennStripNewTab", L"New tab");
@@ -7553,7 +8982,8 @@ int wmain(int argc, wchar_t** argv) {
                 "one change is one presentation sample, and the frame callback is not left subscribed");
     }
     WinUITab duplicates[]{{11, L"New tab"}, {22, L"New tab"}};
-    Require(SUCCEEDED(api.syncTabs(first, duplicates, 2, 11, NextTabRevision(), &requested)), "identical title snapshot");
+    Require(SUCCEEDED(api.syncTabs(first, duplicates, 2, 11, NextTabRevision(), &requested)),
+            "identical title snapshot");
     WithTab(first, L"New tab", L"New tab", true, false, 0, 2, 1);
     {
         auto request = NextRequest(api, first, 1);
@@ -7565,7 +8995,8 @@ int wmain(int argc, wchar_t** argv) {
     if (argc == 3) {
         CheckContextMenu(module, api, first);
         CheckMenuThemes(module, api, first, {tabs[0], tabs[1]});
-        Require(SUCCEEDED(api.syncTabs(first, tabs, 2, 11, NextTabRevision(), &requested)), "restore after theme checks");
+        Require(SUCCEEDED(api.syncTabs(first, tabs, 2, 11, NextTabRevision(), &requested)),
+                "restore after theme checks");
     }
     Require(SUCCEEDED(api.updateTabStrip(first, &rect, TRUE)), "restore geometry after theme checks");
     ShowWindow(first, SW_HIDE);
@@ -7576,8 +9007,8 @@ int wmain(int argc, wchar_t** argv) {
     RECT cuts[]{{0, 0, 30, 40}, {100, 0, 200, 40}};
     Require(SUCCEEDED(api.clip(first, cuts, 2)), "clip overlapping overlays");
     Pump();
-    const HWND page=reinterpret_cast<HWND>(GetPropW(first,L"Fenn.PageWindow"));
-    Require(page != nullptr,"native page input window");
+    const HWND page = reinterpret_cast<HWND>(GetPropW(first, L"Fenn.PageWindow"));
+    Require(page != nullptr, "native page input window");
     HRGN region = CreateRectRgn(0, 0, 0, 0);
     Require(GetWindowRgn(page, region) == COMPLEXREGION, "page region includes retained-control exclusions");
     Require(PtInRegion(region, 10, 20) && PtInRegion(region, 150, 20), "retained-control exclusions route to the page");
@@ -7585,9 +9016,11 @@ int wmain(int argc, wchar_t** argv) {
     Require(api.clip(first, nullptr, 1) == E_INVALIDARG, "reject null exclusions");
     RECT full{0, 0, 640, 40};
     Require(SUCCEEDED(api.clip(first, &full, 1)), "fully covered pane");
-    Require(GetWindowRgn(page, region) != ERROR && PtInRegion(region, 10, 20), "full retained cover routes to the page");
+    Require(GetWindowRgn(page, region) != ERROR && PtInRegion(region, 10, 20),
+            "full retained cover routes to the page");
     Require(SUCCEEDED(api.clip(first, nullptr, 0)), "restore full pane");
-    Require(GetWindowRgn(page, region) != ERROR && !PtInRegion(region, 10, 20), "restored native region bypasses page input");
+    Require(GetWindowRgn(page, region) != ERROR && !PtInRegion(region, 10, 20),
+            "restored native region bypasses page input");
     DeleteObject(region);
     if (argc == 3) {
         // Firefox calls update() and clip() from a requestAnimationFrame
@@ -7659,7 +9092,8 @@ int wmain(int argc, wchar_t** argv) {
         work(after);
         Require(after[5] == before[5] + 1, "a changed region is set on the window");
         HRGN restored = CreateRectRgn(0, 0, 0, 0);
-        Require(GetWindowRgn(page, restored) != ERROR && !PtInRegion(restored, 10, 20), "the changed region reached the window");
+        Require(GetWindowRgn(page, restored) != ERROR && !PtInRegion(restored, 10, 20),
+                "the changed region reached the window");
         DeleteObject(restored);
         // Every ABI entry point accounts for its own calls, which is what makes
         // native cost attributable at all. The count is what this pins; the
@@ -7715,22 +9149,26 @@ int wmain(int argc, wchar_t** argv) {
     std::thread worker([&] { otherThread = api.updateTabStrip(first, &rect, TRUE); });
     worker.join();
     Require(otherThread == RPC_E_WRONG_THREAD, "reject wrong-thread update");
-    HWND wrongThreadWindow=reinterpret_cast<HWND>(1);
-    std::thread createWorker([&] { otherThread=api.createWindowHost(0,L"Rejected",WS_OVERLAPPEDWINDOW,&rect,nullptr,nullptr,&wrongThreadWindow); });
+    HWND wrongThreadWindow = reinterpret_cast<HWND>(1);
+    std::thread createWorker([&] {
+        otherThread =
+            api.createWindowHost(0, L"Rejected", WS_OVERLAPPEDWINDOW, &rect, nullptr, nullptr, &wrongThreadWindow);
+    });
     createWorker.join();
-    Require(otherThread==RPC_E_WRONG_THREAD && !wrongThreadWindow,"reject wrong-thread native Window creation atomically");
+    Require(otherThread == RPC_E_WRONG_THREAD && !wrongThreadWindow,
+            "reject wrong-thread native Window creation atomically");
     std::thread clipWorker([&] { otherThread = api.clip(first, nullptr, 0); });
     clipWorker.join();
     Require(otherThread == RPC_E_WRONG_THREAD, "reject wrong thread");
     if (argc == 3) CheckAddress(api, module, first);
     for (int cycle = 0; cycle < 20; ++cycle) {
-        HWND second = CreateFixtureWindow(0, L"STATIC", L"Second pane host", WS_OVERLAPPEDWINDOW, 0, 0, 640, 480, nullptr,
-                                      nullptr, GetModuleHandleW(nullptr), nullptr);
+        HWND second = CreateFixtureWindow(0, L"STATIC", L"Second pane host", WS_OVERLAPPEDWINDOW, 0, 0, 640, 480,
+                                          nullptr, nullptr, GetModuleHandleW(nullptr), nullptr);
         Require(second != nullptr, "second host");
         Require(SUCCEEDED(api.updateTabStrip(second, &rect, TRUE)), "create second island");
         WinUITab other[]{{11, L"Independent window"}};
-        Require(SUCCEEDED(api.syncTabs(second, other, 1, 11, NextTabRevision(), &requested)) &&
-                    requested && noSelectionRequest(second),
+        Require(SUCCEEDED(api.syncTabs(second, other, 1, 11, NextTabRevision(), &requested)) && requested &&
+                    noSelectionRequest(second),
                 "independent window can reuse tab IDs and keeps its own model revision");
         if (cycle == 0) {
             ShowWindow(second, SW_SHOWNOACTIVATE);
@@ -7738,8 +9176,7 @@ int wmain(int argc, wchar_t** argv) {
             WithTab(second, L"FennStripNewTab", L"New tab");
             Require(!NextRequest(api, first, 4, nullptr, 3).Size(),
                     "second-window new-tab action cannot leak to first window");
-            Require(NextRequest(api, second, 4, nullptr).Size(),
-                    "new-tab request reaches its owning window's queue");
+            Require(NextRequest(api, second, 4, nullptr).Size(), "new-tab request reaches its owning window's queue");
         }
         Require(SUCCEEDED(api.clip(second, cuts, 2)), "second window clipping");
         HRGN firstRegion = CreateRectRgn(0, 0, 0, 0);
@@ -7751,7 +9188,13 @@ int wmain(int argc, wchar_t** argv) {
         RECT resized{10, 0, 610, 40};
         // Where a row is used afterwards, let each geometry change render first:
         // hiding the island while a new row's Loaded is pending leaves it unloaded.
-        auto settle = [&] { if (cycle == 0 && argc == 3) for (int i = 0; i < 50; ++i) { Pump(); Sleep(10); } };
+        auto settle = [&] {
+            if (cycle == 0 && argc == 3)
+                for (int i = 0; i < 50; ++i) {
+                    Pump();
+                    Sleep(10);
+                }
+        };
         settle();
         Require(SUCCEEDED(api.updateTabStrip(second, &resized, TRUE)), "resize second island");
         settle();
@@ -7787,14 +9230,14 @@ int wmain(int argc, wchar_t** argv) {
     }
     {
         using namespace winrt::Microsoft::UI::Xaml;
-        const auto app=Application::Current();
-        uint32_t controlResources=0;
-        for (const auto& dictionary:app.Resources().MergedDictionaries())
+        const auto app = Application::Current();
+        uint32_t controlResources = 0;
+        for (const auto& dictionary : app.Resources().MergedDictionaries())
             if (dictionary.try_as<Controls::XamlControlsResources>()) ++controlResources;
-        Require(controlResources==1, "one control-resource dictionary after repeated window creation");
-        Require(winrt::unbox_value<double>(app.Resources().Lookup(winrt::box_value(L"TabViewItemMaxWidth")))==225.0,
+        Require(controlResources == 1, "one control-resource dictionary after repeated window creation");
+        Require(winrt::unbox_value<double>(app.Resources().Lookup(winrt::box_value(L"TabViewItemMaxWidth"))) == 225.0,
                 "application retains Firefox tab width policy");
-        Require(app.DispatcherShutdownMode()==DispatcherShutdownMode::OnExplicitShutdown,
+        Require(app.DispatcherShutdownMode() == DispatcherShutdownMode::OnExplicitShutdown,
                 "browser window closure leaves application shutdown explicit");
     }
     Require(SUCCEEDED(api.destroy(first)), "destroy first island");
@@ -7804,7 +9247,8 @@ int wmain(int argc, wchar_t** argv) {
     Require(api.updateTabStrip(nullptr, &rect, TRUE) == RO_E_CLOSED, "reject after shutdown");
     CoUninitialize();
     puts(
-        "CHECKS PASSED (process exit still required): ABI rejection, shared Window ordering and page exclusion regions, thread "
+        "CHECKS PASSED (process exit still required): ABI rejection, shared Window ordering and page exclusion "
+        "regions, thread "
         "affinity, partial clipping/restoration, tab snapshots, keyboard selection, stale selection rejection, UIA "
         "selection and accessible titles, native close via UIA/keyboard, close queue and stale IDs, new tab via "
         "UIA/Space/Enter and per-window queue, 20 two-window lifecycles, shutdown");

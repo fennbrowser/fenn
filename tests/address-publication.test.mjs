@@ -4,7 +4,7 @@ import {readFileSync} from "node:fs";
 import vm from "node:vm";
 const context = vm.createContext({console, UrlbarShared:{}});
 vm.runInContext(readFileSync(new URL("../upstream/firefox/browser/base/content/WinUIAddressSession.sys.mjs", import.meta.url), "utf8")
-  .replace(/^import .*;$/m, "").replace("export class WinUIAddressSession", "this.Session = class WinUIAddressSession"), context);
+  .replace(/^import\b[^;]*;$/m, "").replace("export class WinUIAddressSession", "this.Session = class WinUIAddressSession"), context);
 function fixture() {
   const s = Object.create(context.Session.prototype);
   Object.assign(s, {_sequence:0, changed(){}});

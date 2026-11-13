@@ -17,8 +17,8 @@ use std::{
     thread::{self, JoinHandle},
     time::Instant,
 };
-pub mod capabilities;
 mod admission_jobs;
+pub mod capabilities;
 mod fetch_jobs;
 mod offline;
 

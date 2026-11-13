@@ -49,7 +49,7 @@ struct PinnedExtensionButtons {
     ~PinnedExtensionButtons() { lifetime.reset(); }
     void SetRevealed(bool reveal) {
         panel.Opacity(1);
-        for (auto const& [id,row] : rows) row.button.Opacity(reveal || row.alwaysVisible ? 1.0 : 0.0);
+        for (auto const& [id, row] : rows) row.button.Opacity(reveal || row.alwaysVisible ? 1.0 : 0.0);
     }
     static std::vector<State> Read(JObject const& snapshot, wchar_t const* key = L"pinned") {
         std::vector<State> result;
@@ -83,15 +83,17 @@ struct PinnedExtensionButtons {
             next.iconState = item.GetNamedString(L"iconState", L"normal");
             if ((!next.icon.empty() && !OmnibarIcons::Glyph(next.icon)) || !OmnibarIcons::ValidState(next.iconState))
                 throw winrt::hresult_invalid_argument();
-            if (next.id.empty() || next.id.size() > 64 || !ids.insert(next.id).second ||
-                next.label.size() > 4096 || next.badge.size() > 4096 || next.text.size() > 16) throw winrt::hresult_invalid_argument();
+            if (next.id.empty() || next.id.size() > 64 || !ids.insert(next.id).second || next.label.size() > 4096 ||
+                next.badge.size() > 4096 || next.text.size() > 16)
+                throw winrt::hresult_invalid_argument();
             next.enabled = item.GetNamedBoolean(L"enabled");
-            next.genericIcon = item.GetNamedBoolean(L"genericIcon",false);
-            next.alwaysVisible = item.GetNamedBoolean(L"alwaysVisible",false);
+            next.genericIcon = item.GetNamedBoolean(L"genericIcon", false);
+            next.alwaysVisible = item.GetNamedBoolean(L"alwaysVisible", false);
             next.background = color(item, L"background");
             next.foreground = color(item, L"foreground");
             NativeJson::ValidateImage(item, pixels, {32, 32768});
-            if (item.HasKey(L"image") && item.GetNamedValue(L"image").ValueType() != winrt::Windows::Data::Json::JsonValueType::Null)
+            if (item.HasKey(L"image") &&
+                item.GetNamedValue(L"image").ValueType() != winrt::Windows::Data::Json::JsonValueType::Null)
                 next.image = item.GetNamedObject(L"image");
             if (!next.icon.empty() && (next.image || next.genericIcon)) throw winrt::hresult_invalid_argument();
             result.push_back(std::move(next));
@@ -108,7 +110,10 @@ struct PinnedExtensionButtons {
             auto [it, added] = rows.try_emplace(item.id);
             auto& row = it->second;
             if (added) {
-                row.button = Markup::XamlReader::Load(LR"(<Button xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" Style="{StaticResource SubtleButtonStyle}" Width="32" Height="32" MinWidth="0" MinHeight="0" Padding="0" HorizontalContentAlignment="Stretch" VerticalContentAlignment="Stretch"><Grid><Grid.Resources><ResourceDictionary><ResourceDictionary.ThemeDictionaries><ResourceDictionary x:Key="Default" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"><SolidColorBrush x:Key="BadgeBackground" Color="Transparent"/><SolidColorBrush x:Key="BadgeForeground" Color="Transparent"/></ResourceDictionary><ResourceDictionary x:Key="HighContrast" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"><SolidColorBrush x:Key="BadgeBackground" Color="{ThemeResource SystemColorHighlightColor}"/><SolidColorBrush x:Key="BadgeForeground" Color="{ThemeResource SystemColorHighlightTextColor}"/></ResourceDictionary></ResourceDictionary.ThemeDictionaries></ResourceDictionary></Grid.Resources><Image Width="16" Height="16" Stretch="Uniform"/><Border Background="{ThemeResource BadgeBackground}" CornerRadius="3" HorizontalAlignment="Right" VerticalAlignment="Top" MaxWidth="30"><TextBlock Foreground="{ThemeResource BadgeForeground}" FontSize="9" Padding="2,0" TextTrimming="CharacterEllipsis"/></Border></Grid></Button>)").as<Button>();
+                row.button =
+                    Markup::XamlReader::Load(
+                        LR"(<Button xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" Style="{StaticResource SubtleButtonStyle}" Width="32" Height="32" MinWidth="0" MinHeight="0" Padding="0" HorizontalContentAlignment="Stretch" VerticalContentAlignment="Stretch"><Grid><Grid.Resources><ResourceDictionary><ResourceDictionary.ThemeDictionaries><ResourceDictionary x:Key="Default" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"><SolidColorBrush x:Key="BadgeBackground" Color="Transparent"/><SolidColorBrush x:Key="BadgeForeground" Color="Transparent"/></ResourceDictionary><ResourceDictionary x:Key="HighContrast" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"><SolidColorBrush x:Key="BadgeBackground" Color="{ThemeResource SystemColorHighlightColor}"/><SolidColorBrush x:Key="BadgeForeground" Color="{ThemeResource SystemColorHighlightTextColor}"/></ResourceDictionary></ResourceDictionary.ThemeDictionaries></ResourceDictionary></Grid.Resources><Image Width="16" Height="16" Stretch="Uniform"/><Border Background="{ThemeResource BadgeBackground}" CornerRadius="3" HorizontalAlignment="Right" VerticalAlignment="Top" MaxWidth="30"><TextBlock Foreground="{ThemeResource BadgeForeground}" FontSize="9" Padding="2,0" TextTrimming="CharacterEllipsis"/></Border></Grid></Button>)")
+                        .as<Button>();
                 row.button.Width(buttonSize);
                 row.button.Height(buttonSize);
                 auto grid = row.button.Content().as<Grid>();
@@ -116,48 +121,76 @@ struct PinnedExtensionButtons {
                 row.image = grid.Children().GetAt(0).as<Image>();
                 row.badgeBorder = grid.Children().GetAt(1).as<Border>();
                 row.badge = row.badgeBorder.Child().as<TextBlock>();
-                row.genericIcon = Markup::XamlReader::Load(LR"(<FontIcon xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" FontFamily="{ThemeResource SymbolThemeFontFamily}" Glyph="&#xEA86;" FontSize="16" HorizontalAlignment="Center" VerticalAlignment="Center"/>)").as<FontIcon>();
+                row.genericIcon =
+                    Markup::XamlReader::Load(
+                        LR"(<FontIcon xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" FontFamily="{ThemeResource SymbolThemeFontFamily}" Glyph="&#xEA86;" FontSize="16" HorizontalAlignment="Center" VerticalAlignment="Center"/>)")
+                        .as<FontIcon>();
                 grid.Children().Append(row.genericIcon);
                 // Built-ins inherit the stock button foreground (including disabled
                 // and high contrast). State marks carry meaning without color.
-                row.nativeHost = Markup::XamlReader::Load(LR"(<Grid xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" Width="20" Height="20" HorizontalAlignment="Center" VerticalAlignment="Center" IsHitTestVisible="False"><Grid.Resources><ResourceDictionary><ResourceDictionary.ThemeDictionaries><ResourceDictionary x:Key="Default" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"><SolidColorBrush x:Key="NativeIconColor" Color="Transparent"/></ResourceDictionary><ResourceDictionary x:Key="HighContrast" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"><SolidColorBrush x:Key="NativeIconColor" Color="{ThemeResource SystemColorButtonTextColor}"/></ResourceDictionary></ResourceDictionary.ThemeDictionaries></ResourceDictionary></Grid.Resources><FontIcon FontFamily="{ThemeResource SymbolThemeFontFamily}" FontSize="16"/><PathIcon Width="16" Height="16" Data="M 0,14 L 14,0 16,2 2,16 Z"/><Ellipse Width="3" Height="3" Fill="{ThemeResource TextFillColorPrimaryBrush}" HorizontalAlignment="Center" VerticalAlignment="Bottom"/><ProgressRing Width="16" Height="16" MinWidth="0" MinHeight="0" IsActive="False"/><FontIcon FontFamily="{ThemeResource SymbolThemeFontFamily}" FontSize="16" Foreground="{ThemeResource NativeIconColor}"/><Ellipse Width="5" Height="5" Fill="{ThemeResource SystemFillColorCriticalBrush}" HorizontalAlignment="Right" VerticalAlignment="Top"/></Grid>)").as<Grid>();
+                row.nativeHost =
+                    Markup::XamlReader::Load(
+                        LR"(<Grid xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" Width="20" Height="20" HorizontalAlignment="Center" VerticalAlignment="Center" IsHitTestVisible="False"><Grid.Resources><ResourceDictionary><ResourceDictionary.ThemeDictionaries><ResourceDictionary x:Key="Default" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"><SolidColorBrush x:Key="NativeIconColor" Color="Transparent"/></ResourceDictionary><ResourceDictionary x:Key="HighContrast" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"><SolidColorBrush x:Key="NativeIconColor" Color="{ThemeResource SystemColorButtonTextColor}"/></ResourceDictionary></ResourceDictionary.ThemeDictionaries></ResourceDictionary></Grid.Resources><FontIcon FontFamily="{ThemeResource SymbolThemeFontFamily}" FontSize="16"/><PathIcon Width="16" Height="16" Data="M 0,14 L 14,0 16,2 2,16 Z"/><Ellipse Width="3" Height="3" Fill="{ThemeResource TextFillColorPrimaryBrush}" HorizontalAlignment="Center" VerticalAlignment="Bottom"/><ProgressRing Width="16" Height="16" MinWidth="0" MinHeight="0" IsActive="False"/><FontIcon FontFamily="{ThemeResource SymbolThemeFontFamily}" FontSize="16" Foreground="{ThemeResource NativeIconColor}"/><Ellipse Width="5" Height="5" Fill="{ThemeResource SystemFillColorCriticalBrush}" HorizontalAlignment="Right" VerticalAlignment="Top"/></Grid>)")
+                        .as<Grid>();
                 row.nativeIcon = row.nativeHost.Children().GetAt(0).as<FontIcon>();
                 row.blocked = row.nativeHost.Children().GetAt(1).as<PathIcon>();
                 row.active = row.nativeHost.Children().GetAt(2).as<Shapes::Ellipse>();
                 row.busy = row.nativeHost.Children().GetAt(3).as<ProgressRing>();
-                row.coloredIcon=row.nativeHost.Children().GetAt(4).as<FontIcon>();
+                row.coloredIcon = row.nativeHost.Children().GetAt(4).as<FontIcon>();
                 row.recording = row.nativeHost.Children().GetAt(5).as<Shapes::Ellipse>();
-                row.nativeVector = PathIcon(); row.nativeVector.Width(16); row.nativeVector.Height(16);
+                row.nativeVector = PathIcon();
+                row.nativeVector.Width(16);
+                row.nativeVector.Height(16);
                 row.nativeHost.Children().InsertAt(0, row.nativeVector);
-                row.iconColor=row.nativeHost.Resources().ThemeDictionaries().Lookup(winrt::box_value(L"Default")).as<ResourceDictionary>().Lookup(winrt::box_value(L"NativeIconColor")).as<Media::SolidColorBrush>();
+                row.iconColor = row.nativeHost.Resources()
+                                    .ThemeDictionaries()
+                                    .Lookup(winrt::box_value(L"Default"))
+                                    .as<ResourceDictionary>()
+                                    .Lookup(winrt::box_value(L"NativeIconColor"))
+                                    .as<Media::SolidColorBrush>();
                 grid.Children().Append(row.nativeHost);
-                row.nativeText = Markup::XamlReader::Load(LR"(<TextBlock xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" FontSize="12" HorizontalAlignment="Center" VerticalAlignment="Center" IsHitTestVisible="False"/>)").as<TextBlock>();
+                row.nativeText =
+                    Markup::XamlReader::Load(
+                        LR"(<TextBlock xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" FontSize="12" HorizontalAlignment="Center" VerticalAlignment="Center" IsHitTestVisible="False"/>)")
+                        .as<TextBlock>();
                 grid.Children().Append(row.nativeText);
-                Canvas::SetZIndex(row.badgeBorder,1);
-                auto resources = grid.Resources().ThemeDictionaries().Lookup(winrt::box_value(L"Default")).as<ResourceDictionary>();
+                Canvas::SetZIndex(row.badgeBorder, 1);
+                auto resources =
+                    grid.Resources().ThemeDictionaries().Lookup(winrt::box_value(L"Default")).as<ResourceDictionary>();
                 row.background = resources.Lookup(winrt::box_value(L"BadgeBackground")).as<Media::SolidColorBrush>();
                 row.foreground = resources.Lookup(winrt::box_value(L"BadgeForeground")).as<Media::SolidColorBrush>();
                 Automation::AutomationProperties::SetAutomationId(row.button, automationPrefix + item.id);
                 auto invoke = [this, id = item.id, alive = std::weak_ptr<int>(lifetime)](bool context) {
-                    if (alive.expired() || !activate || !rows.contains(id) || panel.Visibility() != Visibility::Visible) return;
+                    if (alive.expired() || !activate || !rows.contains(id) || panel.Visibility() != Visibility::Visible)
+                        return;
                     auto button = rows.at(id).button;
                     if (!context && !button.IsEnabled()) return;
                     auto command = (context ? contextPrefix : commandPrefix) + id;
                     uint32_t modifiers = ((GetKeyState(VK_CONTROL) & 0x8000) ? 1u : 0u) |
-                        ((GetKeyState(VK_MENU) & 0x8000) ? 2u : 0u) | ((GetKeyState(VK_SHIFT) & 0x8000) ? 4u : 0u);
+                                         ((GetKeyState(VK_MENU) & 0x8000) ? 2u : 0u) |
+                                         ((GetKeyState(VK_SHIFT) & 0x8000) ? 4u : 0u);
                     activate(command.c_str(), modifiers, button);
                 };
                 row.button.Click([invoke](auto const&, auto const&) { invoke(false); });
-                row.button.ContextRequested([invoke](auto const&, auto const& args) { args.Handled(true); invoke(true); });
+                row.button.ContextRequested([invoke](auto const&, auto const& args) {
+                    args.Handled(true);
+                    invoke(true);
+                });
             }
             if (!externalLayout) {
-            uint32_t oldIndex;
-            if (panel.Children().IndexOf(row.button, oldIndex)) {
-                if (oldIndex != index) { panel.Children().RemoveAt(oldIndex); panel.Children().InsertAt(index, row.button); }
-            } else panel.Children().InsertAt(index, row.button);
-            ++index;
+                uint32_t oldIndex;
+                if (panel.Children().IndexOf(row.button, oldIndex)) {
+                    if (oldIndex != index) {
+                        panel.Children().RemoveAt(oldIndex);
+                        panel.Children().InsertAt(index, row.button);
+                    }
+                } else
+                    panel.Children().InsertAt(index, row.button);
+                ++index;
             }
-            row.enabled=item.enabled;row.alwaysVisible=item.alwaysVisible;row.button.IsEnabled(visible && item.enabled);
+            row.enabled = item.enabled;
+            row.alwaysVisible = item.alwaysVisible;
+            row.button.IsEnabled(visible && item.enabled);
             Automation::AutomationProperties::SetName(row.button, item.label);
             Automation::AutomationProperties::SetItemStatus(row.button, item.badge);
             ToolTipService::SetToolTip(row.button, winrt::box_value(item.label));
@@ -165,43 +198,62 @@ struct PinnedExtensionButtons {
             const auto width = item.text.empty() ? buttonSize : std::max(buttonSize, double(item.text.size() * 7 + 12));
             row.button.Width(width);
             const bool builtin = !item.icon.empty();
-            row.image.Visibility(!builtin && item.text.empty() && !item.genericIcon ? Visibility::Visible : Visibility::Collapsed);
-            row.genericIcon.Visibility(!builtin && item.text.empty() && item.genericIcon ? Visibility::Visible : Visibility::Collapsed);
+            row.image.Visibility(!builtin && item.text.empty() && !item.genericIcon ? Visibility::Visible
+                                                                                    : Visibility::Collapsed);
+            row.genericIcon.Visibility(!builtin && item.text.empty() && item.genericIcon ? Visibility::Visible
+                                                                                         : Visibility::Collapsed);
             row.badge.FontSize(item.text.empty() ? 9 : 12);
             row.badgeBorder.MaxWidth(item.text.empty() ? 30 : width);
-            row.badgeBorder.HorizontalAlignment(item.text.empty() ? HorizontalAlignment::Right : HorizontalAlignment::Center);
+            row.badgeBorder.HorizontalAlignment(item.text.empty() ? HorizontalAlignment::Right
+                                                                  : HorizontalAlignment::Center);
             row.badgeBorder.VerticalAlignment(item.text.empty() ? VerticalAlignment::Top : VerticalAlignment::Center);
-            row.badgeBorder.Visibility((builtin || item.badge.empty() && item.text.empty()) ? Visibility::Collapsed : Visibility::Visible);
-            row.background.Color(item.background); row.foreground.Color(item.foreground);
+            row.badgeBorder.Visibility((builtin || item.badge.empty() && item.text.empty()) ? Visibility::Collapsed
+                                                                                            : Visibility::Visible);
+            row.background.Color(item.background);
+            row.foreground.Color(item.foreground);
             row.nativeHost.Visibility(builtin && item.text.empty() ? Visibility::Visible : Visibility::Collapsed);
-            if (builtin) { row.nativeIcon.Glyph(OmnibarIcons::Glyph(item.icon)); row.coloredIcon.Glyph(OmnibarIcons::Glyph(item.icon)); }
-            const auto path=builtin ? OmnibarIcons::Path(item.icon) : nullptr;
+            if (builtin) {
+                row.nativeIcon.Glyph(OmnibarIcons::Glyph(item.icon));
+                row.coloredIcon.Glyph(OmnibarIcons::Glyph(item.icon));
+            }
+            const auto path = builtin ? OmnibarIcons::Path(item.icon) : nullptr;
             if (row.iconKey != item.icon) {
-                row.iconKey=item.icon;
+                row.iconKey = item.icon;
                 if (path) {
-                    auto xaml=winrt::hstring(L"<PathIcon xmlns=\"http://schemas.microsoft.com/winfx/2006/xaml/presentation\" Data=\"")+path+L"\"/>";
+                    auto xaml =
+                        winrt::hstring(
+                            L"<PathIcon xmlns=\"http://schemas.microsoft.com/winfx/2006/xaml/presentation\" Data=\"") +
+                        path + L"\"/>";
                     // Keep geometry with its owning PathIcon. Reparenting Data
                     // from a temporary icon can fail with E_INVALIDARG.
-                    auto next=Markup::XamlReader::Load(xaml).as<PathIcon>();
-                    next.Width(16); next.Height(16);
-                    uint32_t position=0;
-                    if (row.nativeHost.Children().IndexOf(row.nativeVector,position)) row.nativeHost.Children().SetAt(position,next);
-                    row.nativeVector=next;
+                    auto next = Markup::XamlReader::Load(xaml).as<PathIcon>();
+                    next.Width(16);
+                    next.Height(16);
+                    uint32_t position = 0;
+                    if (row.nativeHost.Children().IndexOf(row.nativeVector, position))
+                        row.nativeHost.Children().SetAt(position, next);
+                    row.nativeVector = next;
                 }
             }
             row.iconColor.Color(item.foreground);
 
-            row.nativeIcon.Visibility(!item.iconColored && !path && item.iconState != L"busy" ? Visibility::Visible : Visibility::Collapsed);
+            row.nativeIcon.Visibility(!item.iconColored && !path && item.iconState != L"busy" ? Visibility::Visible
+                                                                                              : Visibility::Collapsed);
             if (item.iconColored) {
                 Data::Binding binding;
                 binding.Source(row.coloredIcon);
                 binding.Path(PropertyPath(L"Foreground"));
-                row.nativeVector.SetBinding(IconElement::ForegroundProperty(),binding);
-            } else row.nativeVector.ClearValue(IconElement::ForegroundProperty());
-            row.nativeVector.Visibility(path && item.iconState != L"busy" ? Visibility::Visible : Visibility::Collapsed);
-            row.coloredIcon.Visibility(item.iconColored && !path && item.iconState != L"busy" ? Visibility::Visible : Visibility::Collapsed);
-            row.blocked.Visibility(builtin && item.iconState == L"blocked" ? Visibility::Visible : Visibility::Collapsed);
-            row.recording.Visibility(builtin && item.iconState == L"recording" ? Visibility::Visible : Visibility::Collapsed);
+                row.nativeVector.SetBinding(IconElement::ForegroundProperty(), binding);
+            } else
+                row.nativeVector.ClearValue(IconElement::ForegroundProperty());
+            row.nativeVector.Visibility(path && item.iconState != L"busy" ? Visibility::Visible
+                                                                          : Visibility::Collapsed);
+            row.coloredIcon.Visibility(item.iconColored && !path && item.iconState != L"busy" ? Visibility::Visible
+                                                                                              : Visibility::Collapsed);
+            row.blocked.Visibility(builtin && item.iconState == L"blocked" ? Visibility::Visible
+                                                                           : Visibility::Collapsed);
+            row.recording.Visibility(builtin && item.iconState == L"recording" ? Visibility::Visible
+                                                                               : Visibility::Collapsed);
             row.active.Visibility(builtin && item.iconState == L"active" ? Visibility::Visible : Visibility::Collapsed);
             row.busy.IsActive(builtin && visible && item.iconState == L"busy");
             row.busy.Visibility(builtin && item.iconState == L"busy" ? Visibility::Visible : Visibility::Collapsed);
@@ -209,9 +261,11 @@ struct PinnedExtensionButtons {
             row.nativeText.FontSize(item.text.empty() ? 9 : 12);
             row.nativeText.MaxWidth(item.text.empty() ? 30 : width);
             row.nativeText.TextTrimming(TextTrimming::CharacterEllipsis);
-            row.nativeText.HorizontalAlignment(item.text.empty() ? HorizontalAlignment::Right : HorizontalAlignment::Center);
+            row.nativeText.HorizontalAlignment(item.text.empty() ? HorizontalAlignment::Right
+                                                                 : HorizontalAlignment::Center);
             row.nativeText.VerticalAlignment(item.text.empty() ? VerticalAlignment::Top : VerticalAlignment::Center);
-            row.nativeText.Visibility(builtin && (!item.text.empty() || !item.badge.empty()) ? Visibility::Visible : Visibility::Collapsed);
+            row.nativeText.Visibility(builtin && (!item.text.empty() || !item.badge.empty()) ? Visibility::Visible
+                                                                                             : Visibility::Collapsed);
             auto imageKey = item.image ? item.image.GetNamedString(L"pixels") : winrt::hstring{};
             if (imageKey != row.imageKey) {
                 row.image.Source(item.image ? NativeJson::DecodeImage(item.image) : nullptr);
@@ -219,7 +273,10 @@ struct PinnedExtensionButtons {
             }
         }
         for (auto it = rows.begin(); it != rows.end();) {
-            if (keep.contains(it->first)) { ++it; continue; }
+            if (keep.contains(it->first)) {
+                ++it;
+                continue;
+            }
             uint32_t position;
             if (panel.Children().IndexOf(it->second.button, position)) panel.Children().RemoveAt(position);
             it = rows.erase(it);

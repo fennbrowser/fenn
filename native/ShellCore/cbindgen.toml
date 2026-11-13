@@ -22,6 +22,9 @@ prefix = ""
 # Named by a u32 field rather than a signature, so not reachable on its own.
 include = ["ShellFrameWindowRequest", "ShellAddressInteractionKind", "ShellAddressInteractionEffect", "ShellStripImageKind", "ShellPublicationChannel", "ShellPrivacyPanelKind", "ShellLayoutWork", "ShellWindowHostOperation"]
 item_types = ["enums", "structs", "opaque", "typedefs", "functions", "constants"]
+# Several modules define these with different values; cbindgen emits whichever it
+# meets first, so the macro would change with source order. C++ uses neither.
+exclude = ["BYTES", "MAX_ROWS"]
 
 [enum]
 prefix_with_name = true

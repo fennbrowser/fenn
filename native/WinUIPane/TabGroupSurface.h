@@ -51,7 +51,8 @@ struct TabGroupSurface {
             auto brush = compositor.CreateRadialGradientBrush();
             brush.MappingMode(Microsoft::UI::Composition::CompositionMappingMode::Absolute);
             for (auto [offset, level] : TabAmbient::PoolStops)
-                brush.ColorStops().Append(compositor.CreateColorGradientStop(offset, {uint8_t(pool.peak * level), 0, 0, 0}));
+                brush.ColorStops().Append(
+                    compositor.CreateColorGradientStop(offset, {uint8_t(pool.peak * level), 0, 0, 0}));
             auto body = compositor.CreateSpriteShape(light.geometry);
             body.FillBrush(brush);
             light.visual.Shapes().Append(body);
@@ -62,17 +63,24 @@ struct TabGroupSurface {
         light.geometry.Size({std::max(0.f, width - 1), std::max(0.f, height - 1)});
         light.geometry.CornerRadius({std::max(0.f, radius - .5f), std::max(0.f, radius - .5f)});
         for (uint32_t corner = 0; corner < 4; ++corner) {
-            auto brush = light.visual.Shapes().GetAt(corner).as<Microsoft::UI::Composition::CompositionSpriteShape>()
-                .StrokeBrush().as<Microsoft::UI::Composition::CompositionRadialGradientBrush>();
+            auto brush = light.visual.Shapes()
+                             .GetAt(corner)
+                             .as<Microsoft::UI::Composition::CompositionSpriteShape>()
+                             .StrokeBrush()
+                             .as<Microsoft::UI::Composition::CompositionRadialGradientBrush>();
             brush.EllipseCenter({corner % 2 ? width - radius : radius, corner / 2 ? height - radius : radius});
             brush.EllipseRadius({std::max(1.f, std::min(48.f, width / 3)), std::max(1.f, height * .6f)});
         }
         for (uint32_t index = 0; index < ARRAYSIZE(TabAmbient::Pools); ++index) {
             auto const& pool = TabAmbient::Pools[index];
-            auto brush = light.visual.Shapes().GetAt(4 + index).as<Microsoft::UI::Composition::CompositionSpriteShape>()
-                .FillBrush().as<Microsoft::UI::Composition::CompositionRadialGradientBrush>();
+            auto brush = light.visual.Shapes()
+                             .GetAt(4 + index)
+                             .as<Microsoft::UI::Composition::CompositionSpriteShape>()
+                             .FillBrush()
+                             .as<Microsoft::UI::Composition::CompositionRadialGradientBrush>();
             brush.EllipseCenter({pool.x * width, pool.y * height});
-            brush.EllipseRadius({std::max(1.f, TabAmbient::PoolRadiusX * width), std::max(1.f, TabAmbient::PoolRadiusY * height)});
+            brush.EllipseRadius(
+                {std::max(1.f, TabAmbient::PoolRadiusX * width), std::max(1.f, TabAmbient::PoolRadiusY * height)});
         }
     }
     static void Paint(Light& light, uint32_t color) {
@@ -82,11 +90,11 @@ struct TabGroupSurface {
             auto sprite = shape.as<Microsoft::UI::Composition::CompositionSpriteShape>();
             const bool body = bool(sprite.FillBrush());
             auto brush = (body ? sprite.FillBrush() : sprite.StrokeBrush())
-                .as<Microsoft::UI::Composition::CompositionRadialGradientBrush>();
+                             .as<Microsoft::UI::Composition::CompositionRadialGradientBrush>();
             for (auto stop : brush.ColorStops())
                 TabAmbient::Tint(stop, body ? uint8_t(color >> 16) : shine(uint8_t(color >> 16)),
-                    body ? uint8_t(color >> 8) : shine(uint8_t(color >> 8)),
-                    body ? uint8_t(color) : shine(uint8_t(color)));
+                                 body ? uint8_t(color >> 8) : shine(uint8_t(color >> 8)),
+                                 body ? uint8_t(color) : shine(uint8_t(color)));
         }
     }
 
@@ -94,7 +102,7 @@ struct TabGroupSurface {
     // shape as the blurred light, so highlights catch as it arrives. With
     // `under`, that visual stays beneath (a recolor's old light).
     Microsoft::UI::Composition::CompositionRadialGradientBrush BeginReveal(uint32_t id,
-            std::shared_ptr<Light> under = nullptr) {
+                                                                           std::shared_ptr<Light> under = nullptr) {
         auto light = lights.find(id);
         auto surface = surfaces.find(id);
         if (light == lights.end() || surface == surfaces.end() || !light->second.visual) return nullptr;
@@ -105,24 +113,30 @@ struct TabGroupSurface {
         entry.revealSurface = compositor.CreateVisualSurface();
         entry.revealSurface.SourceVisual(entry.visual);
         entry.revealSurface.SourceSize(size);
-        const Windows::Foundation::Numerics::float2 center{TabGlowIgnition::OriginX * size.x, TabGlowIgnition::OriginY * size.y};
+        const Windows::Foundation::Numerics::float2 center{TabGlowIgnition::OriginX * size.x,
+                                                           TabGlowIgnition::OriginY * size.y};
         auto front = TabGlowIgnition::Front(compositor, center, TabGlowIgnition::Reach(center, size));
         auto mask = compositor.CreateMaskBrush();
-        mask.Source(compositor.CreateSurfaceBrush(entry.revealSurface)); mask.Mask(front);
+        mask.Source(compositor.CreateSurfaceBrush(entry.revealSurface));
+        mask.Mask(front);
         entry.reveal = compositor.CreateSpriteVisual();
         entry.reveal.Comment(L"group-outline-reveal");
-        entry.reveal.Size(size); entry.reveal.Brush(mask);
+        entry.reveal.Size(size);
+        entry.reveal.Brush(mask);
         if (under) {
             entry.previous = std::move(under);
             entry.previousSurface = compositor.CreateVisualSurface();
             entry.previousSurface.SourceVisual(entry.previous->visual);
             entry.previousSurface.SourceSize(size);
-            entry.previousFront = TabGlowIgnition::Front(compositor, center, TabGlowIgnition::Reach(center, size), true);
+            entry.previousFront =
+                TabGlowIgnition::Front(compositor, center, TabGlowIgnition::Reach(center, size), true);
             auto previousMask = compositor.CreateMaskBrush();
-            previousMask.Source(compositor.CreateSurfaceBrush(entry.previousSurface)); previousMask.Mask(entry.previousFront);
+            previousMask.Source(compositor.CreateSurfaceBrush(entry.previousSurface));
+            previousMask.Mask(entry.previousFront);
             auto previous = compositor.CreateSpriteVisual();
             previous.Comment(L"group-outline-previous");
-            previous.Size(size); previous.Brush(previousMask);
+            previous.Size(size);
+            previous.Brush(previousMask);
             entry.revealRoot = compositor.CreateContainerVisual();
             entry.revealRoot.Comment(L"group-outline-recolor");
             entry.revealRoot.Size(size);
@@ -136,7 +150,8 @@ struct TabGroupSurface {
     }
     // Recolor: the old light gives way outside-in as the new color is
     // revealed; returns both fronts.
-    std::vector<Microsoft::UI::Composition::CompositionRadialGradientBrush> BeginRecolor(uint32_t id, uint32_t oldColor) {
+    std::vector<Microsoft::UI::Composition::CompositionRadialGradientBrush> BeginRecolor(uint32_t id,
+                                                                                         uint32_t oldColor) {
         auto light = lights.find(id);
         auto surface = surfaces.find(id);
         if (light == lights.end() || surface == surfaces.end() || !light->second.visual) return {};
@@ -159,10 +174,16 @@ struct TabGroupSurface {
             if (child && (child == entry.reveal || child == entry.revealRoot))
                 Hosting::ElementCompositionPreview::SetElementChildVisual(surface->second, entry.visual);
         }
-        entry.reveal = nullptr; entry.revealSurface = nullptr; entry.revealRoot = nullptr; entry.previous = nullptr;
-        entry.previousSurface = nullptr; entry.previousFront = nullptr;
+        entry.reveal = nullptr;
+        entry.revealSurface = nullptr;
+        entry.revealRoot = nullptr;
+        entry.previous = nullptr;
+        entry.previousSurface = nullptr;
+        entry.previousFront = nullptr;
     }
-    void EndReveals() { for (auto& [id, light] : lights) EndReveal(id); }
+    void EndReveals() {
+        for (auto& [id, light] : lights) EndReveal(id);
+    }
 
     // Reflections belong to the actual outline, below stock tab contents and
     // selection. Retain four soft corner lobes rather than lighting tab seams.
@@ -182,9 +203,13 @@ struct TabGroupSurface {
             const Windows::Foundation::Numerics::float2 size{width, height};
             if (light.visual.Size() != size) {
                 Shape(light, width, height, radius);
-                if (light.reveal) { light.reveal.Size(size); light.revealSurface.SourceSize(size); }
+                if (light.reveal) {
+                    light.reveal.Size(size);
+                    light.revealSurface.SourceSize(size);
+                }
                 if (light.revealRoot) {
-                    light.revealRoot.Size(size); light.previousSurface.SourceSize(size);
+                    light.revealRoot.Size(size);
+                    light.previousSurface.SourceSize(size);
                     for (auto child : light.revealRoot.Children()) child.Size(size);
                 }
                 if (light.previous) Shape(*light.previous, width, height, radius);
@@ -192,17 +217,20 @@ struct TabGroupSurface {
             if (light.color != color->second) Paint(light, color->second);
         }
         for (auto it = lights.begin(); it != lights.end();) {
-            if (colors.count(it->first) && surfaces.count(it->first)) { ++it; continue; }
+            if (colors.count(it->first) && surfaces.count(it->first)) {
+                ++it;
+                continue;
+            }
             EndReveal(it->first);
             if (surfaces.count(it->first)) {
                 auto border = surfaces.at(it->first);
                 if (motion && dim.count(it->first) && motion->Dims()) {
                     // Only clear the outline if a relit group has not replaced it.
                     motion->Dim(it->second.visual, 0, TabGlowIgnition::DimEdge + TabGlowIgnition::DimLag,
-                        [border, visual = it->second.visual] {
-                            if (Hosting::ElementCompositionPreview::GetElementChildVisual(border) == visual)
-                                Hosting::ElementCompositionPreview::SetElementChildVisual(border, nullptr);
-                        });
+                                [border, visual = it->second.visual] {
+                                    if (Hosting::ElementCompositionPreview::GetElementChildVisual(border) == visual)
+                                        Hosting::ElementCompositionPreview::SetElementChildVisual(border, nullptr);
+                                });
                 } else {
                     Hosting::ElementCompositionPreview::SetElementChildVisual(border, nullptr);
                 }
@@ -226,26 +254,33 @@ struct TabGroupSurface {
     }
 
     void Create(Controls::Grid const& root) {
-        layer = Markup::XamlReader::Load(LR"(<Canvas xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" Grid.ColumnSpan="3" Canvas.ZIndex="-1" FlowDirection="LeftToRight" IsHitTestVisible="False" AutomationProperties.AccessibilityView="Raw"/>)").as<Controls::Canvas>();
+        layer =
+            Markup::XamlReader::Load(
+                LR"(<Canvas xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" Grid.ColumnSpan="3" Canvas.ZIndex="-1" FlowDirection="LeftToRight" IsHitTestVisible="False" AutomationProperties.AccessibilityView="Raw"/>)")
+                .as<Controls::Canvas>();
         root.Children().Append(layer);
     }
 
-    void Update(std::map<uint32_t, Windows::Foundation::Rect> const& bounds,
-                Windows::Foundation::Rect viewport) {
+    void Update(std::map<uint32_t, Windows::Foundation::Rect> const& bounds, Windows::Foundation::Rect viewport) {
         auto clip = layer.Clip().try_as<Media::RectangleGeometry>();
-        if (!clip) { clip = Media::RectangleGeometry(); layer.Clip(clip); }
+        if (!clip) {
+            clip = Media::RectangleGeometry();
+            layer.Clip(clip);
+        }
         if (clip.Rect() != viewport) clip.Rect(viewport);
         for (auto const& [id, rect] : bounds) {
             auto [entry, inserted] = surfaces.try_emplace(id, nullptr);
             auto& border = entry->second;
             if (!border) {
-                border = Markup::XamlReader::Load(LR"(
+                border = Markup::XamlReader::Load(
+                             LR"(
 <Border xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
  BorderBrush="{ThemeResource ControlStrokeColorDefaultBrush}" BorderThickness="1" CornerRadius="8"
  IsHitTestVisible="False" AutomationProperties.AccessibilityView="Raw">
  <Border Background="{ThemeResource TabViewItemHeaderBackgroundPointerOver}" CornerRadius="7" Opacity="0"
   IsHitTestVisible="False" AutomationProperties.AccessibilityView="Raw"/>
-</Border>)").as<Controls::Border>();
+</Border>)")
+                             .as<Controls::Border>();
                 Automation::AutomationProperties::SetAutomationId(border, L"FennGroupSurface-" + to_hstring(id));
                 layer.Children().Append(border);
                 ApplyHover(id, border);
@@ -259,8 +294,14 @@ struct TabGroupSurface {
         // decided whether its light went out (Depart): the outline hosts the
         // group's color pools, so removing it here would cut them off.
         for (auto it = surfaces.begin(); it != surfaces.end();) {
-            if (bounds.count(it->first)) { ++it; continue; }
-            if (auto old = departing.find(it->first); old != departing.end()) { Remove(old->second); departing.erase(old); }
+            if (bounds.count(it->first)) {
+                ++it;
+                continue;
+            }
+            if (auto old = departing.find(it->first); old != departing.end()) {
+                Remove(old->second);
+                departing.erase(old);
+            }
             departing.emplace(it->first, it->second);
             it = surfaces.erase(it);
         }
@@ -278,9 +319,10 @@ struct TabGroupSurface {
         auto leaving = std::move(departing);
         departing.clear();
         for (auto const& [id, border] : leaving) {
-            if (motion && motion->Dims() && gone.count(id) && Hosting::ElementCompositionPreview::GetElementChildVisual(border)) {
+            if (motion && motion->Dims() && gone.count(id) &&
+                Hosting::ElementCompositionPreview::GetElementChildVisual(border)) {
                 motion->Dim(Hosting::ElementCompositionPreview::GetElementVisual(border), 0,
-                    TabGlowIgnition::DimEdge + TabGlowIgnition::DimLag, [this, border] { Remove(border); });
+                            TabGlowIgnition::DimEdge + TabGlowIgnition::DimLag, [this, border] { Remove(border); });
             } else {
                 Remove(border);
             }

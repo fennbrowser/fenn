@@ -7,9 +7,9 @@ function fixture() {
   const calls=[];
   const services={getDisplaySpec:spec=>spec,getFixupPrimitives:(value,isPrivate)=>{calls.push({value,isPrivate});return {};}};
   const context=vm.createContext({URL,UrlbarContentUtils:services,UrlbarPrefs:{}});
-  vm.runInContext(readFileSync(new URL('UrlbarShared.mjs',root),'utf8').replace(/^import .*;$/gm,'')
+  vm.runInContext(readFileSync(new URL('UrlbarShared.mjs',root),'utf8').replace(/^import\b[^;]*;$/gm,'')
     .replace('export const UrlbarShared','var UrlbarShared'),context);
-  vm.runInContext(readFileSync(new URL('UrlbarUrlValue.mjs',root),'utf8').replace(/^import .*;$/gm,'')
+  vm.runInContext(readFileSync(new URL('UrlbarUrlValue.mjs',root),'utf8').replace(/^import\b[^;]*;$/gm,'')
     .replaceAll('export function ','function '),context);
   return {context,services,calls};
 }

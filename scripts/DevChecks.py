@@ -151,6 +151,8 @@ def fast(checks, tools):
     checks.run("JavaScript contracts", [tools["node"], "--test", *js_tests],
                missing=problem or (None if tools["node"] else "Node is missing; run the doctor.")
                or (None if js_tests else "No JavaScript test files found."))
+    checks.run("Formatting", [python, "scripts/Check-Formatting.py"],
+               missing=None if tools["git"] else "Git is required.")
     if problem or tools["node"] is None:
         checks.run("Patch JavaScript runtime lint", [], missing=problem or "Node is missing; run the doctor.")
     elif (checks.root / "upstream/firefox/node_modules/eslint/bin/eslint.js").is_file():

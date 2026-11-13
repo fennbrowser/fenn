@@ -30,8 +30,7 @@ inline bool NativeAltGrTextKey(UINT key) {
     if (!GetKeyboardState(state) || !(state[VK_CONTROL] & 0x80) || !(state[VK_MENU] & 0x80)) return false;
     const auto layout = GetKeyboardLayout(0);
     wchar_t text[8]{};
-    const auto count = ToUnicodeEx(key, MapVirtualKeyExW(key, MAPVK_VK_TO_VSC, layout),
-                                   state, text, 8, 4, layout);
+    const auto count = ToUnicodeEx(key, MapVirtualKeyExW(key, MAPVK_VK_TO_VSC, layout), state, text, 8, 4, layout);
     return count < 0 || (count > 0 && text[0] >= L' ');
 }
 
@@ -62,8 +61,12 @@ struct NativeAddress {
     Microsoft::UI::Xaml::Media::TranslateTransform editorTranslation;
     Microsoft::UI::Xaml::Media::Animation::Storyboard editorMotion{nullptr};
     void StopEditorMotion() {
-        if (editorMotion) { editorMotion.Stop(); editorMotion=nullptr; }
-        editorTranslation.X(0); editorTranslation.Y(0);
+        if (editorMotion) {
+            editorMotion.Stop();
+            editorMotion = nullptr;
+        }
+        editorTranslation.X(0);
+        editorTranslation.Y(0);
     }
     std::function<void()> presentationChanged;
     void ArrangeEditor() {
@@ -74,37 +77,42 @@ struct NativeAddress {
         // Sampling TransformToVisual here would bake a delayed animated offset
         // into layout and make the editor jump during toolbar exit holds.
         auto slotOffset = addressSlot.ActualOffset();
-        auto point = toolbarRow.TransformToVisual(addressLayer).TransformPoint({slotOffset.x,slotOffset.y});
+        auto point = toolbarRow.TransformToVisual(addressLayer).TransformPoint({slotOffset.x, slotOffset.y});
         auto editorVisual = Microsoft::UI::Xaml::Hosting::ElementCompositionPreview::GetElementVisual(root);
-        editorVisual.Properties().InsertScalar(L"FollowToolbarMotion",newTab.enabled?0.f:1.f);
-        double width = (std::max)(0.0, addressSlot.ActualWidth()-16);
-        double left = point.X+8, top = point.Y+4;
+        editorVisual.Properties().InsertScalar(L"FollowToolbarMotion", newTab.enabled ? 0.f : 1.f);
+        double width = (std::max)(0.0, addressSlot.ActualWidth() - 16);
+        double left = point.X + 8, top = point.Y + 4;
         if (newTab.enabled) {
-            width = (std::min)(600.0, (std::max)(0.0, toolbarRoot.ActualWidth()-48));
-            left = (toolbarRoot.ActualWidth()-width)/2;
-            top = (std::max)(224.0, (toolbarRoot.ActualHeight()-40)*.38);
+            width = (std::min)(600.0, (std::max)(0.0, toolbarRoot.ActualWidth() - 48));
+            left = (toolbarRoot.ActualWidth() - width) / 2;
+            top = (std::max)(224.0, (toolbarRoot.ActualHeight() - 40) * .38);
         }
-        if (root.Width()==width && Canvas::GetLeft(root)==left && Canvas::GetTop(root)==top &&
-            editorLayoutHeight==toolbarRoot.ActualHeight()) return;
-        editorLayoutHeight=toolbarRoot.ActualHeight();
-        const double oldLeft=Canvas::GetLeft(root)+editorTranslation.X(),oldTop=Canvas::GetTop(root)+editorTranslation.Y();
+        if (root.Width() == width && Canvas::GetLeft(root) == left && Canvas::GetTop(root) == top &&
+            editorLayoutHeight == toolbarRoot.ActualHeight())
+            return;
+        editorLayoutHeight = toolbarRoot.ActualHeight();
+        const double oldLeft = Canvas::GetLeft(root) + editorTranslation.X(),
+                     oldTop = Canvas::GetTop(root) + editorTranslation.Y();
         StopEditorMotion();
-        if (newTab.enabled) newTab.Arrange(toolbarRoot.ActualWidth(),toolbarRoot.ActualHeight(),top,width);
-        if (root.Width()!=width) root.Width(width);
-        if (Canvas::GetLeft(root)!=left) Canvas::SetLeft(root,left);
-        if (Canvas::GetTop(root)!=top) Canvas::SetTop(root,top);
-        const bool animate=std::exchange(animateEditorPlacement,false);
+        if (newTab.enabled) newTab.Arrange(toolbarRoot.ActualWidth(), toolbarRoot.ActualHeight(), top, width);
+        if (root.Width() != width) root.Width(width);
+        if (Canvas::GetLeft(root) != left) Canvas::SetLeft(root, left);
+        if (Canvas::GetTop(root) != top) Canvas::SetTop(root, top);
+        const bool animate = std::exchange(animateEditorPlacement, false);
         if (animate && newTab.enabled && root.IsLoaded() && std::isfinite(oldLeft) && std::isfinite(oldTop) &&
-            !HasActiveComposition() && !popup.IsOpen() && Windows::UI::ViewManagement::UISettings().AnimationsEnabled()) {
+            !HasActiveComposition() && !popup.IsOpen() &&
+            Windows::UI::ViewManagement::UISettings().AnimationsEnabled()) {
             using namespace Microsoft::UI::Xaml;
-            editorMotion=Media::Animation::Storyboard();
-            for(auto const& entry:{std::pair{L"X",oldLeft-left},std::pair{L"Y",oldTop-top}}) {
+            editorMotion = Media::Animation::Storyboard();
+            for (auto const& entry : {std::pair{L"X", oldLeft - left}, std::pair{L"Y", oldTop - top}}) {
                 Media::Animation::DoubleAnimation animation;
-                animation.From(entry.second);animation.To(0.0);
-                animation.Duration(Duration{Windows::Foundation::TimeSpan{TabMotion::GroupDuration},DurationType::TimeSpan});
+                animation.From(entry.second);
+                animation.To(0.0);
+                animation.Duration(
+                    Duration{Windows::Foundation::TimeSpan{TabMotion::GroupDuration}, DurationType::TimeSpan});
                 animation.EasingFunction(TabMotion::Ease());
-                Media::Animation::Storyboard::SetTarget(animation,editorTranslation);
-                Media::Animation::Storyboard::SetTargetProperty(animation,entry.first);
+                Media::Animation::Storyboard::SetTarget(animation, editorTranslation);
+                Media::Animation::Storyboard::SetTargetProperty(animation, entry.first);
                 editorMotion.Children().Append(animation);
             }
             editorMotion.Begin();
@@ -145,9 +153,7 @@ struct NativeAddress {
     // Cached WinUI/JSON observations; lifecycle decisions and IDs live in Rust.
     winrt::hstring session, pending, visibility, observedText, lastEditedText;
     winrt::hstring shareDocument;
-    NativeShellCore::Intent StagedKind() const {
-        return NativeShellCore::Intent(shell.AddressState().staged_kind);
-    }
+    NativeShellCore::Intent StagedKind() const { return NativeShellCore::Intent(shell.AddressState().staged_kind); }
     // The visibility last reported, as a set of ids rather than a serialized
     // message, plus the sequence it was computed against.
     std::set<winrt::hstring> reportedVisible;
@@ -195,7 +201,7 @@ struct NativeAddress {
     NativeAddressInteraction interaction;
     bool EditorOwned() const {
         return islandFocusOwned && field.XamlRoot() &&
-            Microsoft::UI::Xaml::Input::FocusManager::GetFocusedElement(field.XamlRoot()) == field;
+               Microsoft::UI::Xaml::Input::FocusManager::GetFocusedElement(field.XamlRoot()) == field;
     }
     // Read the current native STA's existing TSF context; never activate a second
     // manager or ask Gecko. Korean can retain a live syllable between TextBox
@@ -203,34 +209,36 @@ struct NativeAddress {
     bool HasActiveComposition() const {
         if (composing) return true;
         if (!EditorOwned()) return false;
-        auto module=GetModuleHandleW(L"msctf.dll");
-        using GetManager=HRESULT(WINAPI*)(ITfThreadMgr**);
-        auto getManager=module?reinterpret_cast<GetManager>(GetProcAddress(module,"TF_GetThreadMgr")):nullptr;
+        auto module = GetModuleHandleW(L"msctf.dll");
+        using GetManager = HRESULT(WINAPI*)(ITfThreadMgr**);
+        auto getManager = module ? reinterpret_cast<GetManager>(GetProcAddress(module, "TF_GetThreadMgr")) : nullptr;
         winrt::com_ptr<ITfThreadMgr> manager;
         winrt::com_ptr<ITfDocumentMgr> document;
         winrt::com_ptr<ITfContext> context;
-        if(!getManager || FAILED(getManager(manager.put())) || !manager ||
-            FAILED(manager->GetFocus(document.put())) || !document ||
-            FAILED(document->GetTop(context.put())) || !context)return false;
-        auto composition=context.try_as<ITfContextComposition>();
+        if (!getManager || FAILED(getManager(manager.put())) || !manager || FAILED(manager->GetFocus(document.put())) ||
+            !document || FAILED(document->GetTop(context.put())) || !context)
+            return false;
+        auto composition = context.try_as<ITfContextComposition>();
         winrt::com_ptr<IEnumITfCompositionView> entries;
-        if(!composition || FAILED(composition->EnumCompositions(entries.put())) || !entries)return false;
+        if (!composition || FAILED(composition->EnumCompositions(entries.put())) || !entries) return false;
         winrt::com_ptr<ITfCompositionView> entry;
         ULONG fetched{};
-        return SUCCEEDED(entries->Next(1,entry.put(),&fetched)) && fetched==1;
+        return SUCCEEDED(entries->Next(1, entry.put(), &fetched)) && fetched == 1;
     }
     void ApplyInteraction(ShellAddressInteractionState const& effect) {
         if (!interaction.Current(effect)) return;
         if (effect.effects & SHELL_ADDRESS_INTERACTION_EFFECT_CLEAR_SELECTION) {
             context.requested = false;
             resultMenu.requested = false;
-            if (field.SelectionLength()) field.Select(0,0);
+            if (field.SelectionLength()) field.Select(0, 0);
         }
         if (!interaction.Current(effect)) return;
-        if ((effect.effects & SHELL_ADDRESS_INTERACTION_EFFECT_SELECT_ALL) && EditorOwned() &&
-            !composing && field.SelectionLength() == 0) field.SelectAll();
+        if ((effect.effects & SHELL_ADDRESS_INTERACTION_EFFECT_SELECT_ALL) && EditorOwned() && !composing &&
+            field.SelectionLength() == 0)
+            field.SelectAll();
         if (!interaction.Current(effect)) return;
-        if ((effect.effects & SHELL_ADDRESS_INTERACTION_EFFECT_RELEASE_CONTENT_FOCUS) && releaseContentFocus) releaseContentFocus();
+        if ((effect.effects & SHELL_ADDRESS_INTERACTION_EFFECT_RELEASE_CONTENT_FOCUS) && releaseContentFocus)
+            releaseContentFocus();
         if (!interaction.Current(effect)) return;
         if (effect.effects & SHELL_ADDRESS_INTERACTION_EFFECT_BLUR) Action(L"blur");
         if ((effect.effects & SHELL_ADDRESS_INTERACTION_EFFECT_FOCUS) && interaction.Current(effect)) Action(L"focus");
@@ -241,7 +249,8 @@ struct NativeAddress {
     Microsoft::UI::Xaml::Controls::Grid fieldHeader{nullptr};
     bool FocusInsideField() const {
         if (!islandFocusOwned || !fieldHeader || !fieldHeader.XamlRoot()) return false;
-        auto focused = Microsoft::UI::Xaml::Input::FocusManager::GetFocusedElement(fieldHeader.XamlRoot()).try_as<winrt::Microsoft::UI::Xaml::DependencyObject>();
+        auto focused = Microsoft::UI::Xaml::Input::FocusManager::GetFocusedElement(fieldHeader.XamlRoot())
+                           .try_as<winrt::Microsoft::UI::Xaml::DependencyObject>();
         while (focused) {
             if (focused == fieldHeader) return true;
             focused = winrt::Microsoft::UI::Xaml::Media::VisualTreeHelper::GetParent(focused);
@@ -253,14 +262,16 @@ struct NativeAddress {
         POINT cursor{};
         if (!GetCursorPos(&cursor)) return false;
         auto point = fieldHeader.XamlRoot().ContentIsland().CoordinateConverter().ConvertScreenToLocal(
-            winrt::Windows::Graphics::PointInt32{cursor.x,cursor.y});
+            winrt::Windows::Graphics::PointInt32{cursor.x, cursor.y});
         point = fieldHeader.TransformToVisual(nullptr).Inverse().TransformPoint(point);
-        return point.X >= 0 && point.Y >= 0 && point.X < fieldHeader.ActualWidth() && point.Y < fieldHeader.ActualHeight();
+        return point.X >= 0 && point.Y >= 0 && point.X < fieldHeader.ActualWidth() &&
+               point.Y < fieldHeader.ActualHeight();
     }
     void UpdateEmbeddedControls() {
         formattedValue.Refresh(field, EditorOwned() || composing);
-        const bool reveal = !hideEmbeddedControls || PointerInsideField() || (islandFocusOwned &&
-                            (FocusInsideField() || mode.flyout.IsOpen() || context.IsOpen() || resultMenu.IsOpen() || pageActions.open));
+        const bool reveal = !hideEmbeddedControls || PointerInsideField() ||
+                            (islandFocusOwned && (FocusInsideField() || mode.flyout.IsOpen() || context.IsOpen() ||
+                                                  resultMenu.IsOpen() || pageActions.open));
         omnibarLeft.SetRevealed(reveal);
         omnibarRight.SetRevealed(reveal);
         mode.button.Opacity(1.0);
@@ -270,7 +281,11 @@ struct NativeAddress {
         }
     }
     std::shared_ptr<int> lifetime = std::make_shared<int>(0);
-    ~NativeAddress() { lifetime.reset(); StopEditorMotion(); if (popup) popup.IsOpen(false); }
+    ~NativeAddress() {
+        lifetime.reset();
+        StopEditorMotion();
+        if (popup) popup.IsOpen(false);
+    }
 
     static void ValidateModeImage(JObject const& item, size_t& total) {
         NativeJson::ValidateImage(item, total, NativeJson::kIconImageLimits);
@@ -302,16 +317,11 @@ struct NativeAddress {
     ShellIntentConditions Observed() const {
         const auto state = shell.AddressState();
         return ShellIntentConditions{
-            syncing ? 1u : 0u,
-            composing ? 1u : 0u,
-            session.empty() ? 0u : 1u,
-            state.mode_pending,
-            state.edit_acknowledged,
-            state.query_settled,
+            syncing ? 1u : 0u,  composing ? 1u : 0u,     session.empty() ? 0u : 1u,
+            state.mode_pending, state.edit_acknowledged, state.query_settled,
         };
     }
-    NativeShellCore::Decision Decide(NativeShellCore::Intent incoming,
-                                     NativeShellCore::Intent staged) const {
+    NativeShellCore::Decision Decide(NativeShellCore::Intent incoming, NativeShellCore::Intent staged) const {
         // The shared Rust policy combines control observations with core state.
         return shell.Decide(incoming, staged, Observed());
     }
@@ -351,7 +361,10 @@ struct NativeAddress {
         return value;
     }
     void Edit() {
-        if (startupEdit) { if (!syncing) startupEdit(field.Text()); return; }
+        if (startupEdit) {
+            if (!syncing) startupEdit(field.Text());
+            return;
+        }
         if (field.Text() == observedText && composing == observedComposing) return;
         // A text change replaces whatever was staged: what the user can see is
         // the newest thing they have said. Composition start and end are edits
@@ -384,10 +397,10 @@ struct NativeAddress {
     }
     void Action(wchar_t const* kind, int traversal = 0, wchar_t const* clipboard = nullptr) {
         if (startupEdit) {
-            if (!wcscmp(kind,L"activate") && !composing && startupSubmit)
-                startupSubmit(((GetKeyState(VK_SHIFT)&0x8000)?1u:0u) |
-                              ((GetKeyState(VK_CONTROL)&0x8000)?2u:0u) |
-                              ((GetKeyState(VK_MENU)&0x8000)?4u:0u));
+            if (!wcscmp(kind, L"activate") && !composing && startupSubmit)
+                startupSubmit(((GetKeyState(VK_SHIFT) & 0x8000) ? 1u : 0u) |
+                              ((GetKeyState(VK_CONTROL) & 0x8000) ? 2u : 0u) |
+                              ((GetKeyState(VK_MENU) & 0x8000) ? 4u : 0u));
             return;
         }
         const auto incoming = IntentOf(kind);
@@ -396,10 +409,12 @@ struct NativeAddress {
         if (incoming == NativeShellCore::Focus) firefoxFocusRequest = false;
         if (incoming == NativeShellCore::Dismiss || incoming == NativeShellCore::Activate ||
             incoming == NativeShellCore::Fallback || incoming == NativeShellCore::ContextMenu ||
-            incoming == NativeShellCore::Clipboard) interaction.Interrupt(EditorOwned());
+            incoming == NativeShellCore::Clipboard)
+            interaction.Interrupt(EditorOwned());
         const auto selected = suggestions.list.SelectedIndex();
-        if (incoming == NativeShellCore::Select && !traversal &&
-            selected >= 0 && size_t(selected) < suggestions.current.size() && !suggestions.current[selected]) return;
+        if (incoming == NativeShellCore::Select && !traversal && selected >= 0 &&
+            size_t(selected) < suggestions.current.size() && !suggestions.current[selected])
+            return;
         // Is this intent meaningful at all right now -- a question about the
         // surface, not about what is staged. Asked before Edit() below, which
         // is where the original guard sat.
@@ -414,30 +429,35 @@ struct NativeAddress {
         // Finish layout before reporting the row's actual viewport visibility.
         if (incoming == NativeShellCore::Activate) suggestions.list.UpdateLayout();
         if (incoming == NativeShellCore::Select || incoming == NativeShellCore::Activate) ReportVisibility();
-        if (incoming == NativeShellCore::Activate || incoming == NativeShellCore::Fallback || incoming == NativeShellCore::Clipboard || incoming == NativeShellCore::ContextMenu || incoming == NativeShellCore::Blur) Edit();
-        const uint32_t modifiers = ((GetKeyState(VK_CONTROL) & 0x8000) ? 1u : 0u) |
-                                   ((GetKeyState(VK_MENU) & 0x8000) ? 2u : 0u) |
-                                   ((GetKeyState(VK_SHIFT) & 0x8000) ? 4u : 0u) |
-                                   ((GetKeyState(VK_LWIN) & 0x8000) ? 8u : 0u);
+        if (incoming == NativeShellCore::Activate || incoming == NativeShellCore::Fallback ||
+            incoming == NativeShellCore::Clipboard || incoming == NativeShellCore::ContextMenu ||
+            incoming == NativeShellCore::Blur)
+            Edit();
+        const uint32_t modifiers =
+            ((GetKeyState(VK_CONTROL) & 0x8000) ? 1u : 0u) | ((GetKeyState(VK_MENU) & 0x8000) ? 2u : 0u) |
+            ((GetKeyState(VK_SHIFT) & 0x8000) ? 4u : 0u) | ((GetKeyState(VK_LWIN) & 0x8000) ? 8u : 0u);
         const auto action = shell.NegotiateAddress(incoming, Observed(), modifiers);
         if (action.decision == NativeShellCore::Defer || action.decision == NativeShellCore::DropIntent) return;
         auto value = Message(kind);
         if (firefoxRequested) value.SetNamedValue(L"firefoxRequested", JValue::CreateBooleanValue(true));
         if (incoming == NativeShellCore::Select && traversal)
             value.SetNamedValue(L"traverse", JValue::CreateNumberValue(traversal));
-        if (incoming == NativeShellCore::Fallback || incoming == NativeShellCore::Clipboard || incoming == NativeShellCore::ContextMenu || incoming == NativeShellCore::Blur) {
+        if (incoming == NativeShellCore::Fallback || incoming == NativeShellCore::Clipboard ||
+            incoming == NativeShellCore::ContextMenu || incoming == NativeShellCore::Blur) {
             value.SetNamedValue(L"editId", JValue::CreateNumberValue(double(shell.AddressState().edit_id)));
             value.SetNamedValue(L"text", JValue::CreateStringValue(field.Text()));
             value.SetNamedValue(L"inputType", JValue::CreateStringValue(observedInputType));
             value.SetNamedValue(L"textEpoch", JValue::CreateNumberValue(textEpoch));
             value.SetNamedValue(L"selectionStart", JValue::CreateNumberValue(field.SelectionStart()));
-            value.SetNamedValue(L"selectionEnd", JValue::CreateNumberValue(field.SelectionStart() + field.SelectionLength()));
+            value.SetNamedValue(L"selectionEnd",
+                                JValue::CreateNumberValue(field.SelectionStart() + field.SelectionLength()));
             value.SetNamedValue(L"composing", JValue::CreateBooleanValue(composing));
             if (traversal) value.SetNamedValue(L"traverse", JValue::CreateNumberValue(traversal));
             if (incoming == NativeShellCore::ContextMenu) {
                 value.SetNamedValue(L"generation", JValue::CreateNumberValue(double(context.generation)));
                 if (clipboard) value.SetNamedValue(L"id", JValue::CreateStringValue(clipboard));
-            } else if (clipboard) value.SetNamedValue(L"clipboard", JValue::CreateStringValue(clipboard));
+            } else if (clipboard)
+                value.SetNamedValue(L"clipboard", JValue::CreateStringValue(clipboard));
         }
         if (incoming == NativeShellCore::Activate) {
             // Enter can supersede a queued arrow-clear before Firefox restores
@@ -465,7 +485,8 @@ struct NativeAddress {
         if (negotiated.decision == NativeShellCore::Defer || negotiated.decision == NativeShellCore::DropIntent) return;
         auto value = Message(kind);
         value.SetNamedValue(L"resultId", JValue::CreateStringValue(resultMenuId));
-        if (!resultMenuButtonId.empty()) value.SetNamedValue(L"buttonId", JValue::CreateStringValue(resultMenuButtonId));
+        if (!resultMenuButtonId.empty())
+            value.SetNamedValue(L"buttonId", JValue::CreateStringValue(resultMenuButtonId));
         value.SetNamedValue(L"editId", JValue::CreateNumberValue(double(shell.AddressState().edit_id)));
         value.SetNamedValue(L"generation", JValue::CreateNumberValue(double(resultMenu.generation)));
         value.SetNamedValue(L"id", JValue::CreateStringValue(command));
@@ -479,9 +500,12 @@ struct NativeAddress {
         UpdateEmbeddedControls();
         // Popup focus can temporarily sit on the presenter, outside this root.
         // Retain Firefox's address edit target for the whole overflow opening.
-        const bool overflowAddressMenu=navigation && navigation->overflowMenu.preserveAddress &&
-            navigation->overflowMenu.flyout && navigation->overflowMenu.flyout.IsOpen();
-        if ((mode.flyout.IsOpen() || context.IsOpen() || resultMenu.IsOpen() || pageActions.open || overflowAddressMenu) && islandHasFocus) return;
+        const bool overflowAddressMenu = navigation && navigation->overflowMenu.preserveAddress &&
+                                         navigation->overflowMenu.flyout && navigation->overflowMenu.flyout.IsOpen();
+        if ((mode.flyout.IsOpen() || context.IsOpen() || resultMenu.IsOpen() || pageActions.open ||
+             overflowAddressMenu) &&
+            islandHasFocus)
+            return;
         bool inside = false;
         if (root.XamlRoot() && islandHasFocus) {
             auto focused =
@@ -492,15 +516,17 @@ struct NativeAddress {
                 // leave address focus normally.
                 // Firefox identifies an address edit target in actual overflow.
                 // Keep it while entering that menu, as for inline edit controls.
-                if(navigation && navigation->overflowMenu.preserveAddress &&
-                    (focused==navigation->buttons[6] || navigation->overflowMenu.Owns(focused)))inside=true;
-                if(navigation)for(auto const& item:navigation->customization.state.items) {
-                    auto row=navigation->stock.rows.find(item.id);
-                    if(row==navigation->stock.rows.end())continue;
-                    for(size_t i=0;i<item.stock.size();i++)if(item.stock[i].address &&
-                        focused==row->second.buttons[i])inside=true;
-                }
-                if(inside)break;
+                if (navigation && navigation->overflowMenu.preserveAddress &&
+                    (focused == navigation->buttons[6] || navigation->overflowMenu.Owns(focused)))
+                    inside = true;
+                if (navigation)
+                    for (auto const& item : navigation->customization.state.items) {
+                        auto row = navigation->stock.rows.find(item.id);
+                        if (row == navigation->stock.rows.end()) continue;
+                        for (size_t i = 0; i < item.stock.size(); i++)
+                            if (item.stock[i].address && focused == row->second.buttons[i]) inside = true;
+                    }
+                if (inside) break;
                 // Site/page buttons live inside the editor's visual border,
                 // but focusing them must not start or restore an address query.
                 if (focused == omnibarLeft.panel || focused == trailingActions) break;
@@ -553,8 +579,8 @@ struct NativeAddress {
         });
         Automation::AutomationProperties::SetName(field, L"Search or enter address");
         Automation::AutomationProperties::SetAutomationId(field, L"FennAddress");
-        field.GotFocus([this, alive=std::weak_ptr<int>(lifetime)](auto const&, auto const&) {
-            if(!alive.expired())formattedValue.Hide();
+        field.GotFocus([this, alive = std::weak_ptr<int>(lifetime)](auto const&, auto const&) {
+            if (!alive.expired()) formattedValue.Hide();
         });
         field.TextChanged([this, alive = std::weak_ptr<int>(lifetime)](auto const&, auto const&) {
             if (alive.expired()) return;
@@ -563,7 +589,10 @@ struct NativeAddress {
         });
         field.SelectionChanged([this, alive = std::weak_ptr<int>(lifetime)](auto const&, auto const&) {
             if (alive.expired()) return;
-            if (startupEdit) { if (!syncing) startupEdit(field.Text()); return; }
+            if (startupEdit) {
+                if (!syncing) startupEdit(field.Text());
+                return;
+            }
             formattedValue.Refresh(field, EditorOwned() || composing);
             // A caret move is the least important intent there is: it folds
             // into a staged edit, which already carries a range, and otherwise
@@ -604,51 +633,61 @@ struct NativeAddress {
             if (!alive.expired() && e.FocusState() == FocusState::Pointer) interaction.PointerFocus();
         });
         field.AddHandler(UIElement::PointerPressedEvent(),
-            winrt::box_value(Microsoft::UI::Xaml::Input::PointerEventHandler(
-                [this, alive = std::weak_ptr<int>(lifetime)](auto const&, auto const& e) {
-                    if (alive.expired()) return;
-                    const auto point = e.GetCurrentPoint(field);
-                    if (!point.Properties().IsLeftButtonPressed()) { interaction.Interrupt(EditorOwned()); return; }
-                    firefoxFocusRequest = false;
-                    interaction.Begin(point, !interaction.FocusWithin() || !islandFocusOwned);
-                    if (preparePointerFocus) preparePointerFocus();
-                    ScheduleFocusObservation();
-                })), true);
+                         winrt::box_value(Microsoft::UI::Xaml::Input::PointerEventHandler(
+                             [this, alive = std::weak_ptr<int>(lifetime)](auto const&, auto const& e) {
+                                 if (alive.expired()) return;
+                                 const auto point = e.GetCurrentPoint(field);
+                                 if (!point.Properties().IsLeftButtonPressed()) {
+                                     interaction.Interrupt(EditorOwned());
+                                     return;
+                                 }
+                                 firefoxFocusRequest = false;
+                                 interaction.Begin(point, !interaction.FocusWithin() || !islandFocusOwned);
+                                 if (preparePointerFocus) preparePointerFocus();
+                                 ScheduleFocusObservation();
+                             })),
+                         true);
         field.AddHandler(UIElement::PointerMovedEvent(),
-            winrt::box_value(Microsoft::UI::Xaml::Input::PointerEventHandler(
-                [this, alive = std::weak_ptr<int>(lifetime)](auto const&, auto const& e) {
-                    if (!alive.expired()) interaction.Move(e.GetCurrentPoint(field));
-                })), true);
+                         winrt::box_value(Microsoft::UI::Xaml::Input::PointerEventHandler(
+                             [this, alive = std::weak_ptr<int>(lifetime)](auto const&, auto const& e) {
+                                 if (!alive.expired()) interaction.Move(e.GetCurrentPoint(field));
+                             })),
+                         true);
         field.AddHandler(UIElement::PointerReleasedEvent(),
-            winrt::box_value(Microsoft::UI::Xaml::Input::PointerEventHandler(
-                [this, alive = std::weak_ptr<int>(lifetime)](auto const&, auto const& e) {
-                    if (alive.expired()) return;
-                    if (observeFocus) observeFocus();
-                    ApplyInteraction(interaction.Release(e.GetCurrentPoint(field), EditorOwned()));
-                    ScheduleFocusObservation();
-                })), true);
+                         winrt::box_value(Microsoft::UI::Xaml::Input::PointerEventHandler(
+                             [this, alive = std::weak_ptr<int>(lifetime)](auto const&, auto const& e) {
+                                 if (alive.expired()) return;
+                                 if (observeFocus) observeFocus();
+                                 ApplyInteraction(interaction.Release(e.GetCurrentPoint(field), EditorOwned()));
+                                 ScheduleFocusObservation();
+                             })),
+                         true);
         field.AddHandler(UIElement::PointerCanceledEvent(),
-            winrt::box_value(Microsoft::UI::Xaml::Input::PointerEventHandler(
-                [this, alive = std::weak_ptr<int>(lifetime)](auto const&, auto const& e) {
-                    if (alive.expired()) return;
-                    interaction.Cancel(e.Pointer().PointerId(), interaction.token);
-                    ScheduleFocusObservation();
-                })), true);
+                         winrt::box_value(Microsoft::UI::Xaml::Input::PointerEventHandler(
+                             [this, alive = std::weak_ptr<int>(lifetime)](auto const&, auto const& e) {
+                                 if (alive.expired()) return;
+                                 interaction.Cancel(e.Pointer().PointerId(), interaction.token);
+                                 ScheduleFocusObservation();
+                             })),
+                         true);
         field.AddHandler(UIElement::PointerCaptureLostEvent(),
-            winrt::box_value(Microsoft::UI::Xaml::Input::PointerEventHandler(
-                [this, alive = std::weak_ptr<int>(lifetime)](auto const&, auto const& e) {
-                    if (alive.expired()) return;
-                    // Normal release may lose capture before PointerReleased.
-                    // Reconcile next turn, using the old token so this cannot
-                    // cancel a subsequent gesture or one in a new session.
-                    const auto id=e.Pointer().PointerId(); const auto ticket=interaction.token;
-                    auto queue=Dispatching::DispatcherQueue::GetForCurrentThread();
-                    if (queue) queue.TryEnqueue([this,alive,id,ticket] {
-                        if (alive.expired()) return;
-                        interaction.Cancel(id,ticket);
-                        ScheduleFocusObservation();
-                    });
-                })), true);
+                         winrt::box_value(Microsoft::UI::Xaml::Input::PointerEventHandler(
+                             [this, alive = std::weak_ptr<int>(lifetime)](auto const&, auto const& e) {
+                                 if (alive.expired()) return;
+                                 // Normal release may lose capture before PointerReleased.
+                                 // Reconcile next turn, using the old token so this cannot
+                                 // cancel a subsequent gesture or one in a new session.
+                                 const auto id = e.Pointer().PointerId();
+                                 const auto ticket = interaction.token;
+                                 auto queue = Dispatching::DispatcherQueue::GetForCurrentThread();
+                                 if (queue)
+                                     queue.TryEnqueue([this, alive, id, ticket] {
+                                         if (alive.expired()) return;
+                                         interaction.Cancel(id, ticket);
+                                         ScheduleFocusObservation();
+                                     });
+                             })),
+                         true);
         field.GotFocus([this, alive = std::weak_ptr<int>(lifetime)](auto const&, auto const&) {
             if (!alive.expired()) ScheduleFocusObservation();
         });
@@ -657,19 +696,27 @@ struct NativeAddress {
             StopEditorMotion();
             if (!composing && e.Key() == winrt::Windows::System::VirtualKey::Enter)
                 ApplyInteraction(interaction.PrepareSubmit(EditorOwned()));
-            else interaction.Interrupt(EditorOwned());
+            else
+                interaction.Interrupt(EditorOwned());
             nextInputType = L"insertReplacementText";
             const auto key = uint32_t(e.Key());
             const bool ctrl = (GetKeyState(VK_CONTROL) & 0x8000) != 0;
             const bool alt = (GetKeyState(VK_MENU) & 0x8000) != 0;
-            if (NativeAltGrTextKey(key)) nextInputType = L"insertText";
-            else if (key == VK_BACK) nextInputType = ctrl ? L"deleteWordBackward" : L"deleteContentBackward";
-            else if (key == VK_DELETE) nextInputType = ctrl ? L"deleteWordForward" : L"deleteContentForward";
-            else if (ctrl && key == 'Z') nextInputType = (GetKeyState(VK_SHIFT) & 0x8000) ? L"historyRedo" : L"historyUndo";
-            else if (ctrl && key == 'Y') nextInputType = L"historyRedo";
-            else if (!ctrl && !alt && ((key >= '0' && key <= 'Z') || key == VK_SPACE ||
-                     (key >= VK_NUMPAD0 && key <= VK_DIVIDE) || (key >= VK_OEM_1 && key <= VK_OEM_3) ||
-                     (key >= VK_OEM_4 && key <= VK_OEM_8) || key == VK_OEM_102)) nextInputType = L"insertText";
+            if (NativeAltGrTextKey(key))
+                nextInputType = L"insertText";
+            else if (key == VK_BACK)
+                nextInputType = ctrl ? L"deleteWordBackward" : L"deleteContentBackward";
+            else if (key == VK_DELETE)
+                nextInputType = ctrl ? L"deleteWordForward" : L"deleteContentForward";
+            else if (ctrl && key == 'Z')
+                nextInputType = (GetKeyState(VK_SHIFT) & 0x8000) ? L"historyRedo" : L"historyUndo";
+            else if (ctrl && key == 'Y')
+                nextInputType = L"historyRedo";
+            else if (!ctrl && !alt &&
+                     ((key >= '0' && key <= 'Z') || key == VK_SPACE || (key >= VK_NUMPAD0 && key <= VK_DIVIDE) ||
+                      (key >= VK_OEM_1 && key <= VK_OEM_3) || (key >= VK_OEM_4 && key <= VK_OEM_8) ||
+                      key == VK_OEM_102))
+                nextInputType = L"insertText";
         });
         field.PreviewKeyDown([this, alive = std::weak_ptr<int>(lifetime)](
                                  auto const&, Microsoft::UI::Xaml::Input::KeyRoutedEventArgs const& e) {
@@ -684,8 +731,8 @@ struct NativeAddress {
                 Action(L"dismiss");
                 e.Handled(true);
             }
-            if ((e.Key() == VirtualKey::Down || e.Key() == VirtualKey::Up) &&
-                suggestions.HasCurrentRows() && !(GetKeyState(VK_MENU) & 0x8000)) {
+            if ((e.Key() == VirtualKey::Down || e.Key() == VirtualKey::Up) && suggestions.HasCurrentRows() &&
+                !(GetKeyState(VK_MENU) & 0x8000)) {
                 // Firefox publishes arrow destinations. Apply stock selection
                 // synchronously so immediate Enter commits that exact row.
                 const bool reverse = e.Key() == VirtualKey::Up;
@@ -731,8 +778,8 @@ struct NativeAddress {
             if (!Media::VisualTreeHelper::GetChildrenCount(list)) return;
             auto templateRoot = Media::VisualTreeHelper::GetChild(list, 0).try_as<FrameworkElement>();
             auto scroll = templateRoot ? templateRoot.FindName(L"ScrollViewer").try_as<ScrollViewer>() : nullptr;
-            if (scroll) visibilityScroll = scroll.ViewChanged(winrt::auto_revoke,
-                [this, alive](auto const&, auto const&) {
+            if (scroll)
+                visibilityScroll = scroll.ViewChanged(winrt::auto_revoke, [this, alive](auto const&, auto const&) {
                     if (!alive.expired()) ScheduleVisibilityReport();
                 });
             ScheduleVisibilityReport();
@@ -802,7 +849,9 @@ struct NativeAddress {
             const bool pointer = e.TryGetPosition(suggestions.list, point);
             if (!row && !pointer) row = suggestions.list.SelectedItem().try_as<ListViewItem>();
             uint32_t index{};
-            if (!row || !suggestions.list.Items().IndexOf(row, index) || index >= suggestions.ids.size() || !suggestions.current[index]) return;
+            if (!row || !suggestions.list.Items().IndexOf(row, index) || index >= suggestions.ids.size() ||
+                !suggestions.current[index])
+                return;
             e.Handled(true);
             resultMenuId = suggestions.ids[index];
             resultMenuButtonId = L"";
@@ -818,19 +867,23 @@ struct NativeAddress {
             if (e.Key() == VirtualKey::Down) {
                 const auto next = suggestions.CurrentSelectedIndex() + 1;
                 if (size_t(next) < suggestions.current.size() && !suggestions.current[next]) {
-                    e.Handled(true); return;
+                    e.Handled(true);
+                    return;
                 }
             }
             if (e.Key() == VirtualKey::Tab && (GetKeyState(VK_SHIFT) & 0x8000)) {
                 auto focused = Microsoft::UI::Xaml::Input::FocusManager::GetFocusedElement(suggestions.list.XamlRoot());
                 if (auto help = suggestions.FirstHelp(); help && focused == help) {
-                    field.Focus(FocusState::Keyboard); e.Handled(true); return;
+                    field.Focus(FocusState::Keyboard);
+                    e.Handled(true);
+                    return;
                 }
             }
             if (e.Key() == VirtualKey::Enter) {
                 auto source = e.OriginalSource().try_as<DependencyObject>();
                 while (source && source != suggestions.list) {
-                    if (source.try_as<Button>() || source.try_as<Documents::Hyperlink>()) return; // Let the stock button own Enter.
+                    if (source.try_as<Button>() || source.try_as<Documents::Hyperlink>())
+                        return;  // Let the stock button own Enter.
                     source = Media::VisualTreeHelper::GetParent(source);
                 }
                 Action(L"activate");
@@ -871,8 +924,11 @@ struct NativeAddress {
         header.Children().Append(field);
         header.Children().Append(mode.exit);
         suggestions.openButtonMenu = [this](auto const& id, auto const& resultId, auto const& anchor) {
-            resultMenuId = resultId; resultMenuButtonId = id;
-            resultMenu.anchor = anchor; resultMenu.requested = true; resultMenu.atPointer = false;
+            resultMenuId = resultId;
+            resultMenuButtonId = id;
+            resultMenu.anchor = anchor;
+            resultMenu.requested = true;
+            resultMenu.atPointer = false;
             ResultContext(L"context-open");
         };
         suggestions.focusField = [this] { field.Focus(FocusState::Keyboard); };
@@ -891,11 +947,13 @@ struct NativeAddress {
                 !(GetKeyState(VK_SHIFT) & 0x8000)) {
                 if (popup && popup.IsOpen()) {
                     if (suggestions.FocusFirstAction()) {
-                        e.Handled(true); return;
+                        e.Handled(true);
+                        return;
                     }
                 }
                 if (!actions.visuals.empty()) {
-                    actions.visuals.front().button.Focus(FocusState::Keyboard); e.Handled(true);
+                    actions.visuals.front().button.Focus(FocusState::Keyboard);
+                    e.Handled(true);
                 }
             }
         });
@@ -906,13 +964,15 @@ struct NativeAddress {
             UpdateEmbeddedControls();
         });
         for (auto leave : {&UIElement::PointerExitedEvent, &UIElement::PointerCanceledEvent}) {
-            header.AddHandler((*leave)(), winrt::box_value(Microsoft::UI::Xaml::Input::PointerEventHandler(
-                [this, alive = std::weak_ptr<int>(lifetime)](auto const&, auto const& args) {
-                    if (alive.expired()) return;
-                    // Child exits bubble too, and cross-HWND exits can retain
-                    // the last in-field event position. Read live coordinates.
-                    UpdateEmbeddedControls();
-                })), true);
+            header.AddHandler((*leave)(),
+                              winrt::box_value(Microsoft::UI::Xaml::Input::PointerEventHandler(
+                                  [this, alive = std::weak_ptr<int>(lifetime)](auto const&, auto const& args) {
+                                      if (alive.expired()) return;
+                                      // Child exits bubble too, and cross-HWND exits can retain
+                                      // the last in-field event position. Read live coordinates.
+                                      UpdateEmbeddedControls();
+                                  })),
+                              true);
         }
         header.GotFocus([this, alive = std::weak_ptr<int>(lifetime)](auto const&, auto const&) {
             if (!alive.expired()) ScheduleFocusObservation();
@@ -946,68 +1006,118 @@ struct NativeAddress {
                         <SolidColorBrush x:Key="TextControlBorderBrushPointerOver" Color="{ThemeResource SystemColorHighlightColor}"/>
                     </ResourceDictionary>
                 </ResourceDictionary.ThemeDictionaries>
-            </ResourceDictionary>)").as<ResourceDictionary>());
+            </ResourceDictionary>)")
+                            .as<ResourceDictionary>());
         toolbarRoot = Grid();
         navigation = std::make_unique<NativeNavigationToolbar>();
-        navigation->stock.activate=[this](wchar_t const* command,uint32_t modifiers,auto const& button,bool keyboard) {
-            if(syncing || session.empty() || !navigate || navigation->customization.editing)return;
-            if(navigation->forgetPanel.enabled)for(auto const& item:navigation->customization.state.items)
-                if(item.placed && item.control==L"stock:panic-button" && winrt::hstring(command)==L"stock:"+item.id+L":panic-button") {
-                    navigation->keyboardActivation=keyboard;navigation->forgetPanel.Open(button);return;
-                }
-            if(navigation->tabGroupsMenu.enabled)for(auto const& item:navigation->customization.state.items)
-                if(item.placed && item.control==L"stock:tab-groups-button" && winrt::hstring(command)==L"stock:"+item.id+L":tab-groups-button") {
-                    navigation->tabGroupsMenu.keyboardActivation=keyboard;navigation->tabGroupsMenu.Open(button);return;
-                }
-            if(navigation->profilerPanel.enabled)for(auto const& item:navigation->customization.state.items)
-                if(item.placed && item.control==L"stock:profiler-button" && winrt::hstring(command)==L"stock:"+item.id+L":profiler-button") {
-                    navigation->profilerPanel.keyboardActivation=keyboard;navigation->profilerPanel.Open(button);return;
-                }
-            if(navigation->developerMenu.enabled)for(auto const& item:navigation->customization.state.items)
-                if(item.placed && item.control==L"stock:developer-button" && winrt::hstring(command)==L"stock:"+item.id+L":developer-button") {
-                    navigation->developerMenu.keyboardActivation=keyboard;navigation->developerMenu.Open(button);return;
-                }
+        navigation->stock.activate = [this](wchar_t const* command, uint32_t modifiers, auto const& button,
+                                            bool keyboard) {
+            if (syncing || session.empty() || !navigate || navigation->customization.editing) return;
+            if (navigation->forgetPanel.enabled)
+                for (auto const& item : navigation->customization.state.items)
+                    if (item.placed && item.control == L"stock:panic-button" &&
+                        winrt::hstring(command) == L"stock:" + item.id + L":panic-button") {
+                        navigation->keyboardActivation = keyboard;
+                        navigation->forgetPanel.Open(button);
+                        return;
+                    }
+            if (navigation->tabGroupsMenu.enabled)
+                for (auto const& item : navigation->customization.state.items)
+                    if (item.placed && item.control == L"stock:tab-groups-button" &&
+                        winrt::hstring(command) == L"stock:" + item.id + L":tab-groups-button") {
+                        navigation->tabGroupsMenu.keyboardActivation = keyboard;
+                        navigation->tabGroupsMenu.Open(button);
+                        return;
+                    }
+            if (navigation->profilerPanel.enabled)
+                for (auto const& item : navigation->customization.state.items)
+                    if (item.placed && item.control == L"stock:profiler-button" &&
+                        winrt::hstring(command) == L"stock:" + item.id + L":profiler-button") {
+                        navigation->profilerPanel.keyboardActivation = keyboard;
+                        navigation->profilerPanel.Open(button);
+                        return;
+                    }
+            if (navigation->developerMenu.enabled)
+                for (auto const& item : navigation->customization.state.items)
+                    if (item.placed && item.control == L"stock:developer-button" &&
+                        winrt::hstring(command) == L"stock:" + item.id + L":developer-button") {
+                        navigation->developerMenu.keyboardActivation = keyboard;
+                        navigation->developerMenu.Open(button);
+                        return;
+                    }
             // Reuse the address clipboard contract while its editor owns focus;
             // Firefox's content command controller handles other edit targets.
-            for(auto const& item:navigation->customization.state.items)if(item.placed)
-                for(auto const& part:item.stock)if(part.address && part.enabled &&
-                    winrt::hstring(command)==L"stock:"+item.id+L":"+part.id) {
-                    if(part.id==L"cut-button"){Action(L"clipboard",0,L"cmd_cut");return;}
-                    if(part.id==L"copy-button"){Action(L"clipboard",0,L"cmd_copy");return;}
-                    if(part.id==L"paste-button"){Action(L"clipboard",0,L"cmd_paste");return;}
-                }
-            auto action=Message(L"navigation");
-            action.SetNamedValue(L"command",JValue::CreateStringValue(command));
-            action.SetNamedValue(L"keyboard",JValue::CreateBooleanValue(keyboard));
-            action.SetNamedValue(L"modifiers",JValue::CreateNumberValue(modifiers));
-            auto local=button.TransformToVisual(nullptr).TransformBounds({0,0,float(button.ActualWidth()),float(button.ActualHeight())});
-            auto screen=button.XamlRoot().ContentIsland().CoordinateConverter().ConvertLocalToScreen(local);
-            action.SetNamedValue(L"x",JValue::CreateNumberValue(screen.X));action.SetNamedValue(L"y",JValue::CreateNumberValue(screen.Y));
-            action.SetNamedValue(L"width",JValue::CreateNumberValue(screen.Width));action.SetNamedValue(L"height",JValue::CreateNumberValue(screen.Height));
-            for(auto const& item:navigation->customization.state.items)if(item.placed)
-                for(auto const& part:item.stock)if(part.menu &&
-                    winrt::hstring(command)==L"stock:"+item.id+L":"+part.id && releaseMenuFocus)releaseMenuFocus();
+            for (auto const& item : navigation->customization.state.items)
+                if (item.placed)
+                    for (auto const& part : item.stock)
+                        if (part.address && part.enabled &&
+                            winrt::hstring(command) == L"stock:" + item.id + L":" + part.id) {
+                            if (part.id == L"cut-button") {
+                                Action(L"clipboard", 0, L"cmd_cut");
+                                return;
+                            }
+                            if (part.id == L"copy-button") {
+                                Action(L"clipboard", 0, L"cmd_copy");
+                                return;
+                            }
+                            if (part.id == L"paste-button") {
+                                Action(L"clipboard", 0, L"cmd_paste");
+                                return;
+                            }
+                        }
+            auto action = Message(L"navigation");
+            action.SetNamedValue(L"command", JValue::CreateStringValue(command));
+            action.SetNamedValue(L"keyboard", JValue::CreateBooleanValue(keyboard));
+            action.SetNamedValue(L"modifiers", JValue::CreateNumberValue(modifiers));
+            auto local = button.TransformToVisual(nullptr).TransformBounds(
+                {0, 0, float(button.ActualWidth()), float(button.ActualHeight())});
+            auto screen = button.XamlRoot().ContentIsland().CoordinateConverter().ConvertLocalToScreen(local);
+            action.SetNamedValue(L"x", JValue::CreateNumberValue(screen.X));
+            action.SetNamedValue(L"y", JValue::CreateNumberValue(screen.Y));
+            action.SetNamedValue(L"width", JValue::CreateNumberValue(screen.Width));
+            action.SetNamedValue(L"height", JValue::CreateNumberValue(screen.Height));
+            for (auto const& item : navigation->customization.state.items)
+                if (item.placed)
+                    for (auto const& part : item.stock)
+                        if (part.menu && winrt::hstring(command) == L"stock:" + item.id + L":" + part.id &&
+                            releaseMenuFocus)
+                            releaseMenuFocus();
             navigate(action.Stringify());
         };
         navigation->activate = [this](wchar_t const* command, uint32_t modifiers, Controls::Button const& button) {
             if (syncing || session.empty() || !navigate) return;
-            if (navigation->customization.editing && wcsncmp(command,L"customize:",10)!=0) return;
-            if(wcsncmp(command,L"overflow-menu:invoke:",21)==0 || wcsncmp(command,L"overflow-menu:open:",19)==0)Edit();
+            if (navigation->customization.editing && wcsncmp(command, L"customize:", 10) != 0) return;
+            if (wcsncmp(command, L"overflow-menu:invoke:", 21) == 0 ||
+                wcsncmp(command, L"overflow-menu:open:", 19) == 0)
+                Edit();
             auto action = Message(L"navigation");
-            if(wcsncmp(command,L"overflow-menu:invoke:",21)==0 || wcsncmp(command,L"overflow-menu:open:",19)==0) {
-                auto editor=Message(L"clipboard");
-                editor.SetNamedValue(L"editId",JValue::CreateNumberValue(double(shell.AddressState().edit_id)));
-                editor.SetNamedValue(L"text",JValue::CreateStringValue(field.Text()));
-                editor.SetNamedValue(L"textEpoch",JValue::CreateNumberValue(textEpoch));
-                editor.SetNamedValue(L"selectionStart",JValue::CreateNumberValue(field.SelectionStart()));
-                editor.SetNamedValue(L"selectionEnd",JValue::CreateNumberValue(field.SelectionStart()+field.SelectionLength()));
-                editor.SetNamedValue(L"composing",JValue::CreateBooleanValue(composing));
-                action.SetNamedValue(L"editor",editor);
+            if (wcsncmp(command, L"overflow-menu:invoke:", 21) == 0 ||
+                wcsncmp(command, L"overflow-menu:open:", 19) == 0) {
+                auto editor = Message(L"clipboard");
+                editor.SetNamedValue(L"editId", JValue::CreateNumberValue(double(shell.AddressState().edit_id)));
+                editor.SetNamedValue(L"text", JValue::CreateStringValue(field.Text()));
+                editor.SetNamedValue(L"textEpoch", JValue::CreateNumberValue(textEpoch));
+                editor.SetNamedValue(L"selectionStart", JValue::CreateNumberValue(field.SelectionStart()));
+                editor.SetNamedValue(L"selectionEnd",
+                                     JValue::CreateNumberValue(field.SelectionStart() + field.SelectionLength()));
+                editor.SetNamedValue(L"composing", JValue::CreateBooleanValue(composing));
+                action.SetNamedValue(L"editor", editor);
             }
             action.SetNamedValue(L"command", JValue::CreateStringValue(command));
             action.SetNamedValue(L"keyboard", JValue::CreateBooleanValue(navigation->keyboardActivation));
             action.SetNamedValue(L"modifiers", JValue::CreateNumberValue(modifiers));
-            if (wcscmp(command,L"indicator:private")==0 || wcscmp(command,L"indicator:analysis")==0 || wcsncmp(command, L"product:", 8) == 0 || wcscmp(command, L"back-history") == 0 || wcscmp(command, L"forward-history") == 0 || wcscmp(command, L"profile") == 0 || wcscmp(command, L"extensions") == 0 || wcscmp(command, L"appmenu") == 0 || wcscmp(command, L"overflow") == 0 || wcsncmp(command,L"profiler-panel:",15)==0 || wcsncmp(command,L"tab-groups-menu:",16)==0 || wcsncmp(command,L"privacy-panel:",14)==0 || wcsncmp(command,L"overflow-menu:",14)==0 || wcsncmp(command,L"profile-menu:",13)==0 || wcsncmp(command,L"downloads-panel:",16)==0 || wcscmp(command, L"downloads") == 0 || wcscmp(command, L"history") == 0 || wcsncmp(command,L"history-menu:open:",18)==0 || wcscmp(command, L"bookmarks") == 0 || wcscmp(command, L"reset-pbm") == 0 || wcsncmp(command, L"extension", 9) == 0 || wcsncmp(command,L"widget-menu:",12)==0 || wcsncmp(command, L"omni", 4) == 0) {
+            if (wcscmp(command, L"indicator:private") == 0 || wcscmp(command, L"indicator:analysis") == 0 ||
+                wcsncmp(command, L"product:", 8) == 0 || wcscmp(command, L"back-history") == 0 ||
+                wcscmp(command, L"forward-history") == 0 || wcscmp(command, L"profile") == 0 ||
+                wcscmp(command, L"extensions") == 0 || wcscmp(command, L"appmenu") == 0 ||
+                wcscmp(command, L"overflow") == 0 || wcsncmp(command, L"profiler-panel:", 15) == 0 ||
+                wcsncmp(command, L"tab-groups-menu:", 16) == 0 || wcsncmp(command, L"privacy-panel:", 14) == 0 ||
+                wcsncmp(command, L"overflow-menu:", 14) == 0 || wcsncmp(command, L"profile-menu:", 13) == 0 ||
+                wcsncmp(command, L"downloads-panel:", 16) == 0 || wcscmp(command, L"downloads") == 0 ||
+                wcscmp(command, L"history") == 0 || wcsncmp(command, L"history-menu:open:", 18) == 0 ||
+                wcscmp(command, L"bookmarks") == 0 || wcscmp(command, L"reset-pbm") == 0 ||
+                wcsncmp(command, L"extension", 9) == 0 || wcsncmp(command, L"widget-menu:", 12) == 0 ||
+                wcsncmp(command, L"omni", 4) == 0) {
                 auto local = button.TransformToVisual(nullptr).TransformBounds(
                     {0, 0, float(button.ActualWidth()), float(button.ActualHeight())});
                 auto screen = button.XamlRoot().ContentIsland().CoordinateConverter().ConvertLocalToScreen(local);
@@ -1015,12 +1125,17 @@ struct NativeAddress {
                 action.SetNamedValue(L"y", JValue::CreateNumberValue(screen.Y));
                 action.SetNamedValue(L"width", JValue::CreateNumberValue(screen.Width));
                 action.SetNamedValue(L"height", JValue::CreateNumberValue(screen.Height));
-                if (releaseMenuFocus && wcsncmp(command,L"profiler-panel:",15)!=0 && wcsncmp(command,L"tab-groups-menu:",16)!=0 && wcsncmp(command,L"privacy-panel:",14)!=0 && wcsncmp(command,L"overflow-menu:",14)!=0 && wcsncmp(command,L"profile-menu:",13)!=0 && wcsncmp(command,L"downloads-panel:",16)!=0 && wcsncmp(command,L"history-menu:",13)!=0 &&
-                    wcsncmp(command,L"omni-pin:",9)!=0 && wcsncmp(command,L"omni-unpin:",11)!=0) releaseMenuFocus();
+                if (releaseMenuFocus && wcsncmp(command, L"profiler-panel:", 15) != 0 &&
+                    wcsncmp(command, L"tab-groups-menu:", 16) != 0 && wcsncmp(command, L"privacy-panel:", 14) != 0 &&
+                    wcsncmp(command, L"overflow-menu:", 14) != 0 && wcsncmp(command, L"profile-menu:", 13) != 0 &&
+                    wcsncmp(command, L"downloads-panel:", 16) != 0 && wcsncmp(command, L"history-menu:", 13) != 0 &&
+                    wcsncmp(command, L"omni-pin:", 9) != 0 && wcsncmp(command, L"omni-unpin:", 11) != 0)
+                    releaseMenuFocus();
             }
             navigate(action.Stringify());
         };
-        bookmarksToolbar.activate = [this](auto command, auto modifiers, auto const& element, auto bounds, auto const& url) {
+        bookmarksToolbar.activate = [this](auto command, auto modifiers, auto const& element, auto bounds,
+                                           auto const& url) {
             if (syncing || session.empty() || !navigate || navigation->customization.editing || !element.XamlRoot())
                 return;
             auto action = Message(L"navigation");
@@ -1034,136 +1149,214 @@ struct NativeAddress {
             action.SetNamedValue(L"height", JValue::CreateNumberValue(screen.Height));
             if (!url.empty()) action.SetNamedValue(L"url", JValue::CreateStringValue(url));
             const std::wstring_view verb(command);
-            if (releaseMenuFocus && (verb.starts_with(L"bookmarks-toolbar:open:") ||
-                verb.starts_with(L"bookmarks-toolbar:middle:") || verb.starts_with(L"bookmarks-toolbar:context:")))
+            if (releaseMenuFocus &&
+                (verb.starts_with(L"bookmarks-toolbar:open:") || verb.starts_with(L"bookmarks-toolbar:middle:") ||
+                 verb.starts_with(L"bookmarks-toolbar:context:")))
                 releaseMenuFocus();
             navigate(action.Stringify());
         };
-        navigation->forgetPanel.core=shell.core;navigation->clearPrivatePanel.core=shell.core;
-        navigation->forgetPanel.dispatch=[this](auto command,auto modifiers,auto const& button){navigation->activate(command,modifiers,button.template as<Controls::Button>());};
-        navigation->clearPrivatePanel.dispatch=navigation->forgetPanel.dispatch;
-        navigation->tabGroupsMenu.core=shell.core;
-        navigation->tabGroupsMenu.dispatch=[this](auto command,auto modifiers,auto const& button){if(releaseMenuFocus && wcsncmp(command,L"tab-groups-menu:invoke:",23)==0)releaseMenuFocus();navigation->keyboardActivation=navigation->tabGroupsMenu.keyboardActivation;navigation->activate(command,modifiers,button.template as<Controls::Button>());};
-        bookmarkPanel.core=shell.core;
-        bookmarkPanel.dispatch=[this](auto const& payload,auto const& button){
-            if(syncing || session.empty() || !navigate)return;
-            auto action=Message(L"navigation");for(auto const& value:payload)action.SetNamedValue(value.Key(),value.Value());
-            auto local=button.TransformToVisual(nullptr).TransformBounds({0,0,float(button.ActualWidth()),float(button.ActualHeight())});
-            auto screen=button.XamlRoot().ContentIsland().CoordinateConverter().ConvertLocalToScreen(local);
-            action.SetNamedValue(L"x",JValue::CreateNumberValue(screen.X));action.SetNamedValue(L"y",JValue::CreateNumberValue(screen.Y));
-            action.SetNamedValue(L"width",JValue::CreateNumberValue(screen.Width));action.SetNamedValue(L"height",JValue::CreateNumberValue(screen.Height));
-            if(wcsncmp(payload.GetNamedString(L"command").c_str(),L"bookmark-panel:open:",20)!=0 && !bookmarkPanel.opening && releaseMenuFocus)releaseMenuFocus();
+        navigation->forgetPanel.core = shell.core;
+        navigation->clearPrivatePanel.core = shell.core;
+        navigation->forgetPanel.dispatch = [this](auto command, auto modifiers, auto const& button) {
+            navigation->activate(command, modifiers, button.template as<Controls::Button>());
+        };
+        navigation->clearPrivatePanel.dispatch = navigation->forgetPanel.dispatch;
+        navigation->tabGroupsMenu.core = shell.core;
+        navigation->tabGroupsMenu.dispatch = [this](auto command, auto modifiers, auto const& button) {
+            if (releaseMenuFocus && wcsncmp(command, L"tab-groups-menu:invoke:", 23) == 0) releaseMenuFocus();
+            navigation->keyboardActivation = navigation->tabGroupsMenu.keyboardActivation;
+            navigation->activate(command, modifiers, button.template as<Controls::Button>());
+        };
+        bookmarkPanel.core = shell.core;
+        bookmarkPanel.dispatch = [this](auto const& payload, auto const& button) {
+            if (syncing || session.empty() || !navigate) return;
+            auto action = Message(L"navigation");
+            for (auto const& value : payload) action.SetNamedValue(value.Key(), value.Value());
+            auto local = button.TransformToVisual(nullptr).TransformBounds(
+                {0, 0, float(button.ActualWidth()), float(button.ActualHeight())});
+            auto screen = button.XamlRoot().ContentIsland().CoordinateConverter().ConvertLocalToScreen(local);
+            action.SetNamedValue(L"x", JValue::CreateNumberValue(screen.X));
+            action.SetNamedValue(L"y", JValue::CreateNumberValue(screen.Y));
+            action.SetNamedValue(L"width", JValue::CreateNumberValue(screen.Width));
+            action.SetNamedValue(L"height", JValue::CreateNumberValue(screen.Height));
+            if (wcsncmp(payload.GetNamedString(L"command").c_str(), L"bookmark-panel:open:", 20) != 0 &&
+                !bookmarkPanel.opening && releaseMenuFocus)
+                releaseMenuFocus();
             navigate(action.Stringify());
         };
-        permissionsPanel.core=shell.core;
-        permissionsPanel.dispatch=[this](auto const& payload,auto const& button){
-            if(syncing || session.empty() || !navigate)return;
-            auto action=Message(L"navigation");action.SetNamedValue(L"modifiers",JValue::CreateNumberValue(0));for(auto const& value:payload)action.SetNamedValue(value.Key(),value.Value());
-            auto source=button;if(!source.XamlRoot() || !source.IsLoaded())source=pageActions.button;
-            auto local=source.TransformToVisual(nullptr).TransformBounds({0,0,float(source.ActualWidth()),float(source.ActualHeight())});
-            auto screen=source.XamlRoot().ContentIsland().CoordinateConverter().ConvertLocalToScreen(local);
-            action.SetNamedValue(L"x",JValue::CreateNumberValue(screen.X));action.SetNamedValue(L"y",JValue::CreateNumberValue(screen.Y));
-            action.SetNamedValue(L"width",JValue::CreateNumberValue(screen.Width));action.SetNamedValue(L"height",JValue::CreateNumberValue(screen.Height));
-            if(wcsncmp(payload.GetNamedString(L"command").c_str(),L"permissions-panel:open:",23)!=0 && !permissionsPanel.opening && releaseMenuFocus)releaseMenuFocus();
+        permissionsPanel.core = shell.core;
+        permissionsPanel.dispatch = [this](auto const& payload, auto const& button) {
+            if (syncing || session.empty() || !navigate) return;
+            auto action = Message(L"navigation");
+            action.SetNamedValue(L"modifiers", JValue::CreateNumberValue(0));
+            for (auto const& value : payload) action.SetNamedValue(value.Key(), value.Value());
+            auto source = button;
+            if (!source.XamlRoot() || !source.IsLoaded()) source = pageActions.button;
+            auto local = source.TransformToVisual(nullptr).TransformBounds(
+                {0, 0, float(source.ActualWidth()), float(source.ActualHeight())});
+            auto screen = source.XamlRoot().ContentIsland().CoordinateConverter().ConvertLocalToScreen(local);
+            action.SetNamedValue(L"x", JValue::CreateNumberValue(screen.X));
+            action.SetNamedValue(L"y", JValue::CreateNumberValue(screen.Y));
+            action.SetNamedValue(L"width", JValue::CreateNumberValue(screen.Width));
+            action.SetNamedValue(L"height", JValue::CreateNumberValue(screen.Height));
+            if (wcsncmp(payload.GetNamedString(L"command").c_str(), L"permissions-panel:open:", 23) != 0 &&
+                !permissionsPanel.opening && releaseMenuFocus)
+                releaseMenuFocus();
             navigate(action.Stringify());
         };
-        notificationPanel.core=shell.core;
-        notificationPanel.dispatch=[this](auto const& payload,auto const& button){
-            if(syncing || session.empty() || !navigate)return;
-            auto action=Message(L"navigation");action.SetNamedValue(L"modifiers",JValue::CreateNumberValue(0));for(auto const& value:payload)action.SetNamedValue(value.Key(),value.Value());
-            auto source=button;if(!source.XamlRoot() || !source.IsLoaded())source=pageActions.button;
-            auto local=source.TransformToVisual(nullptr).TransformBounds({0,0,float(source.ActualWidth()),float(source.ActualHeight())});
-            auto screen=source.XamlRoot().ContentIsland().CoordinateConverter().ConvertLocalToScreen(local);
-            action.SetNamedValue(L"x",JValue::CreateNumberValue(screen.X));action.SetNamedValue(L"y",JValue::CreateNumberValue(screen.Y));
-            action.SetNamedValue(L"width",JValue::CreateNumberValue(screen.Width));action.SetNamedValue(L"height",JValue::CreateNumberValue(screen.Height));
-            if(wcsncmp(payload.GetNamedString(L"command").c_str(),L"notification-panel:open:",24)!=0 && !notificationPanel.opening && releaseMenuFocus)releaseMenuFocus();
+        notificationPanel.core = shell.core;
+        notificationPanel.dispatch = [this](auto const& payload, auto const& button) {
+            if (syncing || session.empty() || !navigate) return;
+            auto action = Message(L"navigation");
+            action.SetNamedValue(L"modifiers", JValue::CreateNumberValue(0));
+            for (auto const& value : payload) action.SetNamedValue(value.Key(), value.Value());
+            auto source = button;
+            if (!source.XamlRoot() || !source.IsLoaded()) source = pageActions.button;
+            auto local = source.TransformToVisual(nullptr).TransformBounds(
+                {0, 0, float(source.ActualWidth()), float(source.ActualHeight())});
+            auto screen = source.XamlRoot().ContentIsland().CoordinateConverter().ConvertLocalToScreen(local);
+            action.SetNamedValue(L"x", JValue::CreateNumberValue(screen.X));
+            action.SetNamedValue(L"y", JValue::CreateNumberValue(screen.Y));
+            action.SetNamedValue(L"width", JValue::CreateNumberValue(screen.Width));
+            action.SetNamedValue(L"height", JValue::CreateNumberValue(screen.Height));
+            if (wcsncmp(payload.GetNamedString(L"command").c_str(), L"notification-panel:open:", 24) != 0 &&
+                !notificationPanel.opening && releaseMenuFocus)
+                releaseMenuFocus();
             navigate(action.Stringify());
         };
-        connectionPanel.core=shell.core;
-        connectionPanel.dispatch=[this](auto const& payload,auto const& button){
-            if(syncing || session.empty() || !navigate)return;
-            auto action=Message(L"navigation");action.SetNamedValue(L"modifiers",JValue::CreateNumberValue(0));for(auto const& value:payload)action.SetNamedValue(value.Key(),value.Value());
-            auto source=button;if(!source.XamlRoot() || !source.IsLoaded())source=pageActions.button;
-            auto local=source.TransformToVisual(nullptr).TransformBounds({0,0,float(source.ActualWidth()),float(source.ActualHeight())});
-            auto screen=source.XamlRoot().ContentIsland().CoordinateConverter().ConvertLocalToScreen(local);
-            action.SetNamedValue(L"x",JValue::CreateNumberValue(screen.X));action.SetNamedValue(L"y",JValue::CreateNumberValue(screen.Y));
-            action.SetNamedValue(L"width",JValue::CreateNumberValue(screen.Width));action.SetNamedValue(L"height",JValue::CreateNumberValue(screen.Height));
-            if(wcsncmp(payload.GetNamedString(L"command").c_str(),L"connection-panel:open:",22)!=0 && !connectionPanel.opening && releaseMenuFocus)releaseMenuFocus();
+        connectionPanel.core = shell.core;
+        connectionPanel.dispatch = [this](auto const& payload, auto const& button) {
+            if (syncing || session.empty() || !navigate) return;
+            auto action = Message(L"navigation");
+            action.SetNamedValue(L"modifiers", JValue::CreateNumberValue(0));
+            for (auto const& value : payload) action.SetNamedValue(value.Key(), value.Value());
+            auto source = button;
+            if (!source.XamlRoot() || !source.IsLoaded()) source = pageActions.button;
+            auto local = source.TransformToVisual(nullptr).TransformBounds(
+                {0, 0, float(source.ActualWidth()), float(source.ActualHeight())});
+            auto screen = source.XamlRoot().ContentIsland().CoordinateConverter().ConvertLocalToScreen(local);
+            action.SetNamedValue(L"x", JValue::CreateNumberValue(screen.X));
+            action.SetNamedValue(L"y", JValue::CreateNumberValue(screen.Y));
+            action.SetNamedValue(L"width", JValue::CreateNumberValue(screen.Width));
+            action.SetNamedValue(L"height", JValue::CreateNumberValue(screen.Height));
+            if (wcsncmp(payload.GetNamedString(L"command").c_str(), L"connection-panel:open:", 22) != 0 &&
+                !connectionPanel.opening && releaseMenuFocus)
+                releaseMenuFocus();
             navigate(action.Stringify());
         };
-        translationsPanel.core=shell.core;
-        translationsPanel.dispatch=[this](auto const& payload,auto const& button){
-            if(syncing || session.empty() || !navigate)return;
-            auto action=Message(L"navigation");action.SetNamedValue(L"modifiers",JValue::CreateNumberValue(0));for(auto const& value:payload)action.SetNamedValue(value.Key(),value.Value());
-            auto source=button;if(!source.XamlRoot() || !source.IsLoaded())source=pageActions.button;
-            auto local=source.TransformToVisual(nullptr).TransformBounds({0,0,float(source.ActualWidth()),float(source.ActualHeight())});
-            auto screen=source.XamlRoot().ContentIsland().CoordinateConverter().ConvertLocalToScreen(local);
-            action.SetNamedValue(L"x",JValue::CreateNumberValue(screen.X));action.SetNamedValue(L"y",JValue::CreateNumberValue(screen.Y));
-            action.SetNamedValue(L"width",JValue::CreateNumberValue(screen.Width));action.SetNamedValue(L"height",JValue::CreateNumberValue(screen.Height));
-            if(wcsncmp(payload.GetNamedString(L"command").c_str(),L"translation-panel:open:",23)!=0 && !translationsPanel.opening && releaseMenuFocus)releaseMenuFocus();
+        translationsPanel.core = shell.core;
+        translationsPanel.dispatch = [this](auto const& payload, auto const& button) {
+            if (syncing || session.empty() || !navigate) return;
+            auto action = Message(L"navigation");
+            action.SetNamedValue(L"modifiers", JValue::CreateNumberValue(0));
+            for (auto const& value : payload) action.SetNamedValue(value.Key(), value.Value());
+            auto source = button;
+            if (!source.XamlRoot() || !source.IsLoaded()) source = pageActions.button;
+            auto local = source.TransformToVisual(nullptr).TransformBounds(
+                {0, 0, float(source.ActualWidth()), float(source.ActualHeight())});
+            auto screen = source.XamlRoot().ContentIsland().CoordinateConverter().ConvertLocalToScreen(local);
+            action.SetNamedValue(L"x", JValue::CreateNumberValue(screen.X));
+            action.SetNamedValue(L"y", JValue::CreateNumberValue(screen.Y));
+            action.SetNamedValue(L"width", JValue::CreateNumberValue(screen.Width));
+            action.SetNamedValue(L"height", JValue::CreateNumberValue(screen.Height));
+            if (wcsncmp(payload.GetNamedString(L"command").c_str(), L"translation-panel:open:", 23) != 0 &&
+                !translationsPanel.opening && releaseMenuFocus)
+                releaseMenuFocus();
             navigate(action.Stringify());
         };
-        selectedTranslationsPanel.core=shell.core;
-        selectedTranslationsPanel.dispatch=[this](auto const& payload,auto const& button){
-            if(syncing || session.empty() || !navigate)return;
-            auto action=Message(L"navigation");action.SetNamedValue(L"modifiers",JValue::CreateNumberValue(0));for(auto const& value:payload)action.SetNamedValue(value.Key(),value.Value());
-            auto source=button;if(!source.XamlRoot() || !source.IsLoaded())source=pageActions.button;
-            auto local=source.TransformToVisual(nullptr).TransformBounds({0,0,float(source.ActualWidth()),float(source.ActualHeight())});
-            auto screen=source.XamlRoot().ContentIsland().CoordinateConverter().ConvertLocalToScreen(local);
-            action.SetNamedValue(L"x",JValue::CreateNumberValue(screen.X));action.SetNamedValue(L"y",JValue::CreateNumberValue(screen.Y));
-            action.SetNamedValue(L"width",JValue::CreateNumberValue(screen.Width));action.SetNamedValue(L"height",JValue::CreateNumberValue(screen.Height));
-            if(wcsncmp(payload.GetNamedString(L"command").c_str(),L"selected-translation-panel:open:",32)!=0 && !selectedTranslationsPanel.opening && releaseMenuFocus)releaseMenuFocus();
+        selectedTranslationsPanel.core = shell.core;
+        selectedTranslationsPanel.dispatch = [this](auto const& payload, auto const& button) {
+            if (syncing || session.empty() || !navigate) return;
+            auto action = Message(L"navigation");
+            action.SetNamedValue(L"modifiers", JValue::CreateNumberValue(0));
+            for (auto const& value : payload) action.SetNamedValue(value.Key(), value.Value());
+            auto source = button;
+            if (!source.XamlRoot() || !source.IsLoaded()) source = pageActions.button;
+            auto local = source.TransformToVisual(nullptr).TransformBounds(
+                {0, 0, float(source.ActualWidth()), float(source.ActualHeight())});
+            auto screen = source.XamlRoot().ContentIsland().CoordinateConverter().ConvertLocalToScreen(local);
+            action.SetNamedValue(L"x", JValue::CreateNumberValue(screen.X));
+            action.SetNamedValue(L"y", JValue::CreateNumberValue(screen.Y));
+            action.SetNamedValue(L"width", JValue::CreateNumberValue(screen.Width));
+            action.SetNamedValue(L"height", JValue::CreateNumberValue(screen.Height));
+            if (wcsncmp(payload.GetNamedString(L"command").c_str(), L"selected-translation-panel:open:", 32) != 0 &&
+                !selectedTranslationsPanel.opening && releaseMenuFocus)
+                releaseMenuFocus();
             navigate(action.Stringify());
         };
-        pageContextMenu.core=shell.core;
-        pageContextMenu.dispatch=[this](auto const& payload,auto const& button){
-            if(syncing || session.empty() || !navigate)return;
-            auto action=Message(L"navigation");action.SetNamedValue(L"modifiers",JValue::CreateNumberValue(0));for(auto const& value:payload)action.SetNamedValue(value.Key(),value.Value());
-            auto source=button;if(!source.XamlRoot() || !source.IsLoaded())source=pageActions.button;
-            auto local=source.TransformToVisual(nullptr).TransformBounds({0,0,float(source.ActualWidth()),float(source.ActualHeight())});
-            auto screen=source.XamlRoot().ContentIsland().CoordinateConverter().ConvertLocalToScreen(local);
-            action.SetNamedValue(L"x",JValue::CreateNumberValue(screen.X));action.SetNamedValue(L"y",JValue::CreateNumberValue(screen.Y));
-            action.SetNamedValue(L"width",JValue::CreateNumberValue(screen.Width));action.SetNamedValue(L"height",JValue::CreateNumberValue(screen.Height));
-            if(wcsncmp(payload.GetNamedString(L"command").c_str(),L"page-context:open:",18)!=0 && !pageContextMenu.opening && releaseMenuFocus)releaseMenuFocus();
+        pageContextMenu.core = shell.core;
+        pageContextMenu.dispatch = [this](auto const& payload, auto const& button) {
+            if (syncing || session.empty() || !navigate) return;
+            auto action = Message(L"navigation");
+            action.SetNamedValue(L"modifiers", JValue::CreateNumberValue(0));
+            for (auto const& value : payload) action.SetNamedValue(value.Key(), value.Value());
+            auto source = button;
+            if (!source.XamlRoot() || !source.IsLoaded()) source = pageActions.button;
+            auto local = source.TransformToVisual(nullptr).TransformBounds(
+                {0, 0, float(source.ActualWidth()), float(source.ActualHeight())});
+            auto screen = source.XamlRoot().ContentIsland().CoordinateConverter().ConvertLocalToScreen(local);
+            action.SetNamedValue(L"x", JValue::CreateNumberValue(screen.X));
+            action.SetNamedValue(L"y", JValue::CreateNumberValue(screen.Y));
+            action.SetNamedValue(L"width", JValue::CreateNumberValue(screen.Width));
+            action.SetNamedValue(L"height", JValue::CreateNumberValue(screen.Height));
+            if (wcsncmp(payload.GetNamedString(L"command").c_str(), L"page-context:open:", 18) != 0 &&
+                !pageContextMenu.opening && releaseMenuFocus)
+                releaseMenuFocus();
             navigate(action.Stringify());
         };
-        navigation->profilerPanel.core=shell.core;
-        navigation->profilerPanel.releaseFocus=[this]{if(releaseMenuFocus)releaseMenuFocus();};
-        navigation->profilerPanel.dispatch=[this](auto command,auto modifiers,auto const& button){
-            navigation->keyboardActivation=navigation->profilerPanel.keyboardActivation;
-            navigation->activate(command,modifiers,button.template as<Controls::Button>());
+        navigation->profilerPanel.core = shell.core;
+        navigation->profilerPanel.releaseFocus = [this] {
+            if (releaseMenuFocus) releaseMenuFocus();
         };
-        navigation->developerMenu.core=shell.core;
-        navigation->developerMenu.dispatch=[this](auto command,auto modifiers,auto const& button){
-            auto action=Message(L"navigation");action.SetNamedValue(L"command",JValue::CreateStringValue(command));
-            action.SetNamedValue(L"keyboard",JValue::CreateBooleanValue(navigation->developerMenu.keyboardActivation));
-            action.SetNamedValue(L"modifiers",JValue::CreateNumberValue(modifiers));
-            auto local=button.TransformToVisual(nullptr).TransformBounds({0,0,float(button.ActualWidth()),float(button.ActualHeight())});
-            auto screen=button.XamlRoot().ContentIsland().CoordinateConverter().ConvertLocalToScreen(local);
-            action.SetNamedValue(L"x",JValue::CreateNumberValue(screen.X));action.SetNamedValue(L"y",JValue::CreateNumberValue(screen.Y));
-            action.SetNamedValue(L"width",JValue::CreateNumberValue(screen.Width));action.SetNamedValue(L"height",JValue::CreateNumberValue(screen.Height));
+        navigation->profilerPanel.dispatch = [this](auto command, auto modifiers, auto const& button) {
+            navigation->keyboardActivation = navigation->profilerPanel.keyboardActivation;
+            navigation->activate(command, modifiers, button.template as<Controls::Button>());
+        };
+        navigation->developerMenu.core = shell.core;
+        navigation->developerMenu.dispatch = [this](auto command, auto modifiers, auto const& button) {
+            auto action = Message(L"navigation");
+            action.SetNamedValue(L"command", JValue::CreateStringValue(command));
+            action.SetNamedValue(L"keyboard", JValue::CreateBooleanValue(navigation->developerMenu.keyboardActivation));
+            action.SetNamedValue(L"modifiers", JValue::CreateNumberValue(modifiers));
+            auto local = button.TransformToVisual(nullptr).TransformBounds(
+                {0, 0, float(button.ActualWidth()), float(button.ActualHeight())});
+            auto screen = button.XamlRoot().ContentIsland().CoordinateConverter().ConvertLocalToScreen(local);
+            action.SetNamedValue(L"x", JValue::CreateNumberValue(screen.X));
+            action.SetNamedValue(L"y", JValue::CreateNumberValue(screen.Y));
+            action.SetNamedValue(L"width", JValue::CreateNumberValue(screen.Width));
+            action.SetNamedValue(L"height", JValue::CreateNumberValue(screen.Height));
             navigate(action.Stringify());
         };
-        navigation->backForwardMenu.core=shell.core;
-        navigation->backForwardMenu.dispatch=[this](auto command,auto modifiers,auto const& button){
-            auto action=Message(L"navigation");action.SetNamedValue(L"command",JValue::CreateStringValue(command));
-            action.SetNamedValue(L"keyboard",JValue::CreateBooleanValue(navigation->backForwardMenu.keyboardActivation));
-            action.SetNamedValue(L"modifiers",JValue::CreateNumberValue(modifiers));
-            auto local=button.TransformToVisual(nullptr).TransformBounds({0,0,float(button.ActualWidth()),float(button.ActualHeight())});
-            auto screen=button.XamlRoot().ContentIsland().CoordinateConverter().ConvertLocalToScreen(local);
-            action.SetNamedValue(L"x",JValue::CreateNumberValue(screen.X));action.SetNamedValue(L"y",JValue::CreateNumberValue(screen.Y));
-            action.SetNamedValue(L"width",JValue::CreateNumberValue(screen.Width));action.SetNamedValue(L"height",JValue::CreateNumberValue(screen.Height));
-            if(releaseMenuFocus && (wcsncmp(command,L"back-forward-menu:invoke:",25)==0 || wcsncmp(command,L"back-forward-menu:middle:",25)==0))releaseMenuFocus();
+        navigation->backForwardMenu.core = shell.core;
+        navigation->backForwardMenu.dispatch = [this](auto command, auto modifiers, auto const& button) {
+            auto action = Message(L"navigation");
+            action.SetNamedValue(L"command", JValue::CreateStringValue(command));
+            action.SetNamedValue(L"keyboard",
+                                 JValue::CreateBooleanValue(navigation->backForwardMenu.keyboardActivation));
+            action.SetNamedValue(L"modifiers", JValue::CreateNumberValue(modifiers));
+            auto local = button.TransformToVisual(nullptr).TransformBounds(
+                {0, 0, float(button.ActualWidth()), float(button.ActualHeight())});
+            auto screen = button.XamlRoot().ContentIsland().CoordinateConverter().ConvertLocalToScreen(local);
+            action.SetNamedValue(L"x", JValue::CreateNumberValue(screen.X));
+            action.SetNamedValue(L"y", JValue::CreateNumberValue(screen.Y));
+            action.SetNamedValue(L"width", JValue::CreateNumberValue(screen.Width));
+            action.SetNamedValue(L"height", JValue::CreateNumberValue(screen.Height));
+            if (releaseMenuFocus && (wcsncmp(command, L"back-forward-menu:invoke:", 25) == 0 ||
+                                     wcsncmp(command, L"back-forward-menu:middle:", 25) == 0))
+                releaseMenuFocus();
             navigate(action.Stringify());
         };
-        navigation->historyMenu.core=shell.core;
-        navigation->overflowMenu.core=shell.core;
-        navigation->overflowMenu.dispatch=[this](auto command,auto modifiers,auto const& button){navigation->keyboardActivation=navigation->overflowMenu.keyboardActivation;navigation->activate(command,modifiers,button);};
-        navigation->profileMenu.core=shell.core;
-        navigation->profileMenu.dispatch=navigation->activate;
-        navigation->downloadsPanel.core=shell.core;
-        navigation->downloadsPanel.dispatch=navigation->activate;
-        navigation->historyMenu.dispatch=navigation->activate;
+        navigation->historyMenu.core = shell.core;
+        navigation->overflowMenu.core = shell.core;
+        navigation->overflowMenu.dispatch = [this](auto command, auto modifiers, auto const& button) {
+            navigation->keyboardActivation = navigation->overflowMenu.keyboardActivation;
+            navigation->activate(command, modifiers, button);
+        };
+        navigation->profileMenu.core = shell.core;
+        navigation->profileMenu.dispatch = navigation->activate;
+        navigation->downloadsPanel.core = shell.core;
+        navigation->downloadsPanel.dispatch = navigation->activate;
+        navigation->historyMenu.dispatch = navigation->activate;
         omnibarLeft.activate = navigation->activate;
         omnibarRight.activate = navigation->activate;
         pageActions.dispatch = navigation->activate;
@@ -1194,7 +1387,8 @@ struct NativeAddress {
             column.Width(i == 2 ? GridLengthHelper::FromValueAndType(1, GridUnitType::Star) : GridLengthHelper::Auto());
             header.ColumnDefinitions().Append(column);
         }
-        Grid::SetColumn(field, 0); Grid::SetColumnSpan(field, 5);
+        Grid::SetColumn(field, 0);
+        Grid::SetColumnSpan(field, 5);
         Grid::SetColumn(omnibarLeft.panel, 0);
         Grid::SetColumn(mode.button, 1);
         Grid::SetColumn(mode.exit, 3);
@@ -1210,8 +1404,10 @@ struct NativeAddress {
         header.Children().Append(formattedValue.display);
         header.Children().Append(mode.exit);
         header.Children().Append(trailingActions);
-        mode.button.MinWidth(0); mode.button.MinHeight(0);
-        mode.button.Height(24); mode.button.Margin({4, 0, 4, 0});
+        mode.button.MinWidth(0);
+        mode.button.MinHeight(0);
+        mode.button.Height(24);
+        mode.button.Margin({4, 0, 4, 0});
         // The stock 12-DIP arrow has internal side bearings; balance visible edge spacing.
         mode.button.Padding({8, 0, 6, 0});
         mode.button.VerticalAlignment(VerticalAlignment::Center);
@@ -1241,7 +1437,8 @@ struct NativeAddress {
                         <StaticResource x:Key="ButtonBackgroundDisabled" ResourceKey="SubtleButtonBackgroundDisabled"/>
                     </ResourceDictionary>
                 </ResourceDictionary.ThemeDictionaries>
-            </ResourceDictionary>)").as<ResourceDictionary>());
+            </ResourceDictionary>)")
+                                  .as<ResourceDictionary>());
         auto modeContent = mode.button.Content().as<StackPanel>();
         // Compact the stock template's arrow gap without shrinking the
         // content presenter's layout slot (negative margins overflow it).
@@ -1250,12 +1447,14 @@ struct NativeAddress {
             button.ApplyTemplate();
             if (!Media::VisualTreeHelper::GetChildrenCount(button)) return;
             auto templateRoot = Media::VisualTreeHelper::GetChild(button, 0).template try_as<FrameworkElement>();
-            auto chevron = templateRoot ? templateRoot.FindName(L"ChevronIcon").template try_as<FrameworkElement>() : nullptr;
+            auto chevron =
+                templateRoot ? templateRoot.FindName(L"ChevronIcon").template try_as<FrameworkElement>() : nullptr;
             if (chevron) chevron.Margin({6, 0, 0, 0});
         });
         modeContent.Children().RemoveAt(1);
         Viewbox modeIcon;
-        modeIcon.Width(16); modeIcon.Height(16);
+        modeIcon.Width(16);
+        modeIcon.Height(16);
         modeIcon.Child(mode.symbol);
         modeIcon.Visibility(mode.symbol.Visibility());
         mode.symbolHost = modeIcon;
@@ -1263,11 +1462,13 @@ struct NativeAddress {
         auto reserveControls = [this, alive = std::weak_ptr<int>(lifetime)](auto const&, auto const&) {
             if (alive.expired()) return;
             auto width = [](FrameworkElement const& element) {
-                return element.Visibility() == Visibility::Visible ? element.ActualWidth() + element.Margin().Left + element.Margin().Right : 0.0;
+                return element.Visibility() == Visibility::Visible
+                           ? element.ActualWidth() + element.Margin().Left + element.Margin().Right
+                           : 0.0;
             };
             const float textGap = mode.button.Visibility() == Visibility::Visible ? 2.0f : 8.0f;
             field.Padding({float(textGap + width(omnibarLeft.panel) + width(mode.button)), 4,
-                float(8 + width(mode.exit) + width(trailingActions)), 4});
+                           float(8 + width(mode.exit) + width(trailingActions)), 4});
             formattedValue.Refresh(field, EditorOwned() || composing);
         };
         for (auto element : {omnibarLeft.panel.as<FrameworkElement>(), mode.button.as<FrameworkElement>(),
@@ -1277,13 +1478,17 @@ struct NativeAddress {
         }
         // Match TabViewItem's live radius and its stock top-corner filter.
         // The square bottom edge joins the page below without a seam.
-        toolbarSurface = Markup::XamlReader::Load(
-            LR"(<Grid xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" Background="{ThemeResource LayerOnMicaBaseAltFillColorDefaultBrush}" BorderBrush="{ThemeResource DividerStrokeColorDefaultBrush}" BorderThickness="0,0,0,1" CornerRadius="{Binding Source={ThemeResource OverlayCornerRadius}, Converter={StaticResource TopCornerRadiusFilterConverter}}"/>)").as<Grid>();
+        toolbarSurface =
+            Markup::XamlReader::Load(
+                LR"(<Grid xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" Background="{ThemeResource LayerOnMicaBaseAltFillColorDefaultBrush}" BorderBrush="{ThemeResource DividerStrokeColorDefaultBrush}" BorderThickness="0,0,0,1" CornerRadius="{Binding Source={ThemeResource OverlayCornerRadius}, Converter={StaticResource TopCornerRadiusFilterConverter}}"/>)")
+                .as<Grid>();
         toolbarCorners = toolbarSurface.GetBindingExpression(Grid::CornerRadiusProperty()).ParentBinding();
         // The full native radius adds the page's 8-DIP bottom corners. Keep both
         // bindings live so the toolbar's tab-matching top corners remain themed.
-        auto pageCorners = Markup::XamlReader::Load(
-            LR"(<Grid xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" CornerRadius="{Binding Source={ThemeResource OverlayCornerRadius}}"/>)").as<Grid>();
+        auto pageCorners =
+            Markup::XamlReader::Load(
+                LR"(<Grid xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" CornerRadius="{Binding Source={ThemeResource OverlayCornerRadius}}"/>)")
+                .as<Grid>();
         newTabCorners = pageCorners.GetBindingExpression(Grid::CornerRadiusProperty()).ParentBinding();
         toolbarSurface.Visibility(Visibility::Collapsed);
 
@@ -1291,31 +1496,35 @@ struct NativeAddress {
         // WindowCaption's physical-pixel bottom margin keep the divider above
         // Gecko; a fixed Height would push that stroke underneath the page.
         toolbarRoot.Children().Append(toolbarSurface);
-        toolbarRow = Grid(); toolbarRow.Height(40); toolbarRow.VerticalAlignment(VerticalAlignment::Top);
-        addressSlot = Grid(); addressSlot.MinHeight(40);
+        toolbarRow = Grid();
+        toolbarRow.Height(40);
+        toolbarRow.VerticalAlignment(VerticalAlignment::Top);
+        addressSlot = Grid();
+        addressSlot.MinHeight(40);
         toolbarRow.Children().Append(addressSlot);
-        navigation->Attach(toolbarRow,addressSlot,toolbarSurface);
+        navigation->Attach(toolbarRow, addressSlot, toolbarSurface);
         toolbarRoot.Children().Append(toolbarRow);
         addressLayer = Canvas();
         newTab.Create(addressLayer);
-        addressLayer.Children().InsertAt(1,root);
+        addressLayer.Children().InsertAt(1, root);
         toolbarRoot.Children().Append(addressLayer);
         {
             using Microsoft::UI::Xaml::Hosting::ElementCompositionPreview;
-            ElementCompositionPreview::SetIsTranslationEnabled(addressSlot,true);
-            ElementCompositionPreview::SetIsTranslationEnabled(root,true);
-            auto slotVisual=ElementCompositionPreview::GetElementVisual(addressSlot);
-            auto editorVisual=ElementCompositionPreview::GetElementVisual(root);
-            slotVisual.Properties().InsertVector3(L"Translation",{0,0,0});
-            editorVisual.Properties().InsertVector3(L"Translation",{0,0,0});
-            editorVisual.Properties().InsertScalar(L"FollowToolbarMotion",1);
-            auto follow=editorVisual.Compositor().CreateExpressionAnimation(L"slot.Translation.X * editor.FollowToolbarMotion");
-            follow.SetReferenceParameter(L"slot",slotVisual.Properties());
-            follow.SetReferenceParameter(L"editor",editorVisual.Properties());
-            editorVisual.Properties().StartAnimation(L"Translation.X",follow);
+            ElementCompositionPreview::SetIsTranslationEnabled(addressSlot, true);
+            ElementCompositionPreview::SetIsTranslationEnabled(root, true);
+            auto slotVisual = ElementCompositionPreview::GetElementVisual(addressSlot);
+            auto editorVisual = ElementCompositionPreview::GetElementVisual(root);
+            slotVisual.Properties().InsertVector3(L"Translation", {0, 0, 0});
+            editorVisual.Properties().InsertVector3(L"Translation", {0, 0, 0});
+            editorVisual.Properties().InsertScalar(L"FollowToolbarMotion", 1);
+            auto follow =
+                editorVisual.Compositor().CreateExpressionAnimation(L"slot.Translation.X * editor.FollowToolbarMotion");
+            follow.SetReferenceParameter(L"slot", slotVisual.Properties());
+            follow.SetReferenceParameter(L"editor", editorVisual.Properties());
+            editorVisual.Properties().StartAnimation(L"Translation.X", follow);
         }
         toolbarRoot.Children().Append(bookmarksToolbar.root);
-        toolbarRoot.LayoutUpdated([this, alive = std::weak_ptr<int>(lifetime)](auto const&,auto const&) {
+        toolbarRoot.LayoutUpdated([this, alive = std::weak_ptr<int>(lifetime)](auto const&, auto const&) {
             if (!alive.expired()) ArrangeEditor();
         });
         root.VerticalAlignment(VerticalAlignment::Center);
@@ -1360,8 +1569,10 @@ struct NativeAddress {
         popupContent.Spacing(4);
         popupContent.Children().Append(suggestions.list);
         popupContent.Children().Append(actions.panel);
-        auto border = Markup::XamlReader::Load(
-            LR"(<Border xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" Background="{ThemeResource SolidBackgroundFillColorBaseBrush}" BorderBrush="{ThemeResource SurfaceStrokeColorDefaultBrush}" BorderThickness="1" CornerRadius="8" Padding="4"/>)").as<Border>();
+        auto border =
+            Markup::XamlReader::Load(
+                LR"(<Border xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" Background="{ThemeResource SolidBackgroundFillColorBaseBrush}" BorderBrush="{ThemeResource SurfaceStrokeColorDefaultBrush}" BorderThickness="1" CornerRadius="8" Padding="4"/>)")
+                .as<Border>();
         border.Child(popupContent);
         popup = Primitives::Popup();
         popup.Child(border);
@@ -1382,7 +1593,7 @@ struct NativeAddress {
             if (!alive.expired()) ScheduleFocusObservation();
         });
         popupContent.PreviewKeyDown([this, alive = std::weak_ptr<int>(lifetime)](
-            auto const&, Microsoft::UI::Xaml::Input::KeyRoutedEventArgs const& e) {
+                                        auto const&, Microsoft::UI::Xaml::Input::KeyRoutedEventArgs const& e) {
             if (!alive.expired() && !composing && e.Key() == winrt::Windows::System::VirtualKey::Escape) {
                 field.Focus(FocusState::Keyboard);
                 Action(L"dismiss");
@@ -1406,14 +1617,15 @@ struct NativeAddress {
             newTab.Apply(JObject());
             bookmarksToolbar.Apply(JObject());
             SetNewTabCorners(false);
-            toolbarSurface.BorderThickness(Thickness{0,0,0,1});
+            toolbarSurface.BorderThickness(Thickness{0, 0, 0, 1});
             if (presentationChanged) presentationChanged();
             shell.ResetAddressPublication();
             shell.ResetToolbarPublication();
             if (navigation && !retainEditor) navigation->Apply({}, false);
             context.Reset();
             resultMenu.Reset();
-            omnibarLeft.Apply({}, false); omnibarRight.Apply({}, false);
+            omnibarLeft.Apply({}, false);
+            omnibarRight.Apply({}, false);
             pageActions.Apply({}, false);
             if (popup) popup.IsOpen(false);
             mode.Disable();
@@ -1434,7 +1646,8 @@ struct NativeAddress {
         const auto checkedOpen = snapshot.GetNamedBoolean(L"open", false);
         const auto contentFocused = snapshot.GetNamedBoolean(L"contentFocused", false);
         const auto checkedRtl = snapshot.GetNamedBoolean(L"rtl", false);
-        const auto checkedTextEpoch = snapshot.HasKey(L"textEpoch") ? NativeJson::RequireRevision(snapshot, L"textEpoch") : 0;
+        const auto checkedTextEpoch =
+            snapshot.HasKey(L"textEpoch") ? NativeJson::RequireRevision(snapshot, L"textEpoch") : 0;
         const auto navigationToolbar = snapshot.GetNamedBoolean(L"navigationToolbar", false);
         const auto newTabState = NativeNewTabPage::Read(snapshot);
         auto customizationState = NativeToolbarCustomization::Read(snapshot);
@@ -1458,11 +1671,14 @@ struct NativeAddress {
         const auto clearPrivatePanelState = navigation ? navigation->clearPrivatePanel.Read(snapshot) : JObject();
         const auto productMenuState = NativeProductMenu::Read(snapshot);
         const auto navigationState = NativeNavigationToolbar::Read(snapshot);
-        const auto nextShareDocument = snapshot.GetNamedObject(L"navigation", JObject()).GetNamedString(L"shareDocument", L"0");
-        if(nextShareDocument.empty() || nextShareDocument.size()>20 ||
-           !std::all_of(nextShareDocument.begin(),nextShareDocument.end(),[](wchar_t c){return c>=L'0' && c<=L'9';}))throw_hresult(E_INVALIDARG);
+        const auto nextShareDocument =
+            snapshot.GetNamedObject(L"navigation", JObject()).GetNamedString(L"shareDocument", L"0");
+        if (nextShareDocument.empty() || nextShareDocument.size() > 20 ||
+            !std::all_of(nextShareDocument.begin(), nextShareDocument.end(),
+                         [](wchar_t c) { return c >= L'0' && c <= L'9'; }))
+            throw_hresult(E_INVALIDARG);
         const auto pinnedState = PinnedExtensionButtons::Read(snapshot);
-        const auto paletteState = PinnedExtensionButtons::Read(snapshot,L"palette");
+        const auto paletteState = PinnedExtensionButtons::Read(snapshot, L"palette");
         const auto omnibarLeftState = PinnedExtensionButtons::Read(snapshot, L"omnibarLeft");
         const auto omnibarRightState = PinnedExtensionButtons::Read(snapshot, L"omnibarRight");
         const auto pageActionsState = NativePageActionsMenu::Read(snapshot);
@@ -1478,22 +1694,27 @@ struct NativeAddress {
         const auto clipboardReplacement = clipboard.GetNamedString(L"replacement", L"");
         const auto replaceStart = clipboard.Size() ? NativeJson::RequireRevision(clipboard, L"replaceStart") : 0;
         const auto replaceEnd = clipboard.Size() ? NativeJson::RequireRevision(clipboard, L"replaceEnd") : 0;
-        if (clipboardId && (clipboardBefore.size() > NativeJson::kMaxFieldText ||
-            replaceStart > replaceEnd || replaceEnd > clipboardBefore.size() ||
-            clipboardReplacement.size() > NativeJson::kMaxFieldText ||
-            std::wstring(clipboardBefore).substr(0, replaceStart) + std::wstring(clipboardReplacement) +
-            std::wstring(clipboardBefore).substr(replaceEnd) != std::wstring(checkedText)))
+        if (clipboardId &&
+            (clipboardBefore.size() > NativeJson::kMaxFieldText || replaceStart > replaceEnd ||
+             replaceEnd > clipboardBefore.size() || clipboardReplacement.size() > NativeJson::kMaxFieldText ||
+             std::wstring(clipboardBefore).substr(0, replaceStart) + std::wstring(clipboardReplacement) +
+                     std::wstring(clipboardBefore).substr(replaceEnd) !=
+                 std::wstring(checkedText)))
             winrt::throw_hresult(E_INVALIDARG);
         if (snapshot.HasKey(L"contextMenu")) {
             auto menu = snapshot.GetNamedObject(L"contextMenu");
-            NativeJson::RequireRevision(menu, L"generation"); NativeJson::RequireRevision(menu, L"editId");
-            size_t count = 0; NativeAddressContextMenu::Validate(menu.GetNamedArray(L"items"), count);
+            NativeJson::RequireRevision(menu, L"generation");
+            NativeJson::RequireRevision(menu, L"editId");
+            size_t count = 0;
+            NativeAddressContextMenu::Validate(menu.GetNamedArray(L"items"), count);
         }
         if (snapshot.HasKey(L"resultMenu")) {
             auto menu = snapshot.GetNamedObject(L"resultMenu");
-            NativeJson::RequireRevision(menu, L"generation"); NativeJson::RequireRevision(menu, L"editId");
+            NativeJson::RequireRevision(menu, L"generation");
+            NativeJson::RequireRevision(menu, L"editId");
             NativeJson::RequireLength(menu.GetNamedString(L"resultId"), 64);
-            size_t count = 0; NativeAddressContextMenu::Validate(menu.GetNamedArray(L"items"), count);
+            size_t count = 0;
+            NativeAddressContextMenu::Validate(menu.GetNamedArray(L"items"), count);
         }
         double completionSerial = 0, completionEdit = 0, completionStart = 0, completionEnd = 0;
         winrt::hstring completionBefore;
@@ -1505,7 +1726,8 @@ struct NativeAddress {
             completionEnd = NativeJson::RequireRevision(completion, L"end");
             completionBefore = completion.GetNamedString(L"before");
             if (completionBefore.size() > NativeJson::kMaxFieldText || completionEdit != checkedEdit ||
-                completionStart > completionEnd || completionEnd > checkedText.size()) winrt::throw_hresult(E_INVALIDARG);
+                completionStart > completionEnd || completionEnd > checkedText.size())
+                winrt::throw_hresult(E_INVALIDARG);
         }
         auto checkedRows = snapshot.GetNamedArray(L"rows");
         if (nextSession.empty() || nextSession.size() > 256 || checkedText.size() > NativeJson::kMaxFieldText ||
@@ -1519,16 +1741,16 @@ struct NativeAddress {
             NativeJson::RequireLength(targets.GetNamedString(L"backward", L""), NativeJson::kMaxOpaqueId);
             auto entries = targets.GetNamedArray(L"rows");
             if (entries.Size() > NativeJson::kMaxListEntries) winrt::throw_hresult(E_INVALIDARG);
-            for (auto entry : entries) for (auto key : {L"id", L"forward", L"backward"})
-                NativeJson::RequireLength(entry.GetObject().GetNamedString(key), NativeJson::kMaxOpaqueId);
+            for (auto entry : entries)
+                for (auto key : {L"id", L"forward", L"backward"})
+                    NativeJson::RequireLength(entry.GetObject().GetNamedString(key), NativeJson::kMaxOpaqueId);
         }
         for (auto value : checkedRows) {
             auto row = value.GetObject();
             auto id = row.GetNamedString(L"id");
             NativeJson::RequireLength(row.GetNamedString(L"presentationId", id), NativeJson::kMaxOpaqueId);
             if (id.empty() || id.size() > NativeJson::kMaxOpaqueId || !checkedIds.insert(id).second ||
-                row.GetNamedString(L"title").size() > 4096 ||
-                row.GetNamedString(L"description", L"").size() > 1024 ||
+                row.GetNamedString(L"title").size() > 4096 || row.GetNamedString(L"description", L"").size() > 1024 ||
                 row.GetNamedString(L"feedback", L"").size() > 1024 ||
                 row.GetNamedString(L"displayUrl", L"").size() > 1024 ||
                 row.GetNamedString(L"actionLabel", L"").size() > NativeJson::kMaxShortLabel)
@@ -1538,7 +1760,8 @@ struct NativeAddress {
             if (row.HasKey(L"helpLink")) {
                 auto help = row.GetNamedObject(L"helpLink");
                 NativeJson::RequireLength(help.GetNamedString(L"id"), NativeJson::kMaxOpaqueId);
-                for (auto key : {L"before", L"label", L"after"}) NativeJson::RequireLength(help.GetNamedString(key), 1024);
+                for (auto key : {L"before", L"label", L"after"})
+                    NativeJson::RequireLength(help.GetNamedString(key), 1024);
             }
             row.GetNamedBoolean(L"focusButton", false);
             row.GetNamedBoolean(L"enabled", true);
@@ -1551,7 +1774,8 @@ struct NativeAddress {
             if (buttons.Size() > 8) winrt::throw_hresult(E_INVALIDARG);
             std::set<winrt::hstring> buttonIds;
             for (auto item : buttons) {
-                auto button = item.GetObject(); auto id = button.GetNamedString(L"id");
+                auto button = item.GetObject();
+                auto id = button.GetNamedString(L"id");
                 NativeJson::RequireLength(id, NativeJson::kMaxOpaqueId);
                 NativeJson::RequireLength(button.GetNamedString(L"label"), 1024);
                 if (id.empty() || !buttonIds.insert(id).second) winrt::throw_hresult(E_INVALIDARG);
@@ -1608,7 +1832,8 @@ struct NativeAddress {
         }
         // Validate the remaining presentation fields before classification or
         // any XAML mutation, including a replay or a late publication.
-        NativeJson::RequireLength(snapshot.GetNamedString(L"placeholder", L"Search or enter address"), NativeJson::kMaxShortLabel);
+        NativeJson::RequireLength(snapshot.GetNamedString(L"placeholder", L"Search or enter address"),
+                                  NativeJson::kMaxShortLabel);
         auto checkedLabels = snapshot.GetNamedObject(L"labels", JObject());
         for (auto key : {L"suggestions", L"actions", L"addressFallback"})
             NativeJson::RequireLength(checkedLabels.GetNamedString(key, L""), NativeJson::kMaxShortLabel);
@@ -1621,19 +1846,22 @@ struct NativeAddress {
         JObject addressSection;
         for (auto const& item : snapshot) {
             auto key = item.Key();
-            if (key != L"navigation" && key != L"navigationToolbar" && key != L"version" && key != L"enabled" && key != L"startupBrowser")
+            if (key != L"navigation" && key != L"navigationToolbar" && key != L"version" && key != L"enabled" &&
+                key != L"startupBrowser")
                 addressSection.SetNamedValue(key, item.Value());
         }
         auto addressFingerprint = addressSection.Stringify();
         const bool applyAddress = shell.AddressPublication(nextSession, uint64_t(checkedSequence),
-            uint64_t(checkedRevision), addressFingerprint, false);
-        const bool hasModes = snapshot.HasKey(L"modes") && snapshot.GetNamedValue(L"modes").ValueType() != winrt::Windows::Data::Json::JsonValueType::Null;
+                                                           uint64_t(checkedRevision), addressFingerprint, false);
+        const bool hasModes = snapshot.HasKey(L"modes") && snapshot.GetNamedValue(L"modes").ValueType() !=
+                                                               winrt::Windows::Data::Json::JsonValueType::Null;
         const auto modesObject = hasModes ? snapshot.GetNamedObject(L"modes") : JObject();
         const auto modesFingerprint = hasModes ? NativeSearchMode::Fingerprint(modesObject) : winrt::hstring();
         const auto modesGeneration = hasModes ? uint64_t(modesObject.GetNamedNumber(L"generation")) : 0;
         const auto modesDecision = applyAddress && hasModes
-            ? shell.AddressSection(SHELL_PUBLICATION_CHANNEL_ADDRESS_MODES, nextSession, modesGeneration,
-                modesFingerprint, true, false) : SHELL_ADDRESS_SECTION_DECISION_IGNORED;
+                                       ? shell.AddressSection(SHELL_PUBLICATION_CHANNEL_ADDRESS_MODES, nextSession,
+                                                              modesGeneration, modesFingerprint, true, false)
+                                       : SHELL_ADDRESS_SECTION_DECISION_IGNORED;
         const bool hasContext = snapshot.HasKey(L"contextMenu"), hasResult = snapshot.HasKey(L"resultMenu");
         const auto contextObject = hasContext ? snapshot.GetNamedObject(L"contextMenu") : JObject();
         const auto resultObject = hasResult ? snapshot.GetNamedObject(L"resultMenu") : JObject();
@@ -1642,17 +1870,24 @@ struct NativeAddress {
         const auto contextGeneration = hasContext ? uint64_t(contextObject.GetNamedNumber(L"generation")) : 0;
         const auto resultGeneration = hasResult ? uint64_t(resultObject.GetNamedNumber(L"generation")) : 0;
         const auto currentEdit = shell.AddressState().edit_id;
-        const bool contextEligible = hasContext && shell.AddressMenuEligible(nextSession, session,
-            uint64_t(contextObject.GetNamedNumber(L"editId")), currentEdit, L"", L"", context.requested, interaction.FocusWithin());
-        const bool resultEligible = hasResult && shell.AddressMenuEligible(nextSession, session,
-            uint64_t(resultObject.GetNamedNumber(L"editId")), currentEdit,
-            resultObject.GetNamedString(L"resultId"), resultMenuId, resultMenu.requested, interaction.FocusWithin());
-        const auto contextDecision = applyAddress && hasContext
-            ? shell.AddressSection(SHELL_PUBLICATION_CHANNEL_ADDRESS_CONTEXT_MENU, nextSession, contextGeneration,
-                contextFingerprint, contextEligible, false) : SHELL_ADDRESS_SECTION_DECISION_IGNORED;
-        const auto resultDecision = applyAddress && hasResult
-            ? shell.AddressSection(SHELL_PUBLICATION_CHANNEL_ADDRESS_RESULT_MENU, nextSession, resultGeneration,
-                resultFingerprint, resultEligible, false) : SHELL_ADDRESS_SECTION_DECISION_IGNORED;
+        const bool contextEligible =
+            hasContext &&
+            shell.AddressMenuEligible(nextSession, session, uint64_t(contextObject.GetNamedNumber(L"editId")),
+                                      currentEdit, L"", L"", context.requested, interaction.FocusWithin());
+        const bool resultEligible =
+            hasResult &&
+            shell.AddressMenuEligible(nextSession, session, uint64_t(resultObject.GetNamedNumber(L"editId")),
+                                      currentEdit, resultObject.GetNamedString(L"resultId"), resultMenuId,
+                                      resultMenu.requested, interaction.FocusWithin());
+        const auto contextDecision =
+            applyAddress && hasContext
+                ? shell.AddressSection(SHELL_PUBLICATION_CHANNEL_ADDRESS_CONTEXT_MENU, nextSession, contextGeneration,
+                                       contextFingerprint, contextEligible, false)
+                : SHELL_ADDRESS_SECTION_DECISION_IGNORED;
+        const auto resultDecision =
+            applyAddress && hasResult ? shell.AddressSection(SHELL_PUBLICATION_CHANNEL_ADDRESS_RESULT_MENU, nextSession,
+                                                             resultGeneration, resultFingerprint, resultEligible, false)
+                                      : SHELL_ADDRESS_SECTION_DECISION_IGNORED;
         const bool applyHistory = navigation && navigation->historyMenu.Resolve(historyMenuState);
         const bool applyOverflow = navigation && navigation->overflowMenu.Resolve(overflowMenuState);
         const bool applyBookmark = bookmarkPanel.Resolve(bookmarkPanelState);
@@ -1670,13 +1905,14 @@ struct NativeAddress {
         const bool applyClearPrivate = navigation && navigation->clearPrivatePanel.Resolve(clearPrivatePanelState);
         const bool applyProfile = navigation && navigation->profileMenu.Resolve(profileMenuState);
         const bool applyDownloads = navigation && navigation->downloadsPanel.Resolve(downloadsPanelState);
-        const auto toolbarDecision = navigation && customizationState.revision
-            ? shell.ToolbarPublication(customizationState.revision, customizationState.fingerprint, false)
-            : SHELL_TOOLBAR_PUBLICATION_IGNORED;
-        if(navigation && customizationState.revision && toolbarDecision!=SHELL_TOOLBAR_PUBLICATION_ACCEPTED) {
-            auto labels=std::move(customizationState.labels);
-            customizationState=navigation->customization.state;
-            if(toolbarDecision==SHELL_TOOLBAR_PUBLICATION_UNCHANGED) customizationState.labels=std::move(labels);
+        const auto toolbarDecision =
+            navigation && customizationState.revision
+                ? shell.ToolbarPublication(customizationState.revision, customizationState.fingerprint, false)
+                : SHELL_TOOLBAR_PUBLICATION_IGNORED;
+        if (navigation && customizationState.revision && toolbarDecision != SHELL_TOOLBAR_PUBLICATION_ACCEPTED) {
+            auto labels = std::move(customizationState.labels);
+            customizationState = navigation->customization.state;
+            if (toolbarDecision == SHELL_TOOLBAR_PUBLICATION_UNCHANGED) customizationState.labels = std::move(labels);
         }
         if (applyAddress && nextSession != session) {
             pageActions.Close();
@@ -1706,37 +1942,50 @@ struct NativeAddress {
             // Mirror the interface without reversing URL/text character order.
             // Reassigning editor formatting during an active TSF composition
             // can terminate it even when the requested value is unchanged.
-            if (field.TextReadingOrder()!=TextReadingOrder::DetectFromContent)
+            if (field.TextReadingOrder() != TextReadingOrder::DetectFromContent)
                 field.TextReadingOrder(TextReadingOrder::DetectFromContent);
-            if (field.TextAlignment()!=TextAlignment::Left)
-                field.TextAlignment(TextAlignment::Left);
+            if (field.TextAlignment() != TextAlignment::Left) field.TextAlignment(TextAlignment::Left);
             root.Visibility(Visibility::Visible);
         }
         if (toolbarRoot) {
-            if(!customizationState.revision) shell.ResetToolbarPublication();
-            else if(toolbarDecision==SHELL_TOOLBAR_PUBLICATION_ACCEPTED)
+            if (!customizationState.revision)
+                shell.ResetToolbarPublication();
+            else if (toolbarDecision == SHELL_TOOLBAR_PUBLICATION_ACCEPTED)
                 shell.ToolbarPublication(customizationState.revision, customizationState.fingerprint, true);
-            shareDocument=nextShareDocument;
-            bookmarksToolbar.Apply(navigationToolbar ?
-                snapshot.GetNamedObject(L"navigation", JObject()).GetNamedObject(L"bookmarksToolbar", JObject()) :
-                JObject(), checkedRtl);
+            shareDocument = nextShareDocument;
+            bookmarksToolbar.Apply(
+                navigationToolbar
+                    ? snapshot.GetNamedObject(L"navigation", JObject()).GetNamedObject(L"bookmarksToolbar", JObject())
+                    : JObject(),
+                checkedRtl);
             navigation->Apply(navigationState, navigationToolbar && snapshot.HasKey(L"navigation"));
             navigation->pinned.externalLayout = customizationState.revision != 0;
             navigation->pinned.Apply(pinnedState, navigationToolbar);
-            navigation->historyMenu.Apply(historyMenuState,navigationToolbar && !navigation->customization.editing,navigation->buttons[9],applyHistory);
-            navigation->productMenu.Apply(productMenuState,navigationToolbar);
-            navigation->profileMenu.Apply(profileMenuState,navigationToolbar && !navigation->customization.editing,applyProfile);
-            navigation->overflowMenu.Apply(overflowMenuState,navigationToolbar && !navigation->customization.editing,applyOverflow);
-            navigation->profilerPanel.Apply(profilerPanelState,navigationToolbar && !navigation->customization.editing,applyProfiler);
-            navigation->backForwardMenu.Apply(backForwardMenuState,navigationToolbar && !navigation->customization.editing,applyBackForward);
-            navigation->developerMenu.Apply(developerMenuState,navigationToolbar && !navigation->customization.editing,applyDeveloper);
-            navigation->tabGroupsMenu.Apply(tabGroupsMenuState,navigationToolbar && !navigation->customization.editing,applyTabGroups);
-            navigation->forgetPanel.Apply(forgetPanelState,navigationToolbar && !navigation->customization.editing,applyForget);
-            navigation->clearPrivatePanel.Apply(clearPrivatePanelState,navigationToolbar && !navigation->customization.editing,applyClearPrivate);
-            navigation->downloadsPanel.Apply(downloadsPanelState,navigationToolbar && !navigation->customization.editing,applyDownloads);
+            navigation->historyMenu.Apply(historyMenuState, navigationToolbar && !navigation->customization.editing,
+                                          navigation->buttons[9], applyHistory);
+            navigation->productMenu.Apply(productMenuState, navigationToolbar);
+            navigation->profileMenu.Apply(profileMenuState, navigationToolbar && !navigation->customization.editing,
+                                          applyProfile);
+            navigation->overflowMenu.Apply(overflowMenuState, navigationToolbar && !navigation->customization.editing,
+                                           applyOverflow);
+            navigation->profilerPanel.Apply(profilerPanelState, navigationToolbar && !navigation->customization.editing,
+                                            applyProfiler);
+            navigation->backForwardMenu.Apply(
+                backForwardMenuState, navigationToolbar && !navigation->customization.editing, applyBackForward);
+            navigation->developerMenu.Apply(developerMenuState, navigationToolbar && !navigation->customization.editing,
+                                            applyDeveloper);
+            navigation->tabGroupsMenu.Apply(tabGroupsMenuState, navigationToolbar && !navigation->customization.editing,
+                                            applyTabGroups);
+            navigation->forgetPanel.Apply(forgetPanelState, navigationToolbar && !navigation->customization.editing,
+                                          applyForget);
+            navigation->clearPrivatePanel.Apply(
+                clearPrivatePanelState, navigationToolbar && !navigation->customization.editing, applyClearPrivate);
+            navigation->downloadsPanel.Apply(downloadsPanelState,
+                                             navigationToolbar && !navigation->customization.editing, applyDownloads);
             if (snapshot.HasKey(L"navigation")) {
                 auto request = snapshot.GetNamedObject(L"navigation").GetNamedNumber(L"editorRequest", 0);
-                if (std::isfinite(request) && request >= 0 && request <= NativeJson::kMaxSafeInteger) navigation->RequestEditor(request);
+                if (std::isfinite(request) && request >= 0 && request <= NativeJson::kMaxSafeInteger)
+                    navigation->RequestEditor(request);
             }
             navigation->Layout(customizationState);
             navigation->UpdatePalette(paletteState);
@@ -1744,18 +1993,40 @@ struct NativeAddress {
             omnibarLeft.Apply(omnibarLeftState, navigationToolbar);
             omnibarRight.Apply(omnibarRightState, navigationToolbar);
             pageActions.Apply(pageActionsState, navigationToolbar && !navigation->customization.editing);
-            auto bookmarkSource=omnibarRight.rows.find(bookmarkPanelState.GetNamedString(L"source",L""));
-            bookmarkPanel.Apply(bookmarkPanelState,navigationToolbar && !navigation->customization.editing && bookmarkSource!=omnibarRight.rows.end(),bookmarkSource!=omnibarRight.rows.end()?bookmarkSource->second.button:pageActions.button,applyBookmark);
-            auto permissionsSource=omnibarLeft.rows.find(permissionsPanelState.GetNamedString(L"source",L""));
-            permissionsPanel.Apply(permissionsPanelState,navigationToolbar && !navigation->customization.editing,permissionsSource!=omnibarLeft.rows.end()?permissionsSource->second.button:pageActions.button,applyPermissions);
-            auto notificationSource=omnibarLeft.rows.find(notificationPanelState.GetNamedString(L"source",L""));
-            notificationPanel.Apply(notificationPanelState,navigationToolbar && !navigation->customization.editing,notificationSource!=omnibarLeft.rows.end()?notificationSource->second.button:pageActions.button,applyNotification);
-            pageContextMenu.Apply(pageContextMenuState,navigationToolbar && !navigation->customization.editing,pageActions.button,applyPageContextMenu);
-            selectedTranslationsPanel.Apply(selectedTranslationsPanelState,navigationToolbar && !navigation->customization.editing,pageActions.button,applySelectedTranslations);
-            auto translationsSource=omnibarRight.rows.find(translationsPanelState.GetNamedString(L"source",L""));
-            translationsPanel.Apply(translationsPanelState,navigationToolbar && !navigation->customization.editing,translationsSource!=omnibarRight.rows.end() && translationsSource->second.button.Visibility()==Visibility::Visible && translationsSource->second.button.ActualWidth()>0?translationsSource->second.button:pageActions.button,applyTranslations);
-            auto connectionSource=omnibarLeft.rows.find(connectionPanelState.GetNamedString(L"source",L""));
-            connectionPanel.Apply(connectionPanelState,navigationToolbar && !navigation->customization.editing,connectionSource!=omnibarLeft.rows.end()?connectionSource->second.button:pageActions.button,applyConnection);
+            auto bookmarkSource = omnibarRight.rows.find(bookmarkPanelState.GetNamedString(L"source", L""));
+            bookmarkPanel.Apply(
+                bookmarkPanelState,
+                navigationToolbar && !navigation->customization.editing && bookmarkSource != omnibarRight.rows.end(),
+                bookmarkSource != omnibarRight.rows.end() ? bookmarkSource->second.button : pageActions.button,
+                applyBookmark);
+            auto permissionsSource = omnibarLeft.rows.find(permissionsPanelState.GetNamedString(L"source", L""));
+            permissionsPanel.Apply(
+                permissionsPanelState, navigationToolbar && !navigation->customization.editing,
+                permissionsSource != omnibarLeft.rows.end() ? permissionsSource->second.button : pageActions.button,
+                applyPermissions);
+            auto notificationSource = omnibarLeft.rows.find(notificationPanelState.GetNamedString(L"source", L""));
+            notificationPanel.Apply(
+                notificationPanelState, navigationToolbar && !navigation->customization.editing,
+                notificationSource != omnibarLeft.rows.end() ? notificationSource->second.button : pageActions.button,
+                applyNotification);
+            pageContextMenu.Apply(pageContextMenuState, navigationToolbar && !navigation->customization.editing,
+                                  pageActions.button, applyPageContextMenu);
+            selectedTranslationsPanel.Apply(selectedTranslationsPanelState,
+                                            navigationToolbar && !navigation->customization.editing, pageActions.button,
+                                            applySelectedTranslations);
+            auto translationsSource = omnibarRight.rows.find(translationsPanelState.GetNamedString(L"source", L""));
+            translationsPanel.Apply(translationsPanelState, navigationToolbar && !navigation->customization.editing,
+                                    translationsSource != omnibarRight.rows.end() &&
+                                            translationsSource->second.button.Visibility() == Visibility::Visible &&
+                                            translationsSource->second.button.ActualWidth() > 0
+                                        ? translationsSource->second.button
+                                        : pageActions.button,
+                                    applyTranslations);
+            auto connectionSource = omnibarLeft.rows.find(connectionPanelState.GetNamedString(L"source", L""));
+            connectionPanel.Apply(
+                connectionPanelState, navigationToolbar && !navigation->customization.editing,
+                connectionSource != omnibarLeft.rows.end() ? connectionSource->second.button : pageActions.button,
+                applyConnection);
             toolbarSurface.Visibility(navigationToolbar ? Visibility::Visible : Visibility::Collapsed);
             root.Margin(Thickness{0, 0, 0, 0});
             hideEmbeddedControls = navigationToolbar;
@@ -1777,17 +2048,20 @@ struct NativeAddress {
         // about when it published. The collection this replaced returned early
         // for the same reason; it is stated here rather than implied by where
         // the old code happened to return.
-        if (shell.AddressState().needs_dispatch || StagedKind() != NativeShellCore::NoIntent || shell.AddressState().mode_pending) return L"";
+        if (shell.AddressState().needs_dispatch || StagedKind() != NativeShellCore::NoIntent ||
+            shell.AddressState().mode_pending)
+            return L"";
         if (clipboardId && clipboardEdit != shell.AddressState().edit_id) return L"";
         if (completionSerial && completionEdit != shell.AddressState().edit_id) return L"";
-        shell.AddressPublication(nextSession, uint64_t(checkedSequence), uint64_t(checkedRevision), addressFingerprint, true);
-        animateEditorPlacement=!newTab.enabled && newTabState.GetNamedBoolean(L"enabled",false) &&
-            newTabState.GetNamedBoolean(L"animate",false);
+        shell.AddressPublication(nextSession, uint64_t(checkedSequence), uint64_t(checkedRevision), addressFingerprint,
+                                 true);
+        animateEditorPlacement = !newTab.enabled && newTabState.GetNamedBoolean(L"enabled", false) &&
+                                 newTabState.GetNamedBoolean(L"animate", false);
         newTab.Apply(newTabState);
         SetNewTabCorners(newTab.enabled);
-        editorLayoutHeight=-1;
+        editorLayoutHeight = -1;
         // One live theme surface joins the navigation row to the native page.
-        toolbarSurface.BorderThickness(newTab.enabled ? Thickness{} : Thickness{0,0,0,1});
+        toolbarSurface.BorderThickness(newTab.enabled ? Thickness{} : Thickness{0, 0, 0, 1});
         if (presentationChanged) presentationChanged();
         ArrangeEditor();
         syncing = true;
@@ -1803,7 +2077,8 @@ struct NativeAddress {
                 auto actionsName = labels.GetNamedString(L"actions", L"Search actions");
                 NativeJson::RequireLength(suggestionsName, NativeJson::kMaxShortLabel);
                 NativeJson::RequireLength(actionsName, NativeJson::kMaxShortLabel);
-                if (!suggestionsName.empty()) Automation::AutomationProperties::SetName(suggestions.list, suggestionsName);
+                if (!suggestionsName.empty())
+                    Automation::AutomationProperties::SetName(suggestions.list, suggestionsName);
                 if (!actionsName.empty()) Automation::AutomationProperties::SetName(actions.panel, actionsName);
             }
             const auto previousRevision = revision;
@@ -1820,10 +2095,12 @@ struct NativeAddress {
                     field.Select(int(replaceStart), int(replaceEnd - replaceStart));
                     field.SelectedText(clipboardReplacement);
                 } else if (completionSerial > autofillSerial && completionEdit == shell.AddressState().edit_id &&
-                           field.Text() == completionBefore && std::wstring(text).starts_with(std::wstring(completionBefore))) {
+                           field.Text() == completionBefore &&
+                           std::wstring(text).starts_with(std::wstring(completionBefore))) {
                     field.Select(int(completionBefore.size()), 0);
                     field.SelectedText(winrt::hstring(std::wstring(text).substr(completionBefore.size())));
-                } else field.Text(text);
+                } else
+                    field.Text(text);
                 field.Select(int(text.size()), 0);
             }
             formattedValue.Apply(snapshot);
@@ -1853,7 +2130,8 @@ struct NativeAddress {
                 suggestions.list.ScrollIntoView(suggestions.list.SelectedItem());
             suggestions.RefreshLabels();
             if (modesDecision == SHELL_ADDRESS_SECTION_DECISION_ACCEPTED)
-                shell.AddressSection(SHELL_PUBLICATION_CHANNEL_ADDRESS_MODES, nextSession, modesGeneration, modesFingerprint, true, true);
+                shell.AddressSection(SHELL_PUBLICATION_CHANNEL_ADDRESS_MODES, nextSession, modesGeneration,
+                                     modesFingerprint, true, true);
             mode.Sync(snapshot, modesDecision != SHELL_ADDRESS_SECTION_DECISION_IGNORED);
             actions.Sync(snapshot);
             shell.PublishAddress(uint64_t(checkedEdit), checkedComplete || suggestions.HasCurrentRows());
@@ -1870,14 +2148,19 @@ struct NativeAddress {
             popup.IsOpen(checkedOpen && (suggestions.list.Items().Size() || !actions.visuals.empty()));
         }
         if (contextDecision == SHELL_ADDRESS_SECTION_DECISION_ACCEPTED)
-            shell.AddressSection(SHELL_PUBLICATION_CHANNEL_ADDRESS_CONTEXT_MENU, nextSession, contextGeneration, contextFingerprint, contextEligible, true);
+            shell.AddressSection(SHELL_PUBLICATION_CHANNEL_ADDRESS_CONTEXT_MENU, nextSession, contextGeneration,
+                                 contextFingerprint, contextEligible, true);
         if (resultDecision == SHELL_ADDRESS_SECTION_DECISION_ACCEPTED)
-            shell.AddressSection(SHELL_PUBLICATION_CHANNEL_ADDRESS_RESULT_MENU, nextSession, resultGeneration, resultFingerprint, resultEligible, true);
+            shell.AddressSection(SHELL_PUBLICATION_CHANNEL_ADDRESS_RESULT_MENU, nextSession, resultGeneration,
+                                 resultFingerprint, resultEligible, true);
         context.Sync(snapshot, contextDecision == SHELL_ADDRESS_SECTION_DECISION_ACCEPTED, field);
-        if (snapshot.HasKey(L"resultMenu") && snapshot.GetNamedObject(L"resultMenu").GetNamedString(L"resultId") != resultMenuId)
+        if (snapshot.HasKey(L"resultMenu") &&
+            snapshot.GetNamedObject(L"resultMenu").GetNamedString(L"resultId") != resultMenuId)
             resultMenu.Reset();
-        else resultMenu.Sync(snapshot, resultDecision == SHELL_ADDRESS_SECTION_DECISION_ACCEPTED, field);
-        if (interaction.FocusWithin() && !interaction.Holding() && (!popup || popup.IsOpen())) suggestions.FocusPending();
+        else
+            resultMenu.Sync(snapshot, resultDecision == SHELL_ADDRESS_SECTION_DECISION_ACCEPTED, field);
+        if (interaction.FocusWithin() && !interaction.Holding() && (!popup || popup.IsOpen()))
+            suggestions.FocusPending();
         // Firefox has already focused content. Finish only the HWND handoff,
         // after publication and pending-input guards; Escape and mode picks
         // leave Gecko focus on its address proxy and never take this path.
@@ -1911,8 +2194,9 @@ struct NativeAddress {
             if (popup && !popup.IsOpen()) continue;
             if (!root.XamlRoot() || visual.button.ActualHeight() <= 0) continue;
             auto origin = visual.button.TransformToVisual(popupContent ? popupContent : root).TransformPoint({0, 0});
-            auto size = popupContent ? Windows::Foundation::Size{float(popupContent.ActualWidth()), float(popupContent.ActualHeight())}
-                                    : root.XamlRoot().Size();
+            auto size = popupContent ? Windows::Foundation::Size{float(popupContent.ActualWidth()),
+                                                                 float(popupContent.ActualHeight())}
+                                     : root.XamlRoot().Size();
             if (origin.Y < size.Height && origin.Y + visual.button.ActualHeight() > 0 && origin.X < size.Width &&
                 origin.X + visual.button.ActualWidth() > 0)
                 current.insert(visual.resultId);

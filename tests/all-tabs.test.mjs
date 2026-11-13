@@ -44,7 +44,7 @@ function fixture(){
   const context=vm.createContext({console,Glean:{browserUiInteraction:{allTabsPanelEntrypoint:{'alltabs-button':{add(){}}},listAllTabsAction:{search_tabs:{add(){}},close_all_duplicates:{add(){}}}}},Services:{prefs:{getBoolPref:(k,d)=>prefs.get(k)??d,addObserver(){},removeObserver(){}},obs:{addObserver(){},removeObserver(){}}},
     XPCOMUtils:{declareLazy:()=>({TabMetrics:metrics,PanelMultiView:{hidePopup(){}}})},ChromeUtils:{importESModule:()=>({ContentSharingUtils:{isEnabled:false}})}});
   let source=readFileSync(new URL('../upstream/firefox/browser/components/tabbrowser/TabsList.sys.mjs',import.meta.url),'utf8');
-  vm.runInContext(source.replace(/^import .*;\r?\n/m,'').replace('export class TabsPanel','this.TabsPanel=class TabsPanel'),context);
+  vm.runInContext(source.replace(/^import\b[^;]*;\r?\n/m,'').replace('export class TabsPanel','this.TabsPanel=class TabsPanel'),context);
   const controller=(hidden=false,audio=false)=>new context.TabsPanel({view:new Node('panelview'),containerNode:new Node('vbox'),dropIndicator:hidden?null:new Node('indicator'),onlyHiddenTabs:hidden,filterFn:t=>audio?t.soundPlaying || t.muted:hidden?t!==window.FirefoxViewHandler.tab:!t.hidden});
   window.gTabsPanel={allTabsPanel:controller(),hiddenTabsPopup:controller(true),hiddenAudioTabsPopup:controller(true,true),init(){},hideAllTabsPanel(){},hasHiddenTabsExcludingFxView:()=>browser.tabs.some(t=>t.hidden),containerTabsView:new Node('view'),searchTabs:()=>calls.push(['search'])};
   window.gTabsPanel.hiddenAudioTabs=window.gTabsPanel.hiddenAudioTabsPopup.containerNode;
@@ -52,7 +52,7 @@ function fixture(){
     resolveStripTab:id=>browser.tabs.find(t=>owner.tabIds.get(t)===id && t.isConnected && !t.hidden && (!t.group?.collapsed || t===browser.selectedTab)),stripSourceWindow:()=>window};
   window.gWinUIPane=owner;
   vm.runInContext(readFileSync(new URL('../upstream/firefox/browser/base/content/WinUITabGroupsMenu.sys.mjs',import.meta.url),'utf8').replace('export function','function').replace('export class WinUITabGroupsMenu','class WinUITabGroupsMenu'),context);
-  vm.runInContext(readFileSync(new URL('../upstream/firefox/browser/base/content/WinUIAllTabs.sys.mjs',import.meta.url),'utf8').replace(/^import .*;\r?\n/m,'').replace('export class WinUIAllTabs','this.Adapter=class WinUIAllTabs'),context);
+  vm.runInContext(readFileSync(new URL('../upstream/firefox/browser/base/content/WinUIAllTabs.sys.mjs',import.meta.url),'utf8').replace(/^import\b[^;]*;\r?\n/m,'').replace('export class WinUIAllTabs','this.Adapter=class WinUIAllTabs'),context);
   adapter=new context.Adapter(owner,window);
   const add=(label='Tab '+browser.tabs.length,options={})=>{const tab=new Node('tab');Object.assign(tab,{label,isConnected:true,closing:false,hidden:false,pinned:false,userContextId:0,...options});
     tab.toggleMuteAudio=()=>{tab.muted=!tab.muted;calls.push(['mute',tab]);};Object.defineProperty(tab,'selected',{get:()=>browser.selectedTab===tab});browser.tabs.push(tab);if(!browser.selectedTab)browser.selectedTab=tab;return tab;};

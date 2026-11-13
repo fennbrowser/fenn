@@ -7,7 +7,7 @@ const root=new URL('../upstream/firefox/',import.meta.url);
 const read=name=>readFileSync(new URL(name,root),'utf8');
 const context=vm.createContext({console});
 vm.runInContext(read('browser/base/content/WinUIAddressSession.sys.mjs')
-  .replace(/^import .*;$/m,'').replace('export class WinUIAddressSession','this.Session = class WinUIAddressSession'),context);
+  .replace(/^import\b[^;]*;$/m,'').replace('export class WinUIAddressSession','this.Session = class WinUIAddressSession'),context);
 
 function fixture() {
   const s=Object.create(context.Session.prototype), exposures=[];

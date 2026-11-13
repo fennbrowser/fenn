@@ -14,7 +14,12 @@ impl GroupHover {
             return false;
         }
         if (self.source, self.target, self.delay) != (source, target, delay) || now < self.since {
-            *self = Self { source, target, since: now, delay };
+            *self = Self {
+                source,
+                target,
+                since: now,
+                delay,
+            };
         }
         now.saturating_sub(self.since) >= u64::from(delay)
     }

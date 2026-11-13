@@ -40,8 +40,12 @@ pub struct ShellAddressAction {
 
 impl AddressState {
     pub fn can_yield_editor(&self) -> bool {
-        !self.needs_dispatch && self.edit_id==self.acknowledged && self.staged.is_none() &&
-            self.mode_request.is_none() && !self.deferred && self.submit.is_none()
+        !self.needs_dispatch
+            && self.edit_id == self.acknowledged
+            && self.staged.is_none()
+            && self.mode_request.is_none()
+            && !self.deferred
+            && self.submit.is_none()
     }
     pub fn state(&self) -> ShellAddressState {
         ShellAddressState {
@@ -56,7 +60,9 @@ impl AddressState {
     }
 
     pub fn edit(&mut self) -> bool {
-        if self.edit_id == MAX_EDIT_ID { return false; }
+        if self.edit_id == MAX_EDIT_ID {
+            return false;
+        }
         self.edit_id += 1;
         self.recoverable_edit = true;
         self.needs_dispatch = true;
@@ -68,7 +74,12 @@ impl AddressState {
     // request and the new unadmitted edit independent of one another.
     pub fn stage(&mut self, request: u64, kind: IntentKind) {
         self.staged = Some((request, kind));
-        if matches!(kind, IntentKind::Edit | IntentKind::Clipboard | IntentKind::ContextMenu) { self.needs_dispatch = false; }
+        if matches!(
+            kind,
+            IntentKind::Edit | IntentKind::Clipboard | IntentKind::ContextMenu
+        ) {
+            self.needs_dispatch = false;
+        }
     }
 
     // Queue admission owns mode lifetime: refused actions never cancel Enter.
@@ -77,11 +88,17 @@ impl AddressState {
         self.cancel_submit();
     }
 
-    pub fn reset_mode(&mut self) { self.mode_request = None; }
+    pub fn reset_mode(&mut self) {
+        self.mode_request = None;
+    }
 
     pub fn complete(&mut self, request: u64) {
-        if self.mode_request == Some(request) { self.mode_request = None; }
-        if self.staged.is_some_and(|(id, _)| id == request) { self.staged = None; }
+        if self.mode_request == Some(request) {
+            self.mode_request = None;
+        }
+        if self.staged.is_some_and(|(id, _)| id == request) {
+            self.staged = None;
+        }
     }
 
     pub fn publish(&mut self, acknowledged: u64, settled: bool) {
@@ -91,34 +108,52 @@ impl AddressState {
 
     // Only an interrupted first-entry submit needs a new focus query. Ordinary
     // caret clicks can reuse an open query without a new browser publication.
-    pub fn await_focus_query(&mut self) { self.query_settled = false; }
+    pub fn await_focus_query(&mut self) {
+        self.query_settled = false;
+    }
 
     pub fn cancel_submit(&mut self) {
         self.deferred = false;
         self.submit = None;
     }
 
-    pub fn action(&mut self, incoming: IntentKind, mut observed: Conditions, modifiers: u32) -> ShellAddressAction {
+    pub fn action(
+        &mut self,
+        incoming: IntentKind,
+        mut observed: Conditions,
+        modifiers: u32,
+    ) -> ShellAddressAction {
         let state = self.state();
         observed.edit_acknowledged = state.edit_acknowledged != 0;
         observed.query_settled = self.query_settled;
         observed.mode_intent_staged = self.mode_request.is_some();
         // Match the surface guard before capturing an Enter or cancelling work.
         if intent::decide(incoming, None, observed) == Decision::Drop {
-            return ShellAddressAction { decision: Decision::Drop as u32, modifiers: 0 };
+            return ShellAddressAction {
+                decision: Decision::Drop as u32,
+                modifiers: 0,
+            };
         }
-        if incoming == IntentKind::Activate { self.recoverable_edit=false; self.submit.get_or_insert(modifiers); }
+        if incoming == IntentKind::Activate {
+            self.recoverable_edit = false;
+            self.submit.get_or_insert(modifiers);
+        }
         let decision = intent::decide(incoming, self.staged.map(|(_, kind)| kind), observed);
-        let mut result = ShellAddressAction { decision: decision as u32, modifiers: 0 };
+        let mut result = ShellAddressAction {
+            decision: decision as u32,
+            modifiers: 0,
+        };
         match decision {
             Decision::Defer => self.deferred = true,
-            Decision::Drop => {},
+            Decision::Drop => {}
             _ => {
                 if matches!(incoming, IntentKind::Dismiss | IntentKind::Blur) {
                     self.needs_dispatch = false;
                     self.cancel_submit();
                 }
-                if matches!(incoming, IntentKind::Clipboard | IntentKind::ContextMenu) { self.cancel_submit(); }
+                if matches!(incoming, IntentKind::Clipboard | IntentKind::ContextMenu) {
+                    self.cancel_submit();
+                }
                 if incoming == IntentKind::Activate {
                     result.modifiers = self.submit.take().unwrap_or(modifiers);
                     self.deferred = false;
@@ -129,7 +164,9 @@ impl AddressState {
     }
 
     pub fn take_deferred(&mut self) -> bool {
-        if !self.deferred || self.state().edit_acknowledged == 0 || !self.query_settled { return false; }
+        if !self.deferred || self.state().edit_acknowledged == 0 || !self.query_settled {
+            return false;
+        }
         self.deferred = false;
         true
     }
@@ -140,17 +177,34 @@ mod tests {
     use super::*;
     #[test]
     fn yielding_requires_ack_and_no_staged_or_deferred_action() {
-        let mut s=AddressState::default();assert!(s.can_yield_editor());
-        s.edit();assert!(!s.can_yield_editor());
-        s.stage(1,IntentKind::Edit);s.publish(1,true);assert!(!s.can_yield_editor());
-        s.complete(1);assert!(s.can_yield_editor());
-        s.stage_mode(2);assert!(!s.can_yield_editor());s.complete(2);
-        assert!(s.can_yield_editor());s.submit=Some(0);assert!(!s.can_yield_editor());
-        s.submit=None;s.deferred=true;assert!(!s.can_yield_editor());
+        let mut s = AddressState::default();
+        assert!(s.can_yield_editor());
+        s.edit();
+        assert!(!s.can_yield_editor());
+        s.stage(1, IntentKind::Edit);
+        s.publish(1, true);
+        assert!(!s.can_yield_editor());
+        s.complete(1);
+        assert!(s.can_yield_editor());
+        s.stage_mode(2);
+        assert!(!s.can_yield_editor());
+        s.complete(2);
+        assert!(s.can_yield_editor());
+        s.submit = Some(0);
+        assert!(!s.can_yield_editor());
+        s.submit = None;
+        s.deferred = true;
+        assert!(!s.can_yield_editor());
     }
     fn observed() -> Conditions {
-        Conditions { applying: false, composing: false, has_session: true,
-            mode_intent_staged: false, edit_acknowledged: false, query_settled: false }
+        Conditions {
+            applying: false,
+            composing: false,
+            has_session: true,
+            mode_intent_staged: false,
+            edit_acknowledged: false,
+            query_settled: false,
+        }
     }
     fn enter(s: &mut AddressState, modifiers: u32) -> ShellAddressAction {
         s.action(IntentKind::Activate, observed(), modifiers)
@@ -158,15 +212,21 @@ mod tests {
 
     #[test]
     fn recovery_retains_edits_but_not_deferred_or_dispatched_submissions() {
-        let mut state=AddressState::default();
-        assert_eq!(state.state().recoverable_edit,0);
-        state.edit();assert_eq!(state.state().recoverable_edit,1);
-        enter(&mut state,0);assert_eq!(state.state().recoverable_edit,0);
-        state.edit();state.publish(state.state().edit_id,true);
-        state.stage(1,IntentKind::Edit);state.complete(1);
-        assert_eq!(state.state().recoverable_edit,1);
-        enter(&mut state,0);assert_eq!(state.state().recoverable_edit,0);
-        state.edit();assert_eq!(state.state().recoverable_edit,1);
+        let mut state = AddressState::default();
+        assert_eq!(state.state().recoverable_edit, 0);
+        state.edit();
+        assert_eq!(state.state().recoverable_edit, 1);
+        enter(&mut state, 0);
+        assert_eq!(state.state().recoverable_edit, 0);
+        state.edit();
+        state.publish(state.state().edit_id, true);
+        state.stage(1, IntentKind::Edit);
+        state.complete(1);
+        assert_eq!(state.state().recoverable_edit, 1);
+        enter(&mut state, 0);
+        assert_eq!(state.state().recoverable_edit, 0);
+        state.edit();
+        assert_eq!(state.state().recoverable_edit, 1);
     }
 
     #[test]
@@ -175,12 +235,19 @@ mod tests {
         s.publish(0, true);
         s.stage(16, IntentKind::Focus);
         s.complete(16);
-        assert_eq!(s.state().query_settled, 1, "ordinary focus reuse keeps readiness");
+        assert_eq!(
+            s.state().query_settled,
+            1,
+            "ordinary focus reuse keeps readiness"
+        );
         s.await_focus_query();
         s.stage(17, IntentKind::Focus);
         assert_eq!(enter(&mut s, 5).decision, Decision::Defer as u32);
         s.complete(17);
-        assert!(!s.take_deferred(), "transport completion does not make the focus query ready");
+        assert!(
+            !s.take_deferred(),
+            "transport completion does not make the focus query ready"
+        );
         s.publish(0, false);
         assert!(!s.take_deferred());
         s.publish(0, true);
@@ -213,7 +280,8 @@ mod tests {
     #[test]
     fn refusal_and_old_completion_preserve_the_new_edit_and_early_enter() {
         let mut s = AddressState::default();
-        s.edit(); s.stage(10, IntentKind::Edit);
+        s.edit();
+        s.stage(10, IntentKind::Edit);
         s.edit(); // admission refused; no stage call
         enter(&mut s, 2);
         s.complete(10);
@@ -230,13 +298,21 @@ mod tests {
     #[test]
     fn newer_edit_cancels_enter_and_repeated_enter_keeps_first_modifiers() {
         let mut s = AddressState::default();
-        s.edit(); enter(&mut s, 1); enter(&mut s, 8);
         s.edit();
-        s.stage(2, IntentKind::Edit); s.complete(2); s.publish(2, true);
+        enter(&mut s, 1);
+        enter(&mut s, 8);
+        s.edit();
+        s.stage(2, IntentKind::Edit);
+        s.complete(2);
+        s.publish(2, true);
         assert!(!s.take_deferred());
         assert_eq!(enter(&mut s, 4).modifiers, 4);
-        s.edit(); enter(&mut s, 1); enter(&mut s, 8);
-        s.stage(3, IntentKind::Edit); s.complete(3); s.publish(3, true);
+        s.edit();
+        enter(&mut s, 1);
+        enter(&mut s, 8);
+        s.stage(3, IntentKind::Edit);
+        s.complete(3);
+        s.publish(3, true);
         assert!(s.take_deferred());
         assert_eq!(enter(&mut s, 0).modifiers, 1);
     }
@@ -244,11 +320,15 @@ mod tests {
     #[test]
     fn stale_completion_cannot_release_a_newer_request_even_after_session_reset() {
         let mut s = AddressState::default();
-        s.edit(); s.stage(10, IntentKind::Edit);
-        s.stage(11, IntentKind::Edit); s.complete(10);
+        s.edit();
+        s.stage(10, IntentKind::Edit);
+        s.stage(11, IntentKind::Edit);
+        s.complete(10);
         assert_eq!(s.state().staged_kind, IntentKind::Edit as u32);
         s = AddressState::default();
-        s.edit(); s.stage(12, IntentKind::Edit); s.complete(11);
+        s.edit();
+        s.stage(12, IntentKind::Edit);
+        s.complete(11);
         assert_eq!(s.state().staged_kind, IntentKind::Edit as u32);
         s.complete(12);
         assert_eq!(s.state().staged_kind, 0);
@@ -258,7 +338,8 @@ mod tests {
     fn cancellation_and_session_reset_revoke_retry_and_submit() {
         for kind in [IntentKind::Dismiss, IntentKind::Blur] {
             let mut s = AddressState::default();
-            s.edit(); enter(&mut s, 15);
+            s.edit();
+            enter(&mut s, 15);
             s.action(kind, observed(), 0);
             assert_eq!(s.state().needs_dispatch, 0);
             s.publish(1, true);
@@ -266,7 +347,8 @@ mod tests {
             assert_eq!(enter(&mut s, 0).modifiers, 0);
         }
         let mut s = AddressState::default();
-        s.edit(); enter(&mut s, 15);
+        s.edit();
+        enter(&mut s, 15);
         s = AddressState::default();
         s.publish(0, true);
         assert!(!s.take_deferred());
@@ -278,15 +360,30 @@ mod tests {
     fn ime_and_programmatic_echoes_do_not_capture_submit() {
         let mut s = AddressState::default();
         s.publish(0, true);
-        for c in [Conditions { composing: true, ..observed() }, Conditions { applying: true, ..observed() }] {
-            assert_eq!(s.action(IntentKind::Activate, c, 15).decision, Decision::Drop as u32);
+        for c in [
+            Conditions {
+                composing: true,
+                ..observed()
+            },
+            Conditions {
+                applying: true,
+                ..observed()
+            },
+        ] {
+            assert_eq!(
+                s.action(IntentKind::Activate, c, 15).decision,
+                Decision::Drop as u32
+            );
         }
         assert_eq!(enter(&mut s, 0).modifiers, 0);
     }
 
     #[test]
     fn exhausted_edit_identity_is_refused_without_losing_pending_state() {
-        let mut s = AddressState { edit_id: MAX_EDIT_ID, ..Default::default() };
+        let mut s = AddressState {
+            edit_id: MAX_EDIT_ID,
+            ..Default::default()
+        };
         enter(&mut s, 8);
         assert!(!s.edit());
         assert_eq!(s.state().edit_id, MAX_EDIT_ID);

@@ -14,7 +14,7 @@ function fixture() {
     UrlbarResult:class {constructor(data){Object.assign(this,data);}},
   });
   vm.runInContext(readFileSync(new URL('../upstream/firefox/browser/components/urlbar/content/UrlbarResultActions.mjs',import.meta.url),'utf8')
-    .replace(/^import .*;\r?$/gm,'').replace('export class UrlbarResultActions','this.Actions = class UrlbarResultActions'),context);
+    .replace(/^import\b[^;]*;\r?$/gm,'').replace('export class UrlbarResultActions','this.Actions = class UrlbarResultActions'),context);
   const input={handlesOpenInCommands:true,document:{l10n:{formatMessages:async specs=>specs.map(({id})=>({value:'Localized '+id,attributes:[{name:'accesskey',value:'L'}]}))}},
     window:{getHelpLinkURL:topic=>'https://help.test/'+topic},
     view:{updateMenuButtonKeyboardAccessibility(){calls.push('accessibility');}},
@@ -97,7 +97,7 @@ test('semantic telemetry preserves command identity and original DOM action butt
   class MouseEvent {constructor(){this.type='click';this.target=null;}}
   const context=vm.createContext({MouseEvent,UrlbarShared:{isInstance:(event,type)=>event instanceof type}});
   vm.runInContext(readFileSync(new URL('../upstream/firefox/browser/components/urlbar/content/UrlbarTelemetryUtils.mjs',import.meta.url),'utf8')
-    .replace(/^import .*;\r?$/gm,'').replace('export class UrlbarTelemetryUtils','this.Telemetry = class UrlbarTelemetryUtils'),context);
+    .replace(/^import\b[^;]*;\r?$/gm,'').replace('export class UrlbarTelemetryUtils','this.Telemetry = class UrlbarTelemetryUtils'),context);
   assert.equal(context.Telemetry.actionFromEvent(new MouseEvent(),{resultAction:{command:'custom'}}),'custom');
   assert.equal(context.Telemetry.actionFromEvent(new MouseEvent(),{resultAction:{command:'dismiss_autofill'}}),'dismiss');
   assert.equal(context.Telemetry.actionFromEvent(new MouseEvent(),{resultAction:{command:'help'}}),'click');

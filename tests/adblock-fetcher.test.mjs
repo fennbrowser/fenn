@@ -4,7 +4,7 @@ import {readFile} from "node:fs/promises";
 import {PRODUCTION_UPDATE_URL} from "../upstream/firefox/browser/components/fennadblock/FennAdblockUpdates.sys.mjs";
 // Use the actual transport implementation with only its Firefox adapters replaced.
 let source=await readFile(new URL("../upstream/firefox/browser/components/fennadblock/FennAdblockFetcher.sys.mjs",import.meta.url),"utf8");
-source=source.replace(/^import .*;$/gm,"");
+source=source.replace(/^import\b[^;]*;$/gm,"");
 const {FennAdblockFetcher}=await import("data:text/javascript;base64,"+Buffer.from(`const PRODUCTION_UPDATE_URL=${JSON.stringify(PRODUCTION_UPDATE_URL)};\n`+source).toString("base64"));
 function setup(response,request={id:1,path:"metadata/timestamp.json",limit:65536}) {
   const calls=[],writes=[];

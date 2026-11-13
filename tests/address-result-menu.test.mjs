@@ -66,7 +66,7 @@ import {readFileSync} from 'node:fs';
 import vm from 'node:vm';
 const context=vm.createContext({console});
 vm.runInContext(readFileSync(new URL('../upstream/firefox/browser/base/content/WinUIAddressSession.sys.mjs',import.meta.url),'utf8')
-  .replace(/^import .*;$/m,'').replace('export class WinUIAddressSession','this.Session = class WinUIAddressSession'),context);
+  .replace(/^import\b[^;]*;$/m,'').replace('export class WinUIAddressSession','this.Session = class WinUIAddressSession'),context);
 test('provider command refresh updates the original result and revokes its menu',()=>{
   const session=Object.create(context.Session.prototype), result={id:7};let closed=0;
   session.active={context:{results:[result]}};session.resultMenuAdapter={close:()=>closed++};

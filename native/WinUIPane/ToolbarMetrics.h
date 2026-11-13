@@ -8,4 +8,4 @@ namespace ToolbarMetrics {
 constexpr double kButton = 32;
 constexpr double kIcon = 14;
 constexpr double kGap = 4;
-}
+}  // namespace ToolbarMetrics

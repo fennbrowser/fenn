@@ -3,7 +3,7 @@ import {readFile} from "node:fs/promises";
 import test from "node:test";
 
 let source = await readFile(new URL("../upstream/firefox/browser/components/urlbar/content/UrlbarChildTelemetry.mjs", import.meta.url), "utf8");
-source = source.replace(/^import .*;$/gm, "const UrlbarTelemetryUtils = new Proxy({}, {get: (_, key) => globalThis.fixtureTelemetryUtils[key]});");
+source = source.replace(/^import\b[^;]*;$/gm, "const UrlbarTelemetryUtils = new Proxy({}, {get: (_, key) => globalThis.fixtureTelemetryUtils[key]});");
 const {UrlbarChildTelemetry} = await import("data:text/javascript;base64," + Buffer.from(source).toString("base64"));
 
 function setup() {

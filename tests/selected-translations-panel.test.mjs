@@ -3,7 +3,7 @@ import test from 'node:test';
 import vm from 'node:vm';
 import {readFileSync} from 'node:fs';
 const controller=readFileSync(new URL('../upstream/firefox/browser/components/translations/content/selectTranslationsPanel.js',import.meta.url),'utf8');
-const adapter=readFileSync(new URL('../upstream/firefox/browser/base/content/WinUISelectedTranslationsPanel.sys.mjs',import.meta.url),'utf8').replace(/^import .*;$/gm,'').replace('export class WinUISelectedTranslationsPanel','this.Panel=class WinUISelectedTranslationsPanel');
+const adapter=readFileSync(new URL('../upstream/firefox/browser/base/content/WinUISelectedTranslationsPanel.sys.mjs',import.meta.url),'utf8').replace(/^import\b[^;]*;$/gm,'').replace('export class WinUISelectedTranslationsPanel','this.Panel=class WinUISelectedTranslationsPanel');
 const settle=()=>new Promise(r=>setTimeout(r,0));
 function fixture(){
  const calls=[];let failure=false,restricted=false,translatedPage=false,translate=(text,pair)=>Promise.resolve(text.toUpperCase()+':'+pair.sourceLanguage+'-'+pair.targetLanguage),languageReply;

@@ -221,8 +221,8 @@ fn missing_state_and_clock_rollback_fail_closed() {
     }
     let f = Fixture::new();
     f.run("valid").unwrap();
-    let tx = state::Transaction::begin(&f.record(), &fs::read(f.path("anchor.json")).unwrap())
-        .unwrap();
+    let tx =
+        state::Transaction::begin(&f.record(), &fs::read(f.path("anchor.json")).unwrap()).unwrap();
     fs::write(
         tx.work.path().join("latest_known_time.json"),
         b"\"2099-01-01T00:00:00Z\"",
@@ -247,8 +247,7 @@ fn bounds_and_single_writer_reject() {
     f.rejects("huge-descriptor");
     let f = Fixture::new();
     let _tx =
-        state::Transaction::begin(&f.record(), &fs::read(f.path("anchor.json")).unwrap())
-            .unwrap();
+        state::Transaction::begin(&f.record(), &fs::read(f.path("anchor.json")).unwrap()).unwrap();
     f.rejects("busy");
 }
 #[test]

@@ -73,7 +73,8 @@ struct NativeTabStrip {
         if (!core || Drag().phase != DragPhase::Dragging) return 0;
         auto meta = presentation.find(Drag().tab);
         if (meta == presentation.end() || !meta->second.groupSource) return 0;
-        auto slot = std::find_if(groupLayout.begin(), groupLayout.end(), [&](auto value) { return value.tab == Drag().tab; });
+        auto slot =
+            std::find_if(groupLayout.begin(), groupLayout.end(), [&](auto value) { return value.tab == Drag().tab; });
         if (slot == groupLayout.end() || !slot->group) return 0;
         auto run = inlineGroups.runs.find(slot->group);
         return run == inlineGroups.runs.end() || run->second.collapsed ? 0 : slot->group;
@@ -83,7 +84,8 @@ struct NativeTabStrip {
     // The open gap's width and destination group when it lies past that
     // group's last visible member; {0, 0} otherwise.
     std::pair<uint32_t, float> JoinTail() {
-        if (!joinGroup || !core || Drag().phase != DragPhase::Dragging || Drag().original >= drag.originalWidth.size()) return {};
+        if (!joinGroup || !core || Drag().phase != DragPhase::Dragging || Drag().original >= drag.originalWidth.size())
+            return {};
         auto run = inlineGroups.runs.find(joinGroup);
         if (run == inlineGroups.runs.end() || run->second.collapsed) return {};
         uint32_t last{};
@@ -121,30 +123,34 @@ struct NativeTabStrip {
     bool LayoutWork(uint32_t consumer, ShellLayoutInputs const& inputs, bool force = false) {
         bool changed = true;
         // Missing/refused core keeps the conservative presentation path.
-        if (core && shell_core_layout_observe(core, consumer, &inputs, force, &changed) != SHELL_STATUS_OK)
-            return true;
+        if (core && shell_core_layout_observe(core, consumer, &inputs, force, &changed) != SHELL_STATUS_OK) return true;
         return changed;
     }
     bool GeometryChanged(uint32_t consumer, bool force = false) {
         ShellLayoutInputs inputs{};
         const auto offset = root.ActualOffset(), viewOffset = view.ActualOffset();
-        inputs.values[0] = root.ActualWidth(); inputs.values[1] = root.ActualHeight();
-        inputs.values[2] = offset.x; inputs.values[3] = offset.y;
-        inputs.values[4] = viewOffset.x; inputs.values[5] = viewOffset.y;
-        inputs.values[6] = view.ActualWidth(); inputs.values[7] = view.ActualHeight();
+        inputs.values[0] = root.ActualWidth();
+        inputs.values[1] = root.ActualHeight();
+        inputs.values[2] = offset.x;
+        inputs.values[3] = offset.y;
+        inputs.values[4] = viewOffset.x;
+        inputs.values[5] = viewOffset.y;
+        inputs.values[6] = view.ActualWidth();
+        inputs.values[7] = view.ActualHeight();
         auto scroller = inlineGroups.layoutScroller.get();
         if (!scroller || !scroller.IsLoaded()) scroller = GroupScroller(view);
         if (scroller) {
             const auto scrollOffset = scroller.ActualOffset();
-            inputs.values[8] = scrollOffset.x; inputs.values[9] = scrollOffset.y;
+            inputs.values[8] = scrollOffset.x;
+            inputs.values[9] = scrollOffset.y;
             inputs.values[10] = scroller.ExtentWidth();
             inputs.values[11] = scroller.ViewportWidth();
             inputs.values[12] = scroller.HorizontalOffset();
             inputs.values[15] = int(scroller.ComputedHorizontalScrollBarVisibility());
         }
         if (auto xaml = root.XamlRoot()) inputs.values[13] = xaml.RasterizationScale();
-        inputs.values[14] = int(root.Visibility()) + 2 * int(root.IsLoaded()) +
-            4 * int(view.FlowDirection()) + 8 * int(scroller && scroller.IsLoaded());
+        inputs.values[14] = int(root.Visibility()) + 2 * int(root.IsLoaded()) + 4 * int(view.FlowDirection()) +
+                            8 * int(scroller && scroller.IsLoaded());
         // Composition movement retains the existing bounded follow loop.
         return LayoutWork(consumer, inputs, force || ambient.observing);
     }
@@ -248,13 +254,18 @@ struct NativeTabStrip {
         // Reconcile each group independently: one group's reveal must not slow
         // feedback elsewhere, or keep another group's finished fade installed.
         for (auto it = fadedTabs.begin(); it != fadedTabs.end();) {
-            if (eligible.count(it->first)) { ++it; continue; }
+            if (eligible.count(it->first)) {
+                ++it;
+                continue;
+            }
             it->second.BackgroundTransition(nullptr);
             it = fadedTabs.erase(it);
         }
         if (eligible.empty()) return;
         for (auto const& [id, row] : rows) {
-            if (!eligible.count(id) || fadedTabs.count(id) || !row.IsLoaded() || !Media::VisualTreeHelper::GetChildrenCount(row)) continue;
+            if (!eligible.count(id) || fadedTabs.count(id) || !row.IsLoaded() ||
+                !Media::VisualTreeHelper::GetChildrenCount(row))
+                continue;
             auto root = Media::VisualTreeHelper::GetChild(row, 0).try_as<FrameworkElement>();
             auto container = root ? root.FindName(L"TabContainer").try_as<Controls::Grid>() : Controls::Grid{nullptr};
             if (!container) continue;
@@ -267,10 +278,18 @@ struct NativeTabStrip {
     void DetachGlow() {
         for (auto* fields : {&ambient.groups, &ambient.groupSpill, &ambient.groupHalo})
             for (auto& [id, field] : *fields)
-                if (field.animated) { ambient.motion.Attach(field.Root(), false); field.animated = false; }
+                if (field.animated) {
+                    ambient.motion.Attach(field.Root(), false);
+                    field.animated = false;
+                }
         for (auto& [id, light] : groupSurface.lights)
-            if (light.animated) { ambient.motion.Attach(light.visual, false); light.animated = false; }
-        ambient.EndReveals(); ambient.EndRecolors(); groupSurface.EndReveals();
+            if (light.animated) {
+                ambient.motion.Attach(light.visual, false);
+                light.animated = false;
+            }
+        ambient.EndReveals();
+        ambient.EndRecolors();
+        groupSurface.EndReveals();
         pendingRecolors.clear();
         FadeTabBackgrounds(false);
     }
@@ -282,16 +301,25 @@ struct NativeTabStrip {
         if (motion.following == on) return;
         motion.following = on;
         for (auto& [id, field] : ambient.groupHalo)
-            if (field.animated) { motion.Follow(field.rimShape, on); if (!on) field.bounds = {}; }
+            if (field.animated) {
+                motion.Follow(field.rimShape, on);
+                if (!on) field.bounds = {};
+            }
         for (auto& [id, light] : groupSurface.lights)
-            if (light.animated) { motion.Follow(light.visual, on); if (!on) light.visual.Size({}); }
+            if (light.animated) {
+                motion.Follow(light.visual, on);
+                if (!on) light.visual.Size({});
+            }
     }
-    void AnimateGlow(std::set<uint32_t> const& groups, std::vector<uint32_t> lit, std::vector<uint32_t> const& haloLitNow,
-                     std::map<uint32_t, Windows::Foundation::Rect> const& bounds, bool moving, Controls::ScrollViewer const& scroller) {
+    void AnimateGlow(std::set<uint32_t> const& groups, std::vector<uint32_t> lit,
+                     std::vector<uint32_t> const& haloLitNow,
+                     std::map<uint32_t, Windows::Foundation::Rect> const& bounds, bool moving,
+                     Controls::ScrollViewer const& scroller) {
         auto& motion = ambient.motion;
         auto outlineOf = [&](uint32_t id) {
             auto light = groupSurface.lights.find(id);
-            return light == groupSurface.lights.end() ? Microsoft::UI::Composition::ShapeVisual{nullptr} : light->second.visual;
+            return light == groupSurface.lights.end() ? Microsoft::UI::Composition::ShapeVisual{nullptr}
+                                                      : light->second.visual;
         };
         auto visualOf = [](std::map<uint32_t, TabAmbient::Field> const& fields, uint32_t id) {
             auto field = fields.find(id);
@@ -299,13 +327,15 @@ struct NativeTabStrip {
         };
         auto haloOf = [&](uint32_t id) {
             auto visual = visualOf(ambient.groupHalo, id);
-            return visual ? visual.as<Microsoft::UI::Composition::ShapeVisual>() : Microsoft::UI::Composition::ShapeVisual{nullptr};
+            return visual ? visual.as<Microsoft::UI::Composition::ShapeVisual>()
+                          : Microsoft::UI::Composition::ShapeVisual{nullptr};
         };
         // The blurred light (wash, spill, halo) is revealed over the group
         // plus the halo and blur's reach; the front starts at the primary pool.
         auto revealArea = [](Windows::Foundation::Rect rect) {
             const float margin = TabAmbient::HaloReach + TabAmbient::RevealMargin;
-            return Windows::Foundation::Rect{rect.X - margin, rect.Y - margin, rect.Width + 2 * margin, rect.Height + 2 * margin};
+            return Windows::Foundation::Rect{rect.X - margin, rect.Y - margin, rect.Width + 2 * margin,
+                                             rect.Height + 2 * margin};
         };
         for (auto const& [id, reveal] : std::map<uint32_t, TabAmbient::Reveal>(ambient.reveals))
             if (auto rect = bounds.find(id); rect != bounds.end()) ambient.MoveReveal(id, revealArea(rect->second));
@@ -314,36 +344,45 @@ struct NativeTabStrip {
         for (size_t index = 0; index < lit.size(); ++index) {
             const auto id = lit[index];
             const auto rect = bounds.at(id);
-            std::vector<Microsoft::UI::Composition::CompositionRadialGradientBrush> fronts{
-                ambient.BeginReveal(id, revealArea(rect), {rect.X + TabGlowIgnition::OriginX * rect.Width,
-                                                           rect.Y + TabGlowIgnition::OriginY * rect.Height})};
+            std::vector<Microsoft::UI::Composition::CompositionRadialGradientBrush> fronts{ambient.BeginReveal(
+                id, revealArea(rect),
+                {rect.X + TabGlowIgnition::OriginX * rect.Width, rect.Y + TabGlowIgnition::OriginY * rect.Height})};
             if (auto outline = groupSurface.BeginReveal(id)) fronts.push_back(outline);
             motion.Reveal(id, fronts, float(std::min(index, TabGlowIgnition::StaggerCap)) * TabGlowIgnition::Stagger,
-                [this, id, alive = std::weak_ptr<int>(lifetime)] {
-                    if (alive.expired()) return;
-                    ambient.EndReveal(id); groupSurface.EndReveal(id);
-                    FadeTabBackgrounds(!ambient.reveals.empty());
-                });
+                          [this, id, alive = std::weak_ptr<int>(lifetime)] {
+                              if (alive.expired()) return;
+                              ambient.EndReveal(id);
+                              groupSurface.EndReveal(id);
+                              FadeTabBackgrounds(!ambient.reveals.empty());
+                          });
         }
         for (auto id : haloLitNow)
             if (std::find(lit.begin(), lit.end(), id) == lit.end()) motion.IgniteHalo(id, haloOf(id));
         // A recolor's fronts grow like a light-up's; the old color gives way.
         for (auto id : std::exchange(pendingRecolors, {})) {
             auto rect = bounds.find(id);
-            if (rect == bounds.end() || !ambient.recolors.count(id)) { ambient.EndRecolor(id); continue; }
+            if (rect == bounds.end() || !ambient.recolors.count(id)) {
+                ambient.EndRecolor(id);
+                continue;
+            }
             const auto area = revealArea(rect->second);
-            const Windows::Foundation::Numerics::float2 origin{rect->second.X + TabGlowIgnition::OriginX * rect->second.Width,
-                                                               rect->second.Y + TabGlowIgnition::OriginY * rect->second.Height};
-            const float radius = TabGlowIgnition::Reach({origin.x - area.X, origin.y - area.Y}, {area.Width, area.Height});
+            const Windows::Foundation::Numerics::float2 origin{
+                rect->second.X + TabGlowIgnition::OriginX * rect->second.Width,
+                rect->second.Y + TabGlowIgnition::OriginY * rect->second.Height};
+            const float radius =
+                TabGlowIgnition::Reach({origin.x - area.X, origin.y - area.Y}, {area.Width, area.Height});
             auto fronts = ambient.BeginRecolor(id, origin, radius);
-            for (auto const& outline : groupSurface.BeginRecolor(id, ambient.recolors.at(id).color)) fronts.push_back(outline);
+            for (auto const& outline : groupSurface.BeginRecolor(id, ambient.recolors.at(id).color))
+                fronts.push_back(outline);
             motion.Reveal(id, fronts, 0, [this, id, alive = std::weak_ptr<int>(lifetime)] {
                 if (alive.expired()) return;
-                ambient.EndRecolor(id); groupSurface.EndReveal(id);
+                ambient.EndRecolor(id);
+                groupSurface.EndReveal(id);
                 // Reattach the stop cross-fades to the restored brushes.
                 for (auto* fields : {&ambient.groups, &ambient.groupSpill})
                     if (auto field = fields->find(id); field != fields->end()) {
-                        ambient.motion.Attach(field->second.Root(), true); field->second.animated = true;
+                        ambient.motion.Attach(field->second.Root(), true);
+                        field->second.animated = true;
                     }
             });
         }
@@ -354,11 +393,13 @@ struct NativeTabStrip {
             for (auto* fields : {&ambient.groups, &ambient.groupSpill, &ambient.groupHalo}) {
                 auto field = fields->find(id);
                 if (field == fields->end() || field->second.animated) continue;
-                motion.Attach(field->second.Root(), true); field->second.animated = true;
+                motion.Attach(field->second.Root(), true);
+                field->second.animated = true;
             }
             auto light = groupSurface.lights.find(id);
             if (light != groupSurface.lights.end() && !light->second.animated) {
-                motion.Attach(light->second.visual, true); light->second.animated = true;
+                motion.Attach(light->second.visual, true);
+                light->second.animated = true;
             }
         }
         // Settled extents are in scroll-content space, so scrolling alone
@@ -376,7 +417,9 @@ struct NativeTabStrip {
             }
         std::vector<ShellGlowRecatch> recatch(extents.size());
         size_t count = 0;
-        if (shell_core_glow_settle(core, moving, extents.data(), extents.size(), recatch.data(), &count) != SHELL_STATUS_OK) return;
+        if (shell_core_glow_settle(core, moving, extents.data(), extents.size(), recatch.data(), &count) !=
+            SHELL_STATUS_OK)
+            return;
         for (size_t index = 0; index < count; ++index)
             if (!motion.Active(recatch[index].group))
                 motion.Recatch(outlineOf(recatch[index].group), recatch[index].left, recatch[index].right);
@@ -399,9 +442,11 @@ struct NativeTabStrip {
         // Restore a live ThemeResource through an attached proxy, rather than
         // keeping a resolved brush from a previous light/dark/contrast theme.
         Data::Binding binding;
-        binding.Source(separatorTheme); binding.Path(PropertyPath(L"Background"));
+        binding.Source(separatorTheme);
+        binding.Path(PropertyPath(L"Background"));
         tint.separator.SetBinding(Controls::Border::BackgroundProperty(), binding);
-        tint.tinted = false; tint.color = 0;
+        tint.tinted = false;
+        tint.color = 0;
     }
     void RefreshSeparators() {
 #ifdef WINUI_PANE_TESTING
@@ -431,7 +476,9 @@ struct NativeTabStrip {
             live.insert(id);
             auto& tint = separatorTints[id];
             if (tint.separator != separator) {
-                RestoreSeparator(tint); tint = SeparatorTint{}; tint.separator = separator;
+                RestoreSeparator(tint);
+                tint = SeparatorTint{};
+                tint.separator = separator;
             }
             // TabView's visual states drive only the divider's Opacity, so its
             // Visibility is free for this presentation-only decision.
@@ -441,20 +488,31 @@ struct NativeTabStrip {
                 tint.hidden = hide;
             }
             auto meta = presentation.find(id);
-            const uint32_t color = enabled && id != activeTabId && meta != presentation.end() &&
-                !meta->second.containerName.empty() ? meta->second.containerColor : 0;
-            if (!color) { RestoreSeparator(tint); continue; }
+            const uint32_t color =
+                enabled && id != activeTabId && meta != presentation.end() && !meta->second.containerName.empty()
+                    ? meta->second.containerColor
+                    : 0;
+            if (!color) {
+                RestoreSeparator(tint);
+                continue;
+            }
             if (tint.tinted && tint.color == color) continue;
             const Windows::UI::Color value{170, uint8_t(color >> 16), uint8_t(color >> 8), uint8_t(color)};
-            if (!tint.brush) tint.brush = Media::SolidColorBrush(value);
-            else tint.brush.Color(value);
+            if (!tint.brush)
+                tint.brush = Media::SolidColorBrush(value);
+            else
+                tint.brush.Color(value);
             if (!tint.tinted) separator.Background(tint.brush);
-            tint.tinted = true; tint.color = color;
+            tint.tinted = true;
+            tint.color = color;
             // TabView still owns separator opacity/visibility, including hover,
             // selected neighbors and RTL. Never create a replacement divider.
         }
         for (auto it = separatorTints.begin(); it != separatorTints.end();) {
-            if (live.count(it->first)) { ++it; continue; }
+            if (live.count(it->first)) {
+                ++it;
+                continue;
+            }
             RestoreSeparator(it->second);
             if (it->second.hidden) it->second.separator.Visibility(Visibility::Visible);
             it = separatorTints.erase(it);
@@ -476,7 +534,10 @@ struct NativeTabStrip {
     void ApplyAddSpacing() {
         auto add = FindAddButton(view);
         if (!add) return;
-        if (add != addSpacingButton) { addSpacingButton = add; addBaseMargin = add.Margin(); }
+        if (add != addSpacingButton) {
+            addSpacingButton = add;
+            addBaseMargin = add.Margin();
+        }
         auto margin = addBaseMargin;
         if (groupReach >= LargeGroupReach) margin.Left += groupReach;
         if (add.Margin() != margin) add.Margin(margin);
@@ -498,7 +559,8 @@ struct NativeTabStrip {
         // With diagnostics, report UI-thread refreshes long enough to delay
         // the reveal masks' geometry while a reveal runs.
         struct RefreshReport {
-            TabAmbient& ambient; double start;
+            TabAmbient& ambient;
+            double start;
             ~RefreshReport() {
                 if (!start || ambient.reveals.empty()) return;
                 const double took = TabGlowIgnition::Now() - start;
@@ -507,7 +569,8 @@ struct NativeTabStrip {
         } reportRefresh{ambient, TabGlowIgnition::Diagnostics() ? TabGlowIgnition::Now() : 0};
         if (!root.IsLoaded() || root.Visibility() != Visibility::Visible) {
             ambient.Motion(false);
-            ambient.bottom.IsVisible(false); ambient.top.IsVisible(false);
+            ambient.bottom.IsVisible(false);
+            ambient.top.IsVisible(false);
             if (ambient.rims) ambient.rims.IsVisible(false);
             if (ambient.spill) ambient.spill.IsVisible(false);
             return;
@@ -526,38 +589,51 @@ struct NativeTabStrip {
             if (ambientScroller) ambientScroller.ViewChanged(ambientScrollToken);
             ambientScroller = scroller;
             ambientContent = nullptr;
-            if (scroller) ambientScrollToken = scroller.ViewChanged([this, alive = std::weak_ptr<int>(lifetime)](auto&&, auto&&) {
-                if (!alive.expired()) ambient.Update();
-            });
+            if (scroller)
+                ambientScrollToken = scroller.ViewChanged([this, alive = std::weak_ptr<int>(lifetime)](auto&&, auto&&) {
+                    if (!alive.expired()) ambient.Update();
+                });
         }
         // Sample the clock once per rendered frame. Layout-triggered refreshes
         // in between see the same geometry, so the outline borders this pass
         // sizes cannot keep layout from ever settling (a layout cycle).
         const bool motionFrame = joinFrame != ambient.frames;
-        if (motionFrame) { joinFrame = ambient.frames; joinClock = SteadyMs(); }
+        if (motionFrame) {
+            joinFrame = ambient.frames;
+            joinClock = SteadyMs();
+        }
         UpdateCloseSequence();
         // Updating text width during every LayoutUpdated can feed its measured
         // size back into TabView's width/scrollbar decision indefinitely.
-        if (motionFrame) for (auto& held : settling) if (held.content) {
-            ShellSettleSample sample{};
-            if (shell_core_settle_sample(core, held.kind, held.id, joinClock, &sample) == SHELL_STATUS_OK)
-                held.content->Update(held.element.ActualWidth() * sample.sx);
-        }
+        if (motionFrame)
+            for (auto& held : settling)
+                if (held.content) {
+                    ShellSettleSample sample{};
+                    if (shell_core_settle_sample(core, held.kind, held.id, joinClock, &sample) == SHELL_STATUS_OK)
+                        held.content->Update(held.element.ActualWidth() * sample.sx);
+                }
         if (!settling.empty()) {
             bool curve = false;
             if (!core || shell_core_settle_advance(core, joinClock, false, &curve) != SHELL_STATUS_OK) curve = false;
             // Finished elements leave once XAML reports them at rest.
-            if (!curve) settling.erase(std::remove_if(settling.begin(), settling.end(), [](auto const& held) {
-                if (!held.rested) return false;
-                // The sampled clock can finish before Composition has applied
-                // its final scale. Keep reciprocal content scaling until the
-                // parent reports rest too, avoiding a stretched cleanup frame.
-                if (held.content) {
-                    auto visual = winrt::Microsoft::UI::Xaml::Hosting::ElementCompositionPreview::GetElementVisual(held.element);
-                    if (std::abs(visual.Scale().x - 1.f) > .001f) return false;
-                }
-                return true;
-            }), settling.end());
+            if (!curve)
+                settling.erase(
+                    std::remove_if(
+                        settling.begin(), settling.end(),
+                        [](auto const& held) {
+                            if (!held.rested) return false;
+                            // The sampled clock can finish before Composition has applied
+                            // its final scale. Keep reciprocal content scaling until the
+                            // parent reports rest too, avoiding a stretched cleanup frame.
+                            if (held.content) {
+                                auto visual =
+                                    winrt::Microsoft::UI::Xaml::Hosting::ElementCompositionPreview::GetElementVisual(
+                                        held.element);
+                                if (std::abs(visual.Scale().x - 1.f) > .001f) return false;
+                            }
+                            return true;
+                        }),
+                    settling.end());
             // Interrupted holds must release their compositor state as well as
             // their bookkeeping, or a tab can remain visually compressed.
             if (joinClock >= settlingUntil) ClearSettling();
@@ -577,18 +653,24 @@ struct NativeTabStrip {
                 // curve has ended.
                 auto parent = Media::VisualTreeHelper::GetParent(item).try_as<UIElement>();
                 ShellSettleSample sample{};
-                if (!parent || shell_core_settle_sample(core, held.kind, held.id, joinClock, &sample) != SHELL_STATUS_OK) break;
+                if (!parent ||
+                    shell_core_settle_sample(core, held.kind, held.id, joinClock, &sample) != SHELL_STATUS_OK)
+                    break;
                 const auto offset = item.ActualOffset();
                 auto origin = parent.TransformToVisual(ambient.layer).TransformPoint({offset.x, offset.y});
-                if (auto shift = item.RenderTransform().try_as<Media::TranslateTransform>()) origin.X += float(shift.X());
-                const Windows::Foundation::Rect slot{origin.X + sample.dx, origin.Y, float(item.ActualWidth()) * sample.sx, float(item.ActualHeight())};
+                if (auto shift = item.RenderTransform().try_as<Media::TranslateTransform>())
+                    origin.X += float(shift.X());
+                const Windows::Foundation::Rect slot{origin.X + sample.dx, origin.Y,
+                                                     float(item.ActualWidth()) * sample.sx, float(item.ActualHeight())};
                 if (!sample.active) {
-                    const auto reported = item.TransformToVisual(ambient.layer).TransformBounds({0, 0, slot.Width, slot.Height});
+                    const auto reported =
+                        item.TransformToVisual(ambient.layer).TransformBounds({0, 0, slot.Width, slot.Height});
                     held.rested = std::abs(reported.X - slot.X) < .5f && std::abs(reported.Width - slot.Width) < .5f;
                 }
                 return slot;
             }
-            return item.TransformToVisual(ambient.layer).TransformBounds({0, 0, float(item.ActualWidth()), float(item.ActualHeight())});
+            return item.TransformToVisual(ambient.layer)
+                .TransformBounds({0, 0, float(item.ActualWidth()), float(item.ActualHeight())});
         };
         auto viewport = scroller ? boundsOf(scroller) : boundsOf(view);
         // The stock scroller template places its arrow columns beside the
@@ -603,14 +685,17 @@ struct NativeTabStrip {
                 const auto content = boundsOf(ambientContent);
                 const auto left = std::max(viewport.X, content.X);
                 const auto right = std::min(viewport.X + viewport.Width, content.X + content.Width);
-                viewport.X = left; viewport.Width = std::max(0.f, right - left);
+                viewport.X = left;
+                viewport.Width = std::max(0.f, right - left);
             }
         }
         // Follow realized XAML geometry, including finite drag/collapse motion.
         // Group identity and membership still come from the validated layout.
         std::map<uint32_t, Windows::Foundation::Rect> surfaceBounds;
         auto includeSurface = [&](uint32_t id, FrameworkElement const& element) {
-            if (!element || !element.IsLoaded() || element.Visibility() != Visibility::Visible || element.Opacity() == 0) return;
+            if (!element || !element.IsLoaded() || element.Visibility() != Visibility::Visible ||
+                element.Opacity() == 0)
+                return;
             auto rect = boundsOf(element);
             if (rect.Width <= 0 || rect.Height <= 0) return;
             auto [it, inserted] = surfaceBounds.emplace(id, rect);
@@ -618,8 +703,10 @@ struct NativeTabStrip {
                 auto& total = it->second;
                 const auto right = std::max(total.X + total.Width, rect.X + rect.Width);
                 const auto bottom = std::max(total.Y + total.Height, rect.Y + rect.Height);
-                total.X = std::min(total.X, rect.X); total.Y = std::min(total.Y, rect.Y);
-                total.Width = right - total.X; total.Height = bottom - total.Y;
+                total.X = std::min(total.X, rect.X);
+                total.Y = std::min(total.Y, rect.Y);
+                total.Width = right - total.X;
+                total.Height = bottom - total.Y;
             }
         };
         // A torn-off group is drawn only by its floating window. Its button
@@ -650,26 +737,36 @@ struct NativeTabStrip {
         {
             const auto [tailGroup, tailWidth] = JoinTail();
             ShellGroupSurfaceFrame frame{};
-            frame.frame_ms = joinClock; frame.wall_ms = SteadyMs();
-            frame.tail_group = tailGroup; frame.tail_width = tailWidth;
+            frame.frame_ms = joinClock;
+            frame.wall_ms = SteadyMs();
+            frame.tail_group = tailGroup;
+            frame.tail_width = tailWidth;
             frame.source_group = DraggedMemberGroup();
-            frame.drag_slot_x = dragSlot.X; frame.drag_slot_width = dragSlot.Width;
+            frame.drag_slot_x = dragSlot.X;
+            frame.drag_slot_width = dragSlot.Width;
             if (frame.source_group)
                 frame.pointer_x = view.TransformToVisual(ambient.layer).TransformPoint(lastDragPoint).X;
             frame.source_released = (core && Drag().detaching) || joinGroup;
-            frame.dragging = IsDragging(); frame.join_group = joinGroup;
+            frame.dragging = IsDragging();
+            frame.join_group = joinGroup;
             frame.animate = groupSlide.Enabled();
             frame.right_to_left = root.FlowDirection() == FlowDirection::RightToLeft;
-            frame.reach = groupReach; frame.separation = GroupSeparation;
+            frame.reach = groupReach;
+            frame.separation = GroupSeparation;
             std::vector<ShellGroupSurface> measured;
             measured.reserve(surfaceBounds.size());
-            for (auto const& [id, rect] : surfaceBounds) measured.push_back({id, rect.X, rect.Y, rect.Width, rect.Height});
+            for (auto const& [id, rect] : surfaceBounds)
+                measured.push_back({id, rect.X, rect.Y, rect.Width, rect.Height});
             surfaceMotion = {};
-            if (core && shell_core_group_surface_frame(core, &frame, groupLayout.data(), groupLayout.size(),
-                                                       measured.data(), measured.size(), &surfaceMotion) == SHELL_STATUS_OK)
-                for (auto const& value : measured) surfaceBounds[value.group] = {value.x, value.y, value.width, value.height};
+            if (core &&
+                shell_core_group_surface_frame(core, &frame, groupLayout.data(), groupLayout.size(), measured.data(),
+                                               measured.size(), &surfaceMotion) == SHELL_STATUS_OK)
+                for (auto const& value : measured)
+                    surfaceBounds[value.group] = {value.x, value.y, value.width, value.height};
         }
-        const bool followingMotion = surfaceMotion.following || settlingMotion || IsDragging() || GroupDrag().phase || !foreignGroupShift.entries.empty() || groupSlide.pending || groupSlide.storyboard || !rowAnimations.empty();
+        const bool followingMotion = surfaceMotion.following || settlingMotion || IsDragging() || GroupDrag().phase ||
+                                     !foreignGroupShift.entries.empty() || groupSlide.pending ||
+                                     groupSlide.storyboard || !rowAnimations.empty();
         // Before this pass places any light, so continuous motion never
         // starts a trailing animation.
         if (ambient.motion.Enabled()) FollowGlow(!followingMotion);
@@ -702,7 +799,10 @@ struct NativeTabStrip {
                 };
                 for (auto const& [id, row] : rows) extend(row);
                 for (auto const& [id, run] : inlineGroups.runs) extend(run.button);
-                if (contentRight < contentLeft) { contentLeft = viewport.X; contentRight = viewport.X + viewport.Width; }
+                if (contentRight < contentLeft) {
+                    contentLeft = viewport.X;
+                    contentRight = viewport.X + viewport.Width;
+                }
                 auto fade = [](float space) { return std::clamp(space, 1.f, 16.f); };
                 // A group's halo reaches past its outline by more than the gap
                 // before New Tab. Let it fall off softly under the button's
@@ -717,7 +817,8 @@ struct NativeTabStrip {
                     fadeLeft = fade(contentLeft - left);
                 }
             }
-            ambientViewport.X = left; ambientViewport.Width = std::max(0.f, right - left);
+            ambientViewport.X = left;
+            ambientViewport.Width = std::max(0.f, right - left);
         }
         // Outlines share the light's horizontal bounds, so the extension is
         // not sliced at a scroller sized exactly to the final tab.
@@ -732,8 +833,10 @@ struct NativeTabStrip {
         for (auto const& [id, row] : rows) {
             if (!row.IsLoaded() || row.Visibility() != Visibility::Visible || row.Opacity() == 0) continue;
             const auto bounds = boundsOf(row);
-            if (bounds.Width <= 0 || bounds.Height <= 0 || bounds.X + bounds.Width + TabLightContour::Flare <= viewport.X ||
-                bounds.X - TabLightContour::Flare >= viewport.X + viewport.Width) continue;
+            if (bounds.Width <= 0 || bounds.Height <= 0 ||
+                bounds.X + bounds.Width + TabLightContour::Flare <= viewport.X ||
+                bounds.X - TabLightContour::Flare >= viewport.X + viewport.Width)
+                continue;
             const auto radius = row.CornerRadius();
             faces.push_back({id, bounds, float(radius.TopLeft), float(radius.TopRight), id == activeTabId});
         }
@@ -747,18 +850,20 @@ struct NativeTabStrip {
             auto run = inlineGroups.runs.find(slot.group);
             if (run == inlineGroups.runs.end()) continue;
             auto button = run->second.button;
-            if (!button || !button.IsLoaded() || button.Visibility() != Visibility::Visible || button.Opacity() == 0) continue;
+            if (!button || !button.IsLoaded() || button.Visibility() != Visibility::Visible || button.Opacity() == 0)
+                continue;
             // Faces follow the ID-sorted row map; avoid scanning all tabs for
             // each group during layout or bounded drag updates.
             auto face = std::lower_bound(faces.begin(), faces.end(), slot.tab,
-                [](auto const& value, uint32_t id) { return value.id < id; });
+                                         [](auto const& value, uint32_t id) { return value.id < id; });
             if (face == faces.end() || face->id != slot.tab || face->selected) continue;
             const auto header = boundsOf(button);
             auto& bounds = face->bounds;
             const auto radius = button.CornerRadius();
             const auto margin = button.Margin();
             if (std::abs(header.X + header.Width + float(margin.Right) - bounds.X) <= 2.f) {
-                bounds.Width += bounds.X - header.X; bounds.X = header.X;
+                bounds.Width += bounds.X - header.X;
+                bounds.X = header.X;
                 face->leftRadius = float(radius.TopLeft);
             } else if (std::abs(bounds.X + bounds.Width + float(margin.Left) - header.X) <= 2.f) {
                 bounds.Width = header.X + header.Width - bounds.X;
@@ -786,7 +891,8 @@ struct NativeTabStrip {
                 if (!sample) continue;
                 if (auto run = inlineGroups.runs.find(group); run != inlineGroups.runs.end()) {
                     auto button = run->second.button;
-                    if (button && button.IsLoaded() && button.Visibility() == Visibility::Visible && button.Opacity() > 0) {
+                    if (button && button.IsLoaded() && button.Visibility() == Visibility::Visible &&
+                        button.Opacity() > 0) {
                         const auto header = boundsOf(button);
                         occupied.push_back({header.X, header.X + header.Width});
                     }
@@ -794,12 +900,18 @@ struct NativeTabStrip {
                 std::sort(occupied.begin(), occupied.end());
                 auto fill = [&](float from, float to) {
                     if (to - from < MinSlotGap) return;
-                    slots.push_back({slotId++, {from, sample->bounds.Y, to - from, sample->bounds.Height},
-                        sample->leftRadius, sample->rightRadius, false});
+                    slots.push_back({slotId++,
+                                     {from, sample->bounds.Y, to - from, sample->bounds.Height},
+                                     sample->leftRadius,
+                                     sample->rightRadius,
+                                     false});
                 };
                 // The reach past the outer members stays lit, as at rest.
                 float cursor = surface.X + groupReach;
-                for (auto [left, right] : occupied) { fill(cursor, left); cursor = std::max(cursor, right); }
+                for (auto [left, right] : occupied) {
+                    fill(cursor, left);
+                    cursor = std::max(cursor, right);
+                }
                 fill(cursor, surface.X + surface.Width - groupReach);
             }
             slotFaceWidth = 0;
@@ -815,14 +927,18 @@ struct NativeTabStrip {
         // Open upper-corner strokes keep container light off the central face.
         // Each tab retains its own color and the stock control's corner radii.
         for (auto const& [id, row] : rows) {
-            if (!containerGlow || !row.IsLoaded() || row.Visibility() != Visibility::Visible || row.Opacity() == 0) continue;
+            if (!containerGlow || !row.IsLoaded() || row.Visibility() != Visibility::Visible || row.Opacity() == 0)
+                continue;
             auto meta = presentation.find(id);
             if (meta == presentation.end() || meta->second.containerName.empty()) continue;
             auto bounds = boundsOf(row);
-            if (bounds.Width <= 0 || bounds.Height <= 0 || bounds.X + bounds.Width <= viewport.X || bounds.X >= viewport.X + viewport.Width) continue;
+            if (bounds.Width <= 0 || bounds.Height <= 0 || bounds.X + bounds.Width <= viewport.X ||
+                bounds.X >= viewport.X + viewport.Width)
+                continue;
             containers.insert(id);
             const auto radius = row.CornerRadius();
-            ambient.Corners(ambient.containers[id], meta->second.containerColor, bounds, float(radius.TopLeft), float(radius.TopRight));
+            ambient.Corners(ambient.containers[id], meta->second.containerColor, bounds, float(radius.TopLeft),
+                            float(radius.TopRight));
             ambient.containers[id].visual.Comment(L"container:" + winrt::to_hstring(id));
         }
         // The outline and light share the same full physical bounds. Scrolling
@@ -845,10 +961,13 @@ struct NativeTabStrip {
                 !ambient.reveals.count(id) && !ambient.recolors.count(id)) {
                 for (auto* fields : {&ambient.groups, &ambient.groupSpill})
                     if (auto field = fields->find(id); field != fields->end() && field->second.animated) {
-                        ambient.motion.Attach(field->second.Root(), false); field->second.animated = false;
+                        ambient.motion.Attach(field->second.Root(), false);
+                        field->second.animated = false;
                     }
-                if (auto light = groupSurface.lights.find(id); light != groupSurface.lights.end() && light->second.animated) {
-                    ambient.motion.Attach(light->second.visual, false); light->second.animated = false;
+                if (auto light = groupSurface.lights.find(id);
+                    light != groupSurface.lights.end() && light->second.animated) {
+                    ambient.motion.Attach(light->second.visual, false);
+                    light->second.animated = false;
                 }
                 ambient.recolors[id].color = previousColor;
                 pendingRecolors.push_back(id);
@@ -902,9 +1021,15 @@ struct NativeTabStrip {
         };
         auto status = advance();
         // Nothing was committed: retry once with room for every change.
-        if (status == SHELL_STATUS_TOO_LARGE) { changes.resize(changeCount); status = advance(); }
+        if (status == SHELL_STATUS_TOO_LARGE) {
+            changes.resize(changeCount);
+            status = advance();
+        }
         if (status != SHELL_STATUS_OK) changeCount = 0;
-        if (glowDisabled) { ambient.motion.Cancel(); DetachGlow(); }
+        if (glowDisabled) {
+            ambient.motion.Cancel();
+            DetachGlow();
+        }
         std::vector<uint32_t> lit, haloLitNow;
         std::set<uint32_t> gone, haloGone;
         for (size_t index = 0; index < changeCount; ++index) {
@@ -918,7 +1043,9 @@ struct NativeTabStrip {
         for (auto id : gone) {
             if (TabGlowIgnition::Diagnostics() && ambient.reveals.count(id))
                 fprintf(stderr, "WinUIPane glow reveal cancelled group=%u at=%.1f\n", id, TabGlowIgnition::Now());
-            ambient.EndReveal(id); ambient.EndRecolor(id); groupSurface.EndReveal(id);
+            ambient.EndReveal(id);
+            ambient.EndRecolor(id);
+            groupSurface.EndReveal(id);
         }
         groupSurface.Lighting(outlineColors, &ambient.motion, gone);
         groupSurface.Depart(&ambient.motion, gone);
@@ -936,11 +1063,13 @@ struct NativeTabStrip {
             upperBounds.Width = container->second.bounds.Width;
         }
         const auto radius = activeVisible ? activeRow->second.CornerRadius() : CornerRadius{};
-        ambient.Corners(ambient.upperRim, activeVisible && container != ambient.containers.end() ? container->second.color : 0,
-            upperBounds, float(radius.TopLeft), float(radius.TopRight), true);
+        ambient.Corners(ambient.upperRim,
+                        activeVisible && container != ambient.containers.end() ? container->second.color : 0,
+                        upperBounds, float(radius.TopLeft), float(radius.TopRight), true);
         if (!HasDecorationGroups() && !followingMotion && faces.size() <= 128) {
             selectionViewport = ambientViewport;
-            selectionFadeLeft = fadeLeft; selectionFadeRight = fadeRight;
+            selectionFadeLeft = fadeLeft;
+            selectionFadeRight = fadeRight;
             selectionFaces = std::move(faces);
             selectionGeometryReady = true;
         }
@@ -961,12 +1090,12 @@ struct NativeTabStrip {
         } probeScope(selectionProbeStage);
         ++selectionReentry[0];
 #endif
-        if (!core || !selectionGeometryReady || ambient.updating || ambient.queued ||
-            ambient.observing || HasDecorationGroups() ||
-            surfaceMotion.following || !settling.empty() || IsDragging() || GroupDrag().phase ||
-            !foreignGroupShift.entries.empty() || groupSlide.pending || groupSlide.storyboard || !rowAnimations.empty() ||
-            !root.IsLoaded() || root.Visibility() != Visibility::Visible ||
-            GeometryChanged(SHELL_LAYOUT_WORK_AMBIENT)) return false;
+        if (!core || !selectionGeometryReady || ambient.updating || ambient.queued || ambient.observing ||
+            HasDecorationGroups() || surfaceMotion.following || !settling.empty() || IsDragging() ||
+            GroupDrag().phase || !foreignGroupShift.entries.empty() || groupSlide.pending || groupSlide.storyboard ||
+            !rowAnimations.empty() || !root.IsLoaded() || root.Visibility() != Visibility::Visible ||
+            GeometryChanged(SHELL_LAYOUT_WORK_AMBIENT))
+            return false;
 #ifdef WINUI_PANE_TESTING
         selectionProbeStage = 2;
         ++selectionReentry[1];
@@ -979,33 +1108,40 @@ struct NativeTabStrip {
                 if (found == rows.end()) continue;
                 const auto row = found->second;
                 if (!row.IsLoaded() || row.Visibility() != Visibility::Visible || row.Opacity() == 0) return false;
-                const auto bounds = row.TransformToVisual(ambient.layer).TransformBounds(
-                    {0, 0, float(row.ActualWidth()), float(row.ActualHeight())});
+                const auto bounds = row.TransformToVisual(ambient.layer)
+                                        .TransformBounds({0, 0, float(row.ActualWidth()), float(row.ActualHeight())});
                 const auto radius = row.CornerRadius();
                 auto face = std::lower_bound(selectionFaces.begin(), selectionFaces.end(), id,
-                    [](auto const& value, uint32_t key) { return value.id < key; });
+                                             [](auto const& value, uint32_t key) { return value.id < key; });
                 if (face != selectionFaces.end() && face->id == id) {
                     // A local row move may precede a scroller/extent notification.
                     if (face->bounds != bounds) return false;
                     face->selected = id == active;
-                    face->leftRadius = float(radius.TopLeft); face->rightRadius = float(radius.TopRight);
+                    face->leftRadius = float(radius.TopLeft);
+                    face->rightRadius = float(radius.TopRight);
                 }
-                if (id == active) { activeBounds = bounds; activeRadius = radius; }
+                if (id == active) {
+                    activeBounds = bounds;
+                    activeRadius = radius;
+                }
                 if (auto container = ambient.containers.find(id); container != ambient.containers.end())
-                    ambient.Corners(container->second, container->second.color, bounds,
-                        float(radius.TopLeft), float(radius.TopRight));
+                    ambient.Corners(container->second, container->second.color, bounds, float(radius.TopLeft),
+                                    float(radius.TopRight));
                 RefreshSelectionSeparator(id);
             }
             ambient.Clip(selectionViewport, true, activeBounds, selectionFadeLeft, selectionFadeRight);
             ambient.Faces(selectionViewport, selectionFaces);
             auto container = ambient.containers.find(active);
             ambient.Corners(ambient.upperRim, container != ambient.containers.end() ? container->second.color : 0,
-                activeBounds, float(activeRadius.TopLeft), float(activeRadius.TopRight), true);
+                            activeBounds, float(activeRadius.TopLeft), float(activeRadius.TopRight), true);
 #ifdef WINUI_PANE_TESTING
             ++selectionDecorationPasses;
 #endif
             return true;
-        } catch (...) { InvalidateGeometry(); return false; }
+        } catch (...) {
+            InvalidateGeometry();
+            return false;
+        }
     }
 
     void RefreshSelectionSeparator(uint32_t id) {
@@ -1015,14 +1151,22 @@ struct NativeTabStrip {
         auto& tint = found->second;
         auto meta = presentation.find(id);
         const uint32_t color = containerGlow && !ambient.accessibility.HighContrast() && id != activeTabId &&
-            meta != presentation.end() && !meta->second.containerName.empty() ? meta->second.containerColor : 0;
-        if (!color) { RestoreSeparator(tint); return; }
+                                       meta != presentation.end() && !meta->second.containerName.empty()
+                                   ? meta->second.containerColor
+                                   : 0;
+        if (!color) {
+            RestoreSeparator(tint);
+            return;
+        }
         if (tint.tinted && tint.color == color) return;
         const Windows::UI::Color value{170, uint8_t(color >> 16), uint8_t(color >> 8), uint8_t(color)};
-        if (!tint.brush) tint.brush = Media::SolidColorBrush(value);
-        else tint.brush.Color(value);
+        if (!tint.brush)
+            tint.brush = Media::SolidColorBrush(value);
+        else
+            tint.brush.Color(value);
         if (!tint.tinted) tint.separator.Background(tint.brush);
-        tint.tinted = true; tint.color = color;
+        tint.tinted = true;
+        tint.color = color;
     }
     // Presentation only: keep browser membership, selection and collapse state.
     // Retaining the items also avoids recycling the captured group header.
@@ -1033,11 +1177,15 @@ struct NativeTabStrip {
             if (!slot.tab || slot.group != group) compact.push_back(slot);
         std::vector<ShellGroupMotionRow> motion(groupLayout.size());
         size_t count{};
-        if (shell_core_group_motion(core,groupLayout.data(),groupLayout.size(),compact.data(),compact.size(),
-                &group,1,motion.data(),motion.size(),&count)==SHELL_STATUS_OK) {
+        if (shell_core_group_motion(core, groupLayout.data(), groupLayout.size(), compact.data(), compact.size(),
+                                    &group, 1, motion.data(), motion.size(), &count) == SHELL_STATUS_OK) {
             motion.resize(count);
-            try { groupSlide.Prepare(root,view,FindTabListView(view),rows,inlineGroups,FindAddButton(view),std::move(motion)); }
-            catch (...) { groupSlide.Cancel(); }
+            try {
+                groupSlide.Prepare(root, view, FindTabListView(view), rows, inlineGroups, FindAddButton(view),
+                                   std::move(motion));
+            } catch (...) {
+                groupSlide.Cancel();
+            }
         }
         for (auto slot : groupLayout) {
             if (!slot.tab || slot.group != group || !rows.count(slot.tab)) continue;
@@ -1047,10 +1195,13 @@ struct NativeTabStrip {
         }
         // The browser retains these rows. Borrow their header visuals only for
         // the existing slide effect, restoring them on completion or early drop.
-        auto visible=rows;
-        for (auto [id,visibility] : groupDragVisibility) visible.erase(id);
-        try { groupSlide.Commit(visible,inlineGroups,FindAddButton(view),activeTabId,true,group); }
-        catch (...) { groupSlide.Cancel(); }
+        auto visible = rows;
+        for (auto [id, visibility] : groupDragVisibility) visible.erase(id);
+        try {
+            groupSlide.Commit(visible, inlineGroups, FindAddButton(view), activeTabId, true, group);
+        } catch (...) {
+            groupSlide.Cancel();
+        }
     }
     void RestoreDraggingGroup() {
         if (!groupDragVisibility.empty()) groupSlide.Cancel();
@@ -1067,25 +1218,25 @@ struct NativeTabStrip {
     Microsoft::UI::Dispatching::DispatcherQueueTimer departTimer{nullptr};
     ShellGroupDeparture GroupDeparture() const {
         ShellGroupDeparture state{};
-        if (core) shell_core_group_departure_state(core,&state);
+        if (core) shell_core_group_departure_state(core, &state);
         return state;
     }
     bool DepartGroup(uint32_t group, uint64_t request) {
-        if (!core || shell_core_group_departure_begin(core,group,request)!=SHELL_STATUS_OK) return false;
-        departVisibility=std::move(groupDragVisibility);
+        if (!core || shell_core_group_departure_begin(core, group, request) != SHELL_STATUS_OK) return false;
+        departVisibility = std::move(groupDragVisibility);
         groupDragVisibility.clear();
-        if (auto run=inlineGroups.runs.find(group); run!=inlineGroups.runs.end() && run->second.button) {
+        if (auto run = inlineGroups.runs.find(group); run != inlineGroups.runs.end() && run->second.button) {
             run->second.button.Opacity(0);
             run->second.button.IsHitTestVisible(false);
-            departHeader=group;
+            departHeader = group;
         }
         // Firefox normally removes the group well within this. If it is still
         // here, the move did not happen; show the group again.
         if (!departTimer) {
-            departTimer=root.DispatcherQueue().CreateTimer();
+            departTimer = root.DispatcherQueue().CreateTimer();
             departTimer.IsRepeating(false);
             departTimer.Interval(std::chrono::seconds(8));
-            departTimer.Tick([this, alive=std::weak_ptr<int>(lifetime)](auto&&,auto&&) {
+            departTimer.Tick([this, alive = std::weak_ptr<int>(lifetime)](auto&&, auto&&) {
                 if (!alive.expired()) ReleaseGroupDeparture();
             });
         }
@@ -1098,230 +1249,286 @@ struct NativeTabStrip {
             if (rows.count(id)) rows.at(id).Visibility(visibility);
         departVisibility.clear();
         if (departHeader) {
-            if (auto run=inlineGroups.runs.find(departHeader); run!=inlineGroups.runs.end() && run->second.button) {
+            if (auto run = inlineGroups.runs.find(departHeader); run != inlineGroups.runs.end() && run->second.button) {
                 run->second.button.Opacity(1);
                 run->second.button.IsHitTestVisible(true);
             }
-            departHeader=0;
+            departHeader = 0;
         }
         if (core) shell_core_group_departure_end(core);
     }
     // After request outcomes: this strip's own detach was refused.
     void ReconcileGroupDeparture() {
-        const auto state=GroupDeparture();
-        if (state.group && state.result==2) ReleaseGroupDeparture();
+        const auto state = GroupDeparture();
+        if (state.group && state.result == 2) ReleaseGroupDeparture();
     }
     // Another window's strip reports that Firefox refused its adopt.
     void RejectGroupDeparture(uint32_t group) {
-        bool changed=false;
-        if (core && shell_core_group_departure_reject(core,group,&changed)==SHELL_STATUS_OK && changed) ReleaseGroupDeparture();
+        bool changed = false;
+        if (core && shell_core_group_departure_reject(core, group, &changed) == SHELL_STATUS_OK && changed)
+            ReleaseGroupDeparture();
     }
     ULONGLONG groupScrollTick{}, groupScrollHold{};
     // Presentation geometry captured after the temporary collapse settles.
     // Store content-space bounds so scrolling does not feed animated transforms
     // back into the whole-group insertion decision.
-    std::map<uint64_t,std::pair<double,double>> groupDragGeometry;
+    std::map<uint64_t, std::pair<double, double>> groupDragGeometry;
     // Grouped-source moves can deliver deferred selection after Sync returns.
     // Keep the browser selection until acknowledged layout settles, or new input.
     bool groupSelectionGuard{}, groupSelectionObserving{};
     uint32_t groupSelectionFrames{};
     winrt::event_token groupSelectionRendering{};
     void StopGroupSelectionGuard() {
-        groupSelectionGuard=false;
+        groupSelectionGuard = false;
         if (groupSelectionObserving) {
-            groupSelectionObserving=false;
+            groupSelectionObserving = false;
             Media::CompositionTarget::Rendering(groupSelectionRendering);
         }
     }
     void BeginGroupSelectionGuard() {
-        groupSelectionGuard=true; groupSelectionFrames=0;
+        groupSelectionGuard = true;
+        groupSelectionFrames = 0;
         if (groupSelectionObserving) return;
-        groupSelectionObserving=true;
-        groupSelectionRendering=Media::CompositionTarget::Rendering([this,alive=std::weak_ptr<int>(lifetime)](auto&&,auto&&) {
-            if (alive.expired()) return;
-            if (!groupSelectionGuard) { StopGroupSelectionGuard(); return; }
-            auto state=GroupDrag();
-            if (state.phase || state.awaiting) { groupSelectionFrames=0; return; }
-            if (rows.count(activeTabId) && view.SelectedItem()!=rows.at(activeTabId)) {
-                groupSelectionFrames=0;
-                view.SelectedItem(rows.at(activeTabId));
-            } else if (++groupSelectionFrames>=2) StopGroupSelectionGuard();
-        });
+        groupSelectionObserving = true;
+        groupSelectionRendering =
+            Media::CompositionTarget::Rendering([this, alive = std::weak_ptr<int>(lifetime)](auto&&, auto&&) {
+                if (alive.expired()) return;
+                if (!groupSelectionGuard) {
+                    StopGroupSelectionGuard();
+                    return;
+                }
+                auto state = GroupDrag();
+                if (state.phase || state.awaiting) {
+                    groupSelectionFrames = 0;
+                    return;
+                }
+                if (rows.count(activeTabId) && view.SelectedItem() != rows.at(activeTabId)) {
+                    groupSelectionFrames = 0;
+                    view.SelectedItem(rows.at(activeTabId));
+                } else if (++groupSelectionFrames >= 2)
+                    StopGroupSelectionGuard();
+            });
     }
     std::function<void(uint32_t)> armGroupDragSession;
     ShellGroupDrag GroupDrag() const {
         ShellGroupDrag state{};
-        if (core) shell_core_group_drag_state(core,&state);
+        if (core) shell_core_group_drag_state(core, &state);
         return state;
     }
     static Controls::ScrollViewer GroupScroller(DependencyObject const& node) {
-        if (auto scroll = node.try_as<Controls::ScrollViewer>(); scroll && scroll.Name() == L"ScrollViewer") return scroll;
-        for (int i=0;i<Media::VisualTreeHelper::GetChildrenCount(node);++i)
-            if (auto scroll=GroupScroller(Media::VisualTreeHelper::GetChild(node,i))) return scroll;
+        if (auto scroll = node.try_as<Controls::ScrollViewer>(); scroll && scroll.Name() == L"ScrollViewer")
+            return scroll;
+        for (int i = 0; i < Media::VisualTreeHelper::GetChildrenCount(node); ++i)
+            if (auto scroll = GroupScroller(Media::VisualTreeHelper::GetChild(node, i))) return scroll;
         return nullptr;
     }
     // `foreign`: another window's strip queued the adopt for this group.
     void EndGroupDrag(bool commit = false, bool foreign = false) {
-        const auto state=GroupDrag();
+        const auto state = GroupDrag();
         // Torn off from a window it fills, Firefox moves the window instead of
         // handing the group over: nothing departs. Another window still adopts it.
         size_t tabCount{}, groupTabs{};
-        for (auto slot : groupLayout) if (slot.tab) { ++tabCount; if (slot.group==state.group) ++groupTabs; }
-        const bool movesWindow=groupTabs && groupTabs==tabCount;
-        const bool detach=commit && state.phase==2 && state.detaching && dispatch;
-        const bool departing=state.phase==2 && (foreign || (detach && !movesWindow));
+        for (auto slot : groupLayout)
+            if (slot.tab) {
+                ++tabCount;
+                if (slot.group == state.group) ++groupTabs;
+            }
+        const bool movesWindow = groupTabs && groupTabs == tabCount;
+        const bool detach = commit && state.phase == 2 && state.detaching && dispatch;
+        const bool departing = state.phase == 2 && (foreign || (detach && !movesWindow));
         groupDragGeometry.clear();
         groupDragShift.Reset();
         if (!departing) RestoreDraggingGroup();
-        if (!state.phase) { groupDragVisual.Hide(); return; }
+        if (!state.phase) {
+            groupDragVisual.Hide();
+            return;
+        }
         shell_core_group_drag_end(core);
         groupDragVisual.Hide();
-        if (state.phase==2 && rows.count(activeTabId)) {
-            const auto previous=syncing;
-            syncing=true;
+        if (state.phase == 2 && rows.count(activeTabId)) {
+            const auto previous = syncing;
+            syncing = true;
             view.SelectedItem(rows.at(activeTabId));
-            syncing=previous;
+            syncing = previous;
         }
         // The group re-expands and the browser reorders it a moment later; keep
         // the scroll position through both.
-        if (state.phase==2) groupScrollHold=GetTickCount64()+600;
-        if (state.phase==2 || (state.phase && !commit)) inlineGroups.suppressClick=state.group;
+        if (state.phase == 2) groupScrollHold = GetTickCount64() + 600;
+        if (state.phase == 2 || (state.phase && !commit)) inlineGroups.suppressClick = state.group;
         if (foreign) {
-            if (!departing || !DepartGroup(state.group,0)) RestoreDraggingGroup();
+            if (!departing || !DepartGroup(state.group, 0)) RestoreDraggingGroup();
         } else if (detach) {
             // Firefox opens the new window at the release point; the group stays
             // hidden here until that window adopts it.
             POINT screenPoint{};
             GetCursorPos(&screenPoint);
-            using Value=Windows::Data::Json::JsonValue;
+            using Value = Windows::Data::Json::JsonValue;
             Windows::Data::Json::JsonObject action;
-            action.SetNamedValue(L"kind",Value::CreateStringValue(L"strip-group-detach"));
-            action.SetNamedValue(L"revision",Value::CreateNumberValue(presentationRevision));
-            action.SetNamedValue(L"session",Value::CreateNumberValue(windowDragSession));
-            action.SetNamedValue(L"group",Value::CreateNumberValue(state.group));
-            action.SetNamedValue(L"screenX",Value::CreateNumberValue(double(screenPoint.x)));
-            action.SetNamedValue(L"screenY",Value::CreateNumberValue(double(screenPoint.y)));
-            const auto request=dispatch(0,action.Stringify());
-            if (!departing || !request || !DepartGroup(state.group,request)) RestoreDraggingGroup();
-        } else if (commit && state.phase==2 && state.valid && dispatch) {
-            using Value=Windows::Data::Json::JsonValue;
+            action.SetNamedValue(L"kind", Value::CreateStringValue(L"strip-group-detach"));
+            action.SetNamedValue(L"revision", Value::CreateNumberValue(presentationRevision));
+            action.SetNamedValue(L"session", Value::CreateNumberValue(windowDragSession));
+            action.SetNamedValue(L"group", Value::CreateNumberValue(state.group));
+            action.SetNamedValue(L"screenX", Value::CreateNumberValue(double(screenPoint.x)));
+            action.SetNamedValue(L"screenY", Value::CreateNumberValue(double(screenPoint.y)));
+            const auto request = dispatch(0, action.Stringify());
+            if (!departing || !request || !DepartGroup(state.group, request)) RestoreDraggingGroup();
+        } else if (commit && state.phase == 2 && state.valid && dispatch) {
+            using Value = Windows::Data::Json::JsonValue;
             Windows::Data::Json::JsonObject action;
-            action.SetNamedValue(L"kind",Value::CreateStringValue(L"strip-group-reorder"));
-            action.SetNamedValue(L"revision",Value::CreateNumberValue(presentationRevision));
-            action.SetNamedValue(L"session",Value::CreateNumberValue(windowDragSession));
-            action.SetNamedValue(L"group",Value::CreateNumberValue(state.group));
-            action.SetNamedValue(L"beforeGroup",Value::CreateNumberValue(state.before_group));
-            action.SetNamedValue(L"beforeTab",Value::CreateNumberValue(state.before_tab));
-            const auto request=dispatch(0,action.Stringify());
-            if (request) shell_core_group_drag_wait(core,request,state.group,state.before_group,state.before_tab);
+            action.SetNamedValue(L"kind", Value::CreateStringValue(L"strip-group-reorder"));
+            action.SetNamedValue(L"revision", Value::CreateNumberValue(presentationRevision));
+            action.SetNamedValue(L"session", Value::CreateNumberValue(windowDragSession));
+            action.SetNamedValue(L"group", Value::CreateNumberValue(state.group));
+            action.SetNamedValue(L"beforeGroup", Value::CreateNumberValue(state.before_group));
+            action.SetNamedValue(L"beforeTab", Value::CreateNumberValue(state.before_tab));
+            const auto request = dispatch(0, action.Stringify());
+            if (request) shell_core_group_drag_wait(core, request, state.group, state.before_group, state.before_tab);
         }
     }
     // `foreign`: another window's strip claims the pointer; Pane.cpp resolves
     // a release there itself, so this strip only takes the group off itself.
     void TickGroupDrag(Windows::Foundation::Point point, bool down, bool cancel, bool foreign = false) {
-        const auto old=GroupDrag();
+        const auto old = GroupDrag();
         if (!old.phase) return;
-        if (cancel || !root.IsLoaded() || root.Visibility()!=Visibility::Visible) { EndGroupDrag(); return; }
-        const bool geometryReady=old.phase==2 && !groupSlide.pending && !groupSlide.storyboard;
+        if (cancel || !root.IsLoaded() || root.Visibility() != Visibility::Visible) {
+            EndGroupDrag();
+            return;
+        }
+        const bool geometryReady = old.phase == 2 && !groupSlide.pending && !groupSlide.storyboard;
         if (geometryReady && groupDragGeometry.empty()) view.UpdateLayout();
-        auto scroller=GroupScroller(view);
-        auto viewport = scroller ? scroller.TransformToVisual(view).TransformBounds({0,0,float(scroller.ActualWidth()),float(scroller.ActualHeight())})
-                                : Windows::Foundation::Rect{0,0,float(view.ActualWidth()),float(view.ActualHeight())};
-        const bool inside=point.X>=viewport.X && point.X<=view.ActualWidth() && point.Y>=0 && point.Y<=view.ActualHeight();
+        auto scroller = GroupScroller(view);
+        auto viewport = scroller
+                            ? scroller.TransformToVisual(view).TransformBounds(
+                                  {0, 0, float(scroller.ActualWidth()), float(scroller.ActualHeight())})
+                            : Windows::Foundation::Rect{0, 0, float(view.ActualWidth()), float(view.ActualHeight())};
+        const bool inside =
+            point.X >= viewport.X && point.X <= view.ActualWidth() && point.Y >= 0 && point.Y <= view.ActualHeight();
         // The pointer may be past the scroller's own edge, over the trailing
         // controls: holding it there at the strip's end must keep scrolling.
-        const bool nearStrip=point.X>=0 && point.X<=view.ActualWidth() && point.Y>=0 && point.Y<=view.ActualHeight();
-        if (old.phase==2 && down && nearStrip && scroller && scroller.ScrollableWidth()>0 && GetTickCount64()-groupScrollTick>=16) {
-            groupScrollTick=GetTickCount64();
-            double step=point.X<viewport.X+24 ? -12 : point.X>viewport.X+viewport.Width-24 ? 12 : 0;
+        const bool nearStrip =
+            point.X >= 0 && point.X <= view.ActualWidth() && point.Y >= 0 && point.Y <= view.ActualHeight();
+        if (old.phase == 2 && down && nearStrip && scroller && scroller.ScrollableWidth() > 0 &&
+            GetTickCount64() - groupScrollTick >= 16) {
+            groupScrollTick = GetTickCount64();
+            double step = point.X < viewport.X + 24 ? -12 : point.X > viewport.X + viewport.Width - 24 ? 12 : 0;
             if (step) {
                 // An edge scroll is explicit; stale selected-tab requests must not undo it.
                 inlineGroups.NoteUserScroll();
-                scroller.ChangeView(box_value(std::clamp(scroller.HorizontalOffset()+step,0.0,scroller.ScrollableWidth())).as<Windows::Foundation::IReference<double>>(),nullptr,nullptr,true);
+                scroller.ChangeView(
+                    box_value(std::clamp(scroller.HorizontalOffset() + step, 0.0, scroller.ScrollableWidth()))
+                        .as<Windows::Foundation::IReference<double>>(),
+                    nullptr, nullptr, true);
             }
         }
         std::vector<ShellGroupDragSlot> slots;
-        struct ShiftItem { uint64_t id; FrameworkElement element; size_t block; };
-        std::vector<ShiftItem> shiftItems;
-        auto boundsOf=[&](FrameworkElement const& item) {
-            return item.TransformToVisual(view).TransformBounds({0,0,float(item.ActualWidth()),float(item.ActualHeight())});
+        struct ShiftItem {
+            uint64_t id;
+            FrameworkElement element;
+            size_t block;
         };
-        for (auto slot:groupLayout) {
+        std::vector<ShiftItem> shiftItems;
+        auto boundsOf = [&](FrameworkElement const& item) {
+            return item.TransformToVisual(view).TransformBounds(
+                {0, 0, float(item.ActualWidth()), float(item.ActualHeight())});
+        };
+        for (auto slot : groupLayout) {
             FrameworkElement item{nullptr};
             if (!slot.tab) {
-                auto found=inlineGroups.runs.find(slot.group);
-                if (found==inlineGroups.runs.end()) { EndGroupDrag(); return; }
-                item=slot.group==old.group && groupDragVisual.placeholder
-                    ? groupDragVisual.placeholder.as<FrameworkElement>() : found->second.button.as<FrameworkElement>();
+                auto found = inlineGroups.runs.find(slot.group);
+                if (found == inlineGroups.runs.end()) {
+                    EndGroupDrag();
+                    return;
+                }
+                item = slot.group == old.group && groupDragVisual.placeholder
+                           ? groupDragVisual.placeholder.as<FrameworkElement>()
+                           : found->second.button.as<FrameworkElement>();
                 if (!item.IsLoaded()) {
-                    if (slot.group==old.group) { EndGroupDrag(); return; }
+                    if (slot.group == old.group) {
+                        EndGroupDrag();
+                        return;
+                    }
                     continue;
                 }
             } else {
                 if (!rows.count(slot.tab) || !rows.at(slot.tab).IsLoaded() ||
-                    rows.at(slot.tab).Visibility()==Visibility::Collapsed) continue;
-                if (presentation.count(slot.tab) && (presentation.at(slot.tab).flags&1)) continue;
-                item=rows.at(slot.tab);
+                    rows.at(slot.tab).Visibility() == Visibility::Collapsed)
+                    continue;
+                if (presentation.count(slot.tab) && (presentation.at(slot.tab).flags & 1)) continue;
+                item = rows.at(slot.tab);
             }
-            const auto key=slot.tab ? uint64_t(slot.tab) : GroupSlide::GroupKey(slot.group);
-            auto bounds=boundsOf(item);
+            const auto key = slot.tab ? uint64_t(slot.tab) : GroupSlide::GroupKey(slot.group);
+            auto bounds = boundsOf(item);
             // Targeting uses unshifted geometry so opening a gap cannot move
             // its own midpoint and reverse a stationary pointer's destination.
-            bounds.X-=float(groupDragShift.Offset(key));
-            double start=bounds.X;
-            double end=bounds.X+bounds.Width;
+            bounds.X -= float(groupDragShift.Offset(key));
+            double start = bounds.X;
+            double end = bounds.X + bounds.Width;
             if (slot.tab && slot.group) {
-                if (!slots.empty() && slots.back().group==slot.group) {
-                    slots.back().start=std::min(slots.back().start,start);
-                    slots.back().end=std::max(slots.back().end,end);
-                } else slots.push_back({slot.group,0,start,end});
-            } else slots.push_back({slot.group,slot.tab,start,end});
-            shiftItems.push_back({key,item,slots.size()-1});
+                if (!slots.empty() && slots.back().group == slot.group) {
+                    slots.back().start = std::min(slots.back().start, start);
+                    slots.back().end = std::max(slots.back().end, end);
+                } else
+                    slots.push_back({slot.group, 0, start, end});
+            } else
+                slots.push_back({slot.group, slot.tab, start, end});
+            shiftItems.push_back({key, item, slots.size() - 1});
         }
         if (geometryReady) {
-            const auto scroll=scroller ? scroller.HorizontalOffset() : 0.0;
+            const auto scroll = scroller ? scroller.HorizontalOffset() : 0.0;
             for (auto& slot : slots) {
-                const auto key=slot.group ? GroupSlide::GroupKey(slot.group) : uint64_t(slot.tab);
-                const auto [entry,inserted]=groupDragGeometry.try_emplace(key,slot.start+scroll,slot.end+scroll);
-                slot.start=entry->second.first-scroll;
-                slot.end=entry->second.second-scroll;
+                const auto key = slot.group ? GroupSlide::GroupKey(slot.group) : uint64_t(slot.tab);
+                const auto [entry, inserted] =
+                    groupDragGeometry.try_emplace(key, slot.start + scroll, slot.end + scroll);
+                slot.start = entry->second.first - scroll;
+                slot.end = entry->second.second - scroll;
             }
         }
-        if (shell_core_group_drag_update(core,point.X,point.Y,inside,viewport.X,viewport.X+viewport.Width,slots.data(),slots.size())!=SHELL_STATUS_OK ||
-            shell_core_group_drag_detach(core,point.X,point.Y,view.ActualWidth(),view.ActualHeight(),foreign)!=SHELL_STATUS_OK) { EndGroupDrag(); return; }
-        const auto state=GroupDrag();
-        if (state.phase==2) {
-            if (old.phase==1) {
-                if(GetEnvironmentVariableW(L"FENN_PANE_DIAGNOSTICS",nullptr,0))fprintf(stderr,"AllTabs group-promote x=%.1f y=%.1f down=%d\n",point.X,point.Y,down);
+        if (shell_core_group_drag_update(core, point.X, point.Y, inside, viewport.X, viewport.X + viewport.Width,
+                                         slots.data(), slots.size()) != SHELL_STATUS_OK ||
+            shell_core_group_drag_detach(core, point.X, point.Y, view.ActualWidth(), view.ActualHeight(), foreign) !=
+                SHELL_STATUS_OK) {
+            EndGroupDrag();
+            return;
+        }
+        const auto state = GroupDrag();
+        if (state.phase == 2) {
+            if (old.phase == 1) {
+                if (GetEnvironmentVariableW(L"FENN_PANE_DIAGNOSTICS", nullptr, 0))
+                    fprintf(stderr, "AllTabs group-promote x=%.1f y=%.1f down=%d\n", point.X, point.Y, down);
                 BeginGroupSelectionGuard();
                 ::SetCapture(ownerHwnd);
                 CollapseDraggingGroup(state.group);
-                auto found=inlineGroups.runs.find(state.group);
-                if (found!=inlineGroups.runs.end()) {
-                    try { groupDragVisual.Begin(found->second.button,found->second.model); }
-                    catch (...) { EndGroupDrag(); return; }
+                auto found = inlineGroups.runs.find(state.group);
+                if (found != inlineGroups.runs.end()) {
+                    try {
+                        groupDragVisual.Begin(found->second.button, found->second.model);
+                    } catch (...) {
+                        EndGroupDrag();
+                        return;
+                    }
                 }
             }
-            inlineGroups.suppressClick=state.group;
+            inlineGroups.suppressClick = state.group;
             inlineGroups.hover.Dismiss();
             // Finish the initial collapse before taking ownership of the
             // surviving controls' transforms for the reorder preview.
             if (geometryReady && groupDragVisual.placeholder) {
-                const auto width=groupDragVisual.placeholder.Width()+groupDragVisual.margin.Left+groupDragVisual.margin.Right;
+                const auto width =
+                    groupDragVisual.placeholder.Width() + groupDragVisual.margin.Left + groupDragVisual.margin.Right;
                 for (auto const& item : shiftItems) {
                     double offset{};
-                    if (shell_core_group_drag_offset(core,item.block,width,&offset)==SHELL_STATUS_OK)
-                        groupDragShift.Apply(item.id,item.element,offset,groupSlide.Enabled());
+                    if (shell_core_group_drag_offset(core, item.block, width, &offset) == SHELL_STATUS_OK)
+                        groupDragShift.Apply(item.id, item.element, offset, groupSlide.Enabled());
                 }
             }
-            auto found=inlineGroups.runs.find(state.group);
-            if (found!=inlineGroups.runs.end()) {
+            auto found = inlineGroups.runs.find(state.group);
+            if (found != inlineGroups.runs.end()) {
                 // WinUI already maps view coordinates into logical order in RTL.
                 // The overlay is explicitly LTR, so transform into its own space.
-                auto transform=view.TransformToVisual(groupDragVisual.layer);
-                auto cursor=transform.TransformPoint(point);
-                auto bounds=transform.TransformBounds({0,0,float(view.ActualWidth()),float(view.ActualHeight())});
-                groupDragVisual.Show(cursor.X,bounds.X,bounds.Width);
+                auto transform = view.TransformToVisual(groupDragVisual.layer);
+                auto cursor = transform.TransformPoint(point);
+                auto bounds = transform.TransformBounds({0, 0, float(view.ActualWidth()), float(view.ActualHeight())});
+                groupDragVisual.Show(cursor.X, bounds.X, bounds.Width);
             }
         }
         if (!down) EndGroupDrag(true);
@@ -1332,94 +1539,112 @@ struct NativeTabStrip {
     // The dragged group's slot width, for another window's destination gap.
     double GroupDragSlotWidth() const {
         if (!groupDragVisual.placeholder) return 0;
-        return groupDragVisual.placeholder.Width()+groupDragVisual.margin.Left+groupDragVisual.margin.Right;
+        return groupDragVisual.placeholder.Width() + groupDragVisual.margin.Left + groupDragVisual.margin.Right;
     }
     // This strip as the destination of another window's whole-group drag.
     // ShellCore picks an insertion point between whole blocks and holds the
     // gap after the drop; only the WinUI transforms live here.
     GroupDragShift foreignGroupShift;
     // The window a held adopt takes its group from, told if Firefox refuses.
-    struct ForeignGroupSource { NativeTabStrip* strip{}; std::weak_ptr<int> lifetime; uint32_t group{}; } foreignGroupSource;
+    struct ForeignGroupSource {
+        NativeTabStrip* strip{};
+        std::weak_ptr<int> lifetime;
+        uint32_t group{};
+    } foreignGroupSource;
     ShellForeignGroup ForeignGroup() const {
         ShellForeignGroup state{};
-        if (core) shell_core_group_foreign_state(core,&state);
+        if (core) shell_core_group_foreign_state(core, &state);
         return state;
     }
     bool ForeignGroupOver(Windows::Foundation::Point point, double width) {
-        if (!core || !root.IsLoaded() || root.Visibility()!=Visibility::Visible || IsDragging() || GroupDrag().phase) return false;
+        if (!core || !root.IsLoaded() || root.Visibility() != Visibility::Visible || IsDragging() || GroupDrag().phase)
+            return false;
         if (ForeignGroup().request) EndForeignGroupOver(true);
         if (foreignGroupShift.entries.empty()) view.UpdateLayout();
         std::vector<ShellGroupDragSlot> slots;
-        struct Item { uint64_t key; FrameworkElement element; size_t block; };
+        struct Item {
+            uint64_t key;
+            FrameworkElement element;
+            size_t block;
+        };
         std::vector<Item> items;
         for (auto slot : groupLayout) {
             FrameworkElement item{nullptr};
             if (!slot.tab) {
-                auto found=inlineGroups.runs.find(slot.group);
-                if (found==inlineGroups.runs.end() || !found->second.button.IsLoaded()) continue;
-                item=found->second.button;
+                auto found = inlineGroups.runs.find(slot.group);
+                if (found == inlineGroups.runs.end() || !found->second.button.IsLoaded()) continue;
+                item = found->second.button;
             } else {
                 if (!rows.count(slot.tab) || !rows.at(slot.tab).IsLoaded() ||
-                    rows.at(slot.tab).Visibility()==Visibility::Collapsed) continue;
-                if (presentation.count(slot.tab) && (presentation.at(slot.tab).flags&1)) continue;
-                item=rows.at(slot.tab);
+                    rows.at(slot.tab).Visibility() == Visibility::Collapsed)
+                    continue;
+                if (presentation.count(slot.tab) && (presentation.at(slot.tab).flags & 1)) continue;
+                item = rows.at(slot.tab);
             }
-            const auto key=slot.tab ? uint64_t(slot.tab) : GroupSlide::GroupKey(slot.group);
-            auto bounds=item.TransformToVisual(view).TransformBounds({0,0,float(item.ActualWidth()),float(item.ActualHeight())});
+            const auto key = slot.tab ? uint64_t(slot.tab) : GroupSlide::GroupKey(slot.group);
+            auto bounds = item.TransformToVisual(view).TransformBounds(
+                {0, 0, float(item.ActualWidth()), float(item.ActualHeight())});
             // Unshifted geometry: opening the gap must not move its own target.
-            const double start=bounds.X-foreignGroupShift.Offset(key), end=start+bounds.Width;
+            const double start = bounds.X - foreignGroupShift.Offset(key), end = start + bounds.Width;
             if (slot.tab && slot.group) {
-                if (!slots.empty() && slots.back().group==slot.group) {
-                    slots.back().start=std::min(slots.back().start,start);
-                    slots.back().end=std::max(slots.back().end,end);
-                } else slots.push_back({slot.group,0,start,end});
-            } else slots.push_back({slot.group,slot.tab,start,end});
-            items.push_back({key,item,slots.size()-1});
+                if (!slots.empty() && slots.back().group == slot.group) {
+                    slots.back().start = std::min(slots.back().start, start);
+                    slots.back().end = std::max(slots.back().end, end);
+                } else
+                    slots.push_back({slot.group, 0, start, end});
+            } else
+                slots.push_back({slot.group, slot.tab, start, end});
+            items.push_back({key, item, slots.size() - 1});
         }
-        if (shell_core_group_foreign_hover(core,point.X,slots.data(),slots.size())!=SHELL_STATUS_OK) {
+        if (shell_core_group_foreign_hover(core, point.X, slots.data(), slots.size()) != SHELL_STATUS_OK) {
             EndForeignGroupOver(true);
             return false;
         }
         for (auto const& item : items) {
             double offset{};
-            if (shell_core_group_foreign_offset(core,item.block,width,&offset)==SHELL_STATUS_OK)
-                foreignGroupShift.Apply(item.key,item.element,offset,groupSlide.Enabled());
+            if (shell_core_group_foreign_offset(core, item.block, width, &offset) == SHELL_STATUS_OK)
+                foreignGroupShift.Apply(item.key, item.element, offset, groupSlide.Enabled());
         }
         ambient.Update();
         return true;
     }
     void EndForeignGroupOver(bool force = false) {
-        bool ended=false;
-        if (core) shell_core_group_foreign_end(core,force,&ended);
+        bool ended = false;
+        if (core) shell_core_group_foreign_end(core, force, &ended);
         if (ended || !core) foreignGroupShift.Reset();
     }
     // Releases a held gap once Firefox has rejected the adopt.
     void ReconcileForeignGroup() {
-        const auto state=ForeignGroup();
-        if (state.result==2 && foreignGroupSource.strip && !foreignGroupSource.lifetime.expired())
+        const auto state = ForeignGroup();
+        if (state.result == 2 && foreignGroupSource.strip && !foreignGroupSource.lifetime.expired())
             foreignGroupSource.strip->RejectGroupDeparture(foreignGroupSource.group);
-        if (!state.active || state.result!=0) foreignGroupSource={};
-        if (!state.active || state.result==2) EndForeignGroupOver();
+        if (!state.active || state.result != 0) foreignGroupSource = {};
+        if (!state.active || state.result == 2) EndForeignGroupOver();
     }
     // Queues the adopt on this window's transport. The group ID belongs to the
     // source window's session, which Firefox resolves from its HWND.
     uint64_t AcceptForeignGroupDrop(NativeTabStrip& source, HWND sourceHwnd, uint32_t sourceSession, uint32_t group,
                                     Windows::Foundation::Point point, double width) {
-        if (!dispatch || !ForeignGroupOver(point,width)) { EndForeignGroupOver(true); return 0; }
-        const auto target=ForeignGroup();
-        using Value=Windows::Data::Json::JsonValue;
+        if (!dispatch || !ForeignGroupOver(point, width)) {
+            EndForeignGroupOver(true);
+            return 0;
+        }
+        const auto target = ForeignGroup();
+        using Value = Windows::Data::Json::JsonValue;
         Windows::Data::Json::JsonObject action;
-        action.SetNamedValue(L"kind",Value::CreateStringValue(L"strip-group-adopt"));
-        action.SetNamedValue(L"revision",Value::CreateNumberValue(presentationRevision));
-        action.SetNamedValue(L"session",Value::CreateNumberValue(windowDragSession));
-        action.SetNamedValue(L"sourceHwnd",Value::CreateNumberValue(double(reinterpret_cast<uintptr_t>(sourceHwnd))));
-        action.SetNamedValue(L"sourceSession",Value::CreateNumberValue(sourceSession));
-        action.SetNamedValue(L"group",Value::CreateNumberValue(group));
-        action.SetNamedValue(L"beforeGroup",Value::CreateNumberValue(target.before_group));
-        action.SetNamedValue(L"beforeTab",Value::CreateNumberValue(target.before_tab));
-        const auto request=dispatch(0,action.Stringify());
-        if (!request || shell_core_group_foreign_hold(core,request)!=SHELL_STATUS_OK) EndForeignGroupOver(true);
-        else foreignGroupSource={&source,source.lifetime,group};
+        action.SetNamedValue(L"kind", Value::CreateStringValue(L"strip-group-adopt"));
+        action.SetNamedValue(L"revision", Value::CreateNumberValue(presentationRevision));
+        action.SetNamedValue(L"session", Value::CreateNumberValue(windowDragSession));
+        action.SetNamedValue(L"sourceHwnd", Value::CreateNumberValue(double(reinterpret_cast<uintptr_t>(sourceHwnd))));
+        action.SetNamedValue(L"sourceSession", Value::CreateNumberValue(sourceSession));
+        action.SetNamedValue(L"group", Value::CreateNumberValue(group));
+        action.SetNamedValue(L"beforeGroup", Value::CreateNumberValue(target.before_group));
+        action.SetNamedValue(L"beforeTab", Value::CreateNumberValue(target.before_tab));
+        const auto request = dispatch(0, action.Stringify());
+        if (!request || shell_core_group_foreign_hold(core, request) != SHELL_STATUS_OK)
+            EndForeignGroupOver(true);
+        else
+            foreignGroupSource = {&source, source.lifetime, group};
         return request;
     }
 
@@ -1429,7 +1654,8 @@ struct NativeTabStrip {
         for (auto slot : groupLayout) {
             if (!slot.tab) continue;
             if (index >= view.TabItems().Size() ||
-                unbox_value<uint32_t>(view.TabItems().GetAt(index++).as<Controls::TabViewItem>().Tag()) != slot.tab) return false;
+                unbox_value<uint32_t>(view.TabItems().GetAt(index++).as<Controls::TabViewItem>().Tag()) != slot.tab)
+                return false;
         }
         return index == view.TabItems().Size();
     }
@@ -1441,7 +1667,11 @@ struct NativeTabStrip {
     void UpdateGroupIndicator() {
         uint32_t activeGroup = 0;
         if (activeTabId)
-            for (auto slot : groupLayout) if (slot.tab == activeTabId) { activeGroup = slot.group; break; }
+            for (auto slot : groupLayout)
+                if (slot.tab == activeTabId) {
+                    activeGroup = slot.group;
+                    break;
+                }
         inlineGroups.ActiveGroup(activeGroup, groupSlide.Enabled());
     }
     // The accepted revision as gestures report it. ShellCore owns acceptance and
@@ -1486,7 +1716,7 @@ struct NativeTabStrip {
     void ApplyWindowToolTip(Controls::Button const& button, hstring const& text, Controls::ToolTip& tip) {
         if (!tip) {
             tip = Controls::ToolTip();
-            tip.Opened([this, alive=std::weak_ptr<int>(lifetime)](auto const& sender, auto const&) {
+            tip.Opened([this, alive = std::weak_ptr<int>(lifetime)](auto const& sender, auto const&) {
                 if (alive.expired() || !ownerHwnd || GetAncestor(ownerHwnd, GA_ROOT) != GetForegroundWindow())
                     sender.template as<Controls::ToolTip>().IsOpen(false);
             });
@@ -1513,8 +1743,8 @@ struct NativeTabStrip {
         ApplyAddButtonLabels();
         if (statusChanged)
             for (auto const& [id, row] : rows)
-                Automation::AutomationProperties::SetItemStatus(row,
-                    StatusFor(id == activeTabId, menu.selectedTabs.count(id) != 0));
+                Automation::AutomationProperties::SetItemStatus(
+                    row, StatusFor(id == activeTabId, menu.selectedTabs.count(id) != 0));
     }
     Windows::Data::Json::JsonArray currentGroups;
     bool syncing{};
@@ -1556,15 +1786,20 @@ struct NativeTabStrip {
     void ApplyPreview(NativeTabMenu::Object const& answer) { hoverCard.Apply(answer); }
     // Only peer object lifetimes stay native. Rust owns tickets, request
     // outcomes and source departure tokens until their UI effects are applied.
-    struct TransferPeer { NativeTabStrip* source; std::weak_ptr<int> lifetime; };
+    struct TransferPeer {
+        NativeTabStrip* source;
+        std::weak_ptr<int> lifetime;
+    };
     std::map<uint64_t, TransferPeer> transferPeers;
     uint64_t ReserveTransfer(NativeTabStrip& source, uint32_t tab) {
         ShellTransfer transfer{};
         if (shell_core_transfer_reserve(core, source.core, tab, &transfer) != SHELL_STATUS_OK) return 0;
-        try { transferPeers.emplace(transfer.ticket, TransferPeer{&source, source.lifetime}); }
-        catch (...) {
+        try {
+            transferPeers.emplace(transfer.ticket, TransferPeer{&source, source.lifetime});
+        } catch (...) {
             bool matched = false;
-            shell_core_departure_match(source.core, transfer.source_endpoint, tab, transfer.source_token, true, &matched);
+            shell_core_departure_match(source.core, transfer.source_endpoint, tab, transfer.source_token, true,
+                                       &matched);
             shell_core_transfer_bind(core, transfer.ticket, 0, false);
             shell_core_transfer_ack(core, transfer.ticket);
             throw;
@@ -1578,7 +1813,9 @@ struct NativeTabStrip {
         ~TransferAdmission() {
             if (!bound) {
                 shell_core_transfer_bind(destination.core, ticket, 0, preview);
-                try { destination.ReconcileTransfers(); } catch (...) {}
+                try {
+                    destination.ReconcileTransfers();
+                } catch (...) {}
             }
         }
         void Bind(uint64_t request) {
@@ -1590,7 +1827,9 @@ struct NativeTabStrip {
     };
     void ReconcileTransfers() {
         // A closing destination visual must not prevent restoring live peers.
-        try { ReconcileForeignVisuals(); } catch (...) {}
+        try {
+            ReconcileForeignVisuals();
+        } catch (...) {}
         uint64_t after = 0;
         for (;;) {
             ShellTransfer transfer{};
@@ -1602,14 +1841,16 @@ struct NativeTabStrip {
                     auto source = peer->second.source;
                     bool matched = false;
                     if (shell_core_departure_match(source->core, transfer.source_endpoint, transfer.tab,
-                            transfer.source_token, false, &matched) != SHELL_STATUS_OK) continue;
+                                                   transfer.source_token, false, &matched) != SHELL_STATUS_OK)
+                        continue;
                     if (matched) {
                         source->RestoreRowVisibility(transfer.tab);
                         shell_core_departure_match(source->core, transfer.source_endpoint, transfer.tab,
-                            transfer.source_token, true, &matched);
+                                                   transfer.source_token, true, &matched);
                     }
                 }
-                if (shell_core_transfer_ack(core, transfer.ticket) == SHELL_STATUS_OK) transferPeers.erase(transfer.ticket);
+                if (shell_core_transfer_ack(core, transfer.ticket) == SHELL_STATUS_OK)
+                    transferPeers.erase(transfer.ticket);
             } catch (...) {
                 // Keep this effect for the next drain/publication. Other peers
                 // can still be reconciled if one WinUI object is unwinding.
@@ -1638,7 +1879,9 @@ struct NativeTabStrip {
     // The active tab as Firefox last stated it, so an incremental apply can
     // tell "active" from "also selected" without a snapshot.
     uint32_t activeTabId{};
-    struct DragPhase { static constexpr uint32_t None=0, Armed=1, Dragging=2; };
+    struct DragPhase {
+        static constexpr uint32_t None = 0, Armed = 1, Dragging = 2;
+    };
     // Presentation caches only. Rust owns gesture state and frozen geometry math.
     struct DragVisuals {
         std::vector<double> originalLeftEdge, originalWidth;
@@ -1712,7 +1955,10 @@ struct NativeTabStrip {
                 .as<Controls::Grid>();
         view = root.Children().GetAt(0).as<Controls::TabView>();
         ambient.Create(root);
-        separatorTheme = Markup::XamlReader::Load(LR"(<Border xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" Background="{ThemeResource TabViewItemSeparator}" Visibility="Collapsed" IsHitTestVisible="False" AutomationProperties.AccessibilityView="Raw"/>)").as<Controls::Border>();
+        separatorTheme =
+            Markup::XamlReader::Load(
+                LR"(<Border xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" Background="{ThemeResource TabViewItemSeparator}" Visibility="Collapsed" IsHitTestVisible="False" AutomationProperties.AccessibilityView="Raw"/>)")
+                .as<Controls::Border>();
         ambient.layer.Children().Append(separatorTheme);
         ambient.refresh = [this] { RefreshAmbient(); };
 #ifdef WINUI_PANE_TESTING
@@ -1745,7 +1991,10 @@ struct NativeTabStrip {
             action.SetNamedValue(L"scale", Value::CreateNumberValue(scale));
             preview(action.Stringify());
         };
-        inlineGroups.realized = [this] { InvalidateGeometry(); ambient.ScheduleUpdate(); };
+        inlineGroups.realized = [this] {
+            InvalidateGeometry();
+            ambient.ScheduleUpdate();
+        };
         inlineGroups.geometryChanged = [this] { InvalidateGeometry(); };
         inlineGroups.widthWork = [this](ShellLayoutInputs const& inputs) {
             return LayoutWork(SHELL_LAYOUT_WORK_WIDTHS, inputs);
@@ -1761,7 +2010,10 @@ struct NativeTabStrip {
             auto found = rows.find(enteringTab);
             return found != rows.end() && found->second == tab;
         };
-        groupIndicator = Markup::XamlReader::Load(LR"(<Border xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" BorderBrush="{ThemeResource AccentTextFillColorPrimaryBrush}" BorderThickness="2" CornerRadius="4" Grid.ColumnSpan="3" HorizontalAlignment="Left" VerticalAlignment="Top" IsHitTestVisible="False" Visibility="Collapsed" AutomationProperties.AccessibilityView="Raw"/>)").as<Controls::Border>();
+        groupIndicator =
+            Markup::XamlReader::Load(
+                LR"(<Border xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" BorderBrush="{ThemeResource AccentTextFillColorPrimaryBrush}" BorderThickness="2" CornerRadius="4" Grid.ColumnSpan="3" HorizontalAlignment="Left" VerticalAlignment="Top" IsHitTestVisible="False" Visibility="Collapsed" AutomationProperties.AccessibilityView="Raw"/>)")
+                .as<Controls::Border>();
         root.Children().Append(groupIndicator);
         groupSurface.Create(root);
         groupTimer = root.DispatcherQueue().CreateTimer();
@@ -1787,35 +2039,39 @@ struct NativeTabStrip {
         });
         groupsButton.currentRevision = [this] { return presentationRevision; };
         inlineGroups.press = [this](uint32_t id, Microsoft::UI::Xaml::Input::PointerRoutedEventArgs const& args) {
-            if (!core || syncing || !armGroupDragSession || (GetKeyState(VK_CONTROL)&0x8000) || (GetKeyState(VK_SHIFT)&0x8000) ||
-                GroupDeparture().group==id) return;
+            if (!core || syncing || !armGroupDragSession || (GetKeyState(VK_CONTROL) & 0x8000) ||
+                (GetKeyState(VK_SHIFT) & 0x8000) || GroupDeparture().group == id)
+                return;
             armGroupDragSession(id);
-            auto point=args.GetCurrentPoint(view).Position();
-            if (shell_core_group_drag_arm(core,id,point.X,point.Y)!=SHELL_STATUS_OK) return;
+            auto point = args.GetCurrentPoint(view).Position();
+            if (shell_core_group_drag_arm(core, id, point.X, point.Y) != SHELL_STATUS_OK) return;
             inlineGroups.hover.Dismiss();
             groupSlide.Cancel();
             groupDragVisual.Create(root);
-            auto found=inlineGroups.runs.find(id);
-            if (found!=inlineGroups.runs.end())
-                groupDragVisual.Arm(found->second.button,args.GetCurrentPoint(groupDragVisual.layer).Position());
+            auto found = inlineGroups.runs.find(id);
+            if (found != inlineGroups.runs.end())
+                groupDragVisual.Arm(found->second.button, args.GetCurrentPoint(groupDragVisual.layer).Position());
             if (startDragSessionTimer) startDragSessionTimer();
             // Button retains its stock click/capture until movement promotes the drag.
         };
-        inlineGroups.hover.allowed = [this] { return !IsDragging() && !GroupDrag().phase && !(GetKeyState(VK_LBUTTON) & 0x8000) && root.IsLoaded() && root.Visibility() == Visibility::Visible; };
+        inlineGroups.hover.allowed = [this] {
+            return !IsDragging() && !GroupDrag().phase && !(GetKeyState(VK_LBUTTON) & 0x8000) && root.IsLoaded() &&
+                   root.Visibility() == Visibility::Visible;
+        };
         inlineGroups.hover.activate = [this](uint32_t group, uint32_t tab) {
             if (IsDragging() || GroupDrag().phase || !groupsButton.dispatch) return;
             using Value = Windows::Data::Json::JsonValue;
             Windows::Data::Json::JsonObject action;
-            action.SetNamedValue(L"kind",Value::CreateStringValue(L"strip-group-select"));
-            action.SetNamedValue(L"revision",Value::CreateNumberValue(presentationRevision));
-            action.SetNamedValue(L"session",Value::CreateNumberValue(windowDragSession));
-            action.SetNamedValue(L"group",Value::CreateNumberValue(group));
-            action.SetNamedValue(L"id",Value::CreateNumberValue(tab));
+            action.SetNamedValue(L"kind", Value::CreateStringValue(L"strip-group-select"));
+            action.SetNamedValue(L"revision", Value::CreateNumberValue(presentationRevision));
+            action.SetNamedValue(L"session", Value::CreateNumberValue(windowDragSession));
+            action.SetNamedValue(L"group", Value::CreateNumberValue(group));
+            action.SetNamedValue(L"id", Value::CreateNumberValue(tab));
             groupsButton.dispatch(action.Stringify());
         };
         inlineGroups.highlight = [this](uint32_t id) { groupSurface.Hover(groupHover ? id : 0); };
         inlineGroups.toggle = [this](uint32_t id, bool collapsed) {
-            if (GroupDrag().phase==1) EndGroupDrag(true);
+            if (GroupDrag().phase == 1) EndGroupDrag(true);
             if (IsDragging() || GroupDrag().phase || !groupsButton.dispatch) return;
             using JValue = Windows::Data::Json::JsonValue;
             Windows::Data::Json::JsonObject action;
@@ -1826,10 +2082,12 @@ struct NativeTabStrip {
             groupsButton.dispatch(action.Stringify());
         };
         inlineGroups.context = [this](uint32_t id, Windows::Foundation::Rect, Controls::Button const& button) {
-            OpenGroupEditor(id,button);
+            OpenGroupEditor(id, button);
         };
         auto alive = std::weak_ptr<int>(lifetime);
-        root.ActualThemeChanged([this, alive](auto&&, auto&&) { if (!alive.expired()) InvalidateGeometry(); });
+        root.ActualThemeChanged([this, alive](auto&&, auto&&) {
+            if (!alive.expired()) InvalidateGeometry();
+        });
         root.SizeChanged([this, alive](auto&&, auto&&) {
             if (alive.expired()) return;
             groupSlide.Cancel();
@@ -1838,23 +2096,31 @@ struct NativeTabStrip {
             ++closeGeneration;
             CancelCloseSequence();
         });
-        root.Unloaded([this, alive](auto&&, auto&&) { if (!alive.expired()) { groupHeader.Close(); ambient.Motion(false); CancelCloseSequence(); groupSlide.Cancel(); inlineGroups.hover.Hide(); } });
+        root.Unloaded([this, alive](auto&&, auto&&) {
+            if (!alive.expired()) {
+                groupHeader.Close();
+                ambient.Motion(false);
+                CancelCloseSequence();
+                groupSlide.Cancel();
+                inlineGroups.hover.Hide();
+            }
+        });
         root.PreviewKeyDown([this, alive](auto&&, auto const& args) {
             if (alive.expired() || GroupDrag().phase) return;
-            const auto key=args.Key();
-            using Key=Windows::System::VirtualKey;
-            if (key==Key::Left || key==Key::Right || key==Key::Up || key==Key::Down ||
-                key==Key::Home || key==Key::End || key==Key::Tab || key==Key::Space || key==Key::Enter)
-                groupSelectionGuard=false;
-            if ((key==Key::Left || key==Key::Right || key==Key::Home || key==Key::End) && !args.Handled() &&
+            const auto key = args.Key();
+            using Key = Windows::System::VirtualKey;
+            if (key == Key::Left || key == Key::Right || key == Key::Up || key == Key::Down || key == Key::Home ||
+                key == Key::End || key == Key::Tab || key == Key::Space || key == Key::Enter)
+                groupSelectionGuard = false;
+            if ((key == Key::Left || key == Key::Right || key == Key::Home || key == Key::End) && !args.Handled() &&
                 !IsDragging() && Navigate(args.OriginalSource(), key))
                 args.Handled(true);
         });
         view.SelectionChanged([this, alive](auto const&, auto const&) {
             if (alive.expired() || syncing || GroupDrag().phase || !view.SelectedItem()) return;
             if (groupSelectionGuard) {
-                groupSelectionFrames=0;
-                if (rows.count(activeTabId) && view.SelectedItem()!=rows.at(activeTabId))
+                groupSelectionFrames = 0;
+                if (rows.count(activeTabId) && view.SelectedItem() != rows.at(activeTabId))
                     view.SelectedItem(rows.at(activeTabId));
                 return;
             }
@@ -1951,45 +2217,59 @@ struct NativeTabStrip {
         if (groupTimer) groupTimer.Stop();
         lifetime.reset();
         if (core) shell_core_transfer_cancel(core);
-        try { ReconcileTransfers(); } catch (...) { /* An island may also be closing. */ }
+        try {
+            ReconcileTransfers();
+        } catch (...) { /* An island may also be closing. */
+        }
         inlineGroups.Release(view);
     }
 
-    void OpenGroupEditor(uint32_t id,Controls::Button const& button,uint32_t request=0) {
-        if((!request && (IsDragging() || GroupDrag().phase)) || !groupsButton.dispatch)return;
-        groupHeader.core=core;groupHeader.dispatch=groupsButton.dispatch;
-        groupHeader.releaseFocus=[this]{if(ownerHwnd)SetFocus(NativeWindowHost::PageWindow(ownerHwnd));};
-        const auto opening=request?groupHeader.Request(button,request,id,windowDragSession):groupHeader.Open(button);if(!opening)return;
-        using Value=Windows::Data::Json::JsonValue;
-        auto local=button.TransformToVisual(nullptr).TransformBounds({0,0,float(button.ActualWidth()),float(button.ActualHeight())});
-        auto bounds=button.XamlRoot().ContentIsland().CoordinateConverter().ConvertLocalToScreen(local);
+    void OpenGroupEditor(uint32_t id, Controls::Button const& button, uint32_t request = 0) {
+        if ((!request && (IsDragging() || GroupDrag().phase)) || !groupsButton.dispatch) return;
+        groupHeader.core = core;
+        groupHeader.dispatch = groupsButton.dispatch;
+        groupHeader.releaseFocus = [this] {
+            if (ownerHwnd) SetFocus(NativeWindowHost::PageWindow(ownerHwnd));
+        };
+        const auto opening =
+            request ? groupHeader.Request(button, request, id, windowDragSession) : groupHeader.Open(button);
+        if (!opening) return;
+        using Value = Windows::Data::Json::JsonValue;
+        auto local = button.TransformToVisual(nullptr).TransformBounds(
+            {0, 0, float(button.ActualWidth()), float(button.ActualHeight())});
+        auto bounds = button.XamlRoot().ContentIsland().CoordinateConverter().ConvertLocalToScreen(local);
         Windows::Data::Json::JsonObject action;
-        action.SetNamedValue(L"kind",Value::CreateStringValue(L"strip-group-context"));
-        action.SetNamedValue(L"menuSession",Value::CreateNumberValue(opening));
-        action.SetNamedValue(L"creation",Value::CreateNumberValue(request));
-        action.SetNamedValue(L"revision",Value::CreateNumberValue(presentationRevision));
-        action.SetNamedValue(L"session",Value::CreateNumberValue(windowDragSession));
-        action.SetNamedValue(L"group",Value::CreateNumberValue(id));
-        action.SetNamedValue(L"x",Value::CreateNumberValue(bounds.X));action.SetNamedValue(L"y",Value::CreateNumberValue(bounds.Y));
-        action.SetNamedValue(L"width",Value::CreateNumberValue(bounds.Width));action.SetNamedValue(L"height",Value::CreateNumberValue(bounds.Height));
+        action.SetNamedValue(L"kind", Value::CreateStringValue(L"strip-group-context"));
+        action.SetNamedValue(L"menuSession", Value::CreateNumberValue(opening));
+        action.SetNamedValue(L"creation", Value::CreateNumberValue(request));
+        action.SetNamedValue(L"revision", Value::CreateNumberValue(presentationRevision));
+        action.SetNamedValue(L"session", Value::CreateNumberValue(windowDragSession));
+        action.SetNamedValue(L"group", Value::CreateNumberValue(id));
+        action.SetNamedValue(L"x", Value::CreateNumberValue(bounds.X));
+        action.SetNamedValue(L"y", Value::CreateNumberValue(bounds.Y));
+        action.SetNamedValue(L"width", Value::CreateNumberValue(bounds.Width));
+        action.SetNamedValue(L"height", Value::CreateNumberValue(bounds.Height));
         groupsButton.dispatch(action.Stringify());
     }
     void RequestGroupCreation(Windows::Data::Json::JsonObject const& model) {
-        auto request=NativeGroupHeader::Id(model,L"request"),group=NativeGroupHeader::Id(model,L"group"),window=NativeGroupHeader::Id(model,L"window");
-        if(model.Size()!=3 || window!=windowDragSession)winrt::throw_hresult(E_INVALIDARG);
-        auto source=inlineGroups.runs.find(group);
+        auto request = NativeGroupHeader::Id(model, L"request"), group = NativeGroupHeader::Id(model, L"group"),
+             window = NativeGroupHeader::Id(model, L"window");
+        if (model.Size() != 3 || window != windowDragSession) winrt::throw_hresult(E_INVALIDARG);
+        auto source = inlineGroups.runs.find(group);
         // The new header can still be awaiting layout. The strip's always-loaded
         // all-tabs button is a native, window-scoped anchor for that opening.
-        auto button=source!=inlineGroups.runs.end() && source->second.button.IsLoaded()?source->second.button:allTabs.button;
-        if(!button.IsLoaded())winrt::throw_hresult(E_NOT_VALID_STATE);
-        OpenGroupEditor(group,button,request);
+        auto button = source != inlineGroups.runs.end() && source->second.button.IsLoaded() ? source->second.button
+                                                                                            : allTabs.button;
+        if (!button.IsLoaded()) winrt::throw_hresult(E_NOT_VALID_STATE);
+        OpenGroupEditor(group, button, request);
     }
 
     // Names the native opening and anchor; Firefox publishes the live list.
     void OpenAllTabs() {
         if (!dispatch || IsDragging() || GroupDrag().phase || !allTabs.button.XamlRoot()) return;
         auto button = allTabs.button;
-        const auto session=allTabsPanel.Open(button);if(!session)return;
+        const auto session = allTabsPanel.Open(button);
+        if (!session) return;
         auto local = button.TransformToVisual(nullptr).TransformBounds(
             {0, 0, float(button.ActualWidth()), float(button.ActualHeight())});
         auto screen = button.XamlRoot().ContentIsland().CoordinateConverter().ConvertLocalToScreen(local);
@@ -2037,8 +2317,8 @@ struct NativeTabStrip {
         uint32_t index{};
         if (!tab || !view.TabItems().IndexOf(tab, index)) return;
         CompleteReorderAt(tab, index + 1 < view.TabItems().Size()
-                                    ? view.TabItems().GetAt(index + 1).as<Controls::TabViewItem>()
-                                    : nullptr);
+                                   ? view.TabItems().GetAt(index + 1).as<Controls::TabViewItem>()
+                                   : nullptr);
     }
 
     // Same, but for the hand-rolled drag below: TabItems()'s real order never
@@ -2049,8 +2329,8 @@ struct NativeTabStrip {
     void CompleteReorder(Controls::TabViewItem const& tab, uint32_t targetIndex) {
         if (!tab) return;
         CompleteReorderAt(tab, targetIndex < view.TabItems().Size()
-                                    ? view.TabItems().GetAt(targetIndex).as<Controls::TabViewItem>()
-                                    : nullptr);
+                                   ? view.TabItems().GetAt(targetIndex).as<Controls::TabViewItem>()
+                                   : nullptr);
     }
 
     uint64_t CompleteReorderAt(Controls::TabViewItem const& tab, Controls::TabViewItem const& beforeRow,
@@ -2059,7 +2339,8 @@ struct NativeTabStrip {
         Windows::Data::Json::JsonObject action;
         action.SetNamedValue(L"kind", Windows::Data::Json::JsonValue::CreateStringValue(L"strip-reorder"));
         action.SetNamedValue(L"revision", Windows::Data::Json::JsonValue::CreateNumberValue(presentationRevision));
-        action.SetNamedValue(L"id", Windows::Data::Json::JsonValue::CreateNumberValue(unbox_value<uint32_t>(tab.Tag())));
+        action.SetNamedValue(L"id",
+                             Windows::Data::Json::JsonValue::CreateNumberValue(unbox_value<uint32_t>(tab.Tag())));
         action.SetNamedValue(L"beforeId", Windows::Data::Json::JsonValue::CreateNumberValue(beforeId));
         action.SetNamedValue(L"ungroup", Windows::Data::Json::JsonValue::CreateBooleanValue(ungroup));
         action.SetNamedValue(L"unpin", Windows::Data::Json::JsonValue::CreateBooleanValue(unpin));
@@ -2078,7 +2359,8 @@ struct NativeTabStrip {
         Windows::Data::Json::JsonObject action;
         action.SetNamedValue(L"kind", Windows::Data::Json::JsonValue::CreateStringValue(L"strip-detach"));
         action.SetNamedValue(L"revision", Windows::Data::Json::JsonValue::CreateNumberValue(presentationRevision));
-        action.SetNamedValue(L"id", Windows::Data::Json::JsonValue::CreateNumberValue(unbox_value<uint32_t>(tab.Tag())));
+        action.SetNamedValue(L"id",
+                             Windows::Data::Json::JsonValue::CreateNumberValue(unbox_value<uint32_t>(tab.Tag())));
         action.SetNamedValue(L"screenX", Windows::Data::Json::JsonValue::CreateNumberValue(double(screenPoint.x)));
         action.SetNamedValue(L"screenY", Windows::Data::Json::JsonValue::CreateNumberValue(double(screenPoint.y)));
         return dispatch ? dispatch(unbox_value<uint32_t>(tab.Tag()), action.Stringify()) : 0;
@@ -2095,11 +2377,12 @@ struct NativeTabStrip {
         std::vector<ShellForeignRow> measured;
         for (uint32_t i = 0; i < view.TabItems().Size(); ++i) {
             auto row = view.TabItems().GetAt(i).as<Controls::TabViewItem>();
-            measured.push_back({unbox_value<uint32_t>(row.Tag()),
-                row.TransformToVisual(view).TransformPoint({0, 0}).X, row.ActualWidth()});
+            measured.push_back({unbox_value<uint32_t>(row.Tag()), row.TransformToVisual(view).TransformPoint({0, 0}).X,
+                                row.ActualWidth()});
         }
         uint32_t index = 0;
-        if (shell_core_foreign_external_index(core, measured.data(), measured.size(), localX, &index) != SHELL_STATUS_OK)
+        if (shell_core_foreign_external_index(core, measured.data(), measured.size(), localX, &index) !=
+            SHELL_STATUS_OK)
             throw winrt::hresult_invalid_argument();
         return index;
     }
@@ -2116,7 +2399,7 @@ struct NativeTabStrip {
         action.SetNamedValue(L"kind", Windows::Data::Json::JsonValue::CreateStringValue(L"strip-adopt"));
         action.SetNamedValue(L"revision", Windows::Data::Json::JsonValue::CreateNumberValue(presentationRevision));
         action.SetNamedValue(L"sourceHwnd", Windows::Data::Json::JsonValue::CreateNumberValue(
-                                                 double(reinterpret_cast<uintptr_t>(sourceHwnd))));
+                                                double(reinterpret_cast<uintptr_t>(sourceHwnd))));
         action.SetNamedValue(L"id", Windows::Data::Json::JsonValue::CreateNumberValue(tabId));
         action.SetNamedValue(L"index", Windows::Data::Json::JsonValue::CreateNumberValue(index));
         // The adopted tab belongs to the source window, not this one, so this
@@ -2131,7 +2414,8 @@ struct NativeTabStrip {
     // True if `source` is (or is inside) a button between it and `row` --
     // lets the stock close button keep its normal input untouched by either
     // the multiselect click handler or the drag-arm handler below.
-    static bool OriginatesOnButton(winrt::Windows::Foundation::IInspectable const& source, Controls::TabViewItem const& row) {
+    static bool OriginatesOnButton(winrt::Windows::Foundation::IInspectable const& source,
+                                   Controls::TabViewItem const& row) {
         auto node = source.try_as<DependencyObject>();
         while (node && node != row) {
             if (node.try_as<Controls::Primitives::ButtonBase>()) return true;
@@ -2167,7 +2451,10 @@ struct NativeTabStrip {
         it->second.storyboard.Stop();
         RowTransform(row).X(current);
         row.Clip(nullptr);
-        if (it->second.entering) { RowTransform(row).Y(0); row.Opacity(1); }
+        if (it->second.entering) {
+            RowTransform(row).Y(0);
+            row.Opacity(1);
+        }
         rowAnimations.erase(it);
     }
 
@@ -2181,7 +2468,12 @@ struct NativeTabStrip {
     // next Frame. After `limitMs`, `Expired` is the last call.
     enum class LayoutStep { Pass, Frame, Expired };
     void OnLayoutSteps(std::function<bool(LayoutStep)> work, double limitMs) {
-        struct Pending { winrt::event_token layout, rendering; std::function<bool(LayoutStep)> work; double until{}; bool running{}; };
+        struct Pending {
+            winrt::event_token layout, rendering;
+            std::function<bool(LayoutStep)> work;
+            double until{};
+            bool running{};
+        };
         auto pending = std::make_shared<Pending>();
         pending->work = std::move(work);
         pending->until = SteadyMs() + limitMs;
@@ -2189,10 +2481,14 @@ struct NativeTabStrip {
             auto state = weak.lock();
             // `running`: the work's own layout reads can raise LayoutUpdated.
             if (alive.expired() || !state || !state->work || state->running) return;
-            const auto step = !frame ? LayoutStep::Pass : SteadyMs() >= state->until ? LayoutStep::Expired : LayoutStep::Frame;
+            const auto step = !frame                       ? LayoutStep::Pass
+                              : SteadyMs() >= state->until ? LayoutStep::Expired
+                                                           : LayoutStep::Frame;
             state->running = true;
             bool done = true;
-            try { done = state->work(step); } catch (...) {}
+            try {
+                done = state->work(step);
+            } catch (...) {}
             state->running = false;
             if (!done && step != LayoutStep::Expired) return;
             state->work = nullptr;
@@ -2260,10 +2556,12 @@ struct NativeTabStrip {
             result[{kind, id}] = {bounds.X, bounds.Width};
         };
         for (auto const& [id, row] : rows) append(SHELL_SETTLE_TAB, id, row);
-        for (auto const& [id, run] : inlineGroups.runs) if (run.button) append(SHELL_SETTLE_HEADER, uint32_t(id), run.button);
+        for (auto const& [id, run] : inlineGroups.runs)
+            if (run.button) append(SHELL_SETTLE_HEADER, uint32_t(id), run.button);
         if (auto add = FindAddButton(view)) {
             const auto bounds = displayed ? add.TransformToVisual(root).TransformBounds(
-                {0, 0, float(add.ActualWidth()), float(add.ActualHeight())}) : ArrangedBounds(add);
+                                                {0, 0, float(add.ActualWidth()), float(add.ActualHeight())})
+                                          : ArrangedBounds(add);
             result[{SHELL_SETTLE_CLOCK, 1}] = {bounds.X, bounds.Width};
         }
         return result;
@@ -2295,21 +2593,31 @@ struct NativeTabStrip {
         closeSequence = false;
         preparingClose = false;
         for (auto const& storyboard : closeStoryboards) storyboard.Stop();
-        closeStoryboards.clear(); closeFaces.clear(); closeCheckpoints.clear();
+        closeStoryboards.clear();
+        closeFaces.clear();
+        closeCheckpoints.clear();
         if (closeOverlay) closeOverlay.Children().Clear();
-        closeFrom.clear(); closeTarget.clear();
+        closeFrom.clear();
+        closeTarget.clear();
         StartAddSlide(0);
         ClearSettling();
     }
     void UpdateCloseSequence() {
         if (!closeSequence || updatingClose || preparingClose || syncing) return;
         updatingClose = true;
-        struct Updating { bool& flag; ~Updating() { flag = false; } } guard{updatingClose};
-        if (IsDragging() || !ShellMotion::Enabled()) { CancelCloseSequence(); return; }
+        struct Updating {
+            bool& flag;
+            ~Updating() { flag = false; }
+        } guard{updatingClose};
+        if (IsDragging() || !ShellMotion::Enabled()) {
+            CancelCloseSequence();
+            return;
+        }
         // A blocked/unloaded compositor still gets bounded recovery.
         if (!closeCheckpoints.empty() && SteadyMs() > closeCheckpoints.front()->deadline) {
             for (auto const& storyboard : closeStoryboards) storyboard.Stop();
-            closeStoryboards.clear(); closeFaces.clear();
+            closeStoryboards.clear();
+            closeFaces.clear();
             if (closeOverlay) closeOverlay.Children().Clear();
             for (auto const& checkpoint : closeCheckpoints) checkpoint->ready = true;
             AdvanceCloseSequence();
@@ -2325,12 +2633,14 @@ struct NativeTabStrip {
             Hosting::ElementCompositionPreview::SetIsTranslationEnabled(row, true);
             visual.StopAnimation(L"Scale.X");
             visual.Properties().StopAnimation(L"Translation.X");
-            visual.CenterPoint({0, 0, 0}); visual.Scale({sx, 1, 1});
+            visual.CenterPoint({0, 0, 0});
+            visual.Scale({sx, 1, 1});
             visual.Properties().InsertVector3(L"Translation", {dx, 0, 0});
             Track(kind, id, row, dx, sx, SteadyMs() + 1000);
         };
         for (auto const& [id, row] : rows) place(SHELL_SETTLE_TAB, id, row);
-        for (auto const& [id, run] : inlineGroups.runs) if (run.button) place(SHELL_SETTLE_HEADER, uint32_t(id), run.button);
+        for (auto const& [id, run] : inlineGroups.runs)
+            if (run.button) place(SHELL_SETTLE_HEADER, uint32_t(id), run.button);
         for (auto& face : closeFaces) {
             auto at = positions.find({SHELL_SETTLE_TAB, face.id});
             if (at == positions.end()) continue;
@@ -2345,7 +2655,11 @@ struct NativeTabStrip {
         if (auto add = FindAddButton(view)) {
             auto at = positions.find({SHELL_SETTLE_CLOCK, 1});
             if (at != positions.end()) {
-                if (!addHeld) { addPrevious = add.RenderTransform(); addHeld = true; add.RenderTransform(Media::TranslateTransform()); }
+                if (!addHeld) {
+                    addPrevious = add.RenderTransform();
+                    addHeld = true;
+                    add.RenderTransform(Media::TranslateTransform());
+                }
                 add.RenderTransform().as<Media::TranslateTransform>().X(at->second.first - ArrangedBounds(add).X);
                 if (captionGeometryChanged) captionGeometryChanged();
             }
@@ -2389,20 +2703,22 @@ struct NativeTabStrip {
         if (!closeOverlay) {
             closeOverlay = Controls::Canvas();
             closeOverlay.IsHitTestVisible(false);
-            Automation::AutomationProperties::SetAccessibilityView(closeOverlay, Automation::Peers::AccessibilityView::Raw);
+            Automation::AutomationProperties::SetAccessibilityView(closeOverlay,
+                                                                   Automation::Peers::AccessibilityView::Raw);
             Controls::Grid::SetColumnSpan(closeOverlay, 3);
             Controls::Canvas::SetZIndex(closeOverlay, 10);
             root.Children().Append(closeOverlay);
         }
         Media::RectangleGeometry viewClip;
-        const auto viewBounds = view.TransformToVisual(root).TransformBounds(
-            {0, 0, float(view.ActualWidth()), float(view.ActualHeight())});
+        const auto viewBounds =
+            view.TransformToVisual(root).TransformBounds({0, 0, float(view.ActualWidth()), float(view.ActualHeight())});
         viewClip.Rect(viewBounds);
         closeOverlay.Clip(viewClip);
         // The closed row can remain in WinUI's recycle cache. Transfer only
         // our header after removal, without reparenting the cached container
         // or letting header detachment disturb the pre-close layout capture.
-        for (auto& held : settling) if (held.element == closing.source) held.content.reset();
+        for (auto& held : settling)
+            if (held.element == closing.source) held.content.reset();
         closing.source.Header(nullptr);
         Controls::TabViewItem ghost;
         ghost.Header(closing.header);
@@ -2428,17 +2744,19 @@ struct NativeTabStrip {
         Media::Animation::Storyboard storyboard;
         ShellMotion::Append(storyboard, shift, L"Y", 0, SHELL_MOTION_TRAVEL_DIP, ShellMotion::Kind::Exit);
         ShellMotion::Append(storyboard, ghost, L"Opacity", closing.opacity, 0, ShellMotion::Kind::Exit);
-        storyboard.Completed([this, alive = std::weak_ptr<int>(lifetime), ghost, checkpoint](auto const& sender, auto const&) {
-            if (alive.expired()) return;
-            uint32_t index;
-            if (closeOverlay && closeOverlay.Children().IndexOf(ghost, index)) closeOverlay.Children().RemoveAt(index);
-            std::erase_if(closeFaces, [&](auto const& face) { return face.row == ghost; });
-            std::erase_if(closeStoryboards, [&](auto const& item) { return item == sender; });
-            if (checkpoint->pending) --checkpoint->pending;
-            checkpoint->ready = checkpoint->pending == 0;
-            AdvanceCloseSequence();
-            ambient.Update();
-        });
+        storyboard.Completed(
+            [this, alive = std::weak_ptr<int>(lifetime), ghost, checkpoint](auto const& sender, auto const&) {
+                if (alive.expired()) return;
+                uint32_t index;
+                if (closeOverlay && closeOverlay.Children().IndexOf(ghost, index))
+                    closeOverlay.Children().RemoveAt(index);
+                std::erase_if(closeFaces, [&](auto const& face) { return face.row == ghost; });
+                std::erase_if(closeStoryboards, [&](auto const& item) { return item == sender; });
+                if (checkpoint->pending) --checkpoint->pending;
+                checkpoint->ready = checkpoint->pending == 0;
+                AdvanceCloseSequence();
+                ambient.Update();
+            });
         closeStoryboards.push_back(storyboard);
         storyboard.Begin();
     }
@@ -2450,7 +2768,11 @@ struct NativeTabStrip {
     // unmirrored space in both flow directions (a row's Visual.Offset is the
     // same in each), so the left-edge formula holds in right-to-left too; the
     // right-edge anchor tried first was wrong.
-    struct Neighbor { FrameworkElement element{nullptr}; float dx{}, sx{}; uint32_t kind{}, id{}; };
+    struct Neighbor {
+        FrameworkElement element{nullptr};
+        float dx{}, sx{};
+        uint32_t kind{}, id{};
+    };
     // Old left edge and width of every tab row (SHELL_SETTLE_TAB) and group
     // header (SHELL_SETTLE_HEADER), captured before a publication moves them.
     // Elements easing to rest after HoldNeighbors. Their composition offset
@@ -2461,7 +2783,9 @@ struct NativeTabStrip {
     // ends, so a finished element stays placed from its layout slot until its
     // reported bounds agree (`rested`), for at most SettleLagMs.
     struct Settling {
-        FrameworkElement element{nullptr}; uint32_t kind{}, id{}; bool rested{};
+        FrameworkElement element{nullptr};
+        uint32_t kind{}, id{};
+        bool rested{};
         std::shared_ptr<TabContentScale> content;
     };
     std::vector<Settling> settling;
@@ -2472,7 +2796,8 @@ struct NativeTabStrip {
         ReleaseCloseViewport();
         for (auto& held : settling) {
             try {
-                auto visual = winrt::Microsoft::UI::Xaml::Hosting::ElementCompositionPreview::GetElementVisual(held.element);
+                auto visual =
+                    winrt::Microsoft::UI::Xaml::Hosting::ElementCompositionPreview::GetElementVisual(held.element);
                 visual.StopAnimation(L"Scale.X");
                 visual.Properties().StopAnimation(L"Translation.X");
                 visual.Scale({1, 1, 1});
@@ -2485,7 +2810,8 @@ struct NativeTabStrip {
     }
 
     // Opt-in (FENN_PANE_DIAGNOSTICS) trace of the new-tab entry motion.
-    template <typename... Args> static void EntryLog(char const* format, Args... args) {
+    template <typename... Args>
+    static void EntryLog(char const* format, Args... args) {
         static const bool enabled = GetEnvironmentVariableW(L"FENN_PANE_DIAGNOSTICS", nullptr, 0) != 0;
         if (!enabled) return;
         fprintf(stderr, format, args...);
@@ -2500,15 +2826,16 @@ struct NativeTabStrip {
             auto at = positions.find({kind, id});
             if (at != positions.end()) {
                 auto bounds = ArrangedBounds(row);
-                bounds.X = at->second.first; bounds.Width = at->second.second;
+                bounds.X = at->second.first;
+                bounds.Width = at->second.second;
                 return bounds;
             }
         }
         // Composition getters/TransformToVisual can still report the original
         // hold while the animation runs. Retarget from the sampled on-screen
         // position, as ambient lighting does, so bursts cannot restart there.
-        const auto held = std::find_if(settling.begin(), settling.end(),
-            [&](auto const& item) { return item.element == row; });
+        const auto held =
+            std::find_if(settling.begin(), settling.end(), [&](auto const& item) { return item.element == row; });
         auto parent = Media::VisualTreeHelper::GetParent(row).try_as<UIElement>();
         ShellSettleSample sample{};
         if (held != settling.end() && parent && core &&
@@ -2543,7 +2870,8 @@ struct NativeTabStrip {
             const auto offset = row.ActualOffset();
             auto origin = parent.TransformToVisual(root).TransformPoint({offset.x, offset.y});
             if (auto shift = row.RenderTransform().try_as<Media::TranslateTransform>()) origin.X += float(shift.X());
-            const Windows::Foundation::Rect now{origin.X, origin.Y, float(row.ActualWidth()), float(row.ActualHeight())};
+            const Windows::Foundation::Rect now{origin.X, origin.Y, float(row.ActualWidth()),
+                                                float(row.ActualHeight())};
             // Only animate neighbors visible in both layouts. Scrolling owns
             // entry/exit at the viewport; newly realized containers can carry
             // stale offscreen bounds (thousands of DIP away). Replaying those
@@ -2580,12 +2908,15 @@ struct NativeTabStrip {
     void Track(uint32_t kind, uint32_t id, FrameworkElement const& element, float dx, float sx, double start) {
         if (!core || shell_core_settle_hold(core, kind, id, dx, sx, start) != SHELL_STATUS_OK) return;
         settlingUntil = start + SHELL_MOTION_REPOSITION_MS + SettleLagMs;
-        auto found = std::find_if(settling.begin(), settling.end(), [&](auto const& item) { return item.element == element; });
+        auto found =
+            std::find_if(settling.begin(), settling.end(), [&](auto const& item) { return item.element == element; });
         auto content = found != settling.end() ? found->content : std::shared_ptr<TabContentScale>{};
         if (!content && kind == SHELL_SETTLE_TAB && std::abs(sx - 1.f) >= .002f)
             if (auto row = element.try_as<Controls::TabViewItem>()) content = std::make_shared<TabContentScale>(row);
-        if (found == settling.end()) settling.push_back({element, kind, id, false, std::move(content)});
-        else *found = {element, kind, id, false, std::move(content)};
+        if (found == settling.end())
+            settling.push_back({element, kind, id, false, std::move(content)});
+        else
+            *found = {element, kind, id, false, std::move(content)};
     }
 
     // Without `refresh`, the caller refreshes the lighting once it has placed
@@ -2594,7 +2925,8 @@ struct NativeTabStrip {
         const double start = SteadyMs();
         for (auto const& item : held) {
             try {
-                auto visual = winrt::Microsoft::UI::Xaml::Hosting::ElementCompositionPreview::GetElementVisual(item.element);
+                auto visual =
+                    winrt::Microsoft::UI::Xaml::Hosting::ElementCompositionPreview::GetElementVisual(item.element);
                 Track(item.kind, item.id, item.element, animate ? item.dx : 0.f, animate ? item.sx : 1.f, start);
                 visual.StopAnimation(L"Scale.X");
                 visual.Properties().StopAnimation(L"Translation.X");
@@ -2605,7 +2937,9 @@ struct NativeTabStrip {
                 if (!animate) {
                     // A temporary measurement release must retain title layout;
                     // recreating it on each layout pass would cause reflow loops.
-                    if (refresh) for (auto& held : settling) if (held.element == item.element) held.content.reset();
+                    if (refresh)
+                        for (auto& held : settling)
+                            if (held.element == item.element) held.content.reset();
                     continue;
                 }
                 auto compositor = visual.Compositor();
@@ -2633,8 +2967,7 @@ struct NativeTabStrip {
         if (!entryLayoutReady || closeSequence || !row.IsLoaded() || row.ActualWidth() < 1) return false;
         const auto bounds = MotionBounds(row, SHELL_SETTLE_TAB, id);
         auto overlaps = [&](Windows::Foundation::Rect const& other) {
-            return std::min(bounds.X + bounds.Width, other.X + other.Width) -
-                std::max(bounds.X, other.X) > 1.5f;
+            return std::min(bounds.X + bounds.Width, other.X + other.Width) - std::max(bounds.X, other.X) > 1.5f;
         };
         // Test this face's space, not the newest animation's completion. Older
         // entrances can reveal while later additions keep the strip moving.
@@ -2646,7 +2979,8 @@ struct NativeTabStrip {
             if (other.Opacity() <= 0 && !rowAnimations.count(otherId)) {
                 const auto ownOrder = entryOrder.find(id), otherOrder = entryOrder.find(otherId);
                 if (ownOrder == entryOrder.end() || otherOrder == entryOrder.end() ||
-                    otherOrder->second > ownOrder->second) continue;
+                    otherOrder->second > ownOrder->second)
+                    continue;
             }
             if (overlaps(MotionBounds(other, SHELL_SETTLE_TAB, otherId))) return false;
         }
@@ -2654,56 +2988,79 @@ struct NativeTabStrip {
             if (run.button && overlaps(MotionBounds(run.button, SHELL_SETTLE_HEADER, uint32_t(group)))) return false;
         if (auto add = FindAddButton(view); addSlide && add && add.IsLoaded())
             if (overlaps(add.TransformToVisual(root).TransformBounds(
-                {0, 0, float(add.ActualWidth()), float(add.ActualHeight())}))) return false;
+                    {0, 0, float(add.ActualWidth()), float(add.ActualHeight())})))
+                return false;
         return true;
     }
 
     void AwaitReveal(Controls::TabViewItem const& row, uint32_t id) {
-        OnLayoutSteps([this, alive = std::weak_ptr<int>(lifetime), row, id](LayoutStep step) {
-            if (alive.expired()) return true;
-            if (step == LayoutStep::Pass) return false;
-            auto found = rows.find(id);
-            if (found == rows.end() || found->second != row) return true;
-            if (IsDragging() || groupSlide.storyboard || !ShellMotion::Enabled()) { row.Opacity(1); return true; }
-            if (!EntrySpaceReady(row, id)) {
-                if (step == LayoutStep::Expired) { AwaitReveal(row, id); return true; }
-                return false;
-            }
-            try { StartReveal(row, id); } catch (...) { row.Opacity(1); throw; }
-            row.Opacity(1);
-            return true;
-        }, 1000);
+        OnLayoutSteps(
+            [this, alive = std::weak_ptr<int>(lifetime), row, id](LayoutStep step) {
+                if (alive.expired()) return true;
+                if (step == LayoutStep::Pass) return false;
+                auto found = rows.find(id);
+                if (found == rows.end() || found->second != row) return true;
+                if (IsDragging() || groupSlide.storyboard || !ShellMotion::Enabled()) {
+                    row.Opacity(1);
+                    return true;
+                }
+                if (!EntrySpaceReady(row, id)) {
+                    if (step == LayoutStep::Expired) {
+                        AwaitReveal(row, id);
+                        return true;
+                    }
+                    return false;
+                }
+                try {
+                    StartReveal(row, id);
+                } catch (...) {
+                    row.Opacity(1);
+                    throw;
+                }
+                row.Opacity(1);
+                return true;
+            },
+            1000);
     }
 
     void RevealNewRow(Controls::TabViewItem const& row, uint32_t id, double addBefore,
                       GeometryBefore const& before = {}) {
-        EntryLog("WinUIPane entry reveal id=%u enabled=%d dragging=%d slide=%d width=%.1f loaded=%d before=%zu\n",
-            id, int(groupSlide.Enabled()), int(IsDragging()), int(bool(groupSlide.storyboard)), row.ActualWidth(), int(row.IsLoaded()), before.size());
-        if (!groupSlide.Enabled() || IsDragging() || groupSlide.storyboard) { row.Opacity(1); return; }
+        EntryLog("WinUIPane entry reveal id=%u enabled=%d dragging=%d slide=%d width=%.1f loaded=%d before=%zu\n", id,
+                 int(groupSlide.Enabled()), int(IsDragging()), int(bool(groupSlide.storyboard)), row.ActualWidth(),
+                 int(row.IsLoaded()), before.size());
+        if (!groupSlide.Enabled() || IsDragging() || groupSlide.storyboard) {
+            row.Opacity(1);
+            return;
+        }
         row.Opacity(0);
         if (row.ActualWidth() < 1) {
             // Once the strip overflows, the new container is arranged a layout
             // pass after the first frame. Reveal it from its first real size,
             // which is raised after that layout and before it is drawn.
-            OnLayoutSteps([this, alive = std::weak_ptr<int>(lifetime), generation = closeGeneration,
-                           row, id, addBefore, before](LayoutStep step) {
-                if (alive.expired()) return true;
-                auto found = rows.find(id);
-                if (generation != closeGeneration && found != rows.end() && found->second == row) {
-                    AwaitReveal(row, id);
+            OnLayoutSteps(
+                [this, alive = std::weak_ptr<int>(lifetime), generation = closeGeneration, row, id, addBefore,
+                 before](LayoutStep step) {
+                    if (alive.expired()) return true;
+                    auto found = rows.find(id);
+                    if (generation != closeGeneration && found != rows.end() && found->second == row) {
+                        AwaitReveal(row, id);
+                        return true;
+                    }
+                    if (found == rows.end() || found->second != row || step == LayoutStep::Expired || IsDragging() ||
+                        !ShellMotion::Enabled()) {
+                        row.Opacity(1);
+                        return true;
+                    }
+                    if (row.ActualWidth() < 1) return false;
+                    EntryLog("WinUIPane entry sized id=%u width=%.1f\n", id, row.ActualWidth());
+                    try {
+                        RevealNewRow(row, id, addBefore, before);
+                    } catch (...) {
+                        row.Opacity(1);
+                    }
                     return true;
-                }
-                if (found == rows.end() || found->second != row ||
-                    step == LayoutStep::Expired || IsDragging() || !ShellMotion::Enabled()) {
-                    row.Opacity(1);
-                    return true;
-                }
-                if (row.ActualWidth() < 1) return false;
-                EntryLog("WinUIPane entry sized id=%u width=%.1f\n", id, row.ActualWidth());
-                try { RevealNewRow(row, id, addBefore, before); }
-                catch (...) { row.Opacity(1); }
-                return true;
-            }, 250);
+                },
+                250);
             return;
         }
         const double addDelta = HoldAddButton(addBefore);
@@ -2713,10 +3070,12 @@ struct NativeTabStrip {
             if (auto list = FindTabListView(view))
                 if (Media::VisualTreeHelper::GetChildrenCount(list))
                     if (auto border = Media::VisualTreeHelper::GetChild(list, 0).try_as<FrameworkElement>())
-                        if (auto scroller = border.FindName(L"ScrollViewer").try_as<Controls::ScrollViewer>()) offset = scroller.HorizontalOffset();
+                        if (auto scroller = border.FindName(L"ScrollViewer").try_as<Controls::ScrollViewer>())
+                            offset = scroller.HorizontalOffset();
             const auto at = row.TransformToVisual(root).TransformPoint({0, 0});
-            EntryLog("WinUIPane entry held id=%u x=%.1f neighbors=%zu addDelta=%.1f scroll=%.1f first=%.1f/%.3f\n", id, at.X, neighbors->size(), addDelta,
-                offset, neighbors->empty() ? 0.f : neighbors->front().dx, neighbors->empty() ? 1.f : neighbors->front().sx);
+            EntryLog("WinUIPane entry held id=%u x=%.1f neighbors=%zu addDelta=%.1f scroll=%.1f first=%.1f/%.3f\n", id,
+                     at.X, neighbors->size(), addDelta, offset, neighbors->empty() ? 0.f : neighbors->front().dx,
+                     neighbors->empty() ? 1.f : neighbors->front().sx);
         }
         // Publish readiness after the current layout has received its holds.
         // Reveal scheduling then follows each face's available space.
@@ -2748,10 +3107,16 @@ struct NativeTabStrip {
         auto add = FindAddButton(view);
         if (delta == 0) {
             // Nothing to animate (or the reveal was cancelled): restore.
-            if (addSlide) { try { addSlide.Stop(); } catch (...) {} addSlide = nullptr; }
+            if (addSlide) {
+                try {
+                    addSlide.Stop();
+                } catch (...) {}
+                addSlide = nullptr;
+            }
             const bool restored = addHeld && add;
             if (restored) add.RenderTransform(addPrevious);
-            addHeld = false; addPrevious = nullptr;
+            addHeld = false;
+            addPrevious = nullptr;
             if (restored && captionGeometryChanged) captionGeometryChanged();
             return;
         }
@@ -2763,7 +3128,8 @@ struct NativeTabStrip {
             if (alive.expired() || addSlide != sender) return;
             addSlide = nullptr;
             if (auto add = FindAddButton(view); add && addHeld) add.RenderTransform(addPrevious);
-            addHeld = false; addPrevious = nullptr;
+            addHeld = false;
+            addPrevious = nullptr;
             // Restoring a render transform need not raise LayoutUpdated.
             if (captionGeometryChanged) captionGeometryChanged();
         });
@@ -2777,13 +3143,17 @@ struct NativeTabStrip {
         Media::Animation::Storyboard storyboard;
         ShellMotion::Append(storyboard, RowTransform(row), L"Y", SHELL_MOTION_TRAVEL_DIP, 0, ShellMotion::Kind::Enter);
         ShellMotion::Append(storyboard, row, L"Opacity", 0, 1, ShellMotion::Kind::Fade);
-        storyboard.Completed([this, alive = std::weak_ptr<int>(lifetime), id, weakRow = make_weak(row)](auto const& sender, auto const&) {
+        storyboard.Completed([this, alive = std::weak_ptr<int>(lifetime), id, weakRow = make_weak(row)](
+                                 auto const& sender, auto const&) {
             if (alive.expired()) return;
             auto current = rowAnimations.find(id);
             if (current == rowAnimations.end() || current->second.storyboard != sender) return;
             // Release HoldEnd before later drag code writes opacity/translation.
             current->second.storyboard.Stop();
-            if (auto row = weakRow.get()) { RowTransform(row).Y(0); row.Opacity(1); }
+            if (auto row = weakRow.get()) {
+                RowTransform(row).Y(0);
+                row.Opacity(1);
+            }
             rowAnimations.erase(current);
         });
         rowAnimations[id] = RowAnimation{storyboard, 0, true};
@@ -2806,7 +3176,7 @@ struct NativeTabStrip {
             return;
         }
         const auto from = transform.X();
-        if (from == target) return; // no timeline to wait for when nothing moves
+        if (from == target) return;  // no timeline to wait for when nothing moves
         // Keep the settled value in the base property as well as the timeline.
         // Recycling/unloading a row can end the timeline without holding its
         // final value; it must not then fall back to the old offset.
@@ -2820,8 +3190,7 @@ struct NativeTabStrip {
         // DurationType::Automatic (0), which silently ignores the TimeSpan
         // and falls back to XAML's own built-in 1-second default. Type must
         // be set explicitly, or the duration below is set for nothing.
-        animation.Duration(
-            Duration{Windows::Foundation::TimeSpan{TabMotion::Duration}, DurationType::TimeSpan});
+        animation.Duration(Duration{Windows::Foundation::TimeSpan{TabMotion::Duration}, DurationType::TimeSpan});
         auto ease = TabMotion::Ease();
         animation.EasingFunction(ease);
         Media::Animation::Storyboard::SetTarget(animation, transform);
@@ -2850,7 +3219,10 @@ struct NativeTabStrip {
     void ResetRowOffset(Controls::TabViewItem const& row, uint32_t id) {
         if (auto it = rowAnimations.find(id); it != rowAnimations.end()) {
             it->second.storyboard.Stop();
-            if (it->second.entering) { RowTransform(row).Y(0); row.Opacity(1); }
+            if (it->second.entering) {
+                RowTransform(row).Y(0);
+                row.Opacity(1);
+            }
             rowAnimations.erase(it);
         }
         row.Clip(nullptr);
@@ -2868,8 +3240,8 @@ struct NativeTabStrip {
         auto row = view.TabItems().GetAt(originalIndex).as<Controls::TabViewItem>();
         double target = 0;
         auto status = inlineGroups.active
-            ? shell_core_tab_drag_slot_offset(core, originalIndex, false, false, false, &target)
-            : shell_core_tab_drag_offset(core, originalIndex, &target);
+                          ? shell_core_tab_drag_slot_offset(core, originalIndex, false, false, false, &target)
+                          : shell_core_tab_drag_offset(core, originalIndex, &target);
         if (status != SHELL_STATUS_OK) return;
         auto id = unbox_value<uint32_t>(row.Tag());
         AnimateRowOffset(row, id, target);
@@ -2881,16 +3253,20 @@ struct NativeTabStrip {
     void ShiftTabDragHeaders() {
         if (!inlineGroups.active) return;
         const auto source = Drag().tab;
-        const auto sourceSlot = std::find_if(groupLayout.begin(), groupLayout.end(),
-            [source](auto slot) { return slot.tab == source; });
+        const auto sourceSlot =
+            std::find_if(groupLayout.begin(), groupLayout.end(), [source](auto slot) { return slot.tab == source; });
         const auto sourceGroup = sourceSlot == groupLayout.end() ? 0 : sourceSlot->group;
         uint32_t index = 0;
         for (auto slot : groupLayout) {
-            if (slot.tab) { ++index; continue; }
+            if (slot.tab) {
+                ++index;
+                continue;
+            }
             auto found = inlineGroups.runs.find(slot.group);
             if (found == inlineGroups.runs.end() || !found->second.button) continue;
             double target{};
-            if (shell_core_tab_drag_slot_offset(core, index, true, slot.group == sourceGroup, slot.group == joinGroup, &target) == SHELL_STATUS_OK)
+            if (shell_core_tab_drag_slot_offset(core, index, true, slot.group == sourceGroup, slot.group == joinGroup,
+                                                &target) == SHELL_STATUS_OK)
                 tabDragHeaders.Apply(slot.group, found->second.button, target, groupSlide.Enabled());
         }
     }
@@ -2909,33 +3285,40 @@ struct NativeTabStrip {
         joinGroup = joinTarget = 0;
         uint32_t candidate{};
         const auto source = presentation.find(Drag().tab);
-        if (core && source != presentation.end() && source->second.groupSource &&
-            point.X >= 0 && point.X <= view.ActualWidth() &&
-            point.Y >= 0 && point.Y <= view.ActualHeight()) {
+        if (core && source != presentation.end() && source->second.groupSource && point.X >= 0 &&
+            point.X <= view.ActualWidth() && point.Y >= 0 && point.Y <= view.ActualHeight()) {
             auto join = [&](uint32_t group, uint32_t tab, bool before) {
                 if (shell_core_tab_drag_join(core, group, tab, before) != SHELL_STATUS_OK) {
-                    ClearGroupHover(); return false;
+                    ClearGroupHover();
+                    return false;
                 }
                 ClearGroupHover();
-                joinGroup = group; joinTarget = tab; joinBefore = before;
+                joinGroup = group;
+                joinTarget = tab;
+                joinBefore = before;
                 // Existing groups use the insertion gap. The outline belongs
                 // only to the new-group creation dwell below.
                 return true;
             };
             uint32_t hitGroup{}, hitTab{};
             bool hitBefore{};
-            if (shell_core_tab_drag_join_hit(core, point.X - drag.shift, 0, false, &hitGroup, &hitTab, &hitBefore) == SHELL_STATUS_OK && hitGroup) {
+            if (shell_core_tab_drag_join_hit(core, point.X - drag.shift, 0, false, &hitGroup, &hitTab, &hitBefore) ==
+                    SHELL_STATUS_OK &&
+                hitGroup) {
                 const auto target = presentation.find(hitTab);
                 if (!hitTab || (target != presentation.end() && target->second.groupSource))
                     return join(hitGroup, hitTab, hitBefore);
             }
             // Header hits include fully collapsed groups with no visible member.
             uint32_t index{};
-            const auto sourceSlot = std::find_if(groupLayout.begin(), groupLayout.end(),
-                [&](auto slot) { return slot.tab == Drag().tab; });
+            const auto sourceSlot =
+                std::find_if(groupLayout.begin(), groupLayout.end(), [&](auto slot) { return slot.tab == Drag().tab; });
             const auto sourceGroup = sourceSlot == groupLayout.end() ? 0 : sourceSlot->group;
             for (auto slot : groupLayout) {
-                if (slot.tab) { ++index; continue; }
+                if (slot.tab) {
+                    ++index;
+                    continue;
+                }
                 const auto id = slot.group;
                 const auto found = inlineGroups.runs.find(id);
                 if (found == inlineGroups.runs.end()) continue;
@@ -2944,10 +3327,15 @@ struct NativeTabStrip {
                 double offset{};
                 // Collapsed headers retain their stable acquisition region:
                 // removing the source can shift the entire button by a tab width.
-                if (!run.collapsed && shell_core_tab_drag_slot_offset(core,index,true,id == sourceGroup,id == previousJoin,&offset) != SHELL_STATUS_OK) continue;
-                const auto left = run.button.TransformToVisual(view).TransformPoint({0,0}).X - tabDragHeaders.Offset(id) + offset;
+                if (!run.collapsed && shell_core_tab_drag_slot_offset(core, index, true, id == sourceGroup,
+                                                                      id == previousJoin, &offset) != SHELL_STATUS_OK)
+                    continue;
+                const auto left =
+                    run.button.TransformToVisual(view).TransformPoint({0, 0}).X - tabDragHeaders.Offset(id) + offset;
                 if (point.X < left || point.X > left + run.button.ActualWidth()) continue;
-                if (shell_core_tab_drag_join_hit(core, point.X - drag.shift, id, run.collapsed, &hitGroup, &hitTab, &hitBefore) == SHELL_STATUS_OK && hitGroup) {
+                if (shell_core_tab_drag_join_hit(core, point.X - drag.shift, id, run.collapsed, &hitGroup, &hitTab,
+                                                 &hitBefore) == SHELL_STATUS_OK &&
+                    hitGroup) {
                     if (!join(hitGroup, hitTab, hitBefore)) return false;
                     // A collapsed group has no insertion gap to show, so
                     // outline its header button as the drop target.
@@ -2963,7 +3351,10 @@ struct NativeTabStrip {
             }
             // New-group dwell still targets settled live rows, never a former
             // occupant of the insertion gap or a control in mid-animation.
-            if (!rowAnimations.empty()) { ClearGroupHover(); return false; }
+            if (!rowAnimations.empty()) {
+                ClearGroupHover();
+                return false;
+            }
             for (uint32_t i = 0; i < drag.originalLeftEdge.size(); ++i) {
                 auto row = view.TabItems().GetAt(i).as<Controls::TabViewItem>();
                 const auto id = unbox_value<uint32_t>(row.Tag());
@@ -2972,15 +3363,19 @@ struct NativeTabStrip {
                 const auto width = drag.originalWidth[i];
                 if (point.X - drag.shift < left + width * .3 || point.X - drag.shift > left + width * .7) continue;
                 const auto target = presentation.find(id);
-                if (target != presentation.end() && target->second.groupTarget)
-                    candidate = id;
+                if (target != presentation.end() && target->second.groupTarget) candidate = id;
                 break;
             }
         }
-        if (!candidate) { ClearGroupHover(); return false; }
+        if (!candidate) {
+            ClearGroupHover();
+            return false;
+        }
         bool armed{};
-        if (shell_core_group_hover(core, Drag().tab, candidate, GetTickCount64(), groupingDelay, &armed) != SHELL_STATUS_OK) {
-            ClearGroupHover(); return false;
+        if (shell_core_group_hover(core, Drag().tab, candidate, GetTickCount64(), groupingDelay, &armed) !=
+            SHELL_STATUS_OK) {
+            ClearGroupHover();
+            return false;
         }
         if (candidate != groupCandidate) {
             groupTimer.Stop();
@@ -3021,12 +3416,14 @@ struct NativeTabStrip {
     // is under it.
     bool EdgeScrollDrag(Windows::Foundation::Point const& point) {
         if (Drag().phase != DragPhase::Dragging || Drag().detaching || point.Y < 0 || point.Y > view.ActualHeight() ||
-            point.X < 0 || point.X > view.ActualWidth()) return false;
+            point.X < 0 || point.X > view.ActualWidth())
+            return false;
         const bool recent = GetTickCount64() - drag.scrollTick < 120;
         auto scroller = GroupScroller(view);
         if (!scroller || scroller.ScrollableWidth() <= 0) return false;
-        const auto viewport = scroller.TransformToVisual(view).TransformBounds({0, 0, float(scroller.ActualWidth()), float(scroller.ActualHeight())});
-        const bool left = point.X < viewport.X + 24, right = point.X > viewport.X + viewport.Width - 24;
+        const auto viewport = scroller.TransformToVisual(view).TransformBounds(
+            {0, 0, float(scroller.ActualWidth()), float(scroller.ActualHeight())});
+        const bool left = point.X<viewport.X + 24, right = point.X> viewport.X + viewport.Width - 24;
         if (left == right) return recent;
         // Content must move away from the pointer's edge. The offset grows as
         // content moves left in LTR and right in RTL.
@@ -3081,7 +3478,8 @@ struct NativeTabStrip {
                     if (!previousJoin) return;
                     shell_core_tab_drag_close_gap(core);
                 }
-            } else if (shell_core_tab_drag_update(core, coreX, point.Y, coreWidth, height, true) != SHELL_STATUS_OK) return;
+            } else if (shell_core_tab_drag_update(core, coreX, point.Y, coreWidth, height, true) != SHELL_STATUS_OK)
+                return;
         }
         const auto current = Drag();
         if (current.projected == previous.projected && joinGroup == previousJoin) return;
@@ -3138,7 +3536,8 @@ struct NativeTabStrip {
         uint32_t original = 0;
         view.TabItems().IndexOf(row, original);
         if (ambient.layer)
-            dragSlot = row.TransformToVisual(ambient.layer).TransformBounds({0, 0, float(row.ActualWidth()), float(row.ActualHeight())});
+            dragSlot = row.TransformToVisual(ambient.layer)
+                           .TransformBounds({0, 0, float(row.ActualWidth()), float(row.ActualHeight())});
         std::vector<ShellDragRow> measured;
         drag.originalLeftEdge.clear();
         drag.originalWidth.clear();
@@ -3150,7 +3549,8 @@ struct NativeTabStrip {
         }
         drag.contentOrigin = DragContentX();
         drag.shift = 0;
-        if (shell_core_tab_drag_promote(core, original, measured.data(), measured.size()) != SHELL_STATUS_OK) return false;
+        if (shell_core_tab_drag_promote(core, original, measured.data(), measured.size()) != SHELL_STATUS_OK)
+            return false;
         UpdateDragVisual(point);
         return true;
     }
@@ -3185,7 +3585,9 @@ struct NativeTabStrip {
         auto unpinned = [&](uint32_t id) {
             auto row = rows.find(id);
             return id != tabId && row != rows.end() && row->second.Visibility() == Visibility::Visible &&
-                presentation.count(id) && !(presentation.at(id).flags & 1) ? row->second : Controls::TabViewItem{nullptr};
+                           presentation.count(id) && !(presentation.at(id).flags & 1)
+                       ? row->second
+                       : Controls::TabViewItem{nullptr};
         };
         if (hasGroupLayout) {
             for (auto slot : groupLayout) {
@@ -3193,7 +3595,8 @@ struct NativeTabStrip {
                     auto run = inlineGroups.runs.find(slot.group);
                     if (run != inlineGroups.runs.end() && run->second.button && run->second.button.IsLoaded())
                         return past(run->second.button);
-                } else if (auto row = unpinned(slot.tab)) return past(row);
+                } else if (auto row = unpinned(slot.tab))
+                    return past(row);
             }
             return false;
         }
@@ -3241,18 +3644,18 @@ struct NativeTabStrip {
         auto targetIndex = Drag().projected;
         drag.affectedRowIds.push_back(tabId);
         auto beforeRow = targetIndex < view.TabItems().Size()
-                              ? view.TabItems().GetAt(targetIndex).as<Controls::TabViewItem>()
-                              : nullptr;
+                             ? view.TabItems().GetAt(targetIndex).as<Controls::TabViewItem>()
+                             : nullptr;
         const auto beforeId = beforeRow && beforeRow != row ? unbox_value<uint32_t>(beforeRow.Tag()) : 0;
         // A drop outside the source group's rendered members/header is an
         // explicit ungroup, even if its tab index would remain unchanged.
         bool ungroup = false;
-        auto sourceSlot = std::find_if(groupLayout.begin(), groupLayout.end(),
-            [tabId](auto slot) { return slot.tab == tabId; });
+        auto sourceSlot =
+            std::find_if(groupLayout.begin(), groupLayout.end(), [tabId](auto slot) { return slot.tab == tabId; });
         if (sourceSlot != groupLayout.end() && sourceSlot->group && presentation.at(tabId).groupSource) {
             double left = view.ActualWidth(), right = 0;
             auto include = [&](FrameworkElement const& element) {
-                auto at = element.TransformToVisual(view).TransformPoint({0,0});
+                auto at = element.TransformToVisual(view).TransformPoint({0, 0});
                 left = std::min(left, double(at.X));
                 right = std::max(right, double(at.X) + element.ActualWidth());
             };
@@ -3274,7 +3677,8 @@ struct NativeTabStrip {
         const auto request = CompleteReorderAt(row, beforeRow, ungroup, unpin);
         if (shell_core_tab_drag_commit(core, request, beforeId) != SHELL_STATUS_OK)
             shell_core_tab_drag_end(core, true);
-        else if (request && dropCommitted) dropCommitted();
+        else if (request && dropCommitted)
+            dropCommitted();
         ReconcileDrag();
         RestoreRowVisibility(tabId);
         return true;
@@ -3473,9 +3877,12 @@ struct NativeTabStrip {
     };
     static Backdrop BackdropOf(ShellBackdrop value) {
         switch (value) {
-        case SHELL_BACKDROP_MICA: return Backdrop::Mica;
-        case SHELL_BACKDROP_ACRYLIC: return Backdrop::Acrylic;
-        default: return Backdrop::MicaAlt;
+            case SHELL_BACKDROP_MICA:
+                return Backdrop::Mica;
+            case SHELL_BACKDROP_ACRYLIC:
+                return Backdrop::Acrylic;
+            default:
+                return Backdrop::MicaAlt;
         }
     }
 
@@ -3486,8 +3893,8 @@ struct NativeTabStrip {
         auto fingerprintData = reinterpret_cast<uint16_t const*>(fingerprint.c_str());
         ShellStripOptions resolved{};
         bool unchanged{};
-        if (!core || shell_core_strip_resolve(core, &envelope.raw, fingerprintData, fingerprint.size(),
-                                              &resolved, &unchanged) != SHELL_STATUS_OK)
+        if (!core || shell_core_strip_resolve(core, &envelope.raw, fingerprintData, fingerprint.size(), &resolved,
+                                              &unchanged) != SHELL_STATUS_OK)
             throw hresult_invalid_argument();
         if (unchanged) return;
         const auto base = resolved.base;
@@ -3504,7 +3911,8 @@ struct NativeTabStrip {
         // Removals and rows as Firefox wrote them. ShellCore validates them with
         // the envelope and decides which retained fields each row keeps.
         std::vector<double> removals;
-        if (base) for (auto value : data.GetNamedArray(L"removed")) removals.push_back(value.GetNumber());
+        if (base)
+            for (auto value : data.GetNamedArray(L"removed")) removals.push_back(value.GetNumber());
         std::vector<StagedRow> staged;
         staged.reserve(entries.Size());
         for (auto value : entries) staged.emplace_back(value.GetObject());
@@ -3519,12 +3927,13 @@ struct NativeTabStrip {
             auto name = group.GetNamedString(L"name"), text = group.GetNamedString(L"label");
             auto headerText = group.GetNamedString(L"headerText", L"");
             if (group.HasKey(L"members")) {
-                auto members=group.GetNamedArray(L"members");
-                if (members.Size()>NativeJson::kMaxTabs) throw hresult_invalid_argument();
-                for (auto value:members) {
-                    auto id=value.GetNumber();
-                    if (!std::isfinite(id) || id<=0 || id>UINT32_MAX || std::floor(id)!=id ||
-                        !memberIds.insert(uint32_t(id)).second || memberIds.size()>NativeJson::kMaxTabs) throw hresult_invalid_argument();
+                auto members = group.GetNamedArray(L"members");
+                if (members.Size() > NativeJson::kMaxTabs) throw hresult_invalid_argument();
+                for (auto value : members) {
+                    auto id = value.GetNumber();
+                    if (!std::isfinite(id) || id <= 0 || id > UINT32_MAX || std::floor(id) != id ||
+                        !memberIds.insert(uint32_t(id)).second || memberIds.size() > NativeJson::kMaxTabs)
+                        throw hresult_invalid_argument();
                 }
             }
             if (group.HasKey(L"tabs")) {
@@ -3532,10 +3941,11 @@ struct NativeTabStrip {
                 if (tabs.Size() > NativeJson::kMaxTabs) throw hresult_invalid_argument();
                 for (auto value : tabs) {
                     auto tab = value.GetObject();
-                    if (!previewIds.insert(NativeJson::RequireId(tab,L"id")).second || previewIds.size() > NativeJson::kMaxTabs)
+                    if (!previewIds.insert(NativeJson::RequireId(tab, L"id")).second ||
+                        previewIds.size() > NativeJson::kMaxTabs)
                         throw hresult_invalid_argument();
                     NativeJson::RequireLength(tab.GetNamedString(L"title"), NativeJson::kMaxShortLabel);
-                    NativeJson::ValidateImage(tab,previewPixels,kTabImageLimits);
+                    NativeJson::ValidateImage(tab, previewPixels, kTabImageLimits);
                 }
             }
             group.GetNamedBoolean(L"collapsed");
@@ -3583,22 +3993,23 @@ struct NativeTabStrip {
             auto const& row = accepted[i];
             auto const& source = staged[i];
             const auto old = presentation.find(row.id);
-            auto pick = [&](ShellStripSource from, hstring const& published, hstring Presentation::*retained) {
+            auto pick = [&](ShellStripSource from, hstring const& published, hstring Presentation::* retained) {
                 if (from == SHELL_STRIP_SOURCE_TAKE) return published;
                 return from == SHELL_STRIP_SOURCE_KEEP && old != presentation.end() ? old->second.*retained : hstring{};
             };
-            next.insert_or_assign(row.id, Presentation{
-                pick(row.detail, source.detail, &Presentation::detail), row.flags,
-                pick(row.status, source.status, &Presentation::status),
-                pick(row.image, source.imagePixels, &Presentation::imagePixels), row.image_width, row.image_height,
-                pick(row.container_name, source.containerName, &Presentation::containerName), row.container_color,
-                row.group_source, row.group_target});
+            next.insert_or_assign(
+                row.id, Presentation{pick(row.detail, source.detail, &Presentation::detail), row.flags,
+                                     pick(row.status, source.status, &Presentation::status),
+                                     pick(row.image, source.imagePixels, &Presentation::imagePixels), row.image_width,
+                                     row.image_height,
+                                     pick(row.container_name, source.containerName, &Presentation::containerName),
+                                     row.container_color, row.group_source, row.group_target});
         }
         if (GroupDrag().phase && (layoutChanged || !removed.empty() || !base)) EndGroupDrag();
         if (layoutChanged || !base) {
             EndForeignGroupOver(true);
-            bool left=false;
-            if (shell_core_group_departure_publish(core,&left)==SHELL_STATUS_OK && left) ReleaseGroupDeparture();
+            bool left = false;
+            if (shell_core_group_departure_publish(core, &left) == SHELL_STATUS_OK && left) ReleaseGroupDeparture();
         }
         if (layoutChanged) {
             std::vector<uint32_t> toggled;
@@ -3614,32 +4025,42 @@ struct NativeTabStrip {
             std::vector<ShellGroupMotionRow> motion(groupLayout.size() + layout.size());
             size_t motionCount{};
             if (shell_core_group_motion(core, groupLayout.data(), groupLayout.size(), layout.data(), layout.size(),
-                    toggled.data(), toggled.size(), motion.data(), motion.size(), &motionCount) == SHELL_STATUS_OK) {
+                                        toggled.data(), toggled.size(), motion.data(), motion.size(),
+                                        &motionCount) == SHELL_STATUS_OK) {
                 motion.resize(motionCount);
-                try { groupSlide.Prepare(root, view, FindTabListView(view), rows, inlineGroups, FindAddButton(view), std::move(motion)); }
-                catch (...) { groupSlide.Cancel(); }
-            } else groupSlide.Cancel();
+                try {
+                    groupSlide.Prepare(root, view, FindTabListView(view), rows, inlineGroups, FindAddButton(view),
+                                       std::move(motion));
+                } catch (...) {
+                    groupSlide.Cancel();
+                }
+            } else
+                groupSlide.Cancel();
         }
         if (updateGroups && GroupDrag().phase) {
-            auto id=GroupDrag().group;
-            auto old=inlineGroups.runs.find(id);
-            bool same=false;
-            for (auto value:groups) {
-                auto group=value.GetObject();
-                if (uint32_t(group.GetNamedNumber(L"id"))==id && old!=inlineGroups.runs.end())
-                    same=group.GetNamedArray(L"members",Windows::Data::Json::JsonArray()).Stringify()==old->second.metadata.GetNamedArray(L"members",Windows::Data::Json::JsonArray()).Stringify();
+            auto id = GroupDrag().group;
+            auto old = inlineGroups.runs.find(id);
+            bool same = false;
+            for (auto value : groups) {
+                auto group = value.GetObject();
+                if (uint32_t(group.GetNamedNumber(L"id")) == id && old != inlineGroups.runs.end())
+                    same = group.GetNamedArray(L"members", Windows::Data::Json::JsonArray()).Stringify() ==
+                           old->second.metadata.GetNamedArray(L"members", Windows::Data::Json::JsonArray()).Stringify();
             }
             if (!same) EndGroupDrag();
         }
         if (updateGroups) {
-            if (!inlineGroups.active) groupsButton.Apply(label, groups);
-            else if (!IsDragging()) inlineGroups.Metadata(groups, groupSlide.Enabled());
+            if (!inlineGroups.active)
+                groupsButton.Apply(label, groups);
+            else if (!IsDragging())
+                inlineGroups.Metadata(groups, groupSlide.Enabled());
             groupsLabel = label;
             currentGroups = groups;
         }
         if (!base || data.HasKey(L"rtl"))
             root.FlowDirection(options.rtl ? FlowDirection::RightToLeft : FlowDirection::LeftToRight);
-        if (!base) presentation.swap(next);
+        if (!base)
+            presentation.swap(next);
         else {
             for (auto id : removed) presentation.erase(id);
             for (auto const& [id, value] : next) presentation.insert_or_assign(id, value);
@@ -3651,7 +4072,8 @@ struct NativeTabStrip {
         if (groupingDelay != options.grouping_delay || layoutChanged || !removed.empty()) ClearGroupHover();
         groupingDelay = options.grouping_delay;
         if (groupCandidate && (!presentation.count(groupCandidate) || !presentation.at(groupCandidate).groupTarget ||
-            !presentation.count(Drag().tab) || !presentation.at(Drag().tab).groupSource)) ClearGroupHover();
+                               !presentation.count(Drag().tab) || !presentation.at(Drag().tab).groupSource))
+            ClearGroupHover();
         windowDragSession = options.window_drag_session;
         windowDragPrivate = options.window_drag_private;
         captionDirty = true;
@@ -3674,26 +4096,32 @@ struct NativeTabStrip {
                 syncing = previous;
             }
         }
-        shell_core_group_drag_publish(core,groupLayout.data(),groupLayout.size());
+        shell_core_group_drag_publish(core, groupLayout.data(), groupLayout.size());
         const bool dotChanged = containerDot != options.container_dot;
         containerDot = options.container_dot;
         containerGlow = options.container_glow;
         groupGlow = options.group_glow;
-        if (groupHover != options.group_hover) { groupHover = options.group_hover; inlineGroups.WashesGroup(groupHover); if (!groupHover) groupSurface.Hover(0); }
+        if (groupHover != options.group_hover) {
+            groupHover = options.group_hover;
+            inlineGroups.WashesGroup(groupHover);
+            if (!groupHover) groupSurface.Hover(0);
+        }
         groupHalo = options.group_halo;
         ambient.motion.option = options.group_glow_animations;
         ambient.motion.fadeOut = options.group_glow_fade_out;
         // A full snapshot (window open, session restore) shows its groups
         // already lit; only later changes light up.
         if (!base && core) shell_core_glow_seed(core);
-        if (groupReach != options.group_reach) { groupReach = options.group_reach; ApplyAddSpacing(); }
+        if (groupReach != options.group_reach) {
+            groupReach = options.group_reach;
+            ApplyAddSpacing();
+        }
         if (const auto nextBackdrop = BackdropOf(options.backdrop); nextBackdrop != backdrop) {
             backdrop = nextBackdrop;
             if (applyBackdrop) applyBackdrop(backdrop);
         }
         if (dotChanged) {
-            for (auto const& [id, row] : rows)
-                UpdateHeader(row, id, Automation::AutomationProperties::GetName(row));
+            for (auto const& [id, row] : rows) UpdateHeader(row, id, Automation::AutomationProperties::GetName(row));
         }
         // Metadata has its own publication now; do not wait for a title delta
         // or a structural Sync to make a changed icon/status visible.
@@ -3748,12 +4176,17 @@ struct NativeTabStrip {
         }
         Controls::Border border{nullptr};
         if (existing == outlines.end()) {
-            border = Markup::XamlReader::Load(LR"(<Border xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" BorderThickness="2" CornerRadius="4" IsHitTestVisible="False" HorizontalAlignment="Stretch" VerticalAlignment="Stretch" AutomationProperties.AccessibilityView="Raw"/>)").as<Controls::Border>();
+            border =
+                Markup::XamlReader::Load(
+                    LR"(<Border xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" BorderThickness="2" CornerRadius="4" IsHitTestVisible="False" HorizontalAlignment="Stretch" VerticalAlignment="Stretch" AutomationProperties.AccessibilityView="Raw"/>)")
+                    .as<Controls::Border>();
             Data::Binding binding;
-            binding.Source(groupIndicator); binding.Path(PropertyPath(L"BorderBrush"));
+            binding.Source(groupIndicator);
+            binding.Path(PropertyPath(L"BorderBrush"));
             border.SetBinding(Controls::Border::BorderBrushProperty(), binding);
             outlines.emplace(id, border);
-        } else border = existing->second;
+        } else
+            border = existing->second;
         // A Grid lays children out inside its padding; extend over it so the
         // outline meets the tab's own edges.
         // The template changes that padding with the close button's state, so
@@ -3766,7 +4199,7 @@ struct NativeTabStrip {
         uint32_t at{};
         if (container.Children().IndexOf(border, at)) return;
         container.RegisterPropertyChangedCallback(Controls::Grid::PaddingProperty(),
-            [fit](auto const&, auto const&) { fit(); });
+                                                  [fit](auto const&, auto const&) { fit(); });
         Controls::Grid::SetRowSpan(border, 16);
         Controls::Grid::SetColumnSpan(border, 16);
         Controls::Canvas::SetZIndex(border, 100);
@@ -3774,7 +4207,10 @@ struct NativeTabStrip {
     }
     void SetSelectedOutline(Controls::TabViewItem const& row, bool selected) {
         const auto id = unbox_value<uint32_t>(row.Tag());
-        if (selected) outlinedTabs.insert(id); else outlinedTabs.erase(id);
+        if (selected)
+            outlinedTabs.insert(id);
+        else
+            outlinedTabs.erase(id);
         AttachOutline(id, row);
     }
     void ApplySelectedSet(std::set<uint32_t> const& previous, std::set<uint32_t> const& current) {
@@ -3801,8 +4237,7 @@ struct NativeTabStrip {
         if (IsDragging()) return;
         const auto active = rows.find(activeTabId);
         syncing = true;
-        if (active != rows.end() && view.SelectedItem() != active->second)
-            view.SelectedItem(active->second);
+        if (active != rows.end() && view.SelectedItem() != active->second) view.SelectedItem(active->second);
         for (auto const& [id, row] : rows)
             if (id != activeTabId && row.IsSelected()) row.IsSelected(false);
         syncing = false;
@@ -3901,8 +4336,8 @@ struct NativeTabStrip {
         container.Visibility(containerDot && !meta.containerName.empty() ? Visibility::Visible : Visibility::Collapsed);
         if (unbox_value_or<uint32_t>(container.Tag(), 0) != meta.containerColor) {
             auto color = meta.containerColor;
-            container.Background(Media::SolidColorBrush(Windows::UI::Color{
-                255, uint8_t(color >> 16), uint8_t(color >> 8), uint8_t(color)}));
+            container.Background(Media::SolidColorBrush(
+                Windows::UI::Color{255, uint8_t(color >> 16), uint8_t(color >> 8), uint8_t(color)}));
             container.Tag(box_value(color));
         }
         // Compare against the value last applied to this Image, not against
@@ -3935,12 +4370,15 @@ struct NativeTabStrip {
         audio.Symbol(meta.flags & 4 ? Controls::Symbol::Mute : Controls::Symbol::Volume);
         audioBox.Visibility(meta.flags & 12 ? Visibility::Visible : Visibility::Collapsed);
         ApplyPinnedFace(row, header, (meta.flags & 1) != 0);
-        hoverCard.Update(row, id, title, meta.containerName +
-            (meta.containerName.empty() || meta.detail.empty() ? L"" : L" · ") + meta.detail, lifetime);
+        hoverCard.Update(
+            row, id, title,
+            meta.containerName + (meta.containerName.empty() || meta.detail.empty() ? L"" : L" · ") + meta.detail,
+            lifetime);
         Automation::AutomationProperties::SetHelpText(
             row, meta.detail + (meta.detail.empty() || meta.status.empty() ? L"" : L" \u00b7 ") + meta.status);
-        if (!meta.containerName.empty()) Automation::AutomationProperties::SetHelpText(
-            row, meta.containerName + L" " + meta.detail + L" " + meta.status);
+        if (!meta.containerName.empty())
+            Automation::AutomationProperties::SetHelpText(row,
+                                                          meta.containerName + L" " + meta.detail + L" " + meta.status);
     }
 
     // Tabs and inline group headers in visual order. The grouped source hosts
@@ -3976,10 +4414,14 @@ struct NativeTabStrip {
         const auto count = order.size();
         size_t index = current - order.begin();
         const bool rtl = view.FlowDirection() == FlowDirection::RightToLeft;
-        if (key == Key::Home) index = 0;
-        else if (key == Key::End) index = count - 1;
-        else if ((key == Key::Right) != rtl) index = (index + 1) % count;
-        else index = (index + count - 1) % count;
+        if (key == Key::Home)
+            index = 0;
+        else if (key == Key::End)
+            index = count - 1;
+        else if ((key == Key::Right) != rtl)
+            index = (index + 1) % count;
+        else
+            index = (index + count - 1) % count;
         auto target = order[index];
         if (auto row = target.try_as<Controls::TabViewItem>(); row && !focusOnly)
             select(unbox_value<uint32_t>(row.Tag()));
@@ -4128,8 +4570,11 @@ struct NativeTabStrip {
                 preparingClose = true;
                 if (!closeSequence) {
                     auto before = CloseLayout(true);
-                    ClearSettling(); StartAddSlide(0);
-                    closeFrom = before; closeTarget = std::move(before); closeSequence = true;
+                    ClearSettling();
+                    StartAddSlide(0);
+                    closeFrom = before;
+                    closeTarget = std::move(before);
+                    closeSequence = true;
                     HoldCloseViewport();
                 }
             }
@@ -4137,13 +4582,15 @@ struct NativeTabStrip {
                 for (auto const& [rowId, row] : rows) {
                     if ((!row.IsLoaded() && row.ActualWidth() <= 0) || rowsBefore.size() >= 128) continue;
                     const auto bounds = MotionBounds(row, SHELL_SETTLE_TAB, rowId);
-                    rowsBefore.emplace(std::make_pair(uint32_t(SHELL_SETTLE_TAB), rowId), std::make_pair(bounds.X, bounds.Width));
+                    rowsBefore.emplace(std::make_pair(uint32_t(SHELL_SETTLE_TAB), rowId),
+                                       std::make_pair(bounds.X, bounds.Width));
                 }
                 for (auto const& [group, run] : inlineGroups.runs) {
                     auto button = run.button;
                     if (!button || (!button.IsLoaded() && button.ActualWidth() <= 0)) continue;
                     const auto bounds = MotionBounds(button, SHELL_SETTLE_HEADER, group);
-                    rowsBefore.emplace(std::make_pair(uint32_t(SHELL_SETTLE_HEADER), group), std::make_pair(bounds.X, bounds.Width));
+                    rowsBefore.emplace(std::make_pair(uint32_t(SHELL_SETTLE_HEADER), group),
+                                       std::make_pair(bounds.X, bounds.Width));
                 }
             }
             for (uint32_t i = 0; i < count; ++i) {
@@ -4173,7 +4620,10 @@ struct NativeTabStrip {
                         // that cap is already at or above its Equal width.
                         for (auto const& [otherId, other] : rows) {
                             const auto cap = other.MaxWidth();
-                            if (other.ActualWidth() > 0 && std::isfinite(cap) && cap > 0) { row.MaxWidth(cap); break; }
+                            if (other.ActualWidth() > 0 && std::isfinite(cap) && cap > 0) {
+                                row.MaxWidth(cap);
+                                break;
+                            }
                         }
                     }
                     // The stock close button is shown only while the tab is
@@ -4182,16 +4632,20 @@ struct NativeTabStrip {
                     // reserving space for) the button while IsClosable is false.
                     row.IsClosable(false);
                     {
-                        struct Reveal { bool hover = false; bool focus = false; };
+                        struct Reveal {
+                            bool hover = false;
+                            bool focus = false;
+                        };
                         auto state = std::make_shared<Reveal>();
                         auto apply = [this, alive = std::weak_ptr<int>(lifetime), state](auto const& sender) {
                             auto item = sender.template as<Controls::TabViewItem>();
-                            const bool reveal = (state->hover || state->focus) &&
-                                !alive.expired() && !IsPinnedRow(item);
+                            const bool reveal =
+                                (state->hover || state->focus) && !alive.expired() && !IsPinnedRow(item);
                             if (item.IsClosable() != reveal) item.IsClosable(reveal);
                         };
                         row.PointerEntered([state, apply](auto const& sender, auto&&) {
-                            state->hover = true; apply(sender);
+                            state->hover = true;
+                            apply(sender);
                         });
                         row.PointerExited([state, apply](auto const& sender, auto const& args) {
                             // A spurious exit (popup dismissal layer) with the
@@ -4200,16 +4654,17 @@ struct NativeTabStrip {
                             auto at = args.GetCurrentPoint(element).Position();
                             if (at.X >= 0 && at.Y >= 0 && at.X < element.ActualWidth() && at.Y < element.ActualHeight())
                                 return;
-                            state->hover = false; apply(sender);
+                            state->hover = false;
+                            apply(sender);
                         });
                         row.GotFocus([state, apply](auto const& sender, RoutedEventArgs const&) {
                             // Pointer focus from a click must not pin the button.
-                            state->focus = sender.template as<Controls::Control>().FocusState() ==
-                                FocusState::Keyboard;
+                            state->focus = sender.template as<Controls::Control>().FocusState() == FocusState::Keyboard;
                             apply(sender);
                         });
                         row.LostFocus([state, apply](auto const& sender, auto&&) {
-                            state->focus = false; apply(sender);
+                            state->focus = false;
+                            apply(sender);
                         });
                     }
                     row.HorizontalContentAlignment(HorizontalAlignment::Stretch);
@@ -4227,20 +4682,21 @@ struct NativeTabStrip {
                             ApplyPinnedFace(item, header, true);
                     });
                     auto alive = std::weak_ptr<int>(lifetime);
-                    row.AddHandler(
-                        UIElement::PointerPressedEvent(),
-                        box_value(Microsoft::UI::Xaml::Input::PointerEventHandler(
-                            [this, alive](auto const& sender,
-                                              Microsoft::UI::Xaml::Input::PointerRoutedEventArgs const& args) {
-                                const auto id = unbox_value<uint32_t>(sender.template as<Controls::TabViewItem>().Tag());
-                                if (alive.expired() || syncing || !rows.count(id) ||
-                                    !args.GetCurrentPoint(nullptr).Properties().IsLeftButtonPressed())
-                                    return;
-                                if (!(GetKeyState(VK_CONTROL) & 0x8000) && !(GetKeyState(VK_SHIFT) & 0x8000)) return;
-                                if (OriginatesOnButton(args.OriginalSource(), rows.at(id))) return;
-                                select(id);
-                            })),
-                        true);
+                    row.AddHandler(UIElement::PointerPressedEvent(),
+                                   box_value(Microsoft::UI::Xaml::Input::PointerEventHandler(
+                                       [this, alive](auto const& sender,
+                                                     Microsoft::UI::Xaml::Input::PointerRoutedEventArgs const& args) {
+                                           const auto id =
+                                               unbox_value<uint32_t>(sender.template as<Controls::TabViewItem>().Tag());
+                                           if (alive.expired() || syncing || !rows.count(id) ||
+                                               !args.GetCurrentPoint(nullptr).Properties().IsLeftButtonPressed())
+                                               return;
+                                           if (!(GetKeyState(VK_CONTROL) & 0x8000) && !(GetKeyState(VK_SHIFT) & 0x8000))
+                                               return;
+                                           if (OriginatesOnButton(args.OriginalSource(), rows.at(id))) return;
+                                           select(id);
+                                       })),
+                                   true);
                     // Arms a hand-rolled drag on a plain left press. Uses
                     // AddHandler(handledEventsToo=true) like the multiselect
                     // handler above: TabViewItem's stock ListView-derived
@@ -4252,114 +4708,119 @@ struct NativeTabStrip {
                     // promotes this to an actual drag only once the pointer
                     // clears a small threshold, matching a plain click's
                     // tolerance for incidental movement.
-                    row.AddHandler(
-                        UIElement::PointerPressedEvent(),
-                        box_value(Microsoft::UI::Xaml::Input::PointerEventHandler(
-                            [this, alive](auto const& sender,
-                                              Microsoft::UI::Xaml::Input::PointerRoutedEventArgs const& args) {
-                                const auto id = unbox_value<uint32_t>(sender.template as<Controls::TabViewItem>().Tag());
-                                if (alive.expired() || syncing || !rows.count(id)) return;
-                                auto point = args.GetCurrentPoint(view);
-                                if (!point.Properties().IsLeftButtonPressed()) return;
-                                if (GetKeyState(VK_CONTROL) & 0x8000 || GetKeyState(VK_SHIFT) & 0x8000) return;
-                                auto& row = rows.at(id);
-                                if (OriginatesOnButton(args.OriginalSource(), row)) return;
-                                // Browsers activate a tab the instant the
-                                // mouse goes down on it, even if a drag
-                                // follows -- not on release, which is where
-                                // TabView's own stock SelectionChanged (this
-                                // constructor, above) would otherwise leave
-                                // it. SelectionChanged still fires normally
-                                // once the stock control catches up on
-                                // release; re-selecting the same id there is
-                                // a no-op.
-                                groupSelectionGuard=false;
-                                select(id);
-                                // Capture immediately, before knowing this is
-                                // a real drag: without capture, PointerMoved
-                                // only fires while the cursor is physically
-                                // over this row, and once it leaves those
-                                // bounds (or the OS coalesces several moves
-                                // into one that jumps straight past them)
-                                // this row would simply stop seeing the
-                                // gesture, and the threshold below could
-                                // never be observed crossing. Raw
-                                // ::SetCapture on ownerHwnd, alongside this,
-                                // is the actual ground truth this drag's
-                                // correctness depends on from here on:
-                                // row.CapturePointer only ever feeds the
-                                // low-latency accelerant path.
-                                // Revoke the old session before overwriting its
-                                // local state or taking capture for this press.
-                                if (armDragSession) armDragSession(id);
-                                if (!ArmDrag(id, point.Position())) return;
-                                if (!row.CapturePointer(args.Pointer())) { FinishDrag(id); return; }
-                                ::SetCapture(ownerHwnd);
-                                if (startDragSessionTimer) startDragSessionTimer();
-                            })),
-                        true);
-                    row.AddHandler(
-                        UIElement::PointerMovedEvent(),
-                        box_value(Microsoft::UI::Xaml::Input::PointerEventHandler(
-                            [this, alive](auto const& sender,
-                                              Microsoft::UI::Xaml::Input::PointerRoutedEventArgs const&) {
-                                const auto id = unbox_value<uint32_t>(sender.template as<Controls::TabViewItem>().Tag());
-                                // Use the same live cursor sample as the session poll.
-                                // Queued routed coordinates can belong to an older
-                                // layout or gesture after a transfer.
-                                if (alive.expired() || syncing || !rows.count(id)) return;
-                                if (Drag().tab != id || Drag().phase == DragPhase::None) {
-                                    // Stock TabViewItem keeps checking for drag after
-                                    // raw capture steals its PointerReleased event.
-                                    // Its class handler can re-enter floating state on
-                                    // a later hover even with no button held. Our session
-                                    // owns dragging, so undo that stale presentation.
-                                    TabDragImage::SetFloatingAppearance(rows.at(id), false);
-                                    return;
-                                }
-                                if (tickDragSession) tickDragSession();
-                            })),
-                        true);
-                    row.AddHandler(
-                        UIElement::PointerReleasedEvent(),
-                        box_value(Microsoft::UI::Xaml::Input::PointerEventHandler(
-                            [this, alive](auto const& sender,
-                                              Microsoft::UI::Xaml::Input::PointerRoutedEventArgs const& args) {
-                                const auto id = unbox_value<uint32_t>(sender.template as<Controls::TabViewItem>().Tag());
-                                // Only the still-Armed case is handled here.
-                                // Once Dragging, Pane.cpp's TickDragSession
-                                // (raw GetAsyncKeyState polling, not this
-                                // event) is the sole authority on when the
-                                // gesture ends -- see FinishDrag's own
-                                // comment. In practice this guard is
-                                // usually moot by the time this handler
-                                // runs at all: TickDragSession sees the same
-                                // WM_LBUTTONUP first, via Pane.cpp's
-                                // Translate() pretranslate hook, and will
-                                // already have reset Drag().phase to None.
-                                if (alive.expired() || Drag().tab != id || Drag().phase != DragPhase::Armed) return;
-                                if (rows.count(id)) rows.at(id).ReleasePointerCapture(args.Pointer());
-                                FinishDrag(id);
-                            })),
-                        true);
-                    row.AddHandler(
-                        UIElement::PointerCaptureLostEvent(),
-                        box_value(Microsoft::UI::Xaml::Input::PointerEventHandler(
-                            [this, alive](auto const& sender, auto const&) {
-                                const auto id = unbox_value<uint32_t>(sender.template as<Controls::TabViewItem>().Tag());
-                                // Only meaningful while still Armed -- once
-                                // Dragging, nothing treats this event as
-                                // authoritative anymore (raw ::SetCapture,
-                                // not this row's own WinUI-level capture, is
-                                // what the gesture's correctness depends on
-                                // from that point on).
-                                if (!alive.expired() && Drag().tab == id && Drag().phase == DragPhase::Armed)
-                                    FinishDrag(id);
-                            })),
-                        true);
+                    row.AddHandler(UIElement::PointerPressedEvent(),
+                                   box_value(Microsoft::UI::Xaml::Input::PointerEventHandler(
+                                       [this, alive](auto const& sender,
+                                                     Microsoft::UI::Xaml::Input::PointerRoutedEventArgs const& args) {
+                                           const auto id =
+                                               unbox_value<uint32_t>(sender.template as<Controls::TabViewItem>().Tag());
+                                           if (alive.expired() || syncing || !rows.count(id)) return;
+                                           auto point = args.GetCurrentPoint(view);
+                                           if (!point.Properties().IsLeftButtonPressed()) return;
+                                           if (GetKeyState(VK_CONTROL) & 0x8000 || GetKeyState(VK_SHIFT) & 0x8000)
+                                               return;
+                                           auto& row = rows.at(id);
+                                           if (OriginatesOnButton(args.OriginalSource(), row)) return;
+                                           // Browsers activate a tab the instant the
+                                           // mouse goes down on it, even if a drag
+                                           // follows -- not on release, which is where
+                                           // TabView's own stock SelectionChanged (this
+                                           // constructor, above) would otherwise leave
+                                           // it. SelectionChanged still fires normally
+                                           // once the stock control catches up on
+                                           // release; re-selecting the same id there is
+                                           // a no-op.
+                                           groupSelectionGuard = false;
+                                           select(id);
+                                           // Capture immediately, before knowing this is
+                                           // a real drag: without capture, PointerMoved
+                                           // only fires while the cursor is physically
+                                           // over this row, and once it leaves those
+                                           // bounds (or the OS coalesces several moves
+                                           // into one that jumps straight past them)
+                                           // this row would simply stop seeing the
+                                           // gesture, and the threshold below could
+                                           // never be observed crossing. Raw
+                                           // ::SetCapture on ownerHwnd, alongside this,
+                                           // is the actual ground truth this drag's
+                                           // correctness depends on from here on:
+                                           // row.CapturePointer only ever feeds the
+                                           // low-latency accelerant path.
+                                           // Revoke the old session before overwriting its
+                                           // local state or taking capture for this press.
+                                           if (armDragSession) armDragSession(id);
+                                           if (!ArmDrag(id, point.Position())) return;
+                                           if (!row.CapturePointer(args.Pointer())) {
+                                               FinishDrag(id);
+                                               return;
+                                           }
+                                           ::SetCapture(ownerHwnd);
+                                           if (startDragSessionTimer) startDragSessionTimer();
+                                       })),
+                                   true);
+                    row.AddHandler(UIElement::PointerMovedEvent(),
+                                   box_value(Microsoft::UI::Xaml::Input::PointerEventHandler(
+                                       [this, alive](auto const& sender,
+                                                     Microsoft::UI::Xaml::Input::PointerRoutedEventArgs const&) {
+                                           const auto id =
+                                               unbox_value<uint32_t>(sender.template as<Controls::TabViewItem>().Tag());
+                                           // Use the same live cursor sample as the session poll.
+                                           // Queued routed coordinates can belong to an older
+                                           // layout or gesture after a transfer.
+                                           if (alive.expired() || syncing || !rows.count(id)) return;
+                                           if (Drag().tab != id || Drag().phase == DragPhase::None) {
+                                               // Stock TabViewItem keeps checking for drag after
+                                               // raw capture steals its PointerReleased event.
+                                               // Its class handler can re-enter floating state on
+                                               // a later hover even with no button held. Our session
+                                               // owns dragging, so undo that stale presentation.
+                                               TabDragImage::SetFloatingAppearance(rows.at(id), false);
+                                               return;
+                                           }
+                                           if (tickDragSession) tickDragSession();
+                                       })),
+                                   true);
+                    row.AddHandler(UIElement::PointerReleasedEvent(),
+                                   box_value(Microsoft::UI::Xaml::Input::PointerEventHandler(
+                                       [this, alive](auto const& sender,
+                                                     Microsoft::UI::Xaml::Input::PointerRoutedEventArgs const& args) {
+                                           const auto id =
+                                               unbox_value<uint32_t>(sender.template as<Controls::TabViewItem>().Tag());
+                                           // Only the still-Armed case is handled here.
+                                           // Once Dragging, Pane.cpp's TickDragSession
+                                           // (raw GetAsyncKeyState polling, not this
+                                           // event) is the sole authority on when the
+                                           // gesture ends -- see FinishDrag's own
+                                           // comment. In practice this guard is
+                                           // usually moot by the time this handler
+                                           // runs at all: TickDragSession sees the same
+                                           // WM_LBUTTONUP first, via Pane.cpp's
+                                           // Translate() pretranslate hook, and will
+                                           // already have reset Drag().phase to None.
+                                           if (alive.expired() || Drag().tab != id || Drag().phase != DragPhase::Armed)
+                                               return;
+                                           if (rows.count(id)) rows.at(id).ReleasePointerCapture(args.Pointer());
+                                           FinishDrag(id);
+                                       })),
+                                   true);
+                    row.AddHandler(UIElement::PointerCaptureLostEvent(),
+                                   box_value(Microsoft::UI::Xaml::Input::PointerEventHandler(
+                                       [this, alive](auto const& sender, auto const&) {
+                                           const auto id =
+                                               unbox_value<uint32_t>(sender.template as<Controls::TabViewItem>().Tag());
+                                           // Only meaningful while still Armed -- once
+                                           // Dragging, nothing treats this event as
+                                           // authoritative anymore (raw ::SetCapture,
+                                           // not this row's own WinUI-level capture, is
+                                           // what the gesture's correctness depends on
+                                           // from that point on).
+                                           if (!alive.expired() && Drag().tab == id && Drag().phase == DragPhase::Armed)
+                                               FinishDrag(id);
+                                       })),
+                                   true);
                     row.PreviewKeyDown(
                         [this, alive](auto const& sender, Microsoft::UI::Xaml::Input::KeyRoutedEventArgs const& args) {
-                                const auto id = unbox_value<uint32_t>(sender.template as<Controls::TabViewItem>().Tag());
+                            const auto id = unbox_value<uint32_t>(sender.template as<Controls::TabViewItem>().Tag());
                             if (alive.expired() || syncing || !rows.count(id)) return;
                             if (args.Key() == Windows::System::VirtualKey::Escape && Drag().tab == id &&
                                 Drag().phase != DragPhase::None) {
@@ -4376,7 +4837,7 @@ struct NativeTabStrip {
                         });
                     rows.emplace(id, row);
                     row.Loaded([this, alive](auto const& sender, auto const&) {
-                                const auto id = unbox_value<uint32_t>(sender.template as<Controls::TabViewItem>().Tag());
+                        const auto id = unbox_value<uint32_t>(sender.template as<Controls::TabViewItem>().Tag());
                         auto found = rows.find(id);
                         if (!alive.expired() && found != rows.end()) AttachOutline(id, found->second);
                     });
@@ -4412,10 +4873,11 @@ struct NativeTabStrip {
                 if (!current.count(it->first)) {
                     entryOrder.erase(it->first);
                     shell_core_departure_removed(core, it->first);
-                    outlinedTabs.erase(it->first); outlines.erase(it->first); hoverCard.Forget(it->first);
+                    outlinedTabs.erase(it->first);
+                    outlines.erase(it->first);
+                    hoverCard.Forget(it->first);
                     it = rows.erase(it);
-                }
-                else
+                } else
                     ++it;
             }
             view.SelectedItem(rows.count(active) ? rows.at(active) : nullptr);
@@ -4428,25 +4890,29 @@ struct NativeTabStrip {
                 view.TabWidthMode(Controls::TabViewWidthMode::Equal);
             }
         } catch (...) {
-            syncing = false; preparingClose = false;
+            syncing = false;
+            preparingClose = false;
             if (closeSequence) CancelCloseSequence();
             throw;
         }
         syncing = false;
         captionDirty = true;
         try {
-            if(startupPresentation)groupSlide.Cancel();
-            else groupSlide.Commit(rows, inlineGroups, FindAddButton(view), active);
-        }
-        catch (...) {
+            if (startupPresentation)
+                groupSlide.Cancel();
+            else
+                groupSlide.Commit(rows, inlineGroups, FindAddButton(view), active);
+        } catch (...) {
 #ifdef WINUI_PANE_TESTING
             fprintf(stderr, "GroupSlide Commit failed: %08x\n", unsigned(to_hresult()));
 #endif
             groupSlide.Cancel();
         }
         if (!createdRows.empty())
-            EntryLog("WinUIPane entry sync created=%zu first=%u prior=%zu rows=%zu before=%zu addBefore=%.1f inline=%d\n", createdRows.size(),
-                createdRows[0], priorRowCount, rows.size(), rowsBefore.size(), addBefore, int(inlineGroups.active));
+            EntryLog(
+                "WinUIPane entry sync created=%zu first=%u prior=%zu rows=%zu before=%zu addBefore=%.1f inline=%d\n",
+                createdRows.size(), createdRows[0], priorRowCount, rows.size(), rowsBefore.size(), addBefore,
+                int(inlineGroups.active));
         if (!createdRows.empty()) {
             if (closeSequence) CancelCloseSequence();
             preparingClose = false;
@@ -4459,21 +4925,27 @@ struct NativeTabStrip {
             const auto generation = ++closeGeneration;
             entryLayoutReady = false;
             auto token = std::make_shared<winrt::event_token>();
-            *token = Media::CompositionTarget::Rendering([this, alive = std::weak_ptr<int>(lifetime), generation, token,
-                                                          created = createdRows, addBefore, rowsBefore](auto&&, auto&&) {
-                Media::CompositionTarget::Rendering(*token);
-                if (alive.expired()) return;
-                bool started = false;
-                for (auto id : created) {
-                    if (!rows.count(id)) continue;
-                    if (generation != closeGeneration || started) { AwaitReveal(rows.at(id), id); continue; }
-                    started = true;
-                    try { RevealNewRow(rows.at(id), id, addBefore, rowsBefore); }
-                    catch (...) { rows.at(id).Opacity(1); }
-                }
-            });
-        }
-        else if (!startupPresentation && createdRows.empty() && rows.size() < priorRowCount) {
+            *token =
+                Media::CompositionTarget::Rendering([this, alive = std::weak_ptr<int>(lifetime), generation, token,
+                                                     created = createdRows, addBefore, rowsBefore](auto&&, auto&&) {
+                    Media::CompositionTarget::Rendering(*token);
+                    if (alive.expired()) return;
+                    bool started = false;
+                    for (auto id : created) {
+                        if (!rows.count(id)) continue;
+                        if (generation != closeGeneration || started) {
+                            AwaitReveal(rows.at(id), id);
+                            continue;
+                        }
+                        started = true;
+                        try {
+                            RevealNewRow(rows.at(id), id, addBefore, rowsBefore);
+                        } catch (...) {
+                            rows.at(id).Opacity(1);
+                        }
+                    }
+                });
+        } else if (!startupPresentation && createdRows.empty() && rows.size() < priorRowCount) {
             ++closeGeneration;
             if (closeSequence && !groupSlide.storyboard && closeCheckpoints.size() < 128) {
                 // Capture each acknowledged layout before the next publication
@@ -4497,8 +4969,12 @@ struct NativeTabStrip {
                     preparingClose = false;
                     AdvanceCloseSequence();
                     UpdateCloseSequence();
-                } else preparingClose = false;
-            } else { preparingClose = false; if (closeSequence) CancelCloseSequence(); }
+                } else
+                    preparingClose = false;
+            } else {
+                preparingClose = false;
+                if (closeSequence) CancelCloseSequence();
+            }
         }
         // A stationary cursor may produce no further input after this layout
         // change. Refresh a live hover now using the session's cursor sampler.

@@ -4,8 +4,8 @@ import {readFileSync} from 'node:fs';
 import vm from 'node:vm';
 const root=new URL('../upstream/firefox/browser/components/urlbar/content/',import.meta.url);
 const c=vm.createContext({});
-vm.runInContext(readFileSync(new URL('UrlbarShared.mjs',root),'utf8').replace(/^import .*;$/gm,'').replace('export const UrlbarShared','var UrlbarShared'),c);
-vm.runInContext(readFileSync(new URL('UrlbarCompositionModel.mjs',root),'utf8').replace(/^import .*;$/gm,'').replace('export class UrlbarCompositionModel','this.Model=class UrlbarCompositionModel'),c);
+vm.runInContext(readFileSync(new URL('UrlbarShared.mjs',root),'utf8').replace(/^import\b[^;]*;$/gm,'').replace('export const UrlbarShared','var UrlbarShared'),c);
+vm.runInContext(readFileSync(new URL('UrlbarCompositionModel.mjs',root),'utf8').replace(/^import\b[^;]*;$/gm,'').replace('export class UrlbarCompositionModel','this.Model=class UrlbarCompositionModel'),c);
 const M=c.Model,S=c.UrlbarShared.COMPOSITION;
 
 test('commit is consumed by exactly one input and selection clears before transition',()=>{

@@ -242,9 +242,11 @@ struct NativeSearchMode {
         // nothing opens. Open it then, unless the flyout was open when this press began (the press
         // that closes it). See the implementation lessons.
         button.AddHandler(UIElement::PointerPressedEvent(),
-            winrt::box_value(Microsoft::UI::Xaml::Input::PointerEventHandler([this, alive = std::weak_ptr<int>(lifetime)](auto const&, auto const&) {
-                if (!alive.expired()) openAtPress = flyout.IsOpen();
-            })), true);
+                          winrt::box_value(Microsoft::UI::Xaml::Input::PointerEventHandler(
+                              [this, alive = std::weak_ptr<int>(lifetime)](auto const&, auto const&) {
+                                  if (!alive.expired()) openAtPress = flyout.IsOpen();
+                              })),
+                          true);
         button.Click([this, alive = std::weak_ptr<int>(lifetime)](auto const&, auto const&) {
             if (alive.expired()) return;
             const bool wasOpen = openAtPress;
@@ -253,7 +255,8 @@ struct NativeSearchMode {
             if (wasOpen || !queue) return;
             queue.TryEnqueue([this, alive] {
                 if (alive.expired() || flyout.IsOpen() || !button.IsEnabled() ||
-                    button.Visibility() != Visibility::Visible || !button.XamlRoot()) return;
+                    button.Visibility() != Visibility::Visible || !button.XamlRoot())
+                    return;
                 Primitives::FlyoutShowOptions options;
                 options.Placement(Primitives::FlyoutPlacementMode::BottomEdgeAlignedLeft);
                 flyout.ShowAt(button, options);

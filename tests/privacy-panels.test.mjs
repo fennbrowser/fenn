@@ -86,7 +86,7 @@ test('Firefox reset gateway enforces private context and confirmation before pre
     XPCOMUtils:{defineLazyPreferenceGetter:(object,key,_pref,fallback)=>object[key]=key==='_enabled'?true:fallback},
     ChromeUtils:{defineESModuleGetters:lazy=>Object.assign(lazy,{PrivateBrowsingUtils:{isWindowPrivate:w=>w?.private}})},
     Glean:{privateBrowsingResetPbm:{confirmPanel:{record:v=>calls.push(v)},resetAction:{record:v=>calls.push(v)}}}});
-  vm.runInContext(readFileSync(new URL('../upstream/firefox/browser/components/privatebrowsing/ResetPBMPanel.sys.mjs',import.meta.url),'utf8').replace(/^import .*;$/m,'').replace('export const ResetPBMPanel','this.ResetPBMPanel'),context);
+  vm.runInContext(readFileSync(new URL('../upstream/firefox/browser/components/privatebrowsing/ResetPBMPanel.sys.mjs',import.meta.url),'utf8').replace(/^import\b[^;]*;$/m,'').replace('export const ResetPBMPanel','this.ResetPBMPanel'),context);
   const reset=context.ResetPBMPanel;reset._restartPBM=async w=>calls.push(w);
   await assert.rejects(reset.restartFromToolbar({private:false},{confirmed:true,alwaysAsk:false}));
   await assert.rejects(reset.restartFromToolbar({private:true},{confirmed:false}));assert.equal(prefs.size,0);assert.equal(calls.length,0);

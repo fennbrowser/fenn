@@ -15,9 +15,18 @@ struct NativeAddressContextMenu {
     uint64_t generation{};
     bool requested{}, invoking{}, atPointer{};
     winrt::Windows::Foundation::Point position{};
-    ~NativeAddressContextMenu() { lifetime.reset(); if (flyout) flyout.Hide(); }
+    ~NativeAddressContextMenu() {
+        lifetime.reset();
+        if (flyout) flyout.Hide();
+    }
     bool IsOpen() const { return flyout && flyout.IsOpen(); }
-    void Reset() { opening.reset(); requested = false; if (flyout) flyout.Hide(); flyout = nullptr; generation = 0; }
+    void Reset() {
+        opening.reset();
+        requested = false;
+        if (flyout) flyout.Hide();
+        flyout = nullptr;
+        generation = 0;
+    }
     static void Validate(Array const& items, size_t& count, unsigned depth = 0) {
         if (depth > 4 || (count += items.Size()) > 128) winrt::throw_hresult(E_INVALIDARG);
         for (auto value : items) {
@@ -27,49 +36,72 @@ struct NativeAddressContextMenu {
             NativeJson::RequireLength(item.GetNamedString(L"label"), 4096);
             NativeJson::RequireLength(item.GetNamedString(L"accessKey", L""), 16);
             item.GetNamedBoolean(L"enabled");
-            item.GetNamedBoolean(L"checked", false); item.GetNamedBoolean(L"checkable", false);
+            item.GetNamedBoolean(L"checked", false);
+            item.GetNamedBoolean(L"checkable", false);
             if (item.HasKey(L"children")) Validate(item.GetNamedArray(L"children"), count, depth + 1);
         }
     }
-    void Populate(Array const& items,
-        winrt::Windows::Foundation::Collections::IVector<Microsoft::UI::Xaml::Controls::MenuFlyoutItemBase> const& target,
+    void Populate(
+        Array const& items,
+        winrt::Windows::Foundation::Collections::IVector<Microsoft::UI::Xaml::Controls::MenuFlyoutItemBase> const&
+            target,
         Microsoft::UI::Xaml::Controls::TextBox const& field) {
         using namespace Microsoft::UI::Xaml;
         using namespace Microsoft::UI::Xaml::Controls;
         for (auto value : items) {
             auto item = value.GetObject();
-            if (item.GetNamedBoolean(L"separator", false)) { target.Append(MenuFlyoutSeparator()); continue; }
+            if (item.GetNamedBoolean(L"separator", false)) {
+                target.Append(MenuFlyoutSeparator());
+                continue;
+            }
             const auto id = item.GetNamedString(L"id"), label = item.GetNamedString(L"label");
             const auto acceptedGeneration = generation;
             if (item.HasKey(L"children")) {
-                MenuFlyoutSubItem sub; sub.Text(label); sub.IsEnabled(item.GetNamedBoolean(L"enabled"));
-                Populate(item.GetNamedArray(L"children"), sub.Items(), field); target.Append(sub); continue;
+                MenuFlyoutSubItem sub;
+                sub.Text(label);
+                sub.IsEnabled(item.GetNamedBoolean(L"enabled"));
+                Populate(item.GetNamedArray(L"children"), sub.Items(), field);
+                target.Append(sub);
+                continue;
             }
             auto configure = [&](auto button) {
-                button.Text(label); button.AccessKey(item.GetNamedString(L"accessKey", L""));
+                button.Text(label);
+                button.AccessKey(item.GetNamedString(L"accessKey", L""));
                 bool enabled = item.GetNamedBoolean(L"enabled");
                 if (id == L"cmd_undo") enabled = field.CanUndo();
                 if (id == L"cmd_redo") enabled = field.CanRedo();
                 if (id == L"cmd_delete") enabled = field.SelectionLength() > 0;
                 button.IsEnabled(enabled);
                 Automation::AutomationProperties::SetAutomationId(button, automationPrefix + id);
-                button.Click([this, field, id, acceptedGeneration, opened = std::weak_ptr<int>(opening), alive = std::weak_ptr<int>(lifetime)](auto const&, auto const&) {
+                button.Click([this, field, id, acceptedGeneration, opened = std::weak_ptr<int>(opening),
+                              alive = std::weak_ptr<int>(lifetime)](auto const&, auto const&) {
                     if (alive.expired() || opened.expired() || generation != acceptedGeneration) return;
                     invoking = true;
                     if (focusEditor) field.Focus(FocusState::Programmatic);
                     if (editType) {
-                        if (id == L"cmd_undo") editType(L"historyUndo");
-                        else if (id == L"cmd_redo") editType(L"historyRedo");
-                        else if (id == L"cmd_delete") editType(L"deleteContentForward");
+                        if (id == L"cmd_undo")
+                            editType(L"historyUndo");
+                        else if (id == L"cmd_redo")
+                            editType(L"historyRedo");
+                        else if (id == L"cmd_delete")
+                            editType(L"deleteContentForward");
                     }
-                    if (id == L"cmd_undo") field.Undo();
-                    else if (id == L"cmd_redo") field.Redo();
-                    else if (id == L"cmd_cut") field.CutSelectionToClipboard();
-                    else if (id == L"cmd_copy") field.CopySelectionToClipboard();
-                    else if (id == L"cmd_paste") field.PasteFromClipboard();
-                    else if (id == L"cmd_delete") field.SelectedText(L"");
-                    else if (id == L"cmd_selectAll") field.SelectAll();
-                    else if (action) action(L"context-action", id);
+                    if (id == L"cmd_undo")
+                        field.Undo();
+                    else if (id == L"cmd_redo")
+                        field.Redo();
+                    else if (id == L"cmd_cut")
+                        field.CutSelectionToClipboard();
+                    else if (id == L"cmd_copy")
+                        field.CopySelectionToClipboard();
+                    else if (id == L"cmd_paste")
+                        field.PasteFromClipboard();
+                    else if (id == L"cmd_delete")
+                        field.SelectedText(L"");
+                    else if (id == L"cmd_selectAll")
+                        field.SelectAll();
+                    else if (action)
+                        action(L"context-action", id);
                     invoking = false;
                 });
                 target.Append(button);
@@ -78,11 +110,11 @@ struct NativeAddressContextMenu {
                 ToggleMenuFlyoutItem button;
                 button.IsChecked(item.GetNamedBoolean(L"checked", false));
                 configure(button);
-            } else configure(MenuFlyoutItem());
+            } else
+                configure(MenuFlyoutItem());
         }
     }
-    void Sync(Object const& snapshot, bool accepted,
-              Microsoft::UI::Xaml::Controls::TextBox const& field) {
+    void Sync(Object const& snapshot, bool accepted, Microsoft::UI::Xaml::Controls::TextBox const& field) {
         if (!snapshot.HasKey(snapshotKey)) {
             if (!requested && !invoking && IsOpen()) Reset();
             return;
@@ -96,14 +128,17 @@ struct NativeAddressContextMenu {
         flyout = Microsoft::UI::Xaml::Controls::MenuFlyout();
         Populate(menu.GetNamedArray(L"items"), flyout.Items(), field);
         flyout.OverlayInputPassThroughElement(field.XamlRoot().Content());
-        flyout.Closed([this, next, opened = std::weak_ptr<int>(opening), alive = std::weak_ptr<int>(lifetime)](auto const&, auto const&) {
-            if (!alive.expired() && !opened.expired() && next == generation && !invoking && action) action(L"context-close", L"");
+        flyout.Closed([this, next, opened = std::weak_ptr<int>(opening), alive = std::weak_ptr<int>(lifetime)](
+                          auto const&, auto const&) {
+            if (!alive.expired() && !opened.expired() && next == generation && !invoking && action)
+                action(L"context-close", L"");
         });
         auto target = anchor ? anchor : field.as<Microsoft::UI::Xaml::FrameworkElement>();
         if (atPointer) {
             Microsoft::UI::Xaml::Controls::Primitives::FlyoutShowOptions options;
             options.Position(position);
             flyout.ShowAt(target, options);
-        } else flyout.ShowAt(target);
+        } else
+            flyout.ShowAt(target);
     }
 };

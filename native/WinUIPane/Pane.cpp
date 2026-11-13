@@ -53,18 +53,19 @@ namespace SystemDrag = Microsoft::UI::Input::DragDrop;
 struct ChromeDropTarget : implements<ChromeDropTarget, SystemDrag::IDropOperationTarget> {
     using Operation = Windows::ApplicationModel::DataTransfer::DataPackageOperation;
     enum Phase { Enter, Over, Leave, Drop };
-    using Route = std::function<Operation(Phase, SystemDrag::DragInfo const&, SystemDrag::DragUIOverride const*, POINT, hstring const&)>;
+    using Route = std::function<Operation(Phase, SystemDrag::DragInfo const&, SystemDrag::DragUIOverride const*, POINT,
+                                          hstring const&)>;
     std::weak_ptr<Route> route;
     explicit ChromeDropTarget(std::weak_ptr<Route> route) : route(std::move(route)) {}
-    Operation Call(Phase phase, SystemDrag::DragInfo const& info, SystemDrag::DragUIOverride const* ui,
-                   POINT cursor, hstring const& url = {}) const noexcept {
+    Operation Call(Phase phase, SystemDrag::DragInfo const& info, SystemDrag::DragUIOverride const* ui, POINT cursor,
+                   hstring const& url = {}) const noexcept {
         try {
             if (auto routed = route.lock()) return (*routed)(phase, info, ui, cursor, url);
         } catch (...) {}
         return Operation::None;
     }
     Windows::Foundation::IAsyncOperation<Operation> EnterAsync(SystemDrag::DragInfo const& info,
-                                                              SystemDrag::DragUIOverride const& ui) {
+                                                               SystemDrag::DragUIOverride const& ui) {
         POINT cursor{};
         if (!GetCursorPos(&cursor)) co_return Operation::None;
         const auto operation = Call(Enter, info, &ui, cursor);
@@ -72,7 +73,7 @@ struct ChromeDropTarget : implements<ChromeDropTarget, SystemDrag::IDropOperatio
         co_return operation;
     }
     Windows::Foundation::IAsyncOperation<Operation> OverAsync(SystemDrag::DragInfo const& info,
-                                                             SystemDrag::DragUIOverride const& ui) {
+                                                              SystemDrag::DragUIOverride const& ui) {
         POINT cursor{};
         co_return GetCursorPos(&cursor) ? Call(Over, info, &ui, cursor) : Operation::None;
     }
@@ -83,8 +84,7 @@ struct ChromeDropTarget : implements<ChromeDropTarget, SystemDrag::IDropOperatio
     Windows::Foundation::IAsyncOperation<Operation> DropAsync(SystemDrag::DragInfo const& info) {
         POINT cursor{};
         if (!GetCursorPos(&cursor)) co_return Operation::None;
-        if (const auto operation = Call(Drop, info, nullptr, cursor); operation != Operation::None)
-            co_return operation;
+        if (const auto operation = Call(Drop, info, nullptr, cursor); operation != Operation::None) co_return operation;
         if (Call(Over, info, nullptr, cursor) != Operation::Copy) co_return Operation::None;
 
         // Only the bookmark row advertises Copy for a system web link.
@@ -130,14 +130,22 @@ inline EntryWork* nativeWork() {
     // against a measured 3.5us per call, the instrument costs about 1.4% of
     // what it reports, which is worth knowing rather than guessing at.
     static EntryWork entries[]{
-        {L"updateTabStrip", 0, 0, 0}, {L"clip", 0, 0, 0},
-        {L"syncTabs", 0, 0, 0},     {L"syncAddress", 0, 0, 0},    {L"syncTabMenu", 0, 0, 0},
-        {L"drainRequests", 0, 0, 0},{L"completeRequests", 0, 0, 0}, {L"applyTabDelta", 0, 0, 0},
-        {L"focus", 0, 0, 0},        {L"destroy", 0, 0, 0},        {L"translate", 0, 0, 0},
+        {L"updateTabStrip", 0, 0, 0},
+        {L"clip", 0, 0, 0},
+        {L"syncTabs", 0, 0, 0},
+        {L"syncAddress", 0, 0, 0},
+        {L"syncTabMenu", 0, 0, 0},
+        {L"drainRequests", 0, 0, 0},
+        {L"completeRequests", 0, 0, 0},
+        {L"applyTabDelta", 0, 0, 0},
+        {L"focus", 0, 0, 0},
+        {L"destroy", 0, 0, 0},
+        {L"translate", 0, 0, 0},
         // Inside the first update() for a window. Separated because one is
         // paid once per process and the other once per browser window, and a
         // single 45.9ms figure for "the first update()" cannot tell them apart.
-        {L"initialize", 0, 0, 0},   {L"paneCreate", 0, 0, 0},
+        {L"initialize", 0, 0, 0},
+        {L"paneCreate", 0, 0, 0},
         // Only the ticks that had a session to advance. Every window message
         // reaches TickDragSession, and the ones with no drag in progress
         // return on a pointer test -- section 8 requires no session work after
@@ -171,8 +179,7 @@ bool DiagnosticsEnabled();
 // calls -- a fifth of what update() itself was reported to cost. The perf
 // harness turns diagnostics off for exactly that reason, so it sets this.
 inline bool WorkAccountingEnabled() {
-    static const bool enabled =
-        GetEnvironmentVariableW(L"FENN_PANE_WORK", nullptr, 0) != 0 || DiagnosticsEnabled();
+    static const bool enabled = GetEnvironmentVariableW(L"FENN_PANE_WORK", nullptr, 0) != 0 || DiagnosticsEnabled();
     return enabled;
 }
 // Counts on construction, charges elapsed time on destruction, so an entry
@@ -249,8 +256,10 @@ struct StageWork {
 };
 inline StageWork* requestLatency() {
     static StageWork stages[]{
-        {{L"wakeup", 0, 0, 0}, {}, 0, 0, 0},  {{L"execute", 0, 0, 0}, {}, 0, 0, 0},
-        {{L"total", 0, 0, 0}, {}, 0, 0, 0},   {{L"present", 0, 0, 0}, {}, 0, 0, 0},
+        {{L"wakeup", 0, 0, 0}, {}, 0, 0, 0},
+        {{L"execute", 0, 0, 0}, {}, 0, 0, 0},
+        {{L"total", 0, 0, 0}, {}, 0, 0, 0},
+        {{L"present", 0, 0, 0}, {}, 0, 0, 0},
         // Release of a tab reorder until Firefox's snapshot places the tab: the
         // span a dropped tab sits on its preview transform before it snaps.
         {{L"drop", 0, 0, 0}, {}, 0, 0, 0},
@@ -402,8 +411,8 @@ struct TabDragSession {
 struct Pane;
 void NotifyStartup(Pane& pane) noexcept;
 TabDragSession& dragSession();
-void ArmDragSession(Pane& pane, DragKind kind, uint32_t id,
-                    DragOrigin origin = DragOrigin::Strip, UIElement listVisual = nullptr);
+void ArmDragSession(Pane& pane, DragKind kind, uint32_t id, DragOrigin origin = DragOrigin::Strip,
+                    UIElement listVisual = nullptr);
 void AbortDragSession() noexcept;
 void TickDragSession();
 void StartDragSessionTimer();
@@ -433,10 +442,13 @@ struct Pane {
     RECT startupStripBounds{}, startupNavigationBounds{};
     bool startupStripBoundsPending{}, startupNavigationBoundsPending{};
     bool KeepStartupBounds() const {
-        if(!startupPresenter || startupContext || !GetPropW(parent,L"Fenn.InteractiveStartup") ||
-           !GetPropW(parent,NativeWindowHost::StartupPageHoldProperty))return false;
-        const auto* host=NativeWindowHost::Get(parent);RECT client{};GetClientRect(parent,&client);
-        return host && host->startupFrameValid && EqualRect(&client,&host->startupFrameClient);
+        if (!startupPresenter || startupContext || !GetPropW(parent, L"Fenn.InteractiveStartup") ||
+            !GetPropW(parent, NativeWindowHost::StartupPageHoldProperty))
+            return false;
+        const auto* host = NativeWindowHost::Get(parent);
+        RECT client{};
+        GetClientRect(parent, &client);
+        return host && host->startupFrameValid && EqualRect(&client, &host->startupFrameClient);
     }
 
     HWND addressWindow{};
@@ -450,7 +462,7 @@ struct Pane {
         } else {
             Media::MicaBackdrop mica;
             mica.Kind(kind == NativeTabStrip::Backdrop::Mica ? Composition::SystemBackdrops::MicaKind::Base
-                                                          : Composition::SystemBackdrops::MicaKind::BaseAlt);
+                                                             : Composition::SystemBackdrops::MicaKind::BaseAlt);
             target.SystemBackdrop(mica);
         }
     }
@@ -467,7 +479,16 @@ struct Pane {
         return false;
     }
     void DismissMenus() {
-        if (address) { address->bookmarkPanel.LightDismiss(); address->permissionsPanel.LightDismiss(); address->notificationPanel.LightDismiss(true); address->connectionPanel.LightDismiss(); address->translationsPanel.LightDismiss(); address->selectedTranslationsPanel.LightDismiss(); address->pageContextMenu.LightDismiss(); if(address->navigation)address->navigation->backForwardMenu.LightDismiss(); }
+        if (address) {
+            address->bookmarkPanel.LightDismiss();
+            address->permissionsPanel.LightDismiss();
+            address->notificationPanel.LightDismiss(true);
+            address->connectionPanel.LightDismiss();
+            address->translationsPanel.LightDismiss();
+            address->selectedTranslationsPanel.LightDismiss();
+            address->pageContextMenu.LightDismiss();
+            if (address->navigation) address->navigation->backForwardMenu.LightDismiss();
+        }
         if (strip) strip->allTabsPanel.LightDismiss(true);
         if (tabMenu.active) tabMenu.Dismiss();
         if (strip) strip->inlineGroups.hover.Dismiss();
@@ -478,7 +499,8 @@ struct Pane {
     // so it joins the same outside-press and deactivation paths as the menus.
     void CloseCustomization() {
         if (address && address->navigation && address->navigation->customization.editing &&
-            !address->navigation->customization.dragging) address->navigation->customization.Hide();
+            !address->navigation->customization.dragging)
+            address->navigation->customization.Hide();
     }
     void LeaveAddress() {
         if (!address) return;
@@ -487,19 +509,17 @@ struct Pane {
         if (address->popup) address->popup.IsOpen(false);
         address->ScheduleVisibilityReport();
     }
-    static LRESULT CALLBACK FocusProc(HWND hwnd, UINT msg, WPARAM w, LPARAM l,
-                                      UINT_PTR id, DWORD_PTR data) noexcept {
+    static LRESULT CALLBACK FocusProc(HWND hwnd, UINT msg, WPARAM w, LPARAM l, UINT_PTR id, DWORD_PTR data) noexcept {
         auto* pane = reinterpret_cast<Pane*>(data);
         try {
             if (hwnd == pane->parent && ((msg == WM_ACTIVATE && LOWORD(w) == WA_INACTIVE &&
-                 GetAncestor(HWND(l), GA_ROOTOWNER) != GetAncestor(hwnd, GA_ROOTOWNER)) ||
-                (msg == WM_ACTIVATEAPP && !w) || msg == WM_CANCELMODE)) {
+                                          GetAncestor(HWND(l), GA_ROOTOWNER) != GetAncestor(hwnd, GA_ROOTOWNER)) ||
+                                         (msg == WM_ACTIVATEAPP && !w) || msg == WM_CANCELMODE)) {
                 if (pane->strip) pane->strip->CloseToolTips();
                 pane->DismissMenus();
                 pane->LeaveAddress();
             }
-            if ((msg == WM_KILLFOCUS || msg == WM_SETFOCUS) && pane->address)
-                pane->address->ScheduleFocusObservation();
+            if ((msg == WM_KILLFOCUS || msg == WM_SETFOCUS) && pane->address) pane->address->ScheduleFocusObservation();
             if (msg == WM_NCDESTROY) RemoveWindowSubclass(hwnd, FocusProc, id);
         } catch (...) {}
         return DefSubclassProc(hwnd, msg, w, l);
@@ -509,18 +529,29 @@ struct Pane {
         const bool addressPopup = InPopups(addressSource ? addressIsland : contentIsland, target);
         // All submenu windows belong to the same island popup graph.
         if (!stripPopup && tabMenu.active) tabMenu.Dismiss();
-        if(!stripPopup && strip)strip->allTabsPanel.LightDismiss();
+        if (!stripPopup && strip) strip->allTabsPanel.LightDismiss();
         if (!stripPopup && strip && (strip->inlineGroups.hover.open || strip->inlineGroups.hover.showPending))
             strip->inlineGroups.hover.Dismiss();
-        if (!addressPopup && address) { address->bookmarkPanel.LightDismiss(); address->permissionsPanel.LightDismiss(); address->notificationPanel.LightDismiss(); address->connectionPanel.LightDismiss(); address->translationsPanel.LightDismiss(); address->selectedTranslationsPanel.LightDismiss(); address->pageContextMenu.LightDismiss(); if(address->navigation)address->navigation->backForwardMenu.LightDismiss(); }
+        if (!addressPopup && address) {
+            address->bookmarkPanel.LightDismiss();
+            address->permissionsPanel.LightDismiss();
+            address->notificationPanel.LightDismiss();
+            address->connectionPanel.LightDismiss();
+            address->translationsPanel.LightDismiss();
+            address->selectedTranslationsPanel.LightDismiss();
+            address->pageContextMenu.LightDismiss();
+            if (address->navigation) address->navigation->backForwardMenu.LightDismiss();
+        }
         const bool inAddress = (addressSource ? addressSource : source).Holds(target);
-        if (!inAddress && !addressPopup) LeaveAddress();
-        else if (!addressPopup && address && address->mode.flyout.IsOpen()) address->mode.flyout.Hide();
-        if (!source.Holds(target) && !addressSource.Holds(target) &&
-            !stripPopup && !addressPopup &&
+        if (!inAddress && !addressPopup)
+            LeaveAddress();
+        else if (!addressPopup && address && address->mode.flyout.IsOpen())
+            address->mode.flyout.Hide();
+        if (!source.Holds(target) && !addressSource.Holds(target) && !stripPopup && !addressPopup &&
             (InWindow(childWindow, GetFocus()) || InWindow(addressWindow, GetFocus()) ||
              InPopups(contentIsland, GetFocus()) || InPopups(addressIsland, GetFocus())) &&
-            InWindow(parent, target)) SetFocus(NativeWindowHost::PageWindow(parent));
+            InWindow(parent, target))
+            SetFocus(NativeWindowHost::PageWindow(parent));
         if (!inAddress && !addressPopup) CloseCustomization();
         if (address) address->ScheduleFocusObservation();
     }
@@ -530,17 +561,21 @@ struct Pane {
         if (!parent) return;
         std::vector<RECT> chrome, cut;
         for (auto const* slot : {&source, &addressSource}) {
-            if (*slot) if (RECT r = slot->Bounds(); r.right > r.left && r.bottom > r.top) {
-                if (slot == &addressSource && address && address->newTab.enabled) {
-                    // Exclude the page's material gutters as well as its controls.
-                    // Keep the original top: retained Firefox tabs above this row
-                    // must still paint and receive input. Reuse the address entry
-                    // within the process transport's two-rectangle bound.
-                    RECT client{}; GetClientRect(parent,&client);
-                    r.left=client.left; r.right=client.right; r.bottom=client.bottom;
+            if (*slot)
+                if (RECT r = slot->Bounds(); r.right > r.left && r.bottom > r.top) {
+                    if (slot == &addressSource && address && address->newTab.enabled) {
+                        // Exclude the page's material gutters as well as its controls.
+                        // Keep the original top: retained Firefox tabs above this row
+                        // must still paint and receive input. Reuse the address entry
+                        // within the process transport's two-rectangle bound.
+                        RECT client{};
+                        GetClientRect(parent, &client);
+                        r.left = client.left;
+                        r.right = client.right;
+                        r.bottom = client.bottom;
+                    }
+                    chrome.push_back(r);
                 }
-                chrome.push_back(r);
-            }
         }
         const RECT strip = source.Bounds();
         for (auto r : appliedExclusions) {
@@ -553,18 +588,21 @@ struct Pane {
         if (!addressSource || !address || !addressBoundsApplied) return;
         RECT rect = addressBounds;
         if (address->newTab.enabled) {
-            RECT client{}; GetClientRect(parent,&client);
+            RECT client{};
+            GetClientRect(parent, &client);
             rect.bottom = (std::max)(rect.top, client.bottom - (std::max)(0L, rect.left));
         }
-        addressSource.SiteBridge().MoveAndResize({rect.left,rect.top,rect.right-rect.left,rect.bottom-rect.top});
+        addressSource.SiteBridge().MoveAndResize({rect.left, rect.top, rect.right - rect.left, rect.bottom - rect.top});
         if (auto* host = NativeWindowHost::Get(parent); host && host->startupPageBackgroundScope)
-            host->startupPageBackgroundScope.Visibility(address->newTab.enabled ? Visibility::Collapsed : Visibility::Visible);
+            host->startupPageBackgroundScope.Visibility(address->newTab.enabled ? Visibility::Collapsed
+                                                                                : Visibility::Visible);
         ApplyPageRegion();
     }
     void CloseAddressHost() {
         startupPresenter.reset();
         if (!addressSource) return;
-        if (addressWindow && addressWindow != childWindow) RemoveWindowSubclass(addressWindow, FocusProc, reinterpret_cast<UINT_PTR>(this));
+        if (addressWindow && addressWindow != childWindow)
+            RemoveWindowSubclass(addressWindow, FocusProc, reinterpret_cast<UINT_PTR>(this));
         addressSource.TakeFocusRequested(addressTakeFocus);
         addressSource.SiteBridge().Hide();
         addressSource.SystemBackdrop(nullptr);
@@ -590,15 +628,17 @@ struct Pane {
         address->presentationChanged = [this] { RefreshAddressPresentation(); };
         address->newTab.activate = [this](hstring const& id) {
             NativeAddress::JObject action;
-            action.SetNamedValue(L"version",NativeAddress::JValue::CreateNumberValue(1));
-            action.SetNamedValue(L"command",NativeAddress::JValue::CreateStringValue(L"newtab-shortcut"));
-            action.SetNamedValue(L"id",NativeAddress::JValue::CreateStringValue(id));
-            action.SetNamedValue(L"session",NativeAddress::JValue::CreateStringValue(address->session));
-            const int modifiers=((GetKeyState(VK_CONTROL)&0x8000)?1:0)|((GetKeyState(VK_MENU)&0x8000)?2:0)|((GetKeyState(VK_SHIFT)&0x8000)?4:0);
-            action.SetNamedValue(L"modifiers",NativeAddress::JValue::CreateNumberValue(modifiers));
-            Enqueue(NativeShellCore::NavigationAction,0,0,action.Stringify());
+            action.SetNamedValue(L"version", NativeAddress::JValue::CreateNumberValue(1));
+            action.SetNamedValue(L"command", NativeAddress::JValue::CreateStringValue(L"newtab-shortcut"));
+            action.SetNamedValue(L"id", NativeAddress::JValue::CreateStringValue(id));
+            action.SetNamedValue(L"session", NativeAddress::JValue::CreateStringValue(address->session));
+            const int modifiers = ((GetKeyState(VK_CONTROL) & 0x8000) ? 1 : 0) |
+                                  ((GetKeyState(VK_MENU) & 0x8000) ? 2 : 0) |
+                                  ((GetKeyState(VK_SHIFT) & 0x8000) ? 4 : 0);
+            action.SetNamedValue(L"modifiers", NativeAddress::JValue::CreateNumberValue(modifiers));
+            Enqueue(NativeShellCore::NavigationAction, 0, 0, action.Stringify());
         };
-        address->navigation->ownerHwnd=parent;
+        address->navigation->ownerHwnd = parent;
         windowDrag.windowCaption.SetToolbarSurface(address->toolbarSurface, address->toolbarRoot);
         if (strip) {
             auto menuButton = address->navigation->productMenu.button;
@@ -616,14 +656,13 @@ struct Pane {
             // or a dialog. XAML logical focus alone is not ownership.
             const auto focused = GetFocus();
             const auto host = addressSource ? addressWindow : childWindow;
-            const bool release = GetForegroundWindow() == parent &&
+            const bool release =
+                GetForegroundWindow() == parent &&
                 (InWindow(host, focused) || InPopups(addressSource ? addressIsland : contentIsland, focused));
             NativeWindowHost::FocusTrace(release ? "release-content-focus" : "release-content-focus-skipped");
             if (release) SetFocus(NativeWindowHost::PageWindow(parent));
         };
-        address->navigate = [this](hstring const& action) {
-            Enqueue(NativeShellCore::NavigationAction, 0, 0, action);
-        };
+        address->navigate = [this](hstring const& action) { Enqueue(NativeShellCore::NavigationAction, 0, 0, action); };
         address->dispatch = [this](hstring const& action) {
             return Enqueue(NativeShellCore::AddressAction, 0, address->revision, action);
         };
@@ -648,8 +687,8 @@ struct Pane {
                     }
                 }
             }
-            address->ObserveFocus(ownsFocus &&
-                GetAncestor(GetForegroundWindow(), GA_ROOTOWNER) == GetAncestor(parent, GA_ROOTOWNER));
+            address->ObserveFocus(ownsFocus && GetAncestor(GetForegroundWindow(), GA_ROOTOWNER) ==
+                                                   GetAncestor(parent, GA_ROOTOWNER));
         };
     }
     SystemDrag::DragDropManager::TargetRequested_revoker externalDropRevoker;
@@ -668,20 +707,25 @@ struct Pane {
                 if (!address->navigation->customization.dragging) return Operation::None;
                 auto& navigation = *address->navigation;
                 auto root = strip->root.XamlRoot();
-                if (!root || !navigation.host || !navigation.host.XamlRoot() || !SameObject(root, navigation.host.XamlRoot()))
+                if (!root || !navigation.host || !navigation.host.XamlRoot() ||
+                    !SameObject(root, navigation.host.XamlRoot()))
                     return Operation::None;
-                if (phase == ChromeDropTarget::Leave) { navigation.LeaveRoot(); return Operation::None; }
+                if (phase == ChromeDropTarget::Leave) {
+                    navigation.LeaveRoot();
+                    return Operation::None;
+                }
                 auto* host = NativeWindowHost::Get(parent);
                 if (!host || !host->bridge || !ScreenToClient(host->bridge, &cursor)) return Operation::None;
                 const double scale = root.RasterizationScale() > 0 ? root.RasterizationScale() : 1.0;
                 const Windows::Foundation::Point at{float(cursor.x / scale), float(cursor.y / scale)};
                 const bool accepted = phase == ChromeDropTarget::Drop ? navigation.DropOnRoot(info.Data(), at, ui)
-                                                                    : navigation.DragOverRoot(info.Data(), at, ui);
+                                                                      : navigation.DragOverRoot(info.Data(), at, ui);
                 return accepted ? Operation::Move : Operation::None;
             });
         auto dropManager = SystemDrag::DragDropManager::GetForIsland(strip->root.XamlRoot().ContentIsland());
-        externalDropRevoker = dropManager.TargetRequested(auto_revoke,
-            [route = std::weak_ptr<ChromeDropTarget::Route>(dropRoute)](auto const&, SystemDrag::DropOperationTargetRequestedEventArgs const& args) {
+        externalDropRevoker = dropManager.TargetRequested(
+            auto_revoke, [route = std::weak_ptr<ChromeDropTarget::Route>(dropRoute)](
+                             auto const&, SystemDrag::DropOperationTargetRequestedEventArgs const& args) {
                 args.SetTarget(make<ChromeDropTarget>(route));
             });
     }
@@ -794,7 +838,10 @@ struct Pane {
     // Every erase of a pane calls Close() first, but the Rendering handler
     // captures `this`, so the one invariant that must not depend on a call
     // site getting it right is stated here as well.
-    ~Pane() { startupPresenter.reset(); DisarmPresentation(); }
+    ~Pane() {
+        startupPresenter.reset();
+        DisarmPresentation();
+    }
     NativeWindowDrag windowDrag;
     NativeWindowsShare windowsShare;
     void Close() {
@@ -808,7 +855,8 @@ struct Pane {
         // it replaced) can genuinely still be in progress when a window
         // closes -- abort it rather than leave a dangling sourceStrip/
         // hoverStrip pointer for the next tick to dereference.
-        if (strip && (strip.get() == dragSession().sourceStrip || strip.get() == dragSession().hoverStrip || &strip->allTabsPanel == dragSession().hoverPanel))
+        if (strip && (strip.get() == dragSession().sourceStrip || strip.get() == dragSession().hoverStrip ||
+                      &strip->allTabsPanel == dragSession().hoverPanel))
             AbortDragSession();
         // Ordered teardown: stop accepting requests and drop the host wakeup
         // before anything the queued work refers to goes away, then release the
@@ -822,7 +870,10 @@ struct Pane {
         if (shell && WorkAccountingEnabled()) {
             // A refusal means Firefox and this window disagreed about a
             // publication; suites read these lines to catch it.
-            static constexpr struct { uint32_t channel; wchar_t const* name; } channels[] = {
+            static constexpr struct {
+                uint32_t channel;
+                wchar_t const* name;
+            } channels[] = {
                 {SHELL_PUBLICATION_CHANNEL_TAB_PREVIEW, L"tab-preview"},
                 {SHELL_PUBLICATION_CHANNEL_TAB_MODEL, L"tab-model"},
                 {SHELL_PUBLICATION_CHANNEL_STRIP, L"strip"},
@@ -846,7 +897,8 @@ struct Pane {
             };
             for (auto const& entry : channels) {
                 const auto counts = shell.PublicationCounts(entry.channel);
-                fwprintf(stderr, L"WinUIPane publications channel=%s accepted=%llu unchanged=%llu ignored=%llu refused=%llu\n",
+                fwprintf(stderr,
+                         L"WinUIPane publications channel=%s accepted=%llu unchanged=%llu ignored=%llu refused=%llu\n",
                          entry.name, counts.accepted, counts.unchanged, counts.ignored, counts.refused);
             }
         }
@@ -908,8 +960,8 @@ struct Pane {
     // ShellCore has already reconciled tab/address/mode bookkeeping when each
     // outcome was recorded. Deliver the remaining surface-specific effects.
     void ReconcileOutcomes() {
-        shell.TakeOutcomes(); // Diagnostic reports do not own cleanup anymore.
-        if(startupRender)return;
+        shell.TakeOutcomes();  // Diagnostic reports do not own cleanup anymore.
+        if (startupRender) return;
         if (strip) {
             strip->ReconcileTransfers();
             strip->ReconcileDrag();
@@ -926,15 +978,16 @@ struct Pane {
             const auto previous = shell.ModelRevision();
             if (!shell.BeginSnapshot(shell.Stats().generation, revision, count)) return E_INVALIDARG;
             for (uint32_t i = 0; i < count; ++i) {
-                if (!shell.PushSnapshotTab(snapshot[i].id, snapshot[i].title, snapshot[i].commands)) return E_INVALIDARG;
+                if (!shell.PushSnapshotTab(snapshot[i].id, snapshot[i].title, snapshot[i].commands))
+                    return E_INVALIDARG;
 #ifdef FENN_SHELL_TESTING
-                if(i==0 && count>1 && TestWork::Armed(L"snapshot")) {
-                    SetPropW(parent,L"Fenn.TestSnapshotPushed",reinterpret_cast<HANDLE>(1));
-                    SetPropW(parent,L"Fenn.TestSnapshotCount",reinterpret_cast<HANDLE>(uintptr_t(count)));
-                    SetPropW(parent,L"Fenn.TestSnapshotPrevious",reinterpret_cast<HANDLE>(uintptr_t(previous)));
-                    SetPropW(parent,L"Fenn.TestSnapshotRevision",reinterpret_cast<HANDLE>(uintptr_t(revision)));
+                if (i == 0 && count > 1 && TestWork::Armed(L"snapshot")) {
+                    SetPropW(parent, L"Fenn.TestSnapshotPushed", reinterpret_cast<HANDLE>(1));
+                    SetPropW(parent, L"Fenn.TestSnapshotCount", reinterpret_cast<HANDLE>(uintptr_t(count)));
+                    SetPropW(parent, L"Fenn.TestSnapshotPrevious", reinterpret_cast<HANDLE>(uintptr_t(previous)));
+                    SetPropW(parent, L"Fenn.TestSnapshotRevision", reinterpret_cast<HANDLE>(uintptr_t(revision)));
                     TestWork::Reached();
-                    if(!TestWork::WaitRelease())return E_ABORT;
+                    if (!TestWork::WaitRelease()) return E_ABORT;
                 }
 #endif
             }
@@ -948,9 +1001,11 @@ struct Pane {
         browserSelection = selected;
         shell.SelectionPending(tabMenu.StateRevision());
         tabTitles.clear();
-        for(uint32_t i=0;i<count;++i)tabTitles.emplace(snapshot[i].id,snapshot[i].title);
-        if(startupRender)startupRender();
-        else strip->Sync(snapshot, count, selected);
+        for (uint32_t i = 0; i < count; ++i) tabTitles.emplace(snapshot[i].id, snapshot[i].title);
+        if (startupRender)
+            startupRender();
+        else
+            strip->Sync(snapshot, count, selected);
         return S_OK;
     }
     void QueueStripSelection(uint32_t id) {
@@ -1009,7 +1064,6 @@ struct Pane {
             if (!std::isfinite(value) || value < 0 || value > UINT32_MAX || std::floor(value) != value)
                 return E_INVALIDARG;
             nextSelected = uint32_t(value);
-
         }
         std::vector<ShellTabTitle> rows;
         rows.reserve(titles.size());
@@ -1032,7 +1086,10 @@ struct Pane {
     // them. One changed title is one row update, whatever the tab count.
     void ApplyChanges() {
         auto changes = shell.TakeChanges();
-        if(startupRender){startupRender();return;}
+        if (startupRender) {
+            startupRender();
+            return;
+        }
         // Same guard as ApplyPublishedSelection: a pane that is not presenting
         // has nothing to apply to, and the model catches up at the next
         // snapshot.
@@ -1060,7 +1117,7 @@ struct Pane {
     // needing a whole snapshot. Only the rows whose membership actually
     // changed are touched.
     void ApplyPublishedSelection(std::set<uint32_t> const& previous) {
-        if(startupRender)return;
+        if (startupRender) return;
         // A native selection is still awaiting its authoritative result; its
         // optimistic feedback stands until the outcome or a newer publication.
         if (shell.SelectionPending(tabMenu.StateRevision())) return;
@@ -1068,8 +1125,8 @@ struct Pane {
     }
     void Create(HWND hwnd) {
         parent = hwnd;
-        check_bool(SetWindowSubclass(parent, FocusProc, reinterpret_cast<UINT_PTR>(this),
-                                     reinterpret_cast<DWORD_PTR>(this)));
+        check_bool(
+            SetWindowSubclass(parent, FocusProc, reinterpret_cast<UINT_PTR>(this), reinterpret_cast<DWORD_PTR>(this)));
         // Bounds for this endpoint. Zero means "the core's own default".
         // Deliberately small: these are user intents, not a data channel, and
         // an unbounded backlog of them would be a bug, not throughput.
@@ -1130,7 +1187,8 @@ struct Pane {
         strip->select = [this](uint32_t id) { QueueStripSelection(id); };
         strip->close = [this](uint32_t id) { QueueClose(id); };
         strip->add = [this] { QueueNewTab(); };
-        takeFocus = source.TakeFocusRequested([this](auto const&, auto const&) { SetFocus(NativeWindowHost::PageWindow(parent)); });
+        takeFocus = source.TakeFocusRequested(
+            [this](auto const&, auto const&) { SetFocus(NativeWindowHost::PageWindow(parent)); });
         source.Content(strip->root);
         // The island owns the backdrop and its theme/activation/fallback
         // handling. The toolbar's separate island follows the same choice;
@@ -1150,7 +1208,8 @@ struct Pane {
         // use our independent pointer session and never enter this path.
         // A Window loads its content only once shown, so before then this waits for the strip to load,
         // which still precedes any drag.
-        if (strip->root.XamlRoot()) RejectExternalDrops();
+        if (strip->root.XamlRoot())
+            RejectExternalDrops();
         else {
             auto token = std::make_shared<event_token>();
             *token = strip->root.Loaded([this, token, alive = std::weak_ptr<int>(lifetime)](auto const&, auto const&) {
@@ -1163,52 +1222,86 @@ struct Pane {
         strip->armGroupDragSession = [this](uint32_t id) { ArmDragSession(*this, DragKind::Group, id); };
         strip->tickDragSession = TickDragSession;
         strip->startDragSessionTimer = StartDragSessionTimer;
-        strip->allTabsPanel.core=shell.core;
-        strip->allTabsPanel.ownerHwnd=parent;
-        strip->allTabsPanel.dispatch=[this](auto const& action){if(strip && strip->dispatch)strip->dispatch(0,action.Stringify());};
-        strip->allTabsPanel.releaseFocus=[this]{SetFocus(NativeWindowHost::PageWindow(parent));};
-        strip->allTabsPanel.cancelDrag=[owner=strip.get()] {
-            if(dragSession().sourceStrip==owner || dragSession().hoverPanel==&owner->allTabsPanel)AbortDragSession();
+        strip->allTabsPanel.core = shell.core;
+        strip->allTabsPanel.ownerHwnd = parent;
+        strip->allTabsPanel.dispatch = [this](auto const& action) {
+            if (strip && strip->dispatch) strip->dispatch(0, action.Stringify());
         };
-        strip->allTabsPanel.dragging=[] {
+        strip->allTabsPanel.releaseFocus = [this] { SetFocus(NativeWindowHost::PageWindow(parent)); };
+        strip->allTabsPanel.cancelDrag = [owner = strip.get()] {
+            if (dragSession().sourceStrip == owner || dragSession().hoverPanel == &owner->allTabsPanel)
+                AbortDragSession();
+        };
+        strip->allTabsPanel.dragging = [] {
             const auto& session = dragSession();
             if (!session.sourceStrip) return false;
-            const auto phase = session.kind == DragKind::Group
-                ? session.sourceStrip->GroupDrag().phase : session.sourceStrip->Drag().phase;
+            const auto phase = session.kind == DragKind::Group ? session.sourceStrip->GroupDrag().phase
+                                                               : session.sourceStrip->Drag().phase;
             return phase == NativeTabStrip::DragPhase::Dragging ||
-                (session.origin == DragOrigin::Strip && phase == NativeTabStrip::DragPhase::Armed);
+                   (session.origin == DragOrigin::Strip && phase == NativeTabStrip::DragPhase::Armed);
         };
-        strip->allTabsPanel.deferOutside=[this]{
-            if(!(GetAsyncKeyState(VK_LBUTTON)&0x8000))return false;POINT p{};GetCursorPos(&p);
-            if(GetAncestor(WindowFromPoint(p),GA_ROOTOWNER)!=GetAncestor(parent,GA_ROOTOWNER))return false;
-            for(auto const& [id,row]:strip->rows)if(row.IsLoaded() && row.Visibility()==Visibility::Visible){auto r=NativeAllTabsPanel::ScreenBounds(row);if(p.x>=r.X && p.x<r.X+r.Width && p.y>=r.Y && p.y<r.Y+r.Height)return true;}
-            for(auto const& [id,run]:strip->inlineGroups.runs)if(run.button && run.button.IsLoaded()){auto r=NativeAllTabsPanel::ScreenBounds(run.button);if(p.x>=r.X && p.x<r.X+r.Width && p.y>=r.Y && p.y<r.Y+r.Height)return true;}
+        strip->allTabsPanel.deferOutside = [this] {
+            if (!(GetAsyncKeyState(VK_LBUTTON) & 0x8000)) return false;
+            POINT p{};
+            GetCursorPos(&p);
+            if (GetAncestor(WindowFromPoint(p), GA_ROOTOWNER) != GetAncestor(parent, GA_ROOTOWNER)) return false;
+            for (auto const& [id, row] : strip->rows)
+                if (row.IsLoaded() && row.Visibility() == Visibility::Visible) {
+                    auto r = NativeAllTabsPanel::ScreenBounds(row);
+                    if (p.x >= r.X && p.x < r.X + r.Width && p.y >= r.Y && p.y < r.Y + r.Height) return true;
+                }
+            for (auto const& [id, run] : strip->inlineGroups.runs)
+                if (run.button && run.button.IsLoaded()) {
+                    auto r = NativeAllTabsPanel::ScreenBounds(run.button);
+                    if (p.x >= r.X && p.x < r.X + r.Width && p.y >= r.Y && p.y < r.Y + r.Height) return true;
+                }
             return false;
         };
-        strip->allTabsPanel.armDrag=[this](uint32_t tab,uint32_t group,UIElement visual){
-            POINT p{};GetCursorPos(&p);auto local=ScreenToStrip(p);
-            if(group){
-                if(DiagnosticsEnabled())fprintf(stderr,"AllTabs arm group=%u x=%.1f y=%.1f\n",group,local.X,local.Y);
-                if(shell_core_group_drag_arm(shell.core,group,local.X,local.Y)!=SHELL_STATUS_OK)return false;
+        strip->allTabsPanel.armDrag = [this](uint32_t tab, uint32_t group, UIElement visual) {
+            POINT p{};
+            GetCursorPos(&p);
+            auto local = ScreenToStrip(p);
+            if (group) {
+                if (DiagnosticsEnabled())
+                    fprintf(stderr, "AllTabs arm group=%u x=%.1f y=%.1f\n", group, local.X, local.Y);
+                if (shell_core_group_drag_arm(shell.core, group, local.X, local.Y) != SHELL_STATUS_OK) return false;
                 strip->groupDragVisual.Create(strip->root);
-                auto found=strip->inlineGroups.runs.find(group);if(found!=strip->inlineGroups.runs.end())strip->groupDragVisual.Arm(found->second.button,found->second.button.TransformToVisual(strip->groupDragVisual.layer).TransformPoint({float(found->second.button.ActualWidth()/2),0}));
-                ArmDragSession(*this, DragKind::Group, group, DragOrigin::AllTabs);StartDragSessionTimer();return true;
+                auto found = strip->inlineGroups.runs.find(group);
+                if (found != strip->inlineGroups.runs.end())
+                    strip->groupDragVisual.Arm(found->second.button,
+                                               found->second.button.TransformToVisual(strip->groupDragVisual.layer)
+                                                   .TransformPoint({float(found->second.button.ActualWidth() / 2), 0}));
+                ArmDragSession(*this, DragKind::Group, group, DragOrigin::AllTabs);
+                StartDragSessionTimer();
+                return true;
             }
-            if(!strip->rows.count(tab))return false;
-            ArmDragSession(*this, DragKind::Tab, tab, DragOrigin::AllTabs, visual);if(shell_core_tab_drag_arm(shell.core,tab,local.X,local.Y)!=SHELL_STATUS_OK){AbortDragSession();return false;}StartDragSessionTimer();return true;
+            if (!strip->rows.count(tab)) return false;
+            ArmDragSession(*this, DragKind::Tab, tab, DragOrigin::AllTabs, visual);
+            if (shell_core_tab_drag_arm(shell.core, tab, local.X, local.Y) != SHELL_STATUS_OK) {
+                AbortDragSession();
+                return false;
+            }
+            StartDragSessionTimer();
+            return true;
         };
-        strip->allTabsPanel.image=[this](uint32_t tab)->Media::ImageSource{
-            auto found=strip->rows.find(tab);if(found==strip->rows.end() || !found->second.Header())return nullptr;
-            auto header=found->second.Header().as<Controls::Grid>();
+        strip->allTabsPanel.image = [this](uint32_t tab) -> Media::ImageSource {
+            auto found = strip->rows.find(tab);
+            if (found == strip->rows.end() || !found->second.Header()) return nullptr;
+            auto header = found->second.Header().as<Controls::Grid>();
             return header.Children().GetAt(0).as<Controls::Grid>().Children().GetAt(0).as<Controls::Image>().Source();
         };
-        strip->allTabsPanel.context=[this](uint32_t tab){
-            Controls::MenuFlyout menu;menu.Items().Append(NativeTabMenu::Placeholder());
-            auto alive=std::weak_ptr<int>(lifetime);
-            menu.Opening([this,alive,tab,weak=make_weak(menu)](auto const&,auto const&){if(!alive.expired())tabMenu.Open(weak.get(),tab);});
-            menu.Closed([this,alive,weak=make_weak(menu)](auto const&,auto const&){if(!alive.expired() && tabMenu.active==weak.get())tabMenu.Dismiss();});return menu;
+        strip->allTabsPanel.context = [this](uint32_t tab) {
+            Controls::MenuFlyout menu;
+            menu.Items().Append(NativeTabMenu::Placeholder());
+            auto alive = std::weak_ptr<int>(lifetime);
+            menu.Opening([this, alive, tab, weak = make_weak(menu)](auto const&, auto const&) {
+                if (!alive.expired()) tabMenu.Open(weak.get(), tab);
+            });
+            menu.Closed([this, alive, weak = make_weak(menu)](auto const&, auto const&) {
+                if (!alive.expired() && tabMenu.active == weak.get()) tabMenu.Dismiss();
+            });
+            return menu;
         };
-
     }
 };
 
@@ -1271,7 +1364,9 @@ void StartDragSessionTimer() {
     session.timer.Tick([alive = std::weak_ptr<int>(session.lifetime)](auto const&, auto const&) {
         if (alive.expired()) return;
         // Never let a XAML/input exception escape a dispatcher callback.
-        try { TickDragSession(); } catch (...) {}
+        try {
+            TickDragSession();
+        } catch (...) {}
     });
     session.timer.Start();
 }
@@ -1297,7 +1392,9 @@ TabDragSession RetireDragSession() noexcept {
     // ticks and bitmap completions must never act on a replacement gesture.
     auto session = std::exchange(dragSession(), TabDragSession{});
     session.lifetime.reset();
-    if (session.timer) try { session.timer.Stop(); } catch (...) {}
+    if (session.timer) try {
+            session.timer.Stop();
+        } catch (...) {}
     return session;
 }
 
@@ -1307,19 +1404,30 @@ void AbortDragSession() noexcept {
     // detached preview first, while its exact HWND is still owned here.
     DestroyTearoffWindow(session);
     if (session.sourceHwnd && GetCapture() == session.sourceHwnd) ReleaseCapture();
-    if(session.hoverPanel)try{session.hoverPanel->ResetPreview();}catch(...){}
+    if (session.hoverPanel) try {
+            session.hoverPanel->ResetPreview();
+        } catch (...) {}
     auto& panes = state().panes;
     auto source = panes.find(session.sourceHwnd);
-    if (source != panes.end() && source->second->strip.get() == session.sourceStrip && session.sourceStrip && session.kind == DragKind::Group)
-        try { session.sourceStrip->EndGroupDrag(); } catch (...) {}
+    if (source != panes.end() && source->second->strip.get() == session.sourceStrip && session.sourceStrip &&
+        session.kind == DragKind::Group)
+        try {
+            session.sourceStrip->EndGroupDrag();
+        } catch (...) {}
     if (source != panes.end() && source->second->strip.get() == session.sourceStrip && session.sourceStrip &&
         session.sourceStrip->Drag().phase != NativeTabStrip::DragPhase::None)
-        try { session.sourceStrip->CancelDrag(); } catch (...) {}
+        try {
+            session.sourceStrip->CancelDrag();
+        } catch (...) {}
     if (session.hoverStrip && session.hoverStrip != session.sourceStrip) {
         for (auto& [hwnd, pane] : panes) {
             if (pane->strip.get() == session.hoverStrip) {
-                try { pane->strip->EndForeignDragOver(); } catch (...) {}
-                try { pane->strip->EndForeignGroupOver(); } catch (...) {}
+                try {
+                    pane->strip->EndForeignDragOver();
+                } catch (...) {}
+                try {
+                    pane->strip->EndForeignGroupOver();
+                } catch (...) {}
                 break;
             }
         }
@@ -1360,7 +1468,8 @@ winrt::fire_and_forget RenderTearoffAsync(Controls::TabViewItem row, HWND popup,
         row.Opacity(0);
         bitmap = co_await TabDragImage::RenderElementToBitmapAsync(visual, &width, &height);
     } catch (...) {
-        if (DiagnosticsEnabled()) fprintf(stderr, "WinUIPane drag capture failed hr=0x%08X\n", unsigned(winrt::to_hresult()));
+        if (DiagnosticsEnabled())
+            fprintf(stderr, "WinUIPane drag capture failed hr=0x%08X\n", unsigned(winrt::to_hresult()));
         if (!alive.expired()) {
             TabDragImage::SetFloatingAppearance(row, false);
             row.Opacity(1);
@@ -1395,8 +1504,8 @@ winrt::fire_and_forget RenderTearoffAsync(Controls::TabViewItem row, HWND popup,
 bool CreateTearoffWindow(TabDragSession& session) {
     EnsureTearoffClassRegistered();
     session.tearoffWindow =
-        CreateWindowExW(WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW, kTearoffClassName,
-                         L"", WS_POPUP, 0, 0, 0, 0, nullptr, nullptr, GetModuleHandleW(nullptr), nullptr);
+        CreateWindowExW(WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW, kTearoffClassName, L"",
+                        WS_POPUP, 0, 0, 0, 0, nullptr, nullptr, GetModuleHandleW(nullptr), nullptr);
     if (!session.tearoffWindow) return false;
     ShowWindow(session.tearoffWindow, SW_SHOWNOACTIVATE);
     SetWindowPos(session.tearoffWindow, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
@@ -1406,14 +1515,15 @@ bool CreateTearoffWindow(TabDragSession& session) {
 // Capture a live All Tabs container or group chip under the gesture lease.
 // Unlike strip tabs, these visuals need no template or opacity restoration.
 winrt::fire_and_forget RenderVisualTearoffAsync(UIElement visual, HWND popup, std::weak_ptr<int> alive,
-                                               const char* failureContext = nullptr) {
+                                                const char* failureContext = nullptr) {
     int width{}, height{};
     uint64_t bitmap{};
     try {
         bitmap = co_await TabDragImage::RenderElementToBitmapAsync(visual, &width, &height);
     } catch (...) {
         if (failureContext && DiagnosticsEnabled())
-            fprintf(stderr, "WinUIPane %s drag capture failed hr=0x%08X\n", failureContext, unsigned(winrt::to_hresult()));
+            fprintf(stderr, "WinUIPane %s drag capture failed hr=0x%08X\n", failureContext,
+                    unsigned(winrt::to_hresult()));
         co_return;
     }
     auto& session = dragSession();
@@ -1429,15 +1539,16 @@ winrt::fire_and_forget RenderVisualTearoffAsync(UIElement visual, HWND popup, st
 void ShowOrMoveTearoff(TabDragSession& session, POINT screenPoint) {
     if (!session.tearoffWindow) {
         if (!CreateTearoffWindow(session)) return;
-        if(session.listVisual)RenderVisualTearoffAsync(session.listVisual,session.tearoffWindow,std::weak_ptr<int>(session.lifetime));
+        if (session.listVisual)
+            RenderVisualTearoffAsync(session.listVisual, session.tearoffWindow, std::weak_ptr<int>(session.lifetime));
         else if (session.sourceStrip && session.sourceStrip->rows.count(session.sourceId))
             RenderTearoffAsync(session.sourceStrip->rows.at(session.sourceId), session.tearoffWindow,
-                                std::weak_ptr<int>(session.lifetime));
+                               std::weak_ptr<int>(session.lifetime));
     }
     if (!session.tearoffBitmap) return;
     POINT topLeft{screenPoint.x - session.tearoffWidth / 2, screenPoint.y - session.tearoffHeight / 2};
     TabDragImage::PaintDragVisual(session.tearoffWindow, session.tearoffBitmap, session.tearoffWidth,
-                                   session.tearoffHeight, topLeft);
+                                  session.tearoffHeight, topLeft);
 }
 
 // Off the strip the group follows the cursor in a floating window, keeping
@@ -1461,7 +1572,7 @@ void UpdateGroupTearoff(TabDragSession& session, POINT screenPoint, bool detachi
     // Over another strip, sit in its row band as a header would.
     if (snap.bottom > snap.top) topLeft.y = snap.top + (snap.bottom - snap.top - session.tearoffHeight) / 2;
     TabDragImage::PaintDragVisual(session.tearoffWindow, session.tearoffBitmap, session.tearoffWidth,
-                                   session.tearoffHeight, topLeft);
+                                  session.tearoffHeight, topLeft);
     if (!IsWindowVisible(session.tearoffWindow)) ShowWindow(session.tearoffWindow, SW_SHOWNOACTIVATE);
     visual.Detach(true);
 }
@@ -1479,7 +1590,9 @@ void UpdateGroupTearoff(TabDragSession& session, POINT screenPoint, bool detachi
 void ResolveDragDrop(Pane& sourcePane, Pane* hitPane, POINT screenPoint) {
     // WinUI can throw while resetting transforms or releasing pointer capture.
     // Even then the independent topmost HWND must not survive the gesture.
-    struct Finish { ~Finish() { AbortDragSession(); } } finish;
+    struct Finish {
+        ~Finish() { AbortDragSession(); }
+    } finish;
     auto& session = dragSession();
     auto* strip = session.sourceStrip;
     if (hitPane && hitPane->strip) {
@@ -1487,7 +1600,11 @@ void ResolveDragDrop(Pane& sourcePane, Pane* hitPane, POINT screenPoint) {
         const auto tab = session.sourceId;
         auto destination = hitPane->strip.get();
         const auto ticket = destination->ReserveTransfer(*strip, tab);
-        if (!ticket) { strip->CancelDrag(); destination->EndForeignDragOver(true); return; }
+        if (!ticket) {
+            strip->CancelDrag();
+            destination->EndForeignDragOver(true);
+            return;
+        }
         NativeTabStrip::TransferAdmission admission{*destination, ticket, true};
         strip->BeginDeparture(tab);
         admission.Bind(destination->AcceptForeignDrop(sourcePane.parent, tab, local));
@@ -1513,7 +1630,8 @@ HWND VisibleRootAt(POINT screenPoint) {
         // Top-level window rectangles include invisible resize borders.
         RECT bounds{};
         if (FAILED(DwmGetWindowAttribute(window, DWMWA_EXTENDED_FRAME_BOUNDS, &bounds, sizeof(bounds))) &&
-            !GetWindowRect(window, &bounds)) continue;
+            !GetWindowRect(window, &bounds))
+            continue;
         if (PtInRect(&bounds, screenPoint)) return GetAncestor(window, GA_ROOTOWNER);
     }
     return nullptr;
@@ -1526,7 +1644,8 @@ Pane* ForeignStripAt(Pane& sourcePane, POINT screenPoint) {
     if (!visible) return nullptr;
     for (auto& entry : state().panes) {
         if (!entry.second->strip || entry.second.get() == &sourcePane || !entry.second->appliedVisible ||
-            !IsWindowVisible(entry.first) || IsIconic(entry.first)) continue;
+            !IsWindowVisible(entry.first) || IsIconic(entry.first))
+            continue;
         RECT bounds = entry.second->StripScreenBounds();
         if (!PtInRect(&bounds, screenPoint)) continue;
         // Pane storage is keyed by HWND, not z-order. A covered pane can sort
@@ -1557,8 +1676,10 @@ NativeAllTabsPanel* UpdateAllTabsDragTarget(TabDragSession& session, POINT point
 
 void SetDragHoverStrip(TabDragSession& session, NativeTabStrip* next) {
     if (session.hoverStrip != next && session.hoverStrip && session.hoverStrip != session.sourceStrip) {
-        if (session.kind == DragKind::Group) session.hoverStrip->EndForeignGroupOver();
-        else session.hoverStrip->EndForeignDragOver();
+        if (session.kind == DragKind::Group)
+            session.hoverStrip->EndForeignGroupOver();
+        else
+            session.hoverStrip->EndForeignDragOver();
     }
     session.hoverStrip = next;
 }
@@ -1568,9 +1689,10 @@ void SetDragHoverStrip(TabDragSession& session, NativeTabStrip* next) {
 bool UpdateAllTabsDrag(TabDragSession& session, NativeAllTabsPanel& panel, POINT point, bool buttonDown) {
     const bool valid = panel.Preview(point);
     if (buttonDown) return false;
-    if (valid) panel.Drop(session.sourceHwnd, session.sourceStrip->windowDragSession,
-                          session.kind == DragKind::Group ? 0 : session.sourceId,
-                          session.kind == DragKind::Group ? session.sourceStrip->GroupDrag().group : 0);
+    if (valid)
+        panel.Drop(session.sourceHwnd, session.sourceStrip->windowDragSession,
+                   session.kind == DragKind::Group ? 0 : session.sourceId,
+                   session.kind == DragKind::Group ? session.sourceStrip->GroupDrag().group : 0);
     AbortDragSession();
     return true;
 }
@@ -1590,7 +1712,10 @@ void TickDragSession() {
     static bool ticking{};
     if (ticking) return;
     ticking = true;
-    struct TickScope { bool& active; ~TickScope() { active = false; } } scope{ticking};
+    struct TickScope {
+        bool& active;
+        ~TickScope() { active = false; }
+    } scope{ticking};
     auto& session = dragSession();
     if (!session.sourceHwnd) return;
     WorkScope tick{EntryDragTick};
@@ -1605,11 +1730,14 @@ void TickDragSession() {
     if (session.kind == DragKind::Group) {
         POINT point{};
         GetCursorPos(&point);
-        const bool down=(GetAsyncKeyState(VK_LBUTTON)&0x8000)!=0;
-        const bool cancel=(GetAsyncKeyState(VK_ESCAPE)&0x8000)!=0 || GetAncestor(GetForegroundWindow(),GA_ROOTOWNER)!=GetAncestor(sourcePane.parent,GA_ROOTOWNER) ||
-            (session.sourceStrip->GroupDrag().phase==2 && GetCapture()!=sourcePane.parent) || !sourcePane.appliedVisible;
+        const bool down = (GetAsyncKeyState(VK_LBUTTON) & 0x8000) != 0;
+        const bool cancel =
+            (GetAsyncKeyState(VK_ESCAPE) & 0x8000) != 0 ||
+            GetAncestor(GetForegroundWindow(), GA_ROOTOWNER) != GetAncestor(sourcePane.parent, GA_ROOTOWNER) ||
+            (session.sourceStrip->GroupDrag().phase == 2 && GetCapture() != sourcePane.parent) ||
+            !sourcePane.appliedVisible;
         auto* strip = session.sourceStrip;
-        if(session.origin == DragOrigin::AllTabs && strip->GroupDrag().phase==1 && !down){
+        if (session.origin == DragOrigin::AllTabs && strip->GroupDrag().phase == 1 && !down) {
             // An ordinary ListView click never promoted. Disarm without strip
             // visual restoration or capture changes before WinUI handles up.
             shell_core_group_drag_end(strip->core);
@@ -1621,13 +1749,15 @@ void TickDragSession() {
         // release rolls the source back; filtering that strip out here turns
         // the same release into an unintended off-strip tear-off instead.
         Pane* hitPane = nullptr;
-        if (!cancel && strip->GroupDrag().phase == 2)
-            hitPane = ForeignStripAt(sourcePane, point);
+        if (!cancel && strip->GroupDrag().phase == 2) hitPane = ForeignStripAt(sourcePane, point);
         SetDragHoverStrip(session, hitPane ? hitPane->strip.get() : nullptr);
         auto* panel = UpdateAllTabsDragTarget(session, point);
-        if(cancel){AbortDragSession();return;}
-        if(panel && strip->GroupDrag().phase==2){
-            strip->allTabsPanel.suppressClick=true;
+        if (cancel) {
+            AbortDragSession();
+            return;
+        }
+        if (panel && strip->GroupDrag().phase == 2) {
+            strip->allTabsPanel.suppressClick = true;
             if (UpdateAllTabsDrag(session, *panel, point, down)) return;
         }
         if (hitPane && !down) {
@@ -1635,22 +1765,28 @@ void TickDragSession() {
             // hidden until Firefox moves it, exactly like a tear-off.
             const auto group = strip->GroupDrag().group;
             const auto width = strip->GroupDragSlotWidth();
-            const auto request = hitPane->strip->AcceptForeignGroupDrop(*strip, sourcePane.parent, strip->windowDragSession,
-                                                                        group, hitPane->ScreenToStrip(point), width);
+            const auto request = hitPane->strip->AcceptForeignGroupDrop(
+                *strip, sourcePane.parent, strip->windowDragSession, group, hitPane->ScreenToStrip(point), width);
             strip->EndGroupDrag(false, request != 0);
             session.hoverStrip = nullptr;
             AbortDragSession();
             return;
         }
         strip->TickGroupDrag(sourcePane.ScreenToStrip(point), down, cancel, hitPane != nullptr || panel != nullptr);
-        if(session.origin == DragOrigin::AllTabs && strip->GroupDrag().phase==2)strip->allTabsPanel.suppressClick=true;
+        if (session.origin == DragOrigin::AllTabs && strip->GroupDrag().phase == 2)
+            strip->allTabsPanel.suppressClick = true;
         const auto group = strip->GroupDrag();
-        if (!group.phase) {const bool fromList=session.origin == DragOrigin::AllTabs;AbortDragSession();if(!fromList)sourcePane.strip->allTabsPanel.LightDismiss();return;}
+        if (!group.phase) {
+            const bool fromList = session.origin == DragOrigin::AllTabs;
+            AbortDragSession();
+            if (!fromList) sourcePane.strip->allTabsPanel.LightDismiss();
+            return;
+        }
         if (hitPane) {
             if (!hitPane->strip->ForeignGroupOver(hitPane->ScreenToStrip(point), strip->GroupDragSlotWidth()))
                 session.hoverStrip = nullptr;
         }
-        UpdateGroupTearoff(session, point, group.phase == 2 && (group.detaching || panel!=nullptr),
+        UpdateGroupTearoff(session, point, group.phase == 2 && (group.detaching || panel != nullptr),
                            hitPane ? hitPane->StripScreenBounds() : RECT{});
         return;
     }
@@ -1667,11 +1803,21 @@ void TickDragSession() {
         GetCursorPos(&screenPoint);
         auto local = sourcePane.ScreenToStrip(screenPoint);
         if (!buttonDown) {
-            if(session.origin == DragOrigin::AllTabs)shell_core_tab_drag_end(session.sourceStrip->core,false);else session.sourceStrip->FinishDrag(session.sourceId);
-            const bool fromList=session.origin == DragOrigin::AllTabs;AbortDragSession();if(!fromList)sourcePane.strip->allTabsPanel.LightDismiss();
+            if (session.origin == DragOrigin::AllTabs)
+                shell_core_tab_drag_end(session.sourceStrip->core, false);
+            else
+                session.sourceStrip->FinishDrag(session.sourceId);
+            const bool fromList = session.origin == DragOrigin::AllTabs;
+            AbortDragSession();
+            if (!fromList) sourcePane.strip->allTabsPanel.LightDismiss();
         } else {
             session.sourceStrip->TryPromote(session.sourceId, local);
-            if(session.origin == DragOrigin::AllTabs && session.sourceStrip->Drag().phase==NativeTabStrip::DragPhase::Dragging){shell_core_tab_drag_list_origin(session.sourceStrip->core);session.sourceStrip->allTabsPanel.suppressClick=true;SetCapture(sourcePane.parent);}
+            if (session.origin == DragOrigin::AllTabs &&
+                session.sourceStrip->Drag().phase == NativeTabStrip::DragPhase::Dragging) {
+                shell_core_tab_drag_list_origin(session.sourceStrip->core);
+                session.sourceStrip->allTabsPanel.suppressClick = true;
+                SetCapture(sourcePane.parent);
+            }
         }
         return;
     }
@@ -1698,7 +1844,8 @@ void TickDragSession() {
     auto* panel = UpdateAllTabsDragTarget(session, screenPoint);
     if (panel) {
         SetDragHoverStrip(session, nullptr);
-        session.sourceStrip->CloseDragGap();ShowOrMoveTearoff(session,screenPoint);
+        session.sourceStrip->CloseDragGap();
+        ShowOrMoveTearoff(session, screenPoint);
         UpdateAllTabsDrag(session, *panel, screenPoint, buttonDown);
         return;
     }
@@ -1741,7 +1888,8 @@ void TickDragSession() {
         RECT bounds = snapPane->StripScreenBounds();
         POINT anchor{screenPoint.x, bounds.top + (bounds.bottom - bounds.top) / 2};
         int halfWidth = session.tearoffWidth / 2;
-        anchor.x = std::clamp(anchor.x, bounds.left + halfWidth, std::max(bounds.left + halfWidth, bounds.right - halfWidth));
+        anchor.x =
+            std::clamp(anchor.x, bounds.left + halfWidth, std::max(bounds.left + halfWidth, bounds.right - halfWidth));
         ShowOrMoveTearoff(session, anchor);
     } else {
         // True tear-off -- no strip to snap into, so the visual just
@@ -1791,7 +1939,7 @@ void Initialize() {
 #ifdef FENN_SHELL_PROCESS
         check_bool(bool(Dispatching::DispatcherQueue::GetForCurrentThread()));
         s.app = Application::Current();
-        check_bool(bool(s.app)); // ShellApp already configured its resources.
+        check_bool(bool(s.app));  // ShellApp already configured its resources.
 #else
         if (Dispatching::DispatcherQueue::GetForCurrentThread()) throw_hresult(E_UNEXPECTED);
         s.dispatcher = Dispatching::DispatcherQueueController::CreateOnCurrentThread();
@@ -1844,7 +1992,8 @@ HRESULT CreateBrowserWindow(const RECT& bounds, HWND* output) noexcept {
     }
 }
 const bool browserWindowFactory = (NativeWindowHost::CreateShellWindow = &CreateBrowserWindow, true);
-HRESULT ShowStartupSurfaceForProfile(HWND hwnd, const wchar_t* profile, const wchar_t* presentation = nullptr) noexcept {
+HRESULT ShowStartupSurfaceForProfile(HWND hwnd, const wchar_t* profile,
+                                     const wchar_t* presentation = nullptr) noexcept {
     try {
         check_hresult(Check(hwnd));
         if (!NativeStartupSurface::Eligible(hwnd)) return E_INVALIDARG;
@@ -1852,25 +2001,33 @@ HRESULT ShowStartupSurfaceForProfile(HWND hwnd, const wchar_t* profile, const wc
         Initialize();
         NativeWindowHost::FocusTrace("start-xaml-initialized");
         wchar_t interactive[2]{};
-        bool showEditor=GetEnvironmentVariableW(L"FENN_NATIVE_INTERACTIVE_STARTUP",interactive,2)==1 && interactive[0]==L'1';
+        bool showEditor =
+            GetEnvironmentVariableW(L"FENN_NATIVE_INTERACTIVE_STARTUP", interactive, 2) == 1 && interactive[0] == L'1';
 #ifdef WINUI_PANE_TESTING
         // Synthetic handoff fixtures start only through Firefox's routed host.
         // Production binaries have no manual/pre-profile startup mode.
         wchar_t manual[2]{};
-        showEditor=showEditor || (GetEnvironmentVariableW(L"FENN_TEST_MANUAL_STARTUP",manual,2)==1 && manual[0]==L'1');
+        showEditor =
+            showEditor || (GetEnvironmentVariableW(L"FENN_TEST_MANUAL_STARTUP", manual, 2) == 1 && manual[0] == L'1');
 #endif
-        if(showEditor && GetPropW(hwnd,L"Fenn.NativeStartupOrigin")==reinterpret_cast<HANDLE>(2))
-            return ShowInteractiveStartup(hwnd,profile,presentation);
+        if (showEditor && GetPropW(hwnd, L"Fenn.NativeStartupOrigin") == reinterpret_cast<HANDLE>(2))
+            return ShowInteractiveStartup(hwnd, profile, presentation);
         return NativeStartupSurface::Show(hwnd);
-    } catch (...) { return to_hresult(); }
+    } catch (...) {
+        return to_hresult();
+    }
 }
-HRESULT WINAPI ShowStartupSurface(HWND hwnd) noexcept { return ShowStartupSurfaceForProfile(hwnd,nullptr); }
+HRESULT WINAPI ShowStartupSurface(HWND hwnd) noexcept {
+    return ShowStartupSurfaceForProfile(hwnd, nullptr);
+}
 HRESULT WINAPI DismissStartupSurface(HWND hwnd) noexcept {
     if (!hwnd) return E_INVALIDARG;
     try {
         check_hresult(Check(hwnd));
         return NativeStartupSurface::Close(hwnd);
-    } catch (...) { return to_hresult(); }
+    } catch (...) {
+        return to_hresult();
+    }
 }
 HRESULT WINAPI UpdateTabStrip(HWND hwnd, const RECT* rect, BOOL visible) noexcept {
     WorkScope scope{EntryUpdateTabStrip};
@@ -1890,9 +2047,12 @@ HRESULT WINAPI UpdateTabStrip(HWND hwnd, const RECT* rect, BOOL visible) noexcep
             } catch (...) {
                 auto error = to_hresult();
                 if (DiagnosticsEnabled()) {
-                    try { throw; }
-                    catch (hresult_error const& detail) { fwprintf(stderr, L"WinUIPane create hr=0x%08X message=%s\n", unsigned(error), detail.message().c_str()); }
-                    catch (...) {}
+                    try {
+                        throw;
+                    } catch (hresult_error const& detail) {
+                        fwprintf(stderr, L"WinUIPane create hr=0x%08X message=%s\n", unsigned(error),
+                                 detail.message().c_str());
+                    } catch (...) {}
                 }
                 pane->Close();
                 return error;
@@ -1900,10 +2060,12 @@ HRESULT WINAPI UpdateTabStrip(HWND hwnd, const RECT* rect, BOOL visible) noexcep
             found = s.panes.emplace(hwnd, std::move(pane)).first;
         }
         auto& pane = *found->second;
-        if(visible && pane.boundsApplied && pane.KeepStartupBounds()) {
-            pane.startupStripBounds=*rect;pane.startupStripBoundsPending=true;return S_OK;
+        if (visible && pane.boundsApplied && pane.KeepStartupBounds()) {
+            pane.startupStripBounds = *rect;
+            pane.startupStripBoundsPending = true;
+            return S_OK;
         }
-        pane.startupStripBoundsPending=false;
+        pane.startupStripBoundsPending = false;
         auto site = pane.source.SiteBridge();
         HWND child = GetWindowFromWindowId(site.WindowId());
         auto& work = geometryWork();
@@ -1946,7 +2108,9 @@ HRESULT WINAPI UpdateTabStrip(HWND hwnd, const RECT* rect, BOOL visible) noexcep
         }
         return S_OK;
     } catch (hresult_error const& error) {
-        fwprintf(stderr, L"WinUIPane update hr=0x%08X operation=%hs iconic=%d rect=%ld,%ld,%ld,%ld message=%s\n", unsigned(error.code()), operation, IsIconic(hwnd), rect ? rect->left : 0, rect ? rect->top : 0, rect ? rect->right : 0, rect ? rect->bottom : 0, error.message().c_str());
+        fwprintf(stderr, L"WinUIPane update hr=0x%08X operation=%hs iconic=%d rect=%ld,%ld,%ld,%ld message=%s\n",
+                 unsigned(error.code()), operation, IsIconic(hwnd), rect ? rect->left : 0, rect ? rect->top : 0,
+                 rect ? rect->right : 0, rect ? rect->bottom : 0, error.message().c_str());
         return error.code();
     } catch (...) {
         return to_hresult();
@@ -1970,8 +2134,7 @@ HRESULT WINAPI Clip(HWND hwnd, const RECT* exclusions, uint32_t count) noexcept 
         const RECT size{0, 0, bounds.right - bounds.left, bounds.bottom - bounds.top};
         auto& work = geometryWork();
         ++work.clips;
-        if (pane.clipApplied && EqualRect(&pane.appliedClipClient, &size) &&
-            pane.appliedExclusions.size() == count &&
+        if (pane.clipApplied && EqualRect(&pane.appliedClipClient, &size) && pane.appliedExclusions.size() == count &&
             std::equal(pane.appliedExclusions.begin(), pane.appliedExclusions.end(), exclusions,
                        [](RECT const& a, RECT const& b) { return EqualRect(&a, &b) != 0; }))
             return S_OK;
@@ -1983,7 +2146,8 @@ HRESULT WINAPI Clip(HWND hwnd, const RECT* exclusions, uint32_t count) noexcept 
         ++work.clipsApplied;
         scope.Stop();
         if (DiagnosticsEnabled())
-            fprintf(stderr, "WinUIPane clip exclusions=%u visible=%d\n", count, int(pane.source.SiteBridge().Visible()));
+            fprintf(stderr, "WinUIPane clip exclusions=%u visible=%d\n", count,
+                    int(pane.source.SiteBridge().Visible()));
         return S_OK;
     } catch (...) {
         return to_hresult();
@@ -2001,24 +2165,28 @@ HRESULT WINAPI SyncAddress(HWND hwnd, const wchar_t* input) noexcept {
         auto snapshot = NativeAddress::JObject::Parse(input);
         if (!found->second->address) return snapshot.GetNamedBoolean(L"enabled", false) ? E_NOTIMPL : S_OK;
         auto& pane = *found->second;
-        if(pane.startupRender) {
-            if(!pane.startupAddressApply || !pane.startupAddressApply(snapshot))return S_OK;
+        if (pane.startupRender) {
+            if (!pane.startupAddressApply || !pane.startupAddressApply(snapshot)) return S_OK;
         } else {
-            pane.address->observeFocus();pane.address->Sync(snapshot);
+            pane.address->observeFocus();
+            pane.address->Sync(snapshot);
         }
         if (pane.addressSource) {
-            const bool backdrop = snapshot.GetNamedBoolean(L"enabled", false) &&
-                                  snapshot.GetNamedBoolean(L"navigationToolbar", false);
+            const bool backdrop =
+                snapshot.GetNamedBoolean(L"enabled", false) && snapshot.GetNamedBoolean(L"navigationToolbar", false);
             if (backdrop != pane.navigationBackdrop) {
-                if (backdrop) Pane::SetBackdrop(pane.addressSource, pane.strip->backdrop);
-                else pane.addressSource.SystemBackdrop(nullptr);
+                if (backdrop)
+                    Pane::SetBackdrop(pane.addressSource, pane.strip->backdrop);
+                else
+                    pane.addressSource.SystemBackdrop(nullptr);
                 pane.navigationBackdrop = backdrop;
             }
         }
         return S_OK;
     } catch (winrt::hresult_error const& error) {
         if (DiagnosticsEnabled())
-            fprintf(stderr, "WinUIPane syncAddress failed hr=%08x: %ls\n", unsigned(error.code().value), error.message().c_str());
+            fprintf(stderr, "WinUIPane syncAddress failed hr=%08x: %ls\n", unsigned(error.code().value),
+                    error.message().c_str());
         return error.code();
     } catch (...) {
         return to_hresult();
@@ -2035,14 +2203,18 @@ HRESULT WINAPI UpdateAddress(HWND hwnd, const RECT* rect, BOOL visible) noexcept
             // Firefox initializes its retained toolbar before it binds the
             // early presenter. Its provisional hide must not replace the live
             // local editor. Explicit post-binding hide and teardown still close it.
-            if(pane.startupPresenter && !pane.startupContext && GetPropW(hwnd,L"Fenn.InteractiveStartup"))return S_OK;
-            pane.CloseAddressHost(); return S_OK;
+            if (pane.startupPresenter && !pane.startupContext && GetPropW(hwnd, L"Fenn.InteractiveStartup"))
+                return S_OK;
+            pane.CloseAddressHost();
+            return S_OK;
         }
         if (!pane.strip) return E_NOTIMPL;
-        if(pane.addressBoundsApplied && pane.KeepStartupBounds()) {
-            pane.startupNavigationBounds=*rect;pane.startupNavigationBoundsPending=true;return S_OK;
+        if (pane.addressBoundsApplied && pane.KeepStartupBounds()) {
+            pane.startupNavigationBounds = *rect;
+            pane.startupNavigationBoundsPending = true;
+            return S_OK;
         }
-        pane.startupNavigationBoundsPending=false;
+        pane.startupNavigationBoundsPending = false;
         if (!pane.addressSource) {
             pane.addressSource = XamlSlot::New();
             pane.addressSource.Initialize(GetWindowIdFromWindow(hwnd));
@@ -2079,8 +2251,8 @@ HRESULT WINAPI UpdateAddress(HWND hwnd, const RECT* rect, BOOL visible) noexcept
         return error;
     }
 }
-HRESULT WINAPI MeasureChromeLayout(HWND hwnd, uint32_t stripHeight, BOOL navigation,
-                                  uint32_t contentInset, WinUIChromeLayout* output) noexcept {
+HRESULT WINAPI MeasureChromeLayout(HWND hwnd, uint32_t stripHeight, BOOL navigation, uint32_t contentInset,
+                                   WinUIChromeLayout* output) noexcept {
     if (!output) return E_POINTER;
     ShellChromeLayout plan{};
     const auto result = MeasureNativeChromeLayout(hwnd, stripHeight, !!navigation, contentInset, &plan);
@@ -2101,7 +2273,9 @@ HRESULT WINAPI FocusAddress(HWND hwnd, BOOL selectAll) noexcept {
         if (!pane.address->field.Focus(FocusState::Programmatic)) return E_FAIL;
         if (selectAll) pane.address->field.SelectAll();
         return S_OK;
-    } catch (...) { return to_hresult(); }
+    } catch (...) {
+        return to_hresult();
+    }
 }
 // Publication only, since v12: nothing native travels back through this call.
 // Every native intent -- menu transitions, selection, and the strip's own
@@ -2116,9 +2290,12 @@ HRESULT WINAPI SyncTabMenu(HWND hwnd, const wchar_t* input) noexcept {
         if (found == state().panes.end()) return E_INVALIDARG;
         auto snapshot = NativeTabMenu::Object::Parse(input);
         auto& pane = *found->second;
-        if (snapshot.HasKey(L"startupPagePainted")) { EndPageHold(hwnd); return S_OK; }
+        if (snapshot.HasKey(L"startupPagePainted")) {
+            EndPageHold(hwnd);
+            return S_OK;
+        }
         if (snapshot.HasKey(L"strip")) {
-            if(pane.startupRender)return S_OK;
+            if (pane.startupRender) return S_OK;
             // Strip publication is a separate transaction: validate the envelope
             // before touching XAML, and never drain any queued input here.
             if (!pane.strip || snapshot.Size() != 3 || snapshot.GetNamedNumber(L"version") != 2 ||
@@ -2128,23 +2305,32 @@ HRESULT WINAPI SyncTabMenu(HWND hwnd, const wchar_t* input) noexcept {
             return S_OK;
         }
         if (snapshot.HasKey(L"groupCreation")) {
-            if(pane.startupRender)return S_OK;
-            if(!pane.strip || snapshot.Size()!=3 || snapshot.GetNamedNumber(L"version")!=2 || !snapshot.GetNamedBoolean(L"publishOnly",false))return E_INVALIDARG;
-            pane.strip->RequestGroupCreation(snapshot.GetNamedObject(L"groupCreation"));return S_OK;
+            if (pane.startupRender) return S_OK;
+            if (!pane.strip || snapshot.Size() != 3 || snapshot.GetNamedNumber(L"version") != 2 ||
+                !snapshot.GetNamedBoolean(L"publishOnly", false))
+                return E_INVALIDARG;
+            pane.strip->RequestGroupCreation(snapshot.GetNamedObject(L"groupCreation"));
+            return S_OK;
         }
         if (snapshot.HasKey(L"allTabs")) {
-            if(pane.startupRender)return S_OK;
-            if(!pane.strip || snapshot.Size()!=3 || snapshot.GetNamedNumber(L"version")!=2 || !snapshot.GetNamedBoolean(L"publishOnly",false))return E_INVALIDARG;
-            pane.strip->allTabsPanel.Apply(snapshot.GetNamedObject(L"allTabs"));return S_OK;
+            if (pane.startupRender) return S_OK;
+            if (!pane.strip || snapshot.Size() != 3 || snapshot.GetNamedNumber(L"version") != 2 ||
+                !snapshot.GetNamedBoolean(L"publishOnly", false))
+                return E_INVALIDARG;
+            pane.strip->allTabsPanel.Apply(snapshot.GetNamedObject(L"allTabs"));
+            return S_OK;
         }
         if (snapshot.HasKey(L"groupHeader")) {
-            if(pane.startupRender)return S_OK;
-            if (!pane.strip || snapshot.Size()!=3 || snapshot.GetNamedNumber(L"version")!=2 || !snapshot.GetNamedBoolean(L"publishOnly",false)) return E_INVALIDARG;
-            pane.strip->groupHeader.core=pane.shell.core;
-            pane.strip->groupHeader.Apply(snapshot.GetNamedObject(L"groupHeader"));return S_OK;
+            if (pane.startupRender) return S_OK;
+            if (!pane.strip || snapshot.Size() != 3 || snapshot.GetNamedNumber(L"version") != 2 ||
+                !snapshot.GetNamedBoolean(L"publishOnly", false))
+                return E_INVALIDARG;
+            pane.strip->groupHeader.core = pane.shell.core;
+            pane.strip->groupHeader.Apply(snapshot.GetNamedObject(L"groupHeader"));
+            return S_OK;
         }
         if (snapshot.HasKey(L"tabPreview")) {
-            if(pane.startupRender)return S_OK;
+            if (pane.startupRender) return S_OK;
             // Firefox's answer to a hover-card request: also its own envelope,
             // validated in full before the card changes.
             if (!pane.strip || snapshot.Size() != 3 || snapshot.GetNamedNumber(L"version") != 2 ||
@@ -2171,14 +2357,14 @@ bool ValidTabPublication(const WinUITab* tabs, uint32_t count, uint32_t selected
     if (!revision || (count && !tabs) || count > 10000) return false;
     std::set<uint32_t> ids;
     for (uint32_t i = 0; i < count; ++i) {
-        if (!tabs[i].id || !tabs[i].title || !ids.insert(tabs[i].id).second ||
-            wcsnlen(tabs[i].title, 32769) > 32768 || (tabs[i].commands & ~31u) || (tabs[i].commands & 12u) == 12u)
+        if (!tabs[i].id || !tabs[i].title || !ids.insert(tabs[i].id).second || wcsnlen(tabs[i].title, 32769) > 32768 ||
+            (tabs[i].commands & ~31u) || (tabs[i].commands & 12u) == 12u)
             return false;
     }
     return !selected || ids.count(selected);
 }
-HRESULT WINAPI SyncTabs(HWND hwnd, const WinUITab* tabs, uint32_t count, uint32_t selected,
-                        uint32_t revision, uint32_t* requested) noexcept {
+HRESULT WINAPI SyncTabs(HWND hwnd, const WinUITab* tabs, uint32_t count, uint32_t selected, uint32_t revision,
+                        uint32_t* requested) noexcept {
     WorkScope scope{EntrySyncTabs};
     try {
         check_hresult(Check(hwnd));
@@ -2307,49 +2493,68 @@ HRESULT PrepareDrain(HWND hwnd, wchar_t* output, uint32_t capacity) noexcept {
 // A posted publication has no caller left to fail to, so a refusal returns as a request.
 // Firefox answers it with its usual recovery: one complete publication after a refused
 // delta, or the surface's fallback after a refused complete publication.
-void ReportRejectedPublication(HWND hwnd, const wchar_t* channel, bool delta, hstring const& request={}) {
-    auto found=state().panes.find(hwnd);
-    if(found==state().panes.end())return;
+void ReportRejectedPublication(HWND hwnd, const wchar_t* channel, bool delta, hstring const& request = {}) {
+    auto found = state().panes.find(hwnd);
+    if (found == state().panes.end()) return;
     NativeTabMenu::Object action;
-    action.Insert(L"kind",winrt::Windows::Data::Json::JsonValue::CreateStringValue(L"publication-rejected"));
-    action.Insert(L"channel",winrt::Windows::Data::Json::JsonValue::CreateStringValue(channel));
-    action.Insert(L"delta",winrt::Windows::Data::Json::JsonValue::CreateBooleanValue(delta));
-    if(!request.empty())action.Insert(L"request",winrt::Windows::Data::Json::JsonValue::CreateStringValue(request));
-    auto& pane=*found->second;
-    pane.Enqueue(NativeShellCore::StripAction,0,pane.strip?pane.strip->presentationRevision:0,action.Stringify());
+    action.Insert(L"kind", winrt::Windows::Data::Json::JsonValue::CreateStringValue(L"publication-rejected"));
+    action.Insert(L"channel", winrt::Windows::Data::Json::JsonValue::CreateStringValue(channel));
+    action.Insert(L"delta", winrt::Windows::Data::Json::JsonValue::CreateBooleanValue(delta));
+    if (!request.empty()) action.Insert(L"request", winrt::Windows::Data::Json::JsonValue::CreateStringValue(request));
+    auto& pane = *found->second;
+    pane.Enqueue(NativeShellCore::StripAction, 0, pane.strip ? pane.strip->presentationRevision : 0,
+                 action.Stringify());
 }
 HRESULT WINAPI PostedSyncAddress(HWND hwnd, const wchar_t* input) noexcept {
-    const auto result=SyncAddress(hwnd,input);
-    if(FAILED(result))try{ReportRejectedPublication(hwnd,L"address",false);}catch(...){}
+    const auto result = SyncAddress(hwnd, input);
+    if (FAILED(result)) try {
+            ReportRejectedPublication(hwnd, L"address", false);
+        } catch (...) {}
     return result;
 }
 HRESULT WINAPI PostedSyncTabMenu(HWND hwnd, const wchar_t* input) noexcept {
-    const auto result=SyncTabMenu(hwnd,input);
-    if(FAILED(result))try{
-        const wchar_t* channel=L"other";bool delta=false;hstring request;
-        NativeTabMenu::Object snapshot{nullptr};
-        if(NativeTabMenu::Object::TryParse(input,snapshot)) {
-            if(snapshot.HasKey(L"strip")){channel=L"strip";delta=snapshot.GetNamedObject(L"strip").GetNamedNumber(L"base",0)!=0;}
-            else if(snapshot.HasKey(L"groupCreation")){channel=L"groupCreation";request=winrt::to_hstring(snapshot.GetNamedObject(L"groupCreation").GetNamedNumber(L"request",0));}
-            else if(snapshot.HasKey(L"state")){channel=L"context";delta=snapshot.GetNamedObject(L"state").GetNamedNumber(L"base",0)!=0;}
-        }
-        ReportRejectedPublication(hwnd,channel,delta,request);
-    }catch(...){}
+    const auto result = SyncTabMenu(hwnd, input);
+    if (FAILED(result)) try {
+            const wchar_t* channel = L"other";
+            bool delta = false;
+            hstring request;
+            NativeTabMenu::Object snapshot{nullptr};
+            if (NativeTabMenu::Object::TryParse(input, snapshot)) {
+                if (snapshot.HasKey(L"strip")) {
+                    channel = L"strip";
+                    delta = snapshot.GetNamedObject(L"strip").GetNamedNumber(L"base", 0) != 0;
+                } else if (snapshot.HasKey(L"groupCreation")) {
+                    channel = L"groupCreation";
+                    request =
+                        winrt::to_hstring(snapshot.GetNamedObject(L"groupCreation").GetNamedNumber(L"request", 0));
+                } else if (snapshot.HasKey(L"state")) {
+                    channel = L"context";
+                    delta = snapshot.GetNamedObject(L"state").GetNamedNumber(L"base", 0) != 0;
+                }
+            }
+            ReportRejectedPublication(hwnd, channel, delta, request);
+        } catch (...) {}
     return result;
 }
 HRESULT WINAPI ReportedUpdateTabStrip(HWND hwnd, const RECT* rect, BOOL visible) noexcept {
-    const auto result=UpdateTabStrip(hwnd,rect,visible);
-    if(FAILED(result))try{ReportRejectedPublication(hwnd,L"stripHost",false);}catch(...){}
+    const auto result = UpdateTabStrip(hwnd, rect, visible);
+    if (FAILED(result)) try {
+            ReportRejectedPublication(hwnd, L"stripHost", false);
+        } catch (...) {}
     return result;
 }
 HRESULT WINAPI ReportedClip(HWND hwnd, const RECT* rects, uint32_t count) noexcept {
-    const auto result=Clip(hwnd,rects,count);
-    if(FAILED(result))try{ReportRejectedPublication(hwnd,L"stripHost",false);}catch(...){}
+    const auto result = Clip(hwnd, rects, count);
+    if (FAILED(result)) try {
+            ReportRejectedPublication(hwnd, L"stripHost", false);
+        } catch (...) {}
     return result;
 }
 HRESULT WINAPI ReportedUpdateAddress(HWND hwnd, const RECT* rect, BOOL visible) noexcept {
-    const auto result=UpdateAddress(hwnd,rect,visible);
-    if(FAILED(result))try{ReportRejectedPublication(hwnd,L"addressHost",false);}catch(...){}
+    const auto result = UpdateAddress(hwnd, rect, visible);
+    if (FAILED(result)) try {
+            ReportRejectedPublication(hwnd, L"addressHost", false);
+        } catch (...) {}
     return result;
 }
 HRESULT WINAPI CompleteRequests(HWND hwnd, const wchar_t* input) noexcept {
@@ -2375,8 +2580,7 @@ HRESULT WINAPI CompleteRequests(HWND hwnd, const wchar_t* input) noexcept {
             auto entry = value.GetObject();
             auto id = entry.GetNamedNumber(L"id");
             auto outcome = NativeJson::RequireId(entry, L"outcome");
-            if (!std::isfinite(id) || id < 1 || id > NativeJson::kMaxSafeInteger || std::floor(id) != id ||
-                outcome > 4)
+            if (!std::isfinite(id) || id < 1 || id > NativeJson::kMaxSafeInteger || std::floor(id) != id || outcome > 4)
                 return E_INVALIDARG;
             if (WorkAccountingEnabled()) {
                 const double now = NowMs();
@@ -2457,31 +2661,39 @@ HRESULT WINAPI Focus(HWND hwnd, BOOL backwards) noexcept {
     }
 }
 HRESULT WINAPI ReportedFocus(HWND hwnd, BOOL backwards) noexcept {
-    const auto result=Focus(hwnd,backwards);
-    if(FAILED(result))try{ReportRejectedPublication(hwnd,L"stripHost",false);}catch(...){}
+    const auto result = Focus(hwnd, backwards);
+    if (FAILED(result)) try {
+            ReportRejectedPublication(hwnd, L"stripHost", false);
+        } catch (...) {}
     return result;
 }
 HRESULT WINAPI ReportedFocusAddress(HWND hwnd, BOOL selectAll) noexcept {
-    const auto result=FocusAddress(hwnd,selectAll);
-    if(FAILED(result))try{ReportRejectedPublication(hwnd,L"addressFocus",false);}catch(...){}
+    const auto result = FocusAddress(hwnd, selectAll);
+    if (FAILED(result)) try {
+            ReportRejectedPublication(hwnd, L"addressFocus", false);
+        } catch (...) {}
     return result;
 }
-HRESULT WINAPI ReportedSyncTabs(HWND hwnd, const WinUITab* tabs, uint32_t count, uint32_t selected, uint32_t revision) noexcept {
-    uint32_t acknowledged=0;
-    const auto result=SyncTabs(hwnd,tabs,count,selected,revision,&acknowledged);
-    if(FAILED(result))try{ReportRejectedPublication(hwnd,L"tabs",false);}catch(...){}
+HRESULT WINAPI ReportedSyncTabs(HWND hwnd, const WinUITab* tabs, uint32_t count, uint32_t selected,
+                                uint32_t revision) noexcept {
+    uint32_t acknowledged = 0;
+    const auto result = SyncTabs(hwnd, tabs, count, selected, revision, &acknowledged);
+    if (FAILED(result)) try {
+            ReportRejectedPublication(hwnd, L"tabs", false);
+        } catch (...) {}
     return result;
 }
 // S_FALSE applied the delta but asks for a snapshot, so it is reported like a refusal.
 HRESULT WINAPI PostedApplyTabDelta(HWND hwnd, const wchar_t* input) noexcept {
-    uint32_t acknowledged=0;
-    const auto result=ApplyTabDelta(hwnd,input,&acknowledged);
-    if(result!=S_OK)try{
-        NativeTabMenu::Object delta{nullptr};
-        hstring request;
-        if(NativeTabMenu::Object::TryParse(input,delta))request=winrt::to_hstring(uint32_t(delta.GetNamedNumber(L"revision",0)));
-        ReportRejectedPublication(hwnd,L"tabs",true,request);
-    }catch(...){}
+    uint32_t acknowledged = 0;
+    const auto result = ApplyTabDelta(hwnd, input, &acknowledged);
+    if (result != S_OK) try {
+            NativeTabMenu::Object delta{nullptr};
+            hstring request;
+            if (NativeTabMenu::Object::TryParse(input, delta))
+                request = winrt::to_hstring(uint32_t(delta.GetNamedNumber(L"revision", 0)));
+            ReportRejectedPublication(hwnd, L"tabs", true, request);
+        } catch (...) {}
     return result;
 }
 HRESULT WINAPI Destroy(HWND hwnd) noexcept {
@@ -2506,35 +2718,40 @@ void PageReported(HWND shell, HWND page, WPARAM kind) noexcept {
         auto found = state().panes.find(shell);
         if (found == state().panes.end()) return;
         auto& pane = *found->second;
-        if (kind == 1) pane.OutsidePress(page);
-        else if (pane.address) pane.address->ScheduleFocusObservation();
+        if (kind == 1)
+            pane.OutsidePress(page);
+        else if (pane.address)
+            pane.address->ScheduleFocusObservation();
     } catch (...) {}
 }
 const bool pageReports = (NativeWindowHost::PageReported = &PageReported, true);
 bool RouteBrowserShortcut(Pane& pane, MSG const& message) noexcept {
     try {
-            if ((message.message == WM_KEYDOWN || message.message == WM_SYSKEYDOWN) &&
-                !(pane.address && pane.address->composing) && !NativeAltGrTextKey(UINT(message.wParam))) {
-                const bool control = (GetKeyState(VK_CONTROL) & 0x8000) != 0;
-                const bool addressShortcut = pane.addressSource &&
-                    (message.wParam == VK_F6 || message.wParam == VK_F5 || message.wParam == VK_F11 ||
-                     (control && (message.wParam == 'K' || message.wParam == 'R')) ||
-                     ((GetKeyState(VK_MENU) & 0x8000) &&
-                      (message.wParam == 'D' || message.wParam == VK_LEFT || message.wParam == VK_RIGHT)));
-                if (addressShortcut || (control && (message.wParam == 'L' || message.wParam == 'T' || message.wParam == 'W' ||
-                                (pane.strip && (message.wParam == VK_TAB || message.wParam == VK_PRIOR ||
-                                                message.wParam == VK_NEXT))))) {
-                    // Capture modifiers on the source queue before focus moves.
-                    // Re-posting a bare key to the input thread loses Ctrl/Alt if
-                    // their real key-up is consumed before that post is handled.
-                    const WPARAM packet=NativeWindowHost::PageKeyPacket(message.wParam);
-                    const HWND page = NativeWindowHost::PageWindow(pane.parent);
-                    SetFocus(page);
-                    if(auto* host=NativeWindowHost::Get(pane.parent);host && host->endpoint)
-                        PostMessageW(host->endpoint,message.message+WINUI_PANE_ENDPOINT_KEY_OFFSET,packet,message.lParam);
-                    return true;
-                }
+        if ((message.message == WM_KEYDOWN || message.message == WM_SYSKEYDOWN) &&
+            !(pane.address && pane.address->composing) && !NativeAltGrTextKey(UINT(message.wParam))) {
+            const bool control = (GetKeyState(VK_CONTROL) & 0x8000) != 0;
+            const bool addressShortcut =
+                pane.addressSource &&
+                (message.wParam == VK_F6 || message.wParam == VK_F5 || message.wParam == VK_F11 ||
+                 (control && (message.wParam == 'K' || message.wParam == 'R')) ||
+                 ((GetKeyState(VK_MENU) & 0x8000) &&
+                  (message.wParam == 'D' || message.wParam == VK_LEFT || message.wParam == VK_RIGHT)));
+            if (addressShortcut ||
+                (control && (message.wParam == 'L' || message.wParam == 'T' || message.wParam == 'W' ||
+                             (pane.strip && (message.wParam == VK_TAB || message.wParam == VK_PRIOR ||
+                                             message.wParam == VK_NEXT))))) {
+                // Capture modifiers on the source queue before focus moves.
+                // Re-posting a bare key to the input thread loses Ctrl/Alt if
+                // their real key-up is consumed before that post is handled.
+                const WPARAM packet = NativeWindowHost::PageKeyPacket(message.wParam);
+                const HWND page = NativeWindowHost::PageWindow(pane.parent);
+                SetFocus(page);
+                if (auto* host = NativeWindowHost::Get(pane.parent); host && host->endpoint)
+                    PostMessageW(host->endpoint, message.message + WINUI_PANE_ENDPOINT_KEY_OFFSET, packet,
+                                 message.lParam);
+                return true;
             }
+        }
     } catch (...) {}
     return false;
 }
@@ -2545,8 +2762,12 @@ BOOL WINAPI Translate(MSG* message) noexcept {
         if (!message || FAILED(Check())) return FALSE;
         // Popup focus and Win32 drag capture have different owners. Consume
         // the actual queued Escape; a short press can end between timer polls.
-        if(message->message==WM_KEYDOWN && message->wParam==VK_ESCAPE && dragSession().sourceHwnd &&
-           (dragSession().origin == DragOrigin::AllTabs || dragSession().hoverPanel || (dragSession().sourceStrip && dragSession().sourceStrip->allTabsPanel.opening))){AbortDragSession();return TRUE;}
+        if (message->message == WM_KEYDOWN && message->wParam == VK_ESCAPE && dragSession().sourceHwnd &&
+            (dragSession().origin == DragOrigin::AllTabs || dragSession().hoverPanel ||
+             (dragSession().sourceStrip && dragSession().sourceStrip->allTabsPanel.opening))) {
+            AbortDragSession();
+            return TRUE;
+        }
 
         // Message-agnostic: this is the ground-truth tick a process-wide
         // drag session's correctness depends on (Pane.cpp's TabDragSession/
@@ -2555,21 +2776,23 @@ BOOL WINAPI Translate(MSG* message) noexcept {
         TickDragSession();
         for (auto const& entry : state().panes) {
             auto& pane = *entry.second;
-            if (pane.startupKey && (message->hwnd==pane.parent || IsChild(pane.parent,message->hwnd)) &&
-                pane.startupKey(*message)) return TRUE;
+            if (pane.startupKey && (message->hwnd == pane.parent || IsChild(pane.parent, message->hwnd)) &&
+                pane.startupKey(*message))
+                return TRUE;
             if (pane.address && pane.address->navigation && message->message == WM_KEYDOWN &&
                 message->wParam == VK_ESCAPE && GetForegroundWindow() == pane.parent &&
-                pane.address->navigation->customization.DismissOnEscape()) return TRUE;
-            if (pane.strip && pane.strip->inlineGroups.hover.open &&
-                message->message == WM_KEYDOWN && message->wParam == VK_ESCAPE &&
-                GetForegroundWindow() == pane.parent) {
+                pane.address->navigation->customization.DismissOnEscape())
+                return TRUE;
+            if (pane.strip && pane.strip->inlineGroups.hover.open && message->message == WM_KEYDOWN &&
+                message->wParam == VK_ESCAPE && GetForegroundWindow() == pane.parent) {
                 pane.strip->inlineGroups.hover.Dismiss();
                 return TRUE;
             }
             if (pane.strip && !pane.strip->inlineGroups.runs.empty() && pane.strip->root.IsLoaded() &&
                 GetForegroundWindow() == pane.parent) {
                 POINT point{};
-                if (GetCursorPos(&point)) pane.strip->inlineGroups.PointerAt(pane.ScreenToStrip(point),pane.strip->view);
+                if (GetCursorPos(&point))
+                    pane.strip->inlineGroups.PointerAt(pane.ScreenToStrip(point), pane.strip->view);
             }
             // Over the SDK caption buttons the pointer is non-client, yet the
             // toolbar island still hovers the control at the same x. Take the
@@ -2590,12 +2813,20 @@ BOOL WINAPI Translate(MSG* message) noexcept {
             if (!pane.contentIsland && pane.source.Content().XamlRoot())
                 pane.contentIsland = pane.source.Content().XamlRoot().ContentIsland();
             switch (message->message) {
-                case WM_LBUTTONDOWN: case WM_RBUTTONDOWN: case WM_MBUTTONDOWN: case WM_XBUTTONDOWN:
-                case WM_NCLBUTTONDOWN: case WM_NCRBUTTONDOWN: case WM_NCMBUTTONDOWN: case WM_NCXBUTTONDOWN:
-                case WM_POINTERDOWN: case WM_NCPOINTERDOWN:
+                case WM_LBUTTONDOWN:
+                case WM_RBUTTONDOWN:
+                case WM_MBUTTONDOWN:
+                case WM_XBUTTONDOWN:
+                case WM_NCLBUTTONDOWN:
+                case WM_NCRBUTTONDOWN:
+                case WM_NCMBUTTONDOWN:
+                case WM_NCXBUTTONDOWN:
+                case WM_POINTERDOWN:
+                case WM_NCPOINTERDOWN:
                     pane.OutsidePress(message->hwnd);
                     break;
-                case WM_SETFOCUS: case WM_KILLFOCUS:
+                case WM_SETFOCUS:
+                case WM_KILLFOCUS:
                     if (pane.address) pane.address->ScheduleFocusObservation();
                     break;
             }
@@ -2621,16 +2852,17 @@ BOOL WINAPI Translate(MSG* message) noexcept {
                 // A Window has no XamlRoot until it is first shown, and so no popups yet either.
                 if (!pane.contentIsland)
                     if (auto root = pane.source.Content().XamlRoot()) pane.contentIsland = root.ContentIsland();
-                if (pane.contentIsland) for (auto popup : pane.contentIsland.Popups()) {
-                    HWND popupWindow = GetWindowFromWindowId(popup.WindowId());
-                    if (message->hwnd == popupWindow || IsChild(popupWindow, message->hwnd)) {
-                        ownsMessage = true;
-                        break;
+                if (pane.contentIsland)
+                    for (auto popup : pane.contentIsland.Popups()) {
+                        HWND popupWindow = GetWindowFromWindowId(popup.WindowId());
+                        if (message->hwnd == popupWindow || IsChild(popupWindow, message->hwnd)) {
+                            ownsMessage = true;
+                            break;
+                        }
                     }
-                }
             }
             if (!ownsMessage) continue;
-            if(RouteBrowserShortcut(pane,*message))return TRUE;
+            if (RouteBrowserShortcut(pane, *message)) return TRUE;
             return ContentPreTranslateMessage(message);
         }
     } catch (...) {}
@@ -2650,18 +2882,19 @@ HRESULT WINAPI Shutdown() noexcept {
             for (auto* stage = requestLatency(); stage->work.name; ++stage) {
                 if (!stage->work.calls && !stage->blocked && !stage->deferred) continue;
                 if (!stage->work.calls) {
-                    fwprintf(stderr, L"WinUIPane request-latency stage=%s n=0 blocked=%llu deferred=%llu (no "
-                                     L"sample was this stage's own to answer for)\n",
+                    fwprintf(stderr,
+                             L"WinUIPane request-latency stage=%s n=0 blocked=%llu deferred=%llu (no "
+                             L"sample was this stage's own to answer for)\n",
                              stage->work.name, stage->blocked, stage->deferred);
                     continue;
                 }
-                fwprintf(stderr, L"WinUIPane request-latency stage=%s n=%llu blocked=%llu deferred=%llu stalled=%llu ms=%.3f"
-                                 L" maxMs=%.3f meanMs=%.4f le1=%llu le4=%llu le16=%llu le64=%llu le256=%llu"
-                                 L" over=%llu\n",
+                fwprintf(stderr,
+                         L"WinUIPane request-latency stage=%s n=%llu blocked=%llu deferred=%llu stalled=%llu ms=%.3f"
+                         L" maxMs=%.3f meanMs=%.4f le1=%llu le4=%llu le16=%llu le64=%llu le256=%llu"
+                         L" over=%llu\n",
                          stage->work.name, stage->work.calls, stage->blocked, stage->deferred, stage->stalled,
-                         stage->work.totalMs,
-                         stage->work.maxMs, stage->work.totalMs / double(stage->work.calls), stage->buckets[0],
-                         stage->buckets[1], stage->buckets[2], stage->buckets[3], stage->buckets[4],
+                         stage->work.totalMs, stage->work.maxMs, stage->work.totalMs / double(stage->work.calls),
+                         stage->buckets[0], stage->buckets[1], stage->buckets[2], stage->buckets[3], stage->buckets[4],
                          stage->buckets[5]);
             }
             auto& work = geometryWork();
@@ -2706,195 +2939,224 @@ HRESULT PublishStartupPresentation(HWND hwnd, Windows::Data::Json::JsonObject co
 #include "LocalStartup.h"
 HRESULT BeginStartupPresenter(HWND hwnd) noexcept {
     try {
-        auto found=state().panes.find(hwnd);
-        if(found==state().panes.end())return E_INVALIDARG;
-        auto& pane=*found->second;
-        if(pane.startupPresenter)return S_OK;
-        if(!pane.address || !pane.strip || !pane.addressSource)return E_NOT_VALID_STATE;
-        if(pane.address->composing)return E_PENDING;
-        if(pane.strip->IsDragging() || pane.strip->currentGroups.Size())return E_NOTIMPL;
-        for(auto const& [id,meta]:pane.strip->presentation)
-            if((meta.flags&13) || !meta.containerName.empty() || meta.containerColor)return E_NOTIMPL;
-        auto presenter=std::make_shared<LocalStartup::Presenter>(pane,true);
+        auto found = state().panes.find(hwnd);
+        if (found == state().panes.end()) return E_INVALIDARG;
+        auto& pane = *found->second;
+        if (pane.startupPresenter) return S_OK;
+        if (!pane.address || !pane.strip || !pane.addressSource) return E_NOT_VALID_STATE;
+        if (pane.address->composing) return E_PENDING;
+        if (pane.strip->IsDragging() || pane.strip->currentGroups.Size()) return E_NOTIMPL;
+        for (auto const& [id, meta] : pane.strip->presentation)
+            if ((meta.flags & 13) || !meta.containerName.empty() || meta.containerColor) return E_NOTIMPL;
+        auto presenter = std::make_shared<LocalStartup::Presenter>(pane, true);
         presenter->Initialize();
-        pane.startupPresenter=std::move(presenter);
+        pane.startupPresenter = std::move(presenter);
         return S_OK;
-    } catch (...) {return to_hresult();}
+    } catch (...) {
+        return to_hresult();
+    }
 }
 
 bool FinishStartupPresenter(HWND hwnd) {
-    auto& pane=*state().panes.at(hwnd);
-    auto presenter=std::static_pointer_cast<LocalStartup::Presenter>(pane.startupPresenter);
-    if(!presenter)return true;
-    if(!presenter->Finish())return false;
-    pane.startupPresenter.reset();return true;
+    auto& pane = *state().panes.at(hwnd);
+    auto presenter = std::static_pointer_cast<LocalStartup::Presenter>(pane.startupPresenter);
+    if (!presenter) return true;
+    if (!presenter->Finish()) return false;
+    pane.startupPresenter.reset();
+    return true;
 }
 
 void ApplyStartupDirection(Pane& pane, bool rtl) {
-    const auto flow=rtl?FlowDirection::RightToLeft:FlowDirection::LeftToRight;
-    if(pane.strip->root.FlowDirection()!=flow)pane.strip->root.FlowDirection(flow);
-    if(pane.address->root.FlowDirection()!=flow)pane.address->root.FlowDirection(flow);
-    if(pane.address->toolbarRoot && pane.address->toolbarRoot.FlowDirection()!=flow)pane.address->toolbarRoot.FlowDirection(flow);
-    if(pane.address->popupContent && pane.address->popupContent.FlowDirection()!=flow)pane.address->popupContent.FlowDirection(flow);
+    const auto flow = rtl ? FlowDirection::RightToLeft : FlowDirection::LeftToRight;
+    if (pane.strip->root.FlowDirection() != flow) pane.strip->root.FlowDirection(flow);
+    if (pane.address->root.FlowDirection() != flow) pane.address->root.FlowDirection(flow);
+    if (pane.address->toolbarRoot && pane.address->toolbarRoot.FlowDirection() != flow)
+        pane.address->toolbarRoot.FlowDirection(flow);
+    if (pane.address->popupContent && pane.address->popupContent.FlowDirection() != flow)
+        pane.address->popupContent.FlowDirection(flow);
     // Preserve URL/editor character order and avoid resetting live composition.
-    if(pane.address->field.TextReadingOrder()!=TextReadingOrder::DetectFromContent)
+    if (pane.address->field.TextReadingOrder() != TextReadingOrder::DetectFromContent)
         pane.address->field.TextReadingOrder(TextReadingOrder::DetectFromContent);
-    if(pane.address->field.TextAlignment()!=TextAlignment::Left)pane.address->field.TextAlignment(TextAlignment::Left);
+    if (pane.address->field.TextAlignment() != TextAlignment::Left)
+        pane.address->field.TextAlignment(TextAlignment::Left);
 }
 HRESULT PublishStartupPresentation(HWND hwnd, Windows::Data::Json::JsonObject const& message) {
-    auto& pane=*state().panes.at(hwnd);
-    auto presenter=std::static_pointer_cast<LocalStartup::Presenter>(pane.startupPresenter);
-    if(!presenter)return E_NOT_VALID_STATE;
-    auto text=[&](wchar_t const* key){auto value=message.GetNamedString(key);
-        if(value.empty())throw_hresult(E_INVALIDARG);
-        NativeJson::RequireLength(value,NativeJson::kMaxShortLabel);return value;};
-    LocalStartup::Presenter::Labels labels{text(L"newTab"),text(L"pending"),text(L"full"),text(L"composition")};
-    const auto address=text(L"address"),unavailable=text(L"unavailable");
-    const bool blocked=message.GetNamedBoolean(L"blocked");
-    const auto recovery=message.HasKey(L"recovery")?text(L"recovery"):hstring{L"Startup needs attention"};
-    const auto recoveryAction=message.HasKey(L"recoveryAction")?text(L"recoveryAction"):hstring{L"Use native layout"};
-    const bool recoverable=message.GetNamedBoolean(L"recoverable",false);
-    const bool rtl=message.GetNamedBoolean(L"rtl",false);
-    auto id=[&](wchar_t const* key){auto value=message.GetNamedString(key);
-        if(value.empty() || value.size()>20 || (value.size()>1 && value[0]==L'0'))throw_hresult(E_INVALIDARG);
-        uint64_t result{};for(auto c:value){if(c<L'0'||c>L'9'||result>(UINT64_MAX-(c-L'0'))/10)throw_hresult(E_INVALIDARG);result=result*10+c-L'0';}return result;};
-    const auto json=message.Stringify();bool apply{};
-    if(shell_core_startup_presentation(pane.shell.core,id(L"session"),id(L"revision"),
-        reinterpret_cast<const uint16_t*>(json.c_str()),json.size(),&apply)!=SHELL_STATUS_OK)return E_INVALIDARG;
-    if(!apply)return S_OK;
-    ApplyStartupDirection(pane,rtl);
-    presenter->labels=labels;presenter->blocked=blocked?unavailable:hstring{};
-    presenter->Recovery(recovery,recoveryAction,blocked && recoverable,
-        message.GetNamedString(L"session"),message.GetNamedString(L"revision"));
-    if(pane.address->field.PlaceholderText()!=address)pane.address->field.PlaceholderText(address);
-    Microsoft::UI::Xaml::Automation::AutomationProperties::SetName(pane.address->field,address);
-    auto stripLabels=pane.strip->labels;stripLabels.newTab=labels.newTab;stripLabels.newTabTip=labels.newTab;
+    auto& pane = *state().panes.at(hwnd);
+    auto presenter = std::static_pointer_cast<LocalStartup::Presenter>(pane.startupPresenter);
+    if (!presenter) return E_NOT_VALID_STATE;
+    auto text = [&](wchar_t const* key) {
+        auto value = message.GetNamedString(key);
+        if (value.empty()) throw_hresult(E_INVALIDARG);
+        NativeJson::RequireLength(value, NativeJson::kMaxShortLabel);
+        return value;
+    };
+    LocalStartup::Presenter::Labels labels{text(L"newTab"), text(L"pending"), text(L"full"), text(L"composition")};
+    const auto address = text(L"address"), unavailable = text(L"unavailable");
+    const bool blocked = message.GetNamedBoolean(L"blocked");
+    const auto recovery = message.HasKey(L"recovery") ? text(L"recovery") : hstring{L"Startup needs attention"};
+    const auto recoveryAction =
+        message.HasKey(L"recoveryAction") ? text(L"recoveryAction") : hstring{L"Use native layout"};
+    const bool recoverable = message.GetNamedBoolean(L"recoverable", false);
+    const bool rtl = message.GetNamedBoolean(L"rtl", false);
+    auto id = [&](wchar_t const* key) {
+        auto value = message.GetNamedString(key);
+        if (value.empty() || value.size() > 20 || (value.size() > 1 && value[0] == L'0')) throw_hresult(E_INVALIDARG);
+        uint64_t result{};
+        for (auto c : value) {
+            if (c < L'0' || c > L'9' || result > (UINT64_MAX - (c - L'0')) / 10) throw_hresult(E_INVALIDARG);
+            result = result * 10 + c - L'0';
+        }
+        return result;
+    };
+    const auto json = message.Stringify();
+    bool apply{};
+    if (shell_core_startup_presentation(pane.shell.core, id(L"session"), id(L"revision"),
+                                        reinterpret_cast<const uint16_t*>(json.c_str()), json.size(),
+                                        &apply) != SHELL_STATUS_OK)
+        return E_INVALIDARG;
+    if (!apply) return S_OK;
+    ApplyStartupDirection(pane, rtl);
+    presenter->labels = labels;
+    presenter->blocked = blocked ? unavailable : hstring{};
+    presenter->Recovery(recovery, recoveryAction, blocked && recoverable, message.GetNamedString(L"session"),
+                        message.GetNamedString(L"revision"));
+    if (pane.address->field.PlaceholderText() != address) pane.address->field.PlaceholderText(address);
+    Microsoft::UI::Xaml::Automation::AutomationProperties::SetName(pane.address->field, address);
+    auto stripLabels = pane.strip->labels;
+    stripLabels.newTab = labels.newTab;
+    stripLabels.newTabTip = labels.newTab;
     pane.strip->ApplyLabels(stripLabels);
-    presenter->Refresh(false);presenter->Feedback(SHELL_STATUS_OK);
+    presenter->Refresh(false);
+    presenter->Feedback(SHELL_STATUS_OK);
     return S_OK;
 }
 
 namespace {
-inline constexpr wchar_t InteractiveStartupProperty[]=L"Fenn.InteractiveStartup";
-inline constexpr auto PageHoldProperty=NativeWindowHost::StartupPageHoldProperty;
-inline constexpr UINT_PTR PageHoldTimer=0x46454E;
-inline constexpr UINT PageHoldLimitMs=10000;
+inline constexpr wchar_t InteractiveStartupProperty[] = L"Fenn.InteractiveStartup";
+inline constexpr auto PageHoldProperty = NativeWindowHost::StartupPageHoldProperty;
+inline constexpr UINT_PTR PageHoldTimer = 0x46454E;
+inline constexpr UINT PageHoldLimitMs = 10000;
 // The compositor window is white until Gecko first presents. While this property is set it
 // joins the host hidden (FennCompositorParent.h), leaving the themed host showing, until the
 // selected tab has painted.
 void EndPageHold(HWND hwnd) {
-    if(!RemovePropW(hwnd,PageHoldProperty))return;
-    KillTimer(hwnd,PageHoldTimer);
+    if (!RemovePropW(hwnd, PageHoldProperty)) return;
+    KillTimer(hwnd, PageHoldTimer);
     NativeWindowHost::RefreshPageBackground(hwnd);
     // The software page is owned by the input thread/process. Reuse its bounded
     // shape publication to refresh opacity there; never mutate its HWND here.
-    if(auto* host=NativeWindowHost::Get(hwnd)) {
-        host->pageRegionApplied=false;
-        NativeWindowHost::ApplyPageRegion(hwnd,host);
+    if (auto* host = NativeWindowHost::Get(hwnd)) {
+        host->pageRegionApplied = false;
+        NativeWindowHost::ApplyPageRegion(hwnd, host);
     }
-    for(HWND child=FindWindowExW(hwnd,nullptr,L"MozillaCompositorWindowClass",nullptr);child;
-        child=FindWindowExW(hwnd,child,L"MozillaCompositorWindowClass",nullptr))
-        SetWindowPos(child,nullptr,0,0,0,0,SWP_SHOWWINDOW|SWP_NOMOVE|SWP_NOSIZE|SWP_NOZORDER|SWP_NOACTIVATE|SWP_ASYNCWINDOWPOS);
+    for (HWND child = FindWindowExW(hwnd, nullptr, L"MozillaCompositorWindowClass", nullptr); child;
+         child = FindWindowExW(hwnd, child, L"MozillaCompositorWindowClass", nullptr))
+        SetWindowPos(child, nullptr, 0, 0, 0, 0,
+                     SWP_SHOWWINDOW | SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_ASYNCWINDOWPOS);
     NativeWindowHost::FocusTrace("start-page-revealed");
 }
 void BeginPageHold(HWND hwnd) {
-    SetPropW(hwnd,PageHoldProperty,reinterpret_cast<HANDLE>(1));
-    SetTimer(hwnd,PageHoldTimer,PageHoldLimitMs,nullptr);
-    if(auto* host=NativeWindowHost::Get(hwnd);host && host->page) {
-        host->pageRegionApplied=false;
-        NativeWindowHost::ApplyPageRegion(hwnd,host);
+    SetPropW(hwnd, PageHoldProperty, reinterpret_cast<HANDLE>(1));
+    SetTimer(hwnd, PageHoldTimer, PageHoldLimitMs, nullptr);
+    if (auto* host = NativeWindowHost::Get(hwnd); host && host->page) {
+        host->pageRegionApplied = false;
+        NativeWindowHost::ApplyPageRegion(hwnd, host);
     }
 }
 HRESULT LayoutInteractiveStartup(HWND hwnd) noexcept {
     WinUIChromeLayout layout{};
-    auto result=MeasureChromeLayout(hwnd,40,TRUE,4,&layout);
-    if(FAILED(result))return result;
-    if(!layout.fits)return S_FALSE;
-    result=UpdateTabStrip(hwnd,&layout.strip,TRUE);
-    if(SUCCEEDED(result)) {
+    auto result = MeasureChromeLayout(hwnd, 40, TRUE, 4, &layout);
+    if (FAILED(result)) return result;
+    if (!layout.fits) return S_FALSE;
+    result = UpdateTabStrip(hwnd, &layout.strip, TRUE);
+    if (SUCCEEDED(result)) {
         NativeWindowHost::LayoutStartupBackground(hwnd);
-        result=UpdateAddress(hwnd,&layout.navigation,TRUE);
+        result = UpdateAddress(hwnd, &layout.navigation, TRUE);
     }
     return result;
 }
-LRESULT CALLBACK InteractiveStartupProc(HWND hwnd,UINT msg,WPARAM w,LPARAM l,UINT_PTR id,DWORD_PTR) {
-    if(msg==WM_NCDESTROY) {
-        RemoveWindowSubclass(hwnd,InteractiveStartupProc,id);
-        RemovePropW(hwnd,InteractiveStartupProperty);
-        RemovePropW(hwnd,PageHoldProperty);
+LRESULT CALLBACK InteractiveStartupProc(HWND hwnd, UINT msg, WPARAM w, LPARAM l, UINT_PTR id, DWORD_PTR) {
+    if (msg == WM_NCDESTROY) {
+        RemoveWindowSubclass(hwnd, InteractiveStartupProc, id);
+        RemovePropW(hwnd, InteractiveStartupProperty);
+        RemovePropW(hwnd, PageHoldProperty);
         Destroy(hwnd);
-    } else if(msg==WM_TIMER && w==PageHoldTimer) {
+    } else if (msg == WM_TIMER && w == PageHoldTimer) {
         EndPageHold(hwnd);
         return 0;
-    } else if(msg==WM_SIZE || msg==WM_DPICHANGED) {
+    } else if (msg == WM_SIZE || msg == WM_DPICHANGED) {
         // Gecko owns subsequent bounds publications. Before attachment, the
         // native thread lays out these same islands without a browser callback.
-        const auto* host=NativeWindowHost::Get(hwnd);
-        if(host && host->state.phase==6) {
-            if(msg==WM_DPICHANGED) {
-                const auto& bounds=*reinterpret_cast<const RECT*>(l);
-                SetWindowPos(hwnd,nullptr,bounds.left,bounds.top,bounds.right-bounds.left,bounds.bottom-bounds.top,
-                    SWP_NOZORDER|SWP_NOACTIVATE);
+        const auto* host = NativeWindowHost::Get(hwnd);
+        if (host && host->state.phase == 6) {
+            if (msg == WM_DPICHANGED) {
+                const auto& bounds = *reinterpret_cast<const RECT*>(l);
+                SetWindowPos(hwnd, nullptr, bounds.left, bounds.top, bounds.right - bounds.left,
+                             bounds.bottom - bounds.top, SWP_NOZORDER | SWP_NOACTIVATE);
             }
             LayoutInteractiveStartup(hwnd);
         }
     }
-    return DefSubclassProc(hwnd,msg,w,l);
+    return DefSubclassProc(hwnd, msg, w, l);
 }
 HRESULT PrepareInteractiveStartup(HWND hwnd, const wchar_t* profile, const wchar_t* presentation) noexcept {
     try {
-        if(GetPropW(hwnd,InteractiveStartupProperty))return S_FALSE;
-        const auto layout=LayoutInteractiveStartup(hwnd);
-        if(layout!=S_OK)return layout;
+        if (GetPropW(hwnd, InteractiveStartupProperty)) return S_FALSE;
+        const auto layout = LayoutInteractiveStartup(hwnd);
+        if (layout != S_OK) return layout;
         NativeWindowHost::FocusTrace("start-layout");
         check_hresult(BeginStartupPresenter(hwnd));
         NativeWindowHost::FocusTrace("start-presenter");
         // An island without a backdrop is white in either theme. Firefox's first
         // publication confirms this or takes it away if the toolbar is opted out.
         {
-            auto& ready=*state().panes.at(hwnd);
-            Pane::SetBackdrop(ready.addressSource,ready.strip->backdrop);
-            ready.navigationBackdrop=true;
+            auto& ready = *state().panes.at(hwnd);
+            Pane::SetBackdrop(ready.addressSource, ready.strip->backdrop);
+            ready.navigationBackdrop = true;
         }
         // Even without a cache, construct the inert toolbar before first show.
         state().panes.at(hwnd)->address->navigation->StartupLayout(nullptr);
         bool initialRtl{};
-        auto initialPresentation=NativeStartupLabels::Resolve(presentation,profile,initialRtl);
-        ApplyStartupDirection(*state().panes.at(hwnd),initialRtl);
-        if(initialPresentation) {
-            auto labels=initialPresentation.GetNamedObject(L"labels");
-            auto& pane=*state().panes.at(hwnd);
-            auto presenter=std::static_pointer_cast<LocalStartup::Presenter>(pane.startupPresenter);
-            presenter->labels={labels.GetNamedString(L"newTab"),labels.GetNamedString(L"pending"),
-                labels.GetNamedString(L"full"),labels.GetNamedString(L"composition")};
-            const auto address=labels.GetNamedString(L"address");
+        auto initialPresentation = NativeStartupLabels::Resolve(presentation, profile, initialRtl);
+        ApplyStartupDirection(*state().panes.at(hwnd), initialRtl);
+        if (initialPresentation) {
+            auto labels = initialPresentation.GetNamedObject(L"labels");
+            auto& pane = *state().panes.at(hwnd);
+            auto presenter = std::static_pointer_cast<LocalStartup::Presenter>(pane.startupPresenter);
+            presenter->labels = {labels.GetNamedString(L"newTab"), labels.GetNamedString(L"pending"),
+                                 labels.GetNamedString(L"full"), labels.GetNamedString(L"composition")};
+            const auto address = labels.GetNamedString(L"address");
             pane.address->field.PlaceholderText(address);
-            Microsoft::UI::Xaml::Automation::AutomationProperties::SetName(pane.address->field,address);
-            auto stripLabels=pane.strip->labels;stripLabels.newTab=presenter->labels.newTab;stripLabels.newTabTip=presenter->labels.newTab;
-            pane.strip->ApplyLabels(stripLabels);presenter->Refresh(false);
-            if(initialPresentation.HasKey(L"toolbar")) {
-                presenter->toolbarPreview=initialPresentation.GetNamedObject(L"toolbar");
+            Microsoft::UI::Xaml::Automation::AutomationProperties::SetName(pane.address->field, address);
+            auto stripLabels = pane.strip->labels;
+            stripLabels.newTab = presenter->labels.newTab;
+            stripLabels.newTabTip = presenter->labels.newTab;
+            pane.strip->ApplyLabels(stripLabels);
+            presenter->Refresh(false);
+            if (initialPresentation.HasKey(L"toolbar")) {
+                presenter->toolbarPreview = initialPresentation.GetNamedObject(L"toolbar");
                 pane.address->navigation->StartupLayout(presenter->toolbarPreview);
             }
         }
         // Finish the initial control layout before asking Windows to show its
         // opening fade. This does not show, cloak or recreate the HWND/editor.
-        if(auto* host=NativeWindowHost::Get(hwnd))host->root.UpdateLayout();
+        if (auto* host = NativeWindowHost::Get(hwnd)) host->root.UpdateLayout();
         NativeWindowHost::FocusTrace("start-presentation");
-        check_bool(SetWindowSubclass(hwnd,InteractiveStartupProc,1,0));
-        check_bool(SetPropW(hwnd,InteractiveStartupProperty,reinterpret_cast<HANDLE>(1)));
+        check_bool(SetWindowSubclass(hwnd, InteractiveStartupProc, 1, 0));
+        check_bool(SetPropW(hwnd, InteractiveStartupProperty, reinterpret_cast<HANDLE>(1)));
 #ifdef WINUI_PANE_TESTING
-        auto& initial=*state().panes.at(hwnd);
-        initial.startupInitialLabel=Microsoft::UI::Xaml::Automation::AutomationProperties::GetName(initial.address->field);
-        initial.startupBeforeGecko=GetModuleHandleW(L"xul.dll")==nullptr;
-        initial.startupInitialRtl=initial.strip->root.FlowDirection()==FlowDirection::RightToLeft &&
-            initial.address->root.FlowDirection()==FlowDirection::RightToLeft;
+        auto& initial = *state().panes.at(hwnd);
+        initial.startupInitialLabel =
+            Microsoft::UI::Xaml::Automation::AutomationProperties::GetName(initial.address->field);
+        initial.startupBeforeGecko = GetModuleHandleW(L"xul.dll") == nullptr;
+        initial.startupInitialRtl = initial.strip->root.FlowDirection() == FlowDirection::RightToLeft &&
+                                    initial.address->root.FlowDirection() == FlowDirection::RightToLeft;
         // Seed through the real editor callback before Gecko can bind. Never
         // available in the production DLL or parsed as browser navigation here.
         wchar_t queued[4097]{};
-        const auto length=GetEnvironmentVariableW(L"FENN_TEST_STARTUP_TEXT",queued,4097);
-        if(length && length<4097) {
-            auto& pane=*state().panes.at(hwnd);
+        const auto length = GetEnvironmentVariableW(L"FENN_TEST_STARTUP_TEXT", queued, 4097);
+        if (length && length < 4097) {
+            auto& pane = *state().panes.at(hwnd);
             pane.address->field.Text(queued);
             pane.address->Action(L"activate");
         }
@@ -2903,160 +3165,210 @@ HRESULT PrepareInteractiveStartup(HWND hwnd, const wchar_t* profile, const wchar
         // An island's window is white until XAML first composes, in either theme. Clip it away until then
         // rather than hide it: XAML keeps rendering and the OS animation still plays. Never leave it clipped.
         {
-            auto& pane=*state().panes.at(hwnd);
-            const HWND strip=pane.childWindow,address=pane.addressWindow;
-            SetWindowRgn(strip,CreateRectRgn(0,0,0,0),FALSE);
-            SetWindowRgn(address,CreateRectRgn(0,0,0,0),FALSE);
-            auto token=std::make_shared<winrt::event_token>();auto frames=std::make_shared<int>(0);auto done=std::make_shared<bool>(false);
-            auto reveal=[strip,address,token,done]{
-                if(*done)return;*done=true;
+            auto& pane = *state().panes.at(hwnd);
+            const HWND strip = pane.childWindow, address = pane.addressWindow;
+            SetWindowRgn(strip, CreateRectRgn(0, 0, 0, 0), FALSE);
+            SetWindowRgn(address, CreateRectRgn(0, 0, 0, 0), FALSE);
+            auto token = std::make_shared<winrt::event_token>();
+            auto frames = std::make_shared<int>(0);
+            auto done = std::make_shared<bool>(false);
+            auto reveal = [strip, address, token, done] {
+                if (*done) return;
+                *done = true;
                 Microsoft::UI::Xaml::Media::CompositionTarget::Rendering(*token);
-                if(IsWindow(strip))SetWindowRgn(strip,nullptr,TRUE);
-                if(IsWindow(address))SetWindowRgn(address,nullptr,TRUE);
+                if (IsWindow(strip)) SetWindowRgn(strip, nullptr, TRUE);
+                if (IsWindow(address)) SetWindowRgn(address, nullptr, TRUE);
                 NativeWindowHost::FocusTrace("start-chrome-revealed");
             };
-            *token=Microsoft::UI::Xaml::Media::CompositionTarget::Rendering([frames,reveal](auto const&,auto const&){if(++*frames>=3)reveal();});
-            auto timer=Microsoft::UI::Dispatching::DispatcherQueue::GetForCurrentThread().CreateTimer();
-            timer.Interval(std::chrono::milliseconds(1000));timer.IsRepeating(false);
-            timer.Tick([timer,reveal](auto const&,auto const&){timer.Stop();reveal();});
+            *token =
+                Microsoft::UI::Xaml::Media::CompositionTarget::Rendering([frames, reveal](auto const&, auto const&) {
+                    if (++*frames >= 3) reveal();
+                });
+            auto timer = Microsoft::UI::Dispatching::DispatcherQueue::GetForCurrentThread().CreateTimer();
+            timer.Interval(std::chrono::milliseconds(1000));
+            timer.IsRepeating(false);
+            timer.Tick([timer, reveal](auto const&, auto const&) {
+                timer.Stop();
+                reveal();
+            });
             timer.Start();
         }
         return S_OK;
-    } catch (...) {Destroy(hwnd);return to_hresult();}
+    } catch (...) {
+        Destroy(hwnd);
+        return to_hresult();
+    }
 }
 HRESULT ShowInteractiveStartup(HWND hwnd, const wchar_t* profile, const wchar_t* presentation) noexcept {
     try {
-        const auto prepared=PrepareInteractiveStartup(hwnd,profile,presentation);
-        if(prepared!=S_OK)return prepared;
+        const auto prepared = PrepareInteractiveStartup(hwnd, profile, presentation);
+        if (prepared != S_OK) return prepared;
         // Measurement switch: skip DWM's window-open transition for the first show only, so its cost
         // can be separated from construction. Later minimize/maximize transitions are untouched.
         wchar_t noAnimation[2]{};
-        const bool skipOpenTransition=GetEnvironmentVariableW(L"FENN_NATIVE_NO_OPEN_ANIMATION",noAnimation,2)==1 && noAnimation[0]==L'1';
+        const bool skipOpenTransition =
+            GetEnvironmentVariableW(L"FENN_NATIVE_NO_OPEN_ANIMATION", noAnimation, 2) == 1 && noAnimation[0] == L'1';
         // Activate the first visible window like Firefox's own first window does (nsWindow::CanTakeFocus allows
         // it when no other window of this process is visible); Windows' foreground lock still protects other
         // applications. Without activation the editor has no keyboard focus and typed keys are lost until Gecko
         // asks for focus about 1.6 s later. FENN_NATIVE_STARTUP_NOACTIVATE=1 restores the old behaviour.
         wchar_t noActivate[2]{};
-        const bool keepInactive=GetEnvironmentVariableW(L"FENN_NATIVE_STARTUP_NOACTIVATE",noActivate,2)==1 && noActivate[0]==L'1';
-        if(skipOpenTransition){BOOL disable=TRUE;DwmSetWindowAttribute(hwnd,DWMWA_TRANSITIONS_FORCEDISABLED,&disable,sizeof(disable));}
-        ShowWindow(hwnd,GetPropW(hwnd,L"Fenn.NativeStartupMaximized")?SW_SHOWMAXIMIZED:(keepInactive?SW_SHOWNOACTIVATE:SW_SHOWNORMAL));
-        if(skipOpenTransition){BOOL disable=FALSE;DwmSetWindowAttribute(hwnd,DWMWA_TRANSITIONS_FORCEDISABLED,&disable,sizeof(disable));}
+        const bool keepInactive =
+            GetEnvironmentVariableW(L"FENN_NATIVE_STARTUP_NOACTIVATE", noActivate, 2) == 1 && noActivate[0] == L'1';
+        if (skipOpenTransition) {
+            BOOL disable = TRUE;
+            DwmSetWindowAttribute(hwnd, DWMWA_TRANSITIONS_FORCEDISABLED, &disable, sizeof(disable));
+        }
+        ShowWindow(hwnd, GetPropW(hwnd, L"Fenn.NativeStartupMaximized")
+                             ? SW_SHOWMAXIMIZED
+                             : (keepInactive ? SW_SHOWNOACTIVATE : SW_SHOWNORMAL));
+        if (skipOpenTransition) {
+            BOOL disable = FALSE;
+            DwmSetWindowAttribute(hwnd, DWMWA_TRANSITIONS_FORCEDISABLED, &disable, sizeof(disable));
+        }
         // ShowWindow may activate the top-level before the editor can accept
         // XAML focus. Request the actual editor focus after it is visible, using
         // the existing bounded restoration path and never activating a background window.
-        if(!keepInactive && GetForegroundWindow()==hwnd) {
-            if(auto* host=NativeWindowHost::Get(hwnd);host && host->restoreEditorFocus)host->restoreEditorFocus();
+        if (!keepInactive && GetForegroundWindow() == hwnd) {
+            if (auto* host = NativeWindowHost::Get(hwnd); host && host->restoreEditorFocus) host->restoreEditorFocus();
         }
         NativeWindowHost::FocusTrace("start-shown");
         return S_OK;
-    } catch (...) {Destroy(hwnd);return to_hresult();}
+    } catch (...) {
+        Destroy(hwnd);
+        return to_hresult();
+    }
 }
-}
+}  // namespace
 
 #ifdef FENN_SHELL_PROCESS
 namespace ShellPresentation {
 namespace {
 auto* FindPane(HWND hwnd) {
-    const auto found=state().panes.find(hwnd);
-    return found==state().panes.end()?nullptr:found->second.get();
+    const auto found = state().panes.find(hwnd);
+    return found == state().panes.end() ? nullptr : found->second.get();
 }
 auto* FindAddress(HWND hwnd) {
-    const auto pane=FindPane(hwnd);
-    return pane?pane->address.get():nullptr;
+    const auto pane = FindPane(hwnd);
+    return pane ? pane->address.get() : nullptr;
 }
-}
+}  // namespace
 
 HRESULT ShowInteractiveStartup(HWND hwnd, const wchar_t* profile, const wchar_t* presentation) noexcept {
-    return ::ShowInteractiveStartup(hwnd,profile,presentation);
+    return ::ShowInteractiveStartup(hwnd, profile, presentation);
 }
 HRESULT PrepareInteractiveStartup(HWND hwnd, const wchar_t* profile, const wchar_t* presentation) noexcept {
-    return ::PrepareInteractiveStartup(hwnd,profile,presentation);
+    return ::PrepareInteractiveStartup(hwnd, profile, presentation);
 }
-HRESULT ReportedFocusAddress(HWND hwnd, BOOL selectAll) noexcept { return ::ReportedFocusAddress(hwnd,selectAll); }
-HRESULT ReportedSyncTabs(HWND hwnd, const WinUITab* tabs, uint32_t count, uint32_t selected, uint32_t revision) noexcept {
-    return ::ReportedSyncTabs(hwnd,tabs,count,selected,revision);
+HRESULT ReportedFocusAddress(HWND hwnd, BOOL selectAll) noexcept {
+    return ::ReportedFocusAddress(hwnd, selectAll);
 }
-HRESULT PostedSyncAddress(HWND hwnd, const wchar_t* input) noexcept { return ::PostedSyncAddress(hwnd,input); }
-HRESULT DestroyPane(HWND hwnd) noexcept { return Destroy(hwnd); }
+HRESULT ReportedSyncTabs(HWND hwnd, const WinUITab* tabs, uint32_t count, uint32_t selected,
+                         uint32_t revision) noexcept {
+    return ::ReportedSyncTabs(hwnd, tabs, count, selected, revision);
+}
+HRESULT PostedSyncAddress(HWND hwnd, const wchar_t* input) noexcept {
+    return ::PostedSyncAddress(hwnd, input);
+}
+HRESULT DestroyPane(HWND hwnd) noexcept {
+    return Destroy(hwnd);
+}
 
 std::vector<HWND> PaneWindows() {
     std::vector<HWND> windows;
-    for(const auto& item:state().panes)windows.push_back(item.first);
+    for (const auto& item : state().panes) windows.push_back(item.first);
     return windows;
 }
-bool HasAddress(HWND hwnd) { return FindAddress(hwnd)!=nullptr; }
+bool HasAddress(HWND hwnd) {
+    return FindAddress(hwnd) != nullptr;
+}
 bool AddressSessionReady(HWND hwnd) {
-    const auto address=FindAddress(hwnd);
+    const auto address = FindAddress(hwnd);
     return address && !address->session.empty();
 }
 bool CaptureDraft(HWND hwnd, Draft& draft) {
-    const auto address=FindAddress(hwnd);
-    if(!address)return false;
-    const auto text=address->field.Text();
-    if(address->composing || text.size()>32768 ||
-       (text==address->observedText && !(address->shell.AddressState().recoverable_edit && text==address->lastEditedText)))
+    const auto address = FindAddress(hwnd);
+    if (!address) return false;
+    const auto text = address->field.Text();
+    if (address->composing || text.size() > 32768 ||
+        (text == address->observedText &&
+         !(address->shell.AddressState().recoverable_edit && text == address->lastEditedText)))
         return false;
-    draft={text.c_str(),address->field.SelectionStart(),address->field.SelectionLength(),
-           address->field.FocusState()!=FocusState::Unfocused};
+    draft = {text.c_str(), address->field.SelectionStart(), address->field.SelectionLength(),
+             address->field.FocusState() != FocusState::Unfocused};
     return true;
 }
 bool RestoreDraft(HWND hwnd, const Draft& draft, bool& sessionReady) {
-    const auto address=FindAddress(hwnd);
-    if(!address)return false;
+    const auto address = FindAddress(hwnd);
+    if (!address) return false;
     address->field.Text(draft.text);
-    address->field.Select(draft.selection,draft.length);
+    address->field.Select(draft.selection, draft.length);
     address->Edit();
-    sessionReady=!address->session.empty();
+    sessionReady = !address->session.empty();
     return true;
 }
 void FocusEditor(HWND hwnd) {
-    if(const auto address=FindAddress(hwnd))address->field.Focus(FocusState::Programmatic);
+    if (const auto address = FindAddress(hwnd)) address->field.Focus(FocusState::Programmatic);
 }
 ShareIdentity ShareScope(HWND hwnd) {
-    const auto address=FindAddress(hwnd);
-    if(!address)return {};
-    return {_wcstoui64(address->session.c_str(),nullptr,10),_wcstoui64(address->shareDocument.c_str(),nullptr,10)};
+    const auto address = FindAddress(hwnd);
+    if (!address) return {};
+    return {_wcstoui64(address->session.c_str(), nullptr, 10), _wcstoui64(address->shareDocument.c_str(), nullptr, 10)};
 }
 bool ShareCurrent(HWND hwnd, const uint8_t* bytes, size_t length) {
-    const auto address=FindAddress(hwnd);
-    if(!address || address->root.Visibility()!=Visibility::Visible || !address->navigation || !address->navigation->visible)
+    const auto address = FindAddress(hwnd);
+    if (!address || address->root.Visibility() != Visibility::Visible || !address->navigation ||
+        !address->navigation->visible)
         return false;
-    const auto identity=ShareScope(hwnd);
-    return shell_frame_share_current(bytes,length,identity.session,identity.document,GetTickCount64());
+    const auto identity = ShareScope(hwnd);
+    return shell_frame_share_current(bytes, length, identity.session, identity.document, GetTickCount64());
 }
 HRESULT OpenShare(HWND hwnd, const hstring& title, const hstring& url, const std::function<bool()>& current) {
-    const auto pane=FindPane(hwnd);
-    return pane?pane->windowsShare.Open(hwnd,title,url,current):RO_E_CLOSED;
+    const auto pane = FindPane(hwnd);
+    return pane ? pane->windowsShare.Open(hwnd, title, url, current) : RO_E_CLOSED;
 }
 
 void InstallKeyRouting(HWND window) {
-    auto* host=NativeWindowHost::Get(window);
-    if(!host || GetPropW(window,L"Fenn.ProcessKeyRouting"))return;
-    host->root.PreviewKeyDown([window](Windows::Foundation::IInspectable const& sender,Microsoft::UI::Xaml::Input::KeyRoutedEventArgs const& args) noexcept {
+    auto* host = NativeWindowHost::Get(window);
+    if (!host || GetPropW(window, L"Fenn.ProcessKeyRouting")) return;
+    host->root.PreviewKeyDown([window](Windows::Foundation::IInspectable const& sender,
+                                       Microsoft::UI::Xaml::Input::KeyRoutedEventArgs const& args) noexcept {
         try {
-            auto* current=NativeWindowHost::Get(window);
-            auto pane=state().panes.find(window);
-            if(!current || !SameObject(sender,current->root) || pane==state().panes.end() || args.Handled())return;
-            const auto status=args.KeyStatus();
-            const uint32_t bits=status.RepeatCount | (status.ScanCode<<16) | (uint32_t(status.IsExtendedKey)<<24) |
-                (uint32_t(status.IsMenuKeyDown)<<29) | (uint32_t(status.WasKeyDown)<<30) | (uint32_t(status.IsKeyReleased)<<31);
-            const MSG message{current->bridge,UINT(status.IsMenuKeyDown?WM_SYSKEYDOWN:WM_KEYDOWN),WPARAM(args.Key()),LPARAM(bits),DWORD(GetMessageTime()),{}};
+            auto* current = NativeWindowHost::Get(window);
+            auto pane = state().panes.find(window);
+            if (!current || !SameObject(sender, current->root) || pane == state().panes.end() || args.Handled()) return;
+            const auto status = args.KeyStatus();
+            const uint32_t bits = status.RepeatCount | (status.ScanCode << 16) |
+                                  (uint32_t(status.IsExtendedKey) << 24) | (uint32_t(status.IsMenuKeyDown) << 29) |
+                                  (uint32_t(status.WasKeyDown) << 30) | (uint32_t(status.IsKeyReleased) << 31);
+            const MSG message{current->bridge,         UINT(status.IsMenuKeyDown ? WM_SYSKEYDOWN : WM_KEYDOWN),
+                              WPARAM(args.Key()),      LPARAM(bits),
+                              DWORD(GetMessageTime()), {}};
             // Application owns this message loop, so the in-process Translate
             // hook cannot dismiss customization during a native toolbar drag.
-            if(args.Key()==Windows::System::VirtualKey::Escape && pane->second->address &&
-               pane->second->address->navigation &&
-               pane->second->address->navigation->customization.DismissOnEscape()) {
-                args.Handled(true);return;
+            if (args.Key() == Windows::System::VirtualKey::Escape && pane->second->address &&
+                pane->second->address->navigation &&
+                pane->second->address->navigation->customization.DismissOnEscape()) {
+                args.Handled(true);
+                return;
             }
-            if((pane->second->startupKey && pane->second->startupKey(message)) || RouteBrowserShortcut(*pane->second,message))args.Handled(true);
-        }catch(...){}
+            if ((pane->second->startupKey && pane->second->startupKey(message)) ||
+                RouteBrowserShortcut(*pane->second, message))
+                args.Handled(true);
+        } catch (...) {}
     });
-    check_bool(SetPropW(window,L"Fenn.ProcessKeyRouting",reinterpret_cast<HANDLE>(1)));
+    check_bool(SetPropW(window, L"Fenn.ProcessKeyRouting", reinterpret_cast<HANDLE>(1)));
 }
-void SetRestartProcess(HANDLE process) noexcept { NativePackageUpdates::restartProcess=process; }
-void ApplyFrame(const ShellFrameView& view, WinUIPaneNotifyFn notify) { ShellFramePresentation::Apply(view,notify); }
-void PrepareAndNotify(HWND hwnd) noexcept { ShellFramePresentation::PrepareAndNotify(hwnd); }
+void SetRestartProcess(HANDLE process) noexcept {
+    NativePackageUpdates::restartProcess = process;
 }
+void ApplyFrame(const ShellFrameView& view, WinUIPaneNotifyFn notify) {
+    ShellFramePresentation::Apply(view, notify);
+}
+void PrepareAndNotify(HWND hwnd) noexcept {
+    ShellFramePresentation::PrepareAndNotify(hwnd);
+}
+}  // namespace ShellPresentation
 #endif
 
 #ifndef FENN_SHELL_PROCESS
@@ -3064,41 +3376,17 @@ extern "C" __declspec(dllexport) HRESULT WINAPI WinUIPaneGetApi(uint32_t version
                                                                 WinUIPaneApi* output) noexcept {
     if (!output) return E_POINTER;
     if (version != WINUI_PANE_ABI_VERSION || size != sizeof(WinUIPaneApi)) return E_NOINTERFACE;
-    *output = {sizeof(WinUIPaneApi),
-               WINUI_PANE_ABI_VERSION,
-               Focus,
-               Destroy,
-               Translate,
-               Shutdown,
-               SyncTabs,
-               SyncAddress,
-               Clip,
-               SyncTabMenu,
-               UpdateTabStrip,
-               SetNotifySink,
-               DrainRequests,
-               CompleteRequests,
-               ApplyTabDelta,
-               UpdateAddress,
-               FocusAddress,
-               MeasureChromeLayout,
+    *output = {sizeof(WinUIPaneApi), WINUI_PANE_ABI_VERSION, Focus, Destroy, Translate, Shutdown, SyncTabs, SyncAddress,
+               Clip, SyncTabMenu, UpdateTabStrip, SetNotifySink, DrainRequests, CompleteRequests, ApplyTabDelta,
+               UpdateAddress, FocusAddress, MeasureChromeLayout,
                // Browser callers use the routed owner-thread API; native contract
                // hosts can create the same WinUI Window on their own UI thread.
-               IndependentHost::Create,
-               NativeWindowHost::Destroy,
-               ShowStartupSurface,
-               DismissStartupSurface,
-               IndependentHost::Start,
-               NativeWindowHost::BindBrowserEndpoint,
-               NativeWindowHost::CancelEndpointClose,
-               NativeWindowHost::SetAccessibility,
-               NativePageInput::Publish, NativePageInput::Drain, NativePageInput::Commit, NativePageInput::Geometry,
-               IndependentHost::DirectStartup,
-               NativeWindowHost::SetTitle,
-               NativeWindowHost::SetPageCursor,
-               NativeWindowHost::RegisterPageTouch,
-               IndependentHost::PostWindowRequest,
-               PaneLink::SetStartupSink,nullptr,nullptr,nullptr};
+               IndependentHost::Create, NativeWindowHost::Destroy, ShowStartupSurface, DismissStartupSurface,
+               IndependentHost::Start, NativeWindowHost::BindBrowserEndpoint, NativeWindowHost::CancelEndpointClose,
+               NativeWindowHost::SetAccessibility, NativePageInput::Publish, NativePageInput::Drain,
+               NativePageInput::Commit, NativePageInput::Geometry, IndependentHost::DirectStartup,
+               NativeWindowHost::SetTitle, NativeWindowHost::SetPageCursor, NativeWindowHost::RegisterPageTouch,
+               IndependentHost::PostWindowRequest, PaneLink::SetStartupSink, nullptr, nullptr, nullptr};
     IndependentHost::Route(*output);
     return S_OK;
 }
@@ -3118,168 +3406,223 @@ extern "C" __declspec(dllexport) HRESULT WINAPI WinUIPaneTestGetDropTarget(HWND 
         auto value = make<ChromeDropTarget>(found->second->dropRoute);
         *target = detach_abi(value);
         return S_OK;
-    } catch (...) { return to_hresult(); }
+    } catch (...) {
+        return to_hresult();
+    }
 }
 extern "C" __declspec(dllexport) BOOL WINAPI WinUIPaneTestDropTargetRetired(void* target) noexcept {
     try {
         SystemDrag::IDropOperationTarget value{nullptr};
         copy_from_abi(value, target);
         return get_self<ChromeDropTarget>(value)->route.expired();
-    } catch (...) { return FALSE; }
+    } catch (...) {
+        return FALSE;
+    }
 }
-static HRESULT WINAPI TestStartupDraft(HWND hwnd,uint32_t operation,const wchar_t* text,uint32_t* pending) {
-    auto require=[](bool value){if(!value)throw_hresult(E_FAIL);};
+static HRESULT WINAPI TestStartupDraft(HWND hwnd, uint32_t operation, const wchar_t* text, uint32_t* pending) {
+    auto require = [](bool value) {
+        if (!value) throw_hresult(E_FAIL);
+    };
     try {
-        auto found=state().panes.find(hwnd);
-        if(found==state().panes.end() || !text || !pending || operation>30)return E_INVALIDARG;
-        if(operation==30) {
-            auto& pane=*found->second;
-            const bool rtl=std::wstring_view(text)==L"rtl";
-            require(pane.startupInitialRtl==rtl);
-            require((pane.strip->root.FlowDirection()==FlowDirection::RightToLeft)==rtl);
-            require((pane.address->root.FlowDirection()==FlowDirection::RightToLeft)==rtl);
-            require(pane.address->field.TextAlignment()==TextAlignment::Left);
-            *pending=rtl?1u:0u;return S_OK;
+        auto found = state().panes.find(hwnd);
+        if (found == state().panes.end() || !text || !pending || operation > 30) return E_INVALIDARG;
+        if (operation == 30) {
+            auto& pane = *found->second;
+            const bool rtl = std::wstring_view(text) == L"rtl";
+            require(pane.startupInitialRtl == rtl);
+            require((pane.strip->root.FlowDirection() == FlowDirection::RightToLeft) == rtl);
+            require((pane.address->root.FlowDirection() == FlowDirection::RightToLeft) == rtl);
+            require(pane.address->field.TextAlignment() == TextAlignment::Left);
+            *pending = rtl ? 1u : 0u;
+            return S_OK;
         }
-        if(operation==29) {
-            require(found->second->startupInitialLabel==text);
-            *pending=found->second->startupBeforeGecko?1u:0u;return S_OK;
+        if (operation == 29) {
+            require(found->second->startupInitialLabel == text);
+            *pending = found->second->startupBeforeGecko ? 1u : 0u;
+            return S_OK;
         }
-        if(operation==28) {
-            auto& pane=*found->second;
-            require(pane.address!=nullptr);
-            *pending=pane.address->HasActiveComposition()?1u:0u;return S_OK;
+        if (operation == 28) {
+            auto& pane = *found->second;
+            require(pane.address != nullptr);
+            *pending = pane.address->HasActiveComposition() ? 1u : 0u;
+            return S_OK;
         }
-        if(operation==24 || operation==25) {
-            auto& pane=*found->second;
-            fwprintf(stderr,L"Normal startup check: presenter=%d identity=%d text=%s range=%d/%d composing=%d\n",
-                bool(pane.startupPresenter),pane.startupNormalIdentity && pane.startupNormalIdentity(),pane.address->field.Text().c_str(),
-                pane.address->field.SelectionStart(),pane.address->field.SelectionLength(),pane.address->composing);
+        if (operation == 24 || operation == 25) {
+            auto& pane = *found->second;
+            fwprintf(stderr, L"Normal startup check: presenter=%d identity=%d text=%s range=%d/%d composing=%d\n",
+                     bool(pane.startupPresenter), pane.startupNormalIdentity && pane.startupNormalIdentity(),
+                     pane.address->field.Text().c_str(), pane.address->field.SelectionStart(),
+                     pane.address->field.SelectionLength(), pane.address->composing);
             require(!pane.startupPresenter && pane.startupNormalIdentity && pane.startupNormalIdentity());
             require(!pane.strip->startupPresentation && pane.strip->startupLoading.empty());
             require(pane.address->navigation->startupControls.empty());
-            require(pane.address->field.Text()==text && !pane.address->composing);
-            if(operation==25)require(pane.address->field.SelectionStart()==2 && pane.address->field.SelectionLength()==3);
-            *pending=0;return S_OK;
+            require(pane.address->field.Text() == text && !pane.address->composing);
+            if (operation == 25)
+                require(pane.address->field.SelectionStart() == 2 && pane.address->field.SelectionLength() == 3);
+            *pending = 0;
+            return S_OK;
         }
-        if(operation>=6) {
-            auto& pane=*found->second;
-            auto local=std::static_pointer_cast<LocalStartup::Presenter>(pane.startupPresenter);
-            if(!local || !local->sameEditor || !local->sameEditor() ||
-                (operation<12 && (!local->sameControls || !local->sameControls())))return E_NOT_VALID_STATE;
-            if(operation==26) {
+        if (operation >= 6) {
+            auto& pane = *found->second;
+            auto local = std::static_pointer_cast<LocalStartup::Presenter>(pane.startupPresenter);
+            if (!local || !local->sameEditor || !local->sameEditor() ||
+                (operation < 12 && (!local->sameControls || !local->sameControls())))
+                return E_NOT_VALID_STATE;
+            if (operation == 26) {
                 require(!local->browserEditor && !pane.address->composing);
                 pane.strip->add();
-                pane.address->field.Text(text);pane.address->field.Select(2,3);pane.address->Edit();
-            } else if(operation==27) {
-                const auto draft=std::stoull(text);
-                const auto row=std::find_if(local->drafts.begin(),local->drafts.end(),[&](auto const& entry){return entry.second==draft;});
-                require(row!=local->drafts.end());pane.strip->close(row->first);
-            } else if(operation==21) {
-                require(GetPropW(hwnd,InteractiveStartupProperty)!=nullptr);
-                require(!NativeStartupSurface::Active());
-            } else if(operation==22 || operation==23) {
-                require(pane.address->field.Text().empty());
-                pane.address->composing=operation==22;pane.address->Edit();
-            } else if(operation==7) {
-                require(SetForegroundWindow(hwnd)!=FALSE);
-                local->FocusEditor();
-                pane.address->field.Text(text);pane.address->field.Select(2,3);
-                pane.address->composing=true;pane.address->Edit();
-            } else if(operation==8) {
-                require(pane.address->field.Text()==text && pane.address->field.SelectionStart()==2 &&
-                    pane.address->field.SelectionLength()==3 && pane.address->composing);
-                pane.address->composing=false;pane.address->Edit();
-            } else if(operation==9) {
-                const auto browser=std::stoull(text);
-                auto row=std::find_if(local->browsers.begin(),local->browsers.end(),[&](auto const& entry){return entry.second==browser;});
-                require(row!=local->browsers.end());
-                require(Automation::AutomationProperties::GetName(pane.strip->rows.at(row->first))==pane.tabTitles.at(uint32_t(browser)));
+                pane.address->field.Text(text);
+                pane.address->field.Select(2, 3);
+                pane.address->Edit();
+            } else if (operation == 27) {
+                const auto draft = std::stoull(text);
+                const auto row = std::find_if(local->drafts.begin(), local->drafts.end(),
+                                              [&](auto const& entry) { return entry.second == draft; });
+                require(row != local->drafts.end());
                 pane.strip->close(row->first);
-            } else if(operation==10) {
-                pane.address->field.Text(text);pane.address->field.Select(int32_t(wcslen(text)),0);
+            } else if (operation == 21) {
+                require(GetPropW(hwnd, InteractiveStartupProperty) != nullptr);
+                require(!NativeStartupSurface::Active());
+            } else if (operation == 22 || operation == 23) {
+                require(pane.address->field.Text().empty());
+                pane.address->composing = operation == 22;
+                pane.address->Edit();
+            } else if (operation == 7) {
+                require(SetForegroundWindow(hwnd) != FALSE);
+                local->FocusEditor();
+                pane.address->field.Text(text);
+                pane.address->field.Select(2, 3);
+                pane.address->composing = true;
+                pane.address->Edit();
+            } else if (operation == 8) {
+                require(pane.address->field.Text() == text && pane.address->field.SelectionStart() == 2 &&
+                        pane.address->field.SelectionLength() == 3 && pane.address->composing);
+                pane.address->composing = false;
+                pane.address->Edit();
+            } else if (operation == 9) {
+                const auto browser = std::stoull(text);
+                auto row = std::find_if(local->browsers.begin(), local->browsers.end(),
+                                        [&](auto const& entry) { return entry.second == browser; });
+                require(row != local->browsers.end());
+                require(Automation::AutomationProperties::GetName(pane.strip->rows.at(row->first)) ==
+                        pane.tabTitles.at(uint32_t(browser)));
+                pane.strip->close(row->first);
+            } else if (operation == 10) {
+                pane.address->field.Text(text);
+                pane.address->field.Select(int32_t(wcslen(text)), 0);
                 pane.address->Action(L"activate");
-            } else if(operation==11) {
-                const auto draft=local->view.selected;
-                require(local->view.tabs==1 && !local->browsers.empty());
-                const auto row=std::find_if(local->drafts.begin(),local->drafts.end(),[&](auto const& entry){return entry.second==draft;});
-                require(row!=local->drafts.end());pane.strip->close(row->first);
+            } else if (operation == 11) {
+                const auto draft = local->view.selected;
+                require(local->view.tabs == 1 && !local->browsers.empty());
+                const auto row = std::find_if(local->drafts.begin(), local->drafts.end(),
+                                              [&](auto const& entry) { return entry.second == draft; });
+                require(row != local->drafts.end());
+                pane.strip->close(row->first);
                 require(local->Run(0) && !local->view.tabs && pane.address->field.IsReadOnly());
-            } else if(operation==12) {
-                require(local->browserEditor && !pane.address->field.IsReadOnly() &&
-                    !pane.address->startupEdit && !pane.address->startupSubmit && pane.address->field.Text()==text);
-            } else if(operation==13) {
-                const auto browser=std::stoull(text);
-                const auto row=std::find_if(local->browsers.begin(),local->browsers.end(),[&](auto const& entry){return entry.second==browser;});
-                require(row!=local->browsers.end());pane.strip->select(row->first);
-            } else if(operation==14) {
-                require(local->browserEditor);local->FocusEditor();
-                pane.address->field.Text(text);pane.address->field.Select(int32_t(wcslen(text)),0);
-                pane.address->Edit();pane.address->Action(L"activate");
-            } else if(operation==15) {
-                require(local->browserEditor);pane.strip->add();
-            } else if(operation==16) {
-                require(local->Switching() && pane.address->field.IsReadOnly() && !pane.address->field.IsEnabled() && !pane.address->toolbarRoot.IsHitTestVisible());
-            } else if(operation==17) {
-                const auto draft=std::stoull(text);
-                const auto row=std::find_if(local->drafts.begin(),local->drafts.end(),[&](auto const& entry){return entry.second==draft;});
-                require(row!=local->drafts.end());pane.strip->select(row->first);
-            } else if(operation==18) {
-                require(local->browserEditor);local->FocusEditor();
-                pane.address->field.Text(text);pane.address->field.Select(2,3);pane.address->Edit();
-            } else if(operation==19) {
+            } else if (operation == 12) {
+                require(local->browserEditor && !pane.address->field.IsReadOnly() && !pane.address->startupEdit &&
+                        !pane.address->startupSubmit && pane.address->field.Text() == text);
+            } else if (operation == 13) {
+                const auto browser = std::stoull(text);
+                const auto row = std::find_if(local->browsers.begin(), local->browsers.end(),
+                                              [&](auto const& entry) { return entry.second == browser; });
+                require(row != local->browsers.end());
+                pane.strip->select(row->first);
+            } else if (operation == 14) {
+                require(local->browserEditor);
+                local->FocusEditor();
+                pane.address->field.Text(text);
+                pane.address->field.Select(int32_t(wcslen(text)), 0);
+                pane.address->Edit();
+                pane.address->Action(L"activate");
+            } else if (operation == 15) {
+                require(local->browserEditor);
+                pane.strip->add();
+            } else if (operation == 16) {
+                require(local->Switching() && pane.address->field.IsReadOnly() && !pane.address->field.IsEnabled() &&
+                        !pane.address->toolbarRoot.IsHitTestVisible());
+            } else if (operation == 17) {
+                const auto draft = std::stoull(text);
+                const auto row = std::find_if(local->drafts.begin(), local->drafts.end(),
+                                              [&](auto const& entry) { return entry.second == draft; });
+                require(row != local->drafts.end());
+                pane.strip->select(row->first);
+            } else if (operation == 18) {
+                require(local->browserEditor);
+                local->FocusEditor();
+                pane.address->field.Text(text);
+                pane.address->field.Select(2, 3);
+                pane.address->Edit();
+            } else if (operation == 19) {
                 require(!local->browserEditor && local->sameControls() && !pane.address->field.IsReadOnly() &&
-                    pane.address->field.Text()==text && pane.address->field.SelectionStart()==2 && pane.address->field.SelectionLength()==3);
-            } else if(operation==20) {
-                const auto state=pane.shell.AddressState();
-                *pending=!state.needs_dispatch && state.edit_acknowledged && !state.staged_kind && !state.mode_pending;return S_OK;
-            } else require(pane.address->field.Text()==text);
-            require(local->Run(0));*pending=uint32_t(local->view.pending);return S_OK;
+                        pane.address->field.Text() == text && pane.address->field.SelectionStart() == 2 &&
+                        pane.address->field.SelectionLength() == 3);
+            } else if (operation == 20) {
+                const auto state = pane.shell.AddressState();
+                *pending =
+                    !state.needs_dispatch && state.edit_acknowledged && !state.staged_kind && !state.mode_pending;
+                return S_OK;
+            } else
+                require(pane.address->field.Text() == text);
+            require(local->Run(0));
+            *pending = uint32_t(local->view.pending);
+            return S_OK;
         }
-        auto core=found->second->shell.core;
+        auto core = found->second->shell.core;
         ShellStartupView view{};
-        auto call=[&](uint32_t op){return shell_core_startup(core,op,1,0,
-            reinterpret_cast<const uint16_t*>(text),wcslen(text),&view);};
-        if(operation==0) {
-            require(call(1)==SHELL_STATUS_OK);
-            require(call(2)==SHELL_STATUS_OK);
-            require(call(5)==SHELL_STATUS_OK);
-        } else if(operation==1)require(call(2)==SHELL_STATUS_OK);
-        else if(operation==2)require(call(4)==SHELL_STATUS_OK);
-        else if(operation==4) {
-            require(call(2)==SHELL_STATUS_OK);
-            require(call(5)==SHELL_STATUS_OK);
-        } else if(operation==5)require(call(1)==SHELL_STATUS_OK);
+        auto call = [&](uint32_t op) {
+            return shell_core_startup(core, op, 1, 0, reinterpret_cast<const uint16_t*>(text), wcslen(text), &view);
+        };
+        if (operation == 0) {
+            require(call(1) == SHELL_STATUS_OK);
+            require(call(2) == SHELL_STATUS_OK);
+            require(call(5) == SHELL_STATUS_OK);
+        } else if (operation == 1)
+            require(call(2) == SHELL_STATUS_OK);
+        else if (operation == 2)
+            require(call(4) == SHELL_STATUS_OK);
+        else if (operation == 4) {
+            require(call(2) == SHELL_STATUS_OK);
+            require(call(5) == SHELL_STATUS_OK);
+        } else if (operation == 5)
+            require(call(1) == SHELL_STATUS_OK);
         else {
-            require(call(0)==SHELL_STATUS_OK);
-            require(hstring(reinterpret_cast<const wchar_t*>(view.text),uint32_t(view.length))==text);
+            require(call(0) == SHELL_STATUS_OK);
+            require(hstring(reinterpret_cast<const wchar_t*>(view.text), uint32_t(view.length)) == text);
         }
-        *pending=uint32_t(view.pending);
-        if(operation!=3)NotifyStartup(*found->second);
+        *pending = uint32_t(view.pending);
+        if (operation != 3) NotifyStartup(*found->second);
         return S_OK;
-    } catch (...) {return to_hresult();}
+    } catch (...) {
+        return to_hresult();
+    }
 }
-extern "C" __declspec(dllexport) HRESULT WINAPI WinUIPaneTestStartupDraft(HWND hwnd,uint32_t operation,const wchar_t* text,uint32_t* pending) noexcept {
-    return IndependentHost::Call<TestStartupDraft>(hwnd,operation,text,pending);
+extern "C" __declspec(dllexport) HRESULT WINAPI WinUIPaneTestStartupDraft(HWND hwnd, uint32_t operation,
+                                                                          const wchar_t* text,
+                                                                          uint32_t* pending) noexcept {
+    return IndependentHost::Call<TestStartupDraft>(hwnd, operation, text, pending);
 }
 // Times the posted lifetime calls for the native stall suite. A null window does nothing when its job runs.
 extern "C" __declspec(dllexport) HRESULT WINAPI WinUIPaneTestPostedLifetime() noexcept {
     struct : IUnknown {
-        HRESULT STDMETHODCALLTYPE QueryInterface(REFIID,void**) noexcept override {return E_NOINTERFACE;}
-        ULONG STDMETHODCALLTYPE AddRef() noexcept override {return 2;}
-        ULONG STDMETHODCALLTYPE Release() noexcept override {return 1;}
+        HRESULT STDMETHODCALLTYPE QueryInterface(REFIID, void**) noexcept override { return E_NOINTERFACE; }
+        ULONG STDMETHODCALLTYPE AddRef() noexcept override { return 2; }
+        ULONG STDMETHODCALLTYPE Release() noexcept override { return 1; }
     } static provider;
     // A framed call needs a window the shell knows; generation 0 resolves no close. Dismissal posts
     // only for a shell window, whose startup surface is long gone here.
-    const HWND shell=IndependentHost::State().shell;
-    for(const auto result:{IndependentHost::PostResolve(shell,0,0),IndependentHost::PostAccessibility(nullptr,&provider),
-        IndependentHost::PostDismissSurface(shell)})if(FAILED(result))return result;
+    const HWND shell = IndependentHost::State().shell;
+    for (const auto result :
+         {IndependentHost::PostResolve(shell, 0, 0), IndependentHost::PostAccessibility(nullptr, &provider),
+          IndependentHost::PostDismissSurface(shell)})
+        if (FAILED(result)) return result;
     return S_OK;
 }
 // Overfills the posted queue. Answers how many posts were refused; PostedChars shows the accounting afterward.
 extern "C" __declspec(dllexport) uint32_t WINAPI WinUIPaneTestOverfillPosted() noexcept {
-    uint32_t refused=0;
-    for(uint32_t i=0;i<IndependentHost::MaxPosted+64;++i)if(FAILED(IndependentHost::PostJob(16,[]{return S_OK;})))++refused;
+    uint32_t refused = 0;
+    for (uint32_t i = 0; i < IndependentHost::MaxPosted + 64; ++i)
+        if (FAILED(IndependentHost::PostJob(16, [] { return S_OK; }))) ++refused;
     return refused;
 }
 extern "C" __declspec(dllexport) uint32_t WINAPI WinUIPaneTestPostedChars() noexcept {
@@ -3287,299 +3630,367 @@ extern "C" __declspec(dllexport) uint32_t WINAPI WinUIPaneTestPostedChars() noex
 }
 extern "C" __declspec(dllexport) HRESULT WINAPI WinUIPaneTestLocalStartup(void(WINAPI* inspect)(HWND)) noexcept {
     HWND hwnd{};
-    auto require=[](bool value){if(!value)throw_hresult(E_FAIL);};
+    auto require = [](bool value) {
+        if (!value) throw_hresult(E_FAIL);
+    };
     try {
-        RECT bounds{80,80,81,81};
-        check_hresult(NativeWindowHost::CreateStartup(0,WS_OVERLAPPEDWINDOW,bounds,&hwnd));
-        require(PrepareInteractiveStartup(hwnd,nullptr,nullptr)==S_FALSE);
+        RECT bounds{80, 80, 81, 81};
+        check_hresult(NativeWindowHost::CreateStartup(0, WS_OVERLAPPEDWINDOW, bounds, &hwnd));
+        require(PrepareInteractiveStartup(hwnd, nullptr, nullptr) == S_FALSE);
         require(IsWindow(hwnd) && !IsWindowVisible(hwnd) && !state().panes.count(hwnd));
-        check_bool(SetWindowPos(hwnd,nullptr,80,80,1000,700,SWP_NOZORDER|SWP_NOACTIVATE));
-        check_hresult(PrepareInteractiveStartup(hwnd,nullptr,LR"({"version":1,"labels":{"newTab":"new","pending":"waiting","full":"full","composition":"composition","address":"address","unavailable":"unavailable","recovery":"recovery","recoveryAction":"action"},"toolbar":{"controls":["back","address","extensions","profile"],"productMenu":true,"menuLabel":"menu","menuTooltip":"menu tip"}})"));
+        check_bool(SetWindowPos(hwnd, nullptr, 80, 80, 1000, 700, SWP_NOZORDER | SWP_NOACTIVATE));
+        check_hresult(PrepareInteractiveStartup(
+            hwnd, nullptr,
+            LR"({"version":1,"labels":{"newTab":"new","pending":"waiting","full":"full","composition":"composition","address":"address","unavailable":"unavailable","recovery":"recovery","recoveryAction":"action"},"toolbar":{"controls":["back","address","extensions","profile"],"productMenu":true,"menuLabel":"menu","menuTooltip":"menu tip"}})"));
         require(!IsWindowVisible(hwnd));
-        require(GetPropW(hwnd,PageHoldProperty)!=nullptr);
-        require(PrepareInteractiveStartup(hwnd,nullptr,nullptr)==S_FALSE);
-        ShowWindow(hwnd,SW_SHOWNORMAL);
-        auto& pane=*state().panes.at(hwnd);
+        require(GetPropW(hwnd, PageHoldProperty) != nullptr);
+        require(PrepareInteractiveStartup(hwnd, nullptr, nullptr) == S_FALSE);
+        ShowWindow(hwnd, SW_SHOWNORMAL);
+        auto& pane = *state().panes.at(hwnd);
         {
-            auto& local=*std::static_pointer_cast<LocalStartup::Presenter>(pane.startupPresenter);
-            require(pane.strip->startupPresentation && pane.strip->rows.size()==1);
-            auto& nav=*pane.address->navigation;
-            require(nav.startupControls==std::vector<hstring>{L"back",L"address",L"extensions",L"profile"});
-            require(nav.productMenu.button.Visibility()==Visibility::Visible && !nav.productMenu.button.IsEnabled());
-            require(!nav.productMenu.enabled && nav.productMenu.model.Size()==0);
-            require(pane.address->root.Margin().Left==8 && pane.address->root.Margin().Top==4);
-            auto* host=NativeWindowHost::Get(hwnd);
+            auto& local = *std::static_pointer_cast<LocalStartup::Presenter>(pane.startupPresenter);
+            require(pane.strip->startupPresentation && pane.strip->rows.size() == 1);
+            auto& nav = *pane.address->navigation;
+            require(nav.startupControls == std::vector<hstring>{L"back", L"address", L"extensions", L"profile"});
+            require(nav.productMenu.button.Visibility() == Visibility::Visible && !nav.productMenu.button.IsEnabled());
+            require(!nav.productMenu.enabled && nav.productMenu.model.Size() == 0);
+            require(pane.address->root.Margin().Left == 8 && pane.address->root.Margin().Top == 4);
+            auto* host = NativeWindowHost::Get(hwnd);
             require(host->startupPageBackground && !host->startupPageBackground.IsHitTestVisible());
-            require(GetPropW(hwnd,L"Fenn.NativeBackdrop")!=nullptr);
-            RECT client{},content{};GetClientRect(hwnd,&client);
-            require(NativeWindowHost::ContentFrame(client,host->chrome,GetDpiForWindow(hwnd),content));
-            const double scale=96.0/GetDpiForWindow(hwnd);
-            require(std::abs(Controls::Canvas::GetLeft(host->startupPageBackgroundScope)-content.left*scale)<.01);
-            require(std::abs(host->startupPageBackground.Width()-(content.right-content.left)*scale)<.01);
-            require(host->startupPageBackground.CornerRadius().BottomLeft==8);
+            require(GetPropW(hwnd, L"Fenn.NativeBackdrop") != nullptr);
+            RECT client{}, content{};
+            GetClientRect(hwnd, &client);
+            require(NativeWindowHost::ContentFrame(client, host->chrome, GetDpiForWindow(hwnd), content));
+            const double scale = 96.0 / GetDpiForWindow(hwnd);
+            require(std::abs(Controls::Canvas::GetLeft(host->startupPageBackgroundScope) - content.left * scale) < .01);
+            require(std::abs(host->startupPageBackground.Width() - (content.right - content.left) * scale) < .01);
+            require(host->startupPageBackground.CornerRadius().BottomLeft == 8);
             // Switch both directions on the same backing; construction-only colour
             // selection must not pass this check.
-            const auto originalTheme=host->root.RequestedTheme();
-            for (auto theme : {ElementTheme::Light,ElementTheme::Dark,ElementTheme::Light}) {
+            const auto originalTheme = host->root.RequestedTheme();
+            for (auto theme : {ElementTheme::Light, ElementTheme::Dark, ElementTheme::Light}) {
                 host->root.RequestedTheme(theme);
                 host->root.UpdateLayout();
-                const auto color=host->startupPageBackground.Background().as<Media::SolidColorBrush>().Color();
-                const bool light=theme==ElementTheme::Light;
-                require(color.A==255 && color.R==(light?249:43) &&
-                    color.G==(light?249:42) && color.B==(light?251:51));
+                const auto color = host->startupPageBackground.Background().as<Media::SolidColorBrush>().Color();
+                const bool light = theme == ElementTheme::Light;
+                require(color.A == 255 && color.R == (light ? 249 : 43) && color.G == (light ? 249 : 42) &&
+                        color.B == (light ? 251 : 51));
             }
             host->root.RequestedTheme(originalTheme);
-            require(pane.address->toolbarSurface.BorderThickness().Bottom==1);
-            require(pane.address->toolbarSurface.BorderBrush()!=nullptr);
-            const auto preparedStrip=pane.appliedBounds, preparedNavigation=pane.addressBounds;
-            auto provisionalStrip=preparedStrip, provisionalNavigation=preparedNavigation;
-            OffsetRect(&provisionalStrip,0,4);OffsetRect(&provisionalNavigation,0,4);
-            check_hresult(UpdateTabStrip(hwnd,&provisionalStrip,TRUE));
-            check_hresult(UpdateAddress(hwnd,&provisionalNavigation,TRUE));
-            require(EqualRect(&pane.appliedBounds,&preparedStrip) && EqualRect(&pane.addressBounds,&preparedNavigation));
+            require(pane.address->toolbarSurface.BorderThickness().Bottom == 1);
+            require(pane.address->toolbarSurface.BorderBrush() != nullptr);
+            const auto preparedStrip = pane.appliedBounds, preparedNavigation = pane.addressBounds;
+            auto provisionalStrip = preparedStrip, provisionalNavigation = preparedNavigation;
+            OffsetRect(&provisionalStrip, 0, 4);
+            OffsetRect(&provisionalNavigation, 0, 4);
+            check_hresult(UpdateTabStrip(hwnd, &provisionalStrip, TRUE));
+            check_hresult(UpdateAddress(hwnd, &provisionalNavigation, TRUE));
+            require(EqualRect(&pane.appliedBounds, &preparedStrip) &&
+                    EqualRect(&pane.addressBounds, &preparedNavigation));
             require(pane.startupStripBoundsPending && pane.startupNavigationBoundsPending);
             // The accepted native allocation supersedes the provisional one.
-            check_hresult(UpdateTabStrip(hwnd,&preparedStrip,TRUE));
-            check_hresult(UpdateAddress(hwnd,&preparedNavigation,TRUE));
+            check_hresult(UpdateTabStrip(hwnd, &preparedStrip, TRUE));
+            check_hresult(UpdateAddress(hwnd, &preparedNavigation, TRUE));
 
-            const auto completeChrome=host->chrome;
-            const auto completeExclusions=host->exclusions;
-            const auto framedWidth=host->startupPageBackground.Width();
-            const auto framedLeft=Controls::Canvas::GetLeft(host->startupPageBackgroundScope);
+            const auto completeChrome = host->chrome;
+            const auto completeExclusions = host->exclusions;
+            const auto framedWidth = host->startupPageBackground.Width();
+            const auto framedLeft = Controls::Canvas::GetLeft(host->startupPageBackgroundScope);
             // The initial Gecko publication can temporarily contain only a
             // strip; the held backing must not erase the native surround.
-            NativeWindowHost::SetPageRegion(hwnd,{completeChrome.front()},{});
-            require(host->startupPageBackground.Width()==framedWidth);
-            require(Controls::Canvas::GetLeft(host->startupPageBackgroundScope)==framedLeft);
-            require(host->startupPageBackground.CornerRadius().BottomLeft==8);
-            RemovePropW(hwnd,PageHoldProperty);
+            NativeWindowHost::SetPageRegion(hwnd, {completeChrome.front()}, {});
+            require(host->startupPageBackground.Width() == framedWidth);
+            require(Controls::Canvas::GetLeft(host->startupPageBackgroundScope) == framedLeft);
+            require(host->startupPageBackground.CornerRadius().BottomLeft == 8);
+            RemovePropW(hwnd, PageHoldProperty);
             NativeWindowHost::RefreshPageBackground(hwnd);
             require(!host->startupFrameValid);
-            require(Controls::Canvas::GetLeft(host->startupPageBackgroundScope)==0);
-            require(host->startupPageBackground.CornerRadius().BottomLeft==0);
+            require(Controls::Canvas::GetLeft(host->startupPageBackgroundScope) == 0);
+            require(host->startupPageBackground.CornerRadius().BottomLeft == 0);
             // Once the hold ends, applied geometry retires any queued bounds;
             // later adoption must not replay an older provisional rectangle.
-            check_hresult(UpdateTabStrip(hwnd,&preparedStrip,TRUE));
-            check_hresult(UpdateAddress(hwnd,&preparedNavigation,TRUE));
+            check_hresult(UpdateTabStrip(hwnd, &preparedStrip, TRUE));
+            check_hresult(UpdateAddress(hwnd, &preparedNavigation, TRUE));
             require(!pane.startupStripBoundsPending && !pane.startupNavigationBoundsPending);
-            SetPropW(hwnd,PageHoldProperty,reinterpret_cast<HANDLE>(1));
-            NativeWindowHost::SetPageRegion(hwnd,completeChrome,completeExclusions);
-            check_hresult(UpdateTabStrip(hwnd,&preparedStrip,TRUE));
-            check_hresult(UpdateAddress(hwnd,&preparedNavigation,TRUE));
+            SetPropW(hwnd, PageHoldProperty, reinterpret_cast<HANDLE>(1));
+            NativeWindowHost::SetPageRegion(hwnd, completeChrome, completeExclusions);
+            check_hresult(UpdateTabStrip(hwnd, &preparedStrip, TRUE));
+            check_hresult(UpdateAddress(hwnd, &preparedNavigation, TRUE));
             require(pane.startupStripBoundsPending && pane.startupNavigationBoundsPending);
 
-
-            const auto first=pane.strip->rows.begin()->first;
-            auto header=pane.strip->rows.at(first).Header().as<Controls::Grid>();
-            auto spinner=header.Children().GetAt(0).as<Controls::Grid>().Children().GetAt(1).as<Controls::ProgressRing>();
-            require(spinner.IsActive() && spinner.Visibility()==Visibility::Visible);
-            require(Automation::AutomationProperties::GetName(pane.strip->rows.at(first))==local.labels.pending);
-            require(pane.address->mode.image.Visibility()==Visibility::Collapsed &&
-                    pane.address->mode.label.Visibility()==Visibility::Collapsed);
-            auto field=pane.address->field;
-            auto source=pane.addressSource;
+            const auto first = pane.strip->rows.begin()->first;
+            auto header = pane.strip->rows.at(first).Header().as<Controls::Grid>();
+            auto spinner =
+                header.Children().GetAt(0).as<Controls::Grid>().Children().GetAt(1).as<Controls::ProgressRing>();
+            require(spinner.IsActive() && spinner.Visibility() == Visibility::Visible);
+            require(Automation::AutomationProperties::GetName(pane.strip->rows.at(first)) == local.labels.pending);
+            require(pane.address->mode.image.Visibility() == Visibility::Collapsed &&
+                    pane.address->mode.label.Visibility() == Visibility::Collapsed);
+            auto field = pane.address->field;
+            auto source = pane.addressSource;
             field.Text(L"first search");
             pane.address->Action(L"activate");
-            field.Select(2,3);
+            field.Select(2, 3);
             ShellStartupView submitted{};
-            require(shell_core_startup_read(pane.shell.core,true,0,&submitted)==SHELL_STATUS_OK);
-            require(hstring(reinterpret_cast<const wchar_t*>(submitted.text),uint32_t(submitted.length))==L"first search");
+            require(shell_core_startup_read(pane.shell.core, true, 0, &submitted) == SHELL_STATUS_OK);
+            require(hstring(reinterpret_cast<const wchar_t*>(submitted.text), uint32_t(submitted.length)) ==
+                    L"first search");
             pane.strip->add();
             field.Text(L"second search");
             pane.address->Action(L"activate");
-            require(local.Run(0) && local.view.tabs==2 && local.view.pending==2);
+            require(local.Run(0) && local.view.tabs == 2 && local.view.pending == 2);
             require(!pane.strip->enteringTab && pane.strip->rowAnimations.empty());
             pane.strip->select(1);
-            require(field.Text()==L"first search");
-            require(field.SelectionStart()==2 && field.SelectionLength()==3);
-            pane.address->composing=true;pane.address->Edit();
-            pane.strip->add();pane.strip->select(2);pane.address->Action(L"activate");
-            require(local.Run(0) && local.view.tabs==2 && local.view.pending==2 && local.view.selected==1);
-            require(field.Text()==L"first search" && pane.address->composing);
-            pane.address->composing=false;pane.address->Edit();
-            require(field==pane.address->field && source==pane.addressSource);
+            require(field.Text() == L"first search");
+            require(field.SelectionStart() == 2 && field.SelectionLength() == 3);
+            pane.address->composing = true;
+            pane.address->Edit();
+            pane.strip->add();
+            pane.strip->select(2);
+            pane.address->Action(L"activate");
+            require(local.Run(0) && local.view.tabs == 2 && local.view.pending == 2 && local.view.selected == 1);
+            require(field.Text() == L"first search" && pane.address->composing);
+            pane.address->composing = false;
+            pane.address->Edit();
+            require(field == pane.address->field && source == pane.addressSource);
             // No browser snapshot or endpoint has been installed at any point.
             require(pane.address->session.empty());
-            ShowWindow(hwnd,SW_SHOWNOACTIVATE);
-            if(inspect)inspect(hwnd);
-            require(local.Run(0) && local.view.tabs==3 && local.view.pending==3);
-            require(field.Text()==L"keyboard search");
-            require(shell_core_startup_read(pane.shell.core,true,2,&submitted)==SHELL_STATUS_OK);
-            require(hstring(reinterpret_cast<const wchar_t*>(submitted.text),uint32_t(submitted.length))==L"keyboard search");
+            ShowWindow(hwnd, SW_SHOWNOACTIVATE);
+            if (inspect) inspect(hwnd);
+            require(local.Run(0) && local.view.tabs == 3 && local.view.pending == 3);
+            require(field.Text() == L"keyboard search");
+            require(shell_core_startup_read(pane.shell.core, true, 2, &submitted) == SHELL_STATUS_OK);
+            require(hstring(reinterpret_cast<const wchar_t*>(submitted.text), uint32_t(submitted.length)) ==
+                    L"keyboard search");
             pane.strip->close(3);
             pane.strip->close(2);
-            require(local.view.tabs==1 && local.view.pending==1);
+            require(local.view.tabs == 1 && local.view.pending == 1);
             // Simulated browser completion only: exercise the generated ABI
             // against live controls without claiming a real Gecko attachment.
             ShellStartupTransfer transfer{};
-            auto send=[&](uint32_t operation,uint64_t request=0,uint64_t draft=0,
-                          uint64_t browser=0,bool accepted=true,uint64_t generation=7) {
-                return shell_core_startup_transfer(pane.shell.core,operation,42,transfer.session,generation,
-                    request,draft,browser,accepted,&transfer);
+            auto send = [&](uint32_t operation, uint64_t request = 0, uint64_t draft = 0, uint64_t browser = 0,
+                            bool accepted = true, uint64_t generation = 7) {
+                return shell_core_startup_transfer(pane.shell.core, operation, 42, transfer.session, generation,
+                                                   request, draft, browser, accepted, &transfer);
             };
-            auto transferOutput=std::make_unique<wchar_t[]>(262144);
-            transferOutput[0]=L'X';
-            require(StartupTransfer(hwnd,LR"({"version":1,"operation":1,"context":"42"})",
-                transferOutput.get(),1)==E_INVALIDARG && transferOutput[0]==L'X');
-            require(StartupTransfer(hwnd,LR"({"version":1,"operation":1,"context":"18446744073709551616"})",
-                transferOutput.get(),262144)==E_INVALIDARG && transferOutput[0]==L'X');
-            check_hresult(StartupTransfer(hwnd,LR"({"version":1,"operation":1,"context":"42"})",
-                transferOutput.get(),262144));
+            auto transferOutput = std::make_unique<wchar_t[]>(262144);
+            transferOutput[0] = L'X';
+            require(StartupTransfer(hwnd, LR"({"version":1,"operation":1,"context":"42"})", transferOutput.get(), 1) ==
+                        E_INVALIDARG &&
+                    transferOutput[0] == L'X');
+            require(StartupTransfer(hwnd, LR"({"version":1,"operation":1,"context":"18446744073709551616"})",
+                                    transferOutput.get(), 262144) == E_INVALIDARG &&
+                    transferOutput[0] == L'X');
+            check_hresult(
+                StartupTransfer(hwnd, LR"({"version":1,"operation":1,"context":"42"})", transferOutput.get(), 262144));
             require(!pane.startupStripBoundsPending && !pane.startupNavigationBoundsPending);
-            require(EqualRect(&pane.appliedBounds,&preparedStrip) && EqualRect(&pane.addressBounds,&preparedNavigation));
+            require(EqualRect(&pane.appliedBounds, &preparedStrip) &&
+                    EqualRect(&pane.addressBounds, &preparedNavigation));
 
-            require(send(0)==SHELL_STATUS_OK && send(2)==SHELL_STATUS_OK);
-            uint32_t startupNotifications=0;
-            check_hresult(SetNotifySink(hwnd,[](void* value)->BOOL {
-                return ++*static_cast<uint32_t*>(value)>1;
-            },&startupNotifications));
-            require(startupNotifications==1 && local.Observe() && startupNotifications==2);
-            require(local.Observe() && startupNotifications==2);
-            check_hresult(SetNotifySink(hwnd,nullptr,nullptr));
-            require(send(3,0,1)==SHELL_STATUS_OK && transfer.kind==1);
-            const auto createRequest=transfer.request;
-            const auto draftRow=pane.strip->rows.at(1);
-            local.browserTitle=[](uint64_t id){return id==90?hstring(L"Restored fixture tab"):hstring(L"Browser fixture tab");};
+            require(send(0) == SHELL_STATUS_OK && send(2) == SHELL_STATUS_OK);
+            uint32_t startupNotifications = 0;
+            check_hresult(SetNotifySink(
+                hwnd, [](void* value) -> BOOL { return ++*static_cast<uint32_t*>(value) > 1; }, &startupNotifications));
+            require(startupNotifications == 1 && local.Observe() && startupNotifications == 2);
+            require(local.Observe() && startupNotifications == 2);
+            check_hresult(SetNotifySink(hwnd, nullptr, nullptr));
+            require(send(3, 0, 1) == SHELL_STATUS_OK && transfer.kind == 1);
+            const auto createRequest = transfer.request;
+            const auto draftRow = pane.strip->rows.at(1);
+            local.browserTitle = [](uint64_t id) {
+                return id == 90 ? hstring(L"Restored fixture tab") : hstring(L"Browser fixture tab");
+            };
             std::vector<ShellStartupRow> mergedRows(SHELL_STARTUP_ROW_CAPACITY);
             uint32_t mergedCount{};
-            auto publishRows=[&](uint64_t revision,std::vector<uint64_t> const& ids,uint64_t selected) {
-                require(shell_core_startup_rows(pane.shell.core,transfer.session,7,revision,
-                    ids.data(),ids.size(),selected,mergedRows.data(),mergedRows.size(),&mergedCount)==SHELL_STATUS_OK);
+            auto publishRows = [&](uint64_t revision, std::vector<uint64_t> const& ids, uint64_t selected) {
+                require(shell_core_startup_rows(pane.shell.core, transfer.session, 7, revision, ids.data(), ids.size(),
+                                                selected, mergedRows.data(), mergedRows.size(),
+                                                &mergedCount) == SHELL_STATUS_OK);
                 local.Refresh(false);
             };
-            publishRows(1,{90,123},90);
-            require(mergedCount==3 && pane.strip->rows.at(1)==draftRow);
-            const auto restoredId=mergedRows[0].presentation;
-            const auto duplicateId=mergedRows[1].presentation;
-            const auto restoredRow=pane.strip->rows.at(restoredId);
+            publishRows(1, {90, 123}, 90);
+            require(mergedCount == 3 && pane.strip->rows.at(1) == draftRow);
+            const auto restoredId = mergedRows[0].presentation;
+            const auto duplicateId = mergedRows[1].presentation;
+            const auto restoredRow = pane.strip->rows.at(restoredId);
             require(restoredRow.IsEnabled());
-            field.Text(L"edited during browser creation");field.Select(7,3);
-            pane.address->composing=true;pane.address->Edit();
-            require(send(6,createRequest,0,123,true,8)==SHELL_STATUS_REJECTED);
-            require(send(6,createRequest,0,123)==SHELL_STATUS_OK);
-            publishRows(2,{123,90,91},91);
-            require(mergedCount==3 && pane.strip->rows.at(1)==draftRow &&
-                pane.strip->rows.at(restoredId)==restoredRow && draftRow.IsEnabled());
+            field.Text(L"edited during browser creation");
+            field.Select(7, 3);
+            pane.address->composing = true;
+            pane.address->Edit();
+            require(send(6, createRequest, 0, 123, true, 8) == SHELL_STATUS_REJECTED);
+            require(send(6, createRequest, 0, 123) == SHELL_STATUS_OK);
+            publishRows(2, {123, 90, 91}, 91);
+            require(mergedCount == 3 && pane.strip->rows.at(1) == draftRow &&
+                    pane.strip->rows.at(restoredId) == restoredRow && draftRow.IsEnabled());
             require(!pane.strip->rows.contains(duplicateId));
-            require(mergedRows[mergedCount-1].draft==1 && mergedRows[mergedCount-1].browser==123 &&
-                mergedRows[mergedCount-1].selected);
-            require(field.Text()==L"edited during browser creation" &&
-                field.SelectionStart()==7 && field.SelectionLength()==3 && pane.address->composing);
-            require(field==pane.address->field && source==pane.addressSource && IsWindow(hwnd));
-            require(send(4)==SHELL_STATUS_OK && transfer.kind==2 && transfer.browser==123);
-            require(hstring(reinterpret_cast<const wchar_t*>(transfer.text),uint32_t(transfer.length))==L"first search");
-            const auto submitRequest=transfer.request;
-            require(send(6,submitRequest,0,123)==SHELL_STATUS_OK);
-            require(send(6,submitRequest,0,123)==SHELL_STATUS_OK);
-            require(local.Run(0) && local.view.pending==0);
-            pane.address->composing=false;pane.address->Edit();
-            for(size_t i=0;i<64;++i)require(local.Run(5,1));
-            const auto retained=field.Text();
-            require(!local.Run(5,1));
-            require(field.Text()==retained &&
-                Automation::AutomationProperties::GetItemStatus(field)==local.labels.full);
+            require(mergedRows[mergedCount - 1].draft == 1 && mergedRows[mergedCount - 1].browser == 123 &&
+                    mergedRows[mergedCount - 1].selected);
+            require(field.Text() == L"edited during browser creation" && field.SelectionStart() == 7 &&
+                    field.SelectionLength() == 3 && pane.address->composing);
+            require(field == pane.address->field && source == pane.addressSource && IsWindow(hwnd));
+            require(send(4) == SHELL_STATUS_OK && transfer.kind == 2 && transfer.browser == 123);
+            require(hstring(reinterpret_cast<const wchar_t*>(transfer.text), uint32_t(transfer.length)) ==
+                    L"first search");
+            const auto submitRequest = transfer.request;
+            require(send(6, submitRequest, 0, 123) == SHELL_STATUS_OK);
+            require(send(6, submitRequest, 0, 123) == SHELL_STATUS_OK);
+            require(local.Run(0) && local.view.pending == 0);
+            pane.address->composing = false;
+            pane.address->Edit();
+            for (size_t i = 0; i < 64; ++i) require(local.Run(5, 1));
+            const auto retained = field.Text();
+            require(!local.Run(5, 1));
+            require(field.Text() == retained &&
+                    Automation::AutomationProperties::GetItemStatus(field) == local.labels.full);
             pane.strip->close(1);
-            require(local.view.tabs==0 && local.view.pending==0);
-            require(send(5,0,1)==SHELL_STATUS_OK && transfer.kind==3);
-            require(send(6,transfer.request,0,123)==SHELL_STATUS_OK && transfer.mappings==0);
+            require(local.view.tabs == 0 && local.view.pending == 0);
+            require(send(5, 0, 1) == SHELL_STATUS_OK && transfer.kind == 3);
+            require(send(6, transfer.request, 0, 123) == SHELL_STATUS_OK && transfer.mappings == 0);
         }
         check_hresult(Destroy(hwnd));
         check_hresult(NativeWindowHost::Destroy(hwnd));
         return Shutdown();
     } catch (...) {
-        auto result=to_hresult();
-        if(hwnd){Destroy(hwnd);NativeWindowHost::Destroy(hwnd);}
-        Shutdown();return result;
+        auto result = to_hresult();
+        if (hwnd) {
+            Destroy(hwnd);
+            NativeWindowHost::Destroy(hwnd);
+        }
+        Shutdown();
+        return result;
     }
 }
 // Test-only on-owner query: a miss returns immediately and lets Gecko process
 // the queued request between Marionette calls. No synchronous geometry lookup.
 // On the thread that owns the page window: the input thread when it runs.
-static HRESULT TestPageRangeOn(HWND page,uint32_t start,uint32_t end,int32_t* output) {
-    auto store=NativePageInput::Get(page);if(!store || !output || store->lock || start<store->textBase || end<store->textBase)return E_INVALIDARG;
-    RECT bounds{};BOOL clipped{};store->lock=TS_LF_READ;
-    HRESULT result=store->GetTextExt(0,start-store->textBase,end-store->textBase,&bounds,&clipped);
-    store->lock=0;
-    output[0]=bounds.left;output[1]=bounds.top;output[2]=bounds.right;output[3]=bounds.bottom;output[4]=clipped;
-    output[5]=store->textBase;output[6]=store->Read().length;output[7]=store->Read().edit;
+static HRESULT TestPageRangeOn(HWND page, uint32_t start, uint32_t end, int32_t* output) {
+    auto store = NativePageInput::Get(page);
+    if (!store || !output || store->lock || start < store->textBase || end < store->textBase) return E_INVALIDARG;
+    RECT bounds{};
+    BOOL clipped{};
+    store->lock = TS_LF_READ;
+    HRESULT result = store->GetTextExt(0, start - store->textBase, end - store->textBase, &bounds, &clipped);
+    store->lock = 0;
+    output[0] = bounds.left;
+    output[1] = bounds.top;
+    output[2] = bounds.right;
+    output[3] = bounds.bottom;
+    output[4] = clipped;
+    output[5] = store->textBase;
+    output[6] = store->Read().length;
+    output[7] = store->Read().edit;
     return result;
 }
-static HRESULT WINAPI TestPageRange(HWND hwnd,uint32_t start,uint32_t end,int32_t* output) {
-    return TestPageRangeOn(NativeWindowHost::PageWindow(hwnd),start,end,output);
+static HRESULT WINAPI TestPageRange(HWND hwnd, uint32_t start, uint32_t end, int32_t* output) {
+    return TestPageRangeOn(NativeWindowHost::PageWindow(hwnd), start, end, output);
 }
-extern "C" __declspec(dllexport) HRESULT WINAPI WinUIPaneTestPageRange(HWND hwnd,uint32_t start,uint32_t end,int32_t* output) noexcept {
-    if (InputThread::Running()) return InputThread::OnPage(hwnd,[=](HWND page){return TestPageRangeOn(page,start,end,output);});
-    return IndependentHost::Call<TestPageRange>(hwnd,start,end,output);
+extern "C" __declspec(dllexport) HRESULT WINAPI WinUIPaneTestPageRange(HWND hwnd, uint32_t start, uint32_t end,
+                                                                       int32_t* output) noexcept {
+    if (InputThread::Running())
+        return InputThread::OnPage(hwnd, [=](HWND page) { return TestPageRangeOn(page, start, end, output); });
+    return IndependentHost::Call<TestPageRange>(hwnd, start, end, output);
 }
 #include "../../tests/native/PageInputTests.h"
 extern "C" __declspec(dllexport) HRESULT WINAPI WinUIPaneTestPageInput() noexcept {
-    try { PageInputContract::Run(); return S_OK; } catch (...) { return to_hresult(); }
+    try {
+        PageInputContract::Run();
+        return S_OK;
+    } catch (...) {
+        return to_hresult();
+    }
 }
 #include "../../tests/native/ThreadedStartupTests.h"
-extern "C" __declspec(dllexport) HRESULT WINAPI WinUIPaneTestThreadedStartup(void(WINAPI* inspect)(HWND), BOOL cancel) noexcept {
+extern "C" __declspec(dllexport) HRESULT WINAPI WinUIPaneTestThreadedStartup(void(WINAPI* inspect)(HWND),
+                                                                             BOOL cancel) noexcept {
     if (!inspect) return E_POINTER;
-    try { ThreadedStartupContract::Run(inspect,!!cancel); return S_OK; }
-    catch (...) { return to_hresult(); }
+    try {
+        ThreadedStartupContract::Run(inspect, !!cancel);
+        return S_OK;
+    } catch (...) {
+        return to_hresult();
+    }
 }
 #include "../../tests/native/StartupWindowHostTests.h"
 extern "C" __declspec(dllexport) HRESULT WINAPI WinUIPaneTestStartupSurface(void(WINAPI* inspect)(HWND)) noexcept {
     if (!inspect) return E_POINTER;
     try {
-        auto require=[](bool value) { if (!value) throw_hresult(E_FAIL); };
+        auto require = [](bool value) {
+            if (!value) throw_hresult(E_FAIL);
+        };
         for (bool cancel : {false, true}) {
             HWND hwnd{};
-            RECT bounds{40,40,840,640};
+            RECT bounds{40, 40, 840, 640};
             check_hresult(NativeWindowHost::CreateStartup(0, WS_OVERLAPPEDWINDOW, bounds, &hwnd));
-            struct Cleanup { HWND hwnd; ~Cleanup() { if (IsWindow(hwnd)) NativeWindowHost::Destroy(hwnd); } } cleanup{hwnd};
-            require(ShowStartupSurface(hwnd)==S_OK);
-            require(ShowStartupSurface(hwnd)==S_FALSE);
-            require(DismissStartupSurface(nullptr)==E_INVALIDARG);
+            struct Cleanup {
+                HWND hwnd;
+                ~Cleanup() {
+                    if (IsWindow(hwnd)) NativeWindowHost::Destroy(hwnd);
+                }
+            } cleanup{hwnd};
+            require(ShowStartupSurface(hwnd) == S_OK);
+            require(ShowStartupSurface(hwnd) == S_FALSE);
+            require(DismissStartupSurface(nullptr) == E_INVALIDARG);
             require(IsWindowVisible(hwnd) && GetPropW(hwnd, NativeStartupSurface::Property));
-            auto root=NativeStartupSurface::Active()->source.Content().as<FrameworkElement>();
+            auto root = NativeStartupSurface::Active()->source.Content().as<FrameworkElement>();
             for (auto theme : {ElementTheme::Light, ElementTheme::Dark}) {
                 root.RequestedTheme(theme);
                 inspect(hwnd);
             }
-            SetWindowPos(hwnd, nullptr, 70,70,640,480, SWP_NOACTIVATE|SWP_NOZORDER);
+            SetWindowPos(hwnd, nullptr, 70, 70, 640, 480, SWP_NOACTIVATE | SWP_NOZORDER);
             inspect(hwnd);
             if (cancel) {
                 SendMessageW(hwnd, WM_CLOSE, 0, 0);
                 require(!IsWindow(hwnd) && !NativeStartupSurface::Active());
             } else {
-                require(DismissStartupSurface(hwnd)==S_OK);
-                require(DismissStartupSurface(hwnd)==S_FALSE);
+                require(DismissStartupSurface(hwnd) == S_OK);
+                require(DismissStartupSurface(hwnd) == S_FALSE);
                 require(IsWindow(hwnd) && !GetPropW(hwnd, NativeStartupSurface::Property));
-                ShellWindowBinding binding{}; binding.shell=reinterpret_cast<uintptr_t>(hwnd); binding.content=42;
-                require(NativeWindowHost::Get(hwnd)->Call(SHELL_WINDOW_HOST_OPERATION_BIND,binding)==SHELL_STATUS_OK);
-                require(ShowStartupSurface(hwnd)==E_INVALIDARG);
+                ShellWindowBinding binding{};
+                binding.shell = reinterpret_cast<uintptr_t>(hwnd);
+                binding.content = 42;
+                require(NativeWindowHost::Get(hwnd)->Call(SHELL_WINDOW_HOST_OPERATION_BIND, binding) ==
+                        SHELL_STATUS_OK);
+                require(ShowStartupSurface(hwnd) == E_INVALIDARG);
             }
         }
         return S_OK;
-    } catch (...) { return to_hresult(); }
+    } catch (...) {
+        return to_hresult();
+    }
 }
 extern "C" __declspec(dllexport) HRESULT WINAPI WinUIPaneTestStartupWindowHost() noexcept {
-    try { StartupWindowHostContract::Run(); return S_OK; }
-    catch (...) { return winrt::to_hresult(); }
+    try {
+        StartupWindowHostContract::Run();
+        return S_OK;
+    } catch (...) {
+        return winrt::to_hresult();
+    }
 }
 #include "../../tests/native/WindowHostTests.h"
 #include "../../tests/native/CompositionProbe.h"
-extern "C" __declspec(dllexport) HRESULT WINAPI WinUIPaneTestWindowHost(const WinUIPaneApi* api, void (WINAPI* inspect)(HWND)) noexcept {
+extern "C" __declspec(dllexport) HRESULT WINAPI WinUIPaneTestWindowHost(const WinUIPaneApi* api,
+                                                                        void(WINAPI* inspect)(HWND)) noexcept {
     if (!api || !inspect) return E_POINTER;
-    try { WindowHostContract::Run(*api, inspect); return S_OK; }
-    catch (...) { return winrt::to_hresult(); }
+    try {
+        WindowHostContract::Run(*api, inspect);
+        return S_OK;
+    } catch (...) {
+        return winrt::to_hresult();
+    }
 }
 
-extern "C" __declspec(dllexport) HRESULT WINAPI WinUIPaneTestMeasureChromeLayout(
-    HWND hwnd, uint32_t stripHeight, BOOL navigation, uint32_t contentInset,
-    ShellChromeLayout* output) noexcept {
+extern "C" __declspec(dllexport) HRESULT WINAPI WinUIPaneTestMeasureChromeLayout(HWND hwnd, uint32_t stripHeight,
+                                                                                 BOOL navigation, uint32_t contentInset,
+                                                                                 ShellChromeLayout* output) noexcept {
     return MeasureNativeChromeLayout(hwnd, stripHeight, !!navigation, contentInset, output);
 }
 
 // Borrow the servicing host only while this address host is alive. The test
 // retains shared_from_this() before replacing OS operations. The menu item is
 // returned as an ordinary AddRef'd WinRT control. Neither export ships.
-extern "C" __declspec(dllexport) HRESULT WINAPI WinUIPaneTestGetPackageUpdates(
-    HWND hwnd, void** service, void** item) noexcept {
+extern "C" __declspec(dllexport) HRESULT WINAPI WinUIPaneTestGetPackageUpdates(HWND hwnd, void** service,
+                                                                               void** item) noexcept {
     try {
         check_hresult(Check(hwnd));
         if (!service || !item) return E_POINTER;
@@ -3590,7 +4001,9 @@ extern "C" __declspec(dllexport) HRESULT WINAPI WinUIPaneTestGetPackageUpdates(
         auto control = menu.updateItem;
         *item = detach_abi(control);
         return S_OK;
-    } catch (...) { return to_hresult(); }
+    } catch (...) {
+        return to_hresult();
+    }
 }
 extern "C" __declspec(dllexport) HRESULT WINAPI WinUIPaneTestGetAddressContent(HWND hwnd, void** output) noexcept {
     try {
@@ -3600,7 +4013,9 @@ extern "C" __declspec(dllexport) HRESULT WINAPI WinUIPaneTestGetAddressContent(H
         if (!pane.addressSource) return E_NOT_VALID_STATE;
         *output = detach_abi(pane.addressSource.Content());
         return S_OK;
-    } catch (...) { return to_hresult(); }
+    } catch (...) {
+        return to_hresult();
+    }
 }
 // Test-only: make the Rust shell core panic, so the containment path can be
 // exercised from a real call rather than argued for. The core catches it,
@@ -3620,7 +4035,10 @@ extern "C" __declspec(dllexport) HRESULT WINAPI WinUIPaneTestCorePanic(HWND hwnd
             pane.notifySink = nullptr;
             pane.notifyContext = nullptr;
             pane.drainOpen = false;
-            if (pane.strip) { pane.strip->core = nullptr; pane.strip->hoverCard.core = nullptr; }
+            if (pane.strip) {
+                pane.strip->core = nullptr;
+                pane.strip->hoverCard.core = nullptr;
+            }
             pane.shell.Close();
             return E_FAIL;
         }
@@ -3661,11 +4079,16 @@ extern "C" __declspec(dllexport) HRESULT WINAPI WinUIPaneTestGetStageCounter(con
     if (!name || !counter || !value) return E_POINTER;
     for (auto* stage = requestLatency(); stage->work.name; ++stage) {
         if (wcscmp(stage->work.name, name) != 0) continue;
-        if (wcscmp(counter, L"n") == 0) *value = stage->work.calls;
-        else if (wcscmp(counter, L"blocked") == 0) *value = stage->blocked;
-        else if (wcscmp(counter, L"deferred") == 0) *value = stage->deferred;
-        else if (wcscmp(counter, L"stalled") == 0) *value = stage->stalled;
-        else return E_INVALIDARG;
+        if (wcscmp(counter, L"n") == 0)
+            *value = stage->work.calls;
+        else if (wcscmp(counter, L"blocked") == 0)
+            *value = stage->blocked;
+        else if (wcscmp(counter, L"deferred") == 0)
+            *value = stage->deferred;
+        else if (wcscmp(counter, L"stalled") == 0)
+            *value = stage->stalled;
+        else
+            return E_INVALIDARG;
         return S_OK;
     }
     return E_INVALIDARG;
@@ -3722,10 +4145,11 @@ extern "C" __declspec(dllexport) HRESULT WINAPI WinUIPaneTestGetAddressBackdrop(
         check_hresult(Check(hwnd));
         auto found = state().panes.find(hwnd);
         if (found == state().panes.end()) return E_INVALIDARG;
-        if (found->second->addressSource)
-            *output = detach_abi(found->second->addressSource.SystemBackdrop());
+        if (found->second->addressSource) *output = detach_abi(found->second->addressSource.SystemBackdrop());
         return S_OK;
-    } catch (...) { return to_hresult(); }
+    } catch (...) {
+        return to_hresult();
+    }
 }
 // Test-only: drive the strip's TabItems()-order-derived reorder logic
 // directly, as if a completed drag had already left TabItems() in the given
@@ -3770,25 +4194,34 @@ extern "C" __declspec(dllexport) HRESULT WINAPI WinUIPaneTestRearmDrag(HWND hwnd
     try {
         check_hresult(Check(hwnd));
         auto found = state().panes.find(hwnd);
-        if (found == state().panes.end() || !found->second->strip || !found->second->strip->rows.count(tab)) return E_INVALIDARG;
+        if (found == state().panes.end() || !found->second->strip || !found->second->strip->rows.count(tab))
+            return E_INVALIDARG;
         auto& pane = *found->second;
         ArmDragSession(pane, DragKind::Tab, tab);
-        POINT point{}; GetCursorPos(&point);
+        POINT point{};
+        GetCursorPos(&point);
         pane.strip->ArmDrag(tab, pane.ScreenToStrip(point));
         return S_OK;
-    } catch (...) { return to_hresult(); }
+    } catch (...) {
+        return to_hresult();
+    }
 }
 // Test-only: inspect visual lifetimes and simulate reduced motion without
 // changing the user's Windows animation setting.
-extern "C" __declspec(dllexport) HRESULT WINAPI WinUIPaneTestGroupMotion(HWND hwnd, uint32_t operation, uint32_t* ghosts) noexcept {
+extern "C" __declspec(dllexport) HRESULT WINAPI WinUIPaneTestGroupMotion(HWND hwnd, uint32_t operation,
+                                                                         uint32_t* ghosts) noexcept {
     try {
         check_hresult(Check(hwnd));
         auto found = state().panes.find(hwnd);
         if (!ghosts || found == state().panes.end() || !found->second->strip) return E_INVALIDARG;
         auto& motion = found->second->strip->groupSlide;
-        if (operation == 1) motion.Cancel();
-        else if (operation == 2) { motion.Cancel(); motion.disableForTest = true; }
-        else if (operation == 3) motion.disableForTest = false;
+        if (operation == 1)
+            motion.Cancel();
+        else if (operation == 2) {
+            motion.Cancel();
+            motion.disableForTest = true;
+        } else if (operation == 3)
+            motion.disableForTest = false;
         else if (operation == 7 || operation == 8) {
             // New-tab entry: 7 starts the reveal on the second tab and reports
             // whether it is clipped and tracked; 8 stops it and reports
@@ -3799,41 +4232,52 @@ extern "C" __declspec(dllexport) HRESULT WINAPI WinUIPaneTestGroupMotion(HWND hw
             const auto id = unbox_value<uint32_t>(row.Tag());
             if (operation == 7) {
                 strip.RevealNewRow(row, id, std::numeric_limits<double>::quiet_NaN());
-                *ghosts = strip.rowAnimations.count(id) && row.Clip() && strip.RowTransform(row).X() == 0 ? 1 : 0;            } else {
+                *ghosts = strip.rowAnimations.count(id) && row.Clip() && strip.RowTransform(row).X() == 0 ? 1 : 0;
+            } else {
                 strip.ResetRowOffset(row, id);
                 *ghosts = !strip.rowAnimations.count(id) && !row.Clip() && strip.RowTransform(row).X() == 0 ? 1 : 0;
             }
             return S_OK;
-        }
-        else if (operation == 4) found->second->strip->CollapseDraggingGroup(7);
-        else if (operation == 5) found->second->strip->RestoreDraggingGroup();
-        else if (operation == 6) found->second->strip->UpdateTitle(41,L"Updated during drag");
-        else if (operation == 9) { *ghosts = motion.resizing ? 1 : 0; return S_OK; }
-        else if (operation == 10 || operation == 11 || operation == 12) {
+        } else if (operation == 4)
+            found->second->strip->CollapseDraggingGroup(7);
+        else if (operation == 5)
+            found->second->strip->RestoreDraggingGroup();
+        else if (operation == 6)
+            found->second->strip->UpdateTitle(41, L"Updated during drag");
+        else if (operation == 9) {
+            *ghosts = motion.resizing ? 1 : 0;
+            return S_OK;
+        } else if (operation == 10 || operation == 11 || operation == 12) {
             // 10 pauses the slide and its width motion halfway (75 of 150 ms)
             // so geometry can be read without depending on frame cadence; 11
             // resumes it. Reports whether the motion animates any width.
             *ghosts = motion.resizing ? 1 : 0;
             if (!motion.storyboard) return S_OK;
-            if (operation == 11) motion.storyboard.Resume();
+            if (operation == 11)
+                motion.storyboard.Resume();
             else {
                 motion.storyboard.Pause();
-                motion.storyboard.SeekAlignedToLastTick(Windows::Foundation::TimeSpan{operation == 12 ? std::chrono::milliseconds(0) : InlineTabGroups::MotionDuration / 2});
+                motion.storyboard.SeekAlignedToLastTick(Windows::Foundation::TimeSpan{
+                    operation == 12 ? std::chrono::milliseconds(0) : InlineTabGroups::MotionDuration / 2});
             }
             return S_OK;
-        }
-        else if (operation != 0) return E_INVALIDARG;
+        } else if (operation != 0)
+            return E_INVALIDARG;
         *ghosts = uint32_t(motion.departing.size());
         return S_OK;
-    } catch (...) { return to_hresult(); }
+    } catch (...) {
+        return to_hresult();
+    }
 }
 // Test-only: observe the tab add/close motion without a screenshot. Operation
 // 0 fills out[0..9]: tracked row animations, rows with entry translation/fade,
 // rows with bounded entry channels and no clip, 1 when New Tab carries a nonzero
 // offset (out[3] is its sign: 1 positive, 2 negative), stand-in count, rows
 // with a composition scale or translation in flight, and the first stand-in's
-// Canvas.Left in tenths, then the first row's scale in thousandths and its translation in tenths plus 5000. Operations 1 and 2 set left-to-right or right-to-left.
-extern "C" __declspec(dllexport) HRESULT WINAPI WinUIPaneTestEntryMotion(HWND hwnd, uint32_t operation, uint32_t* out) noexcept {
+// Canvas.Left in tenths, then the first row's scale in thousandths and its translation in tenths plus 5000. Operations
+// 1 and 2 set left-to-right or right-to-left.
+extern "C" __declspec(dllexport) HRESULT WINAPI WinUIPaneTestEntryMotion(HWND hwnd, uint32_t operation,
+                                                                         uint32_t* out) noexcept {
     try {
         check_hresult(Check(hwnd));
         auto found = state().panes.find(hwnd);
@@ -3846,7 +4290,8 @@ extern "C" __declspec(dllexport) HRESULT WINAPI WinUIPaneTestEntryMotion(HWND hw
         }
         if (operation == 3) {
             out[0] = 0;
-            for (auto const& held : strip.settling) if (held.content) ++out[0];
+            for (auto const& held : strip.settling)
+                if (held.content) ++out[0];
             return S_OK;
         }
         if (operation == 7) {
@@ -3858,7 +4303,8 @@ extern "C" __declspec(dllexport) HRESULT WINAPI WinUIPaneTestEntryMotion(HWND hw
             return S_OK;
         }
         if (operation == 6) {
-            out[0] = uint32_t(strip.closeFaces.size()); out[1] = 0;
+            out[0] = uint32_t(strip.closeFaces.size());
+            out[1] = 0;
             const auto positions = strip.ClosePositions();
             for (auto const& face : strip.closeFaces) {
                 auto at = positions.find({SHELL_SETTLE_TAB, face.id});
@@ -3874,7 +4320,9 @@ extern "C" __declspec(dllexport) HRESULT WINAPI WinUIPaneTestEntryMotion(HWND hw
                     if (other.id == face.id) continue;
                     auto next = positions.find({SHELL_SETTLE_TAB, other.id});
                     if (next == positions.end()) continue;
-                    if (std::min(right, next->second.first + next->second.second) - std::max(left, next->second.first) > 2) ++out[1];
+                    if (std::min(right, next->second.first + next->second.second) - std::max(left, next->second.first) >
+                        2)
+                        ++out[1];
                 }
             }
             return S_OK;
@@ -3906,7 +4354,8 @@ extern "C" __declspec(dllexport) HRESULT WINAPI WinUIPaneTestEntryMotion(HWND hw
             const auto y = strip.RowTransform(row).Y();
             if (std::abs(y) > .001 || row.Opacity() < .999) {
                 ++out[1];
-                if (y >= 0 && y <= SHELL_MOTION_TRAVEL_DIP && row.Opacity() >= 0 && row.Opacity() <= 1 && !row.Clip()) ++out[2];
+                if (y >= 0 && y <= SHELL_MOTION_TRAVEL_DIP && row.Opacity() >= 0 && row.Opacity() <= 1 && !row.Clip())
+                    ++out[2];
             }
             auto visual = winrt::Microsoft::UI::Xaml::Hosting::ElementCompositionPreview::GetElementVisual(row);
             winrt::Windows::Foundation::Numerics::float3 shift{};
@@ -3918,15 +4367,20 @@ extern "C" __declspec(dllexport) HRESULT WINAPI WinUIPaneTestEntryMotion(HWND hw
             }
         }
         if (auto add = strip.FindAddButton(strip.view))
-            if (auto transform = add.RenderTransform().try_as<Media::TranslateTransform>(); transform && std::abs(transform.X()) > .5)
+            if (auto transform = add.RenderTransform().try_as<Media::TranslateTransform>();
+                transform && std::abs(transform.X()) > .5)
                 out[3] = transform.X() > 0 ? 1 : 2;
         if (strip.closeOverlay) {
             out[4] = strip.closeOverlay.Children().Size();
-            if (out[4]) out[7] = uint32_t(std::max(0.0, Controls::Canvas::GetLeft(strip.closeOverlay.Children().GetAt(0)) * 10));
+            if (out[4])
+                out[7] =
+                    uint32_t(std::max(0.0, Controls::Canvas::GetLeft(strip.closeOverlay.Children().GetAt(0)) * 10));
         }
         out[5] = uint32_t(strip.closeStoryboards.size());
         return S_OK;
-    } catch (...) { return to_hresult(); }
+    } catch (...) {
+        return to_hresult();
+    }
 }
 // Test-only counts of actual width/ambient/separator/caption work, not events.
 extern "C" __declspec(dllexport) HRESULT WINAPI WinUIPaneTestLayoutPasses(HWND hwnd, uint64_t* counts) noexcept {
@@ -3940,10 +4394,13 @@ extern "C" __declspec(dllexport) HRESULT WINAPI WinUIPaneTestLayoutPasses(HWND h
         counts[2] = strip.separatorPasses;
         counts[3] = strip.captionPasses;
         return S_OK;
-    } catch (...) { return to_hresult(); }
+    } catch (...) {
+        return to_hresult();
+    }
 }
 // Test-only: compare incremental decoration geometry with the full reference.
-extern "C" __declspec(dllexport) HRESULT WINAPI WinUIPaneTestSelectionReentry(HWND hwnd, uint64_t* counts, BOOL reset) noexcept {
+extern "C" __declspec(dllexport) HRESULT WINAPI WinUIPaneTestSelectionReentry(HWND hwnd, uint64_t* counts,
+                                                                              BOOL reset) noexcept {
     try {
         check_hresult(Check(hwnd));
         auto found = state().panes.find(hwnd);
@@ -3954,9 +4411,12 @@ extern "C" __declspec(dllexport) HRESULT WINAPI WinUIPaneTestSelectionReentry(HW
             if (reset) strip.selectionReentry[i] = 0;
         }
         return S_OK;
-    } catch (...) { return to_hresult(); }
+    } catch (...) {
+        return to_hresult();
+    }
 }
-extern "C" __declspec(dllexport) HRESULT WINAPI WinUIPaneTestSelectionDecorations(HWND hwnd, uint64_t* counts, BOOL verify) noexcept {
+extern "C" __declspec(dllexport) HRESULT WINAPI WinUIPaneTestSelectionDecorations(HWND hwnd, uint64_t* counts,
+                                                                                  BOOL verify) noexcept {
     try {
         check_hresult(Check(hwnd));
         auto found = state().panes.find(hwnd);
@@ -3966,9 +4426,9 @@ extern "C" __declspec(dllexport) HRESULT WINAPI WinUIPaneTestSelectionDecoration
         counts[1] = strip.ambientPasses;
         counts[2] = strip.separatorPasses;
         counts[3] = (!strip.selectionGeometryReady ? 1u : 0u) | (strip.ambient.queued ? 2u : 0u) |
-            (strip.ambient.observing ? 4u : 0u) | (strip.currentGroups.Size() ? 8u : 0u) |
-            (strip.HasDecorationGroups() ? 16u : 0u) | (strip.surfaceMotion.following ? 32u : 0u) |
-            (!strip.settling.empty() ? 64u : 0u) | (!strip.rowAnimations.empty() ? 128u : 0u);
+                    (strip.ambient.observing ? 4u : 0u) | (strip.currentGroups.Size() ? 8u : 0u) |
+                    (strip.HasDecorationGroups() ? 16u : 0u) | (strip.surfaceMotion.following ? 32u : 0u) |
+                    (!strip.settling.empty() ? 64u : 0u) | (!strip.rowAnimations.empty() ? 128u : 0u);
         if (verify) {
             const auto faces = strip.ambient.faceMask.previous;
             const auto active = strip.ambient.clippedActive;
@@ -3984,7 +4444,9 @@ extern "C" __declspec(dllexport) HRESULT WINAPI WinUIPaneTestSelectionDecoration
                 if (tints[id] != std::pair{tint.tinted, tint.color}) return E_FAIL;
         }
         return S_OK;
-    } catch (...) { return to_hresult(); }
+    } catch (...) {
+        return to_hresult();
+    }
 }
 // Test-only: refresh decorative geometry. S_FALSE indicates a frame observer
 // following an existing native tab animation or drag.
@@ -3996,38 +4458,56 @@ extern "C" __declspec(dllexport) HRESULT WINAPI WinUIPaneTestRefreshAmbient(HWND
         auto& ambient = found->second->strip->ambient;
         ambient.Update();
         return ambient.observing ? S_FALSE : S_OK;
-    } catch (...) { return to_hresult(); }
+    } catch (...) {
+        return to_hresult();
+    }
 }
 // Test-only: inspect opt-in group glow motion. 0: is `value` lighting up;
 // 1: visuals still dimming; 2: force system animations off (0), on (1) or
 // back to the system setting (2); 3: edge re-catches so far; 4: total width
 // of the tab faces standing in for empty drag slots in group surfaces;
 // 5: group `value`'s drawn decoration, 1 for its outline and 2 for its glow.
-extern "C" __declspec(dllexport) HRESULT WINAPI WinUIPaneTestGlowMotion(HWND hwnd, uint32_t operation, uint32_t value, uint32_t* result) noexcept {
+extern "C" __declspec(dllexport) HRESULT WINAPI WinUIPaneTestGlowMotion(HWND hwnd, uint32_t operation, uint32_t value,
+                                                                        uint32_t* result) noexcept {
     try {
         check_hresult(Check(hwnd));
         auto found = state().panes.find(hwnd);
         if (found == state().panes.end() || !found->second->strip || !result) return E_INVALIDARG;
         auto& motion = found->second->strip->ambient.motion;
         switch (operation) {
-        case 0: *result = motion.Active(value) ? 1 : 0; break;
-        case 1: *result = uint32_t(motion.dimming.size()); break;
-        case 2:
-            if (value > 2) return E_INVALIDARG;
-            if (value == 2) motion.animationsForTest.reset(); else motion.animationsForTest = value == 1;
-            *result = motion.Enabled() ? 1 : 0;
-            break;
-        case 3: *result = uint32_t(motion.recatches); break;
-        case 4: *result = uint32_t(found->second->strip->slotFaceWidth + .5f); break;
-        case 5: {
-            auto& strip = *found->second->strip;
-            *result = (strip.groupSurface.surfaces.count(value) ? 1u : 0u) | (strip.ambient.groups.count(value) ? 2u : 0u);
-            break;
-        }
-        default: return E_INVALIDARG;
+            case 0:
+                *result = motion.Active(value) ? 1 : 0;
+                break;
+            case 1:
+                *result = uint32_t(motion.dimming.size());
+                break;
+            case 2:
+                if (value > 2) return E_INVALIDARG;
+                if (value == 2)
+                    motion.animationsForTest.reset();
+                else
+                    motion.animationsForTest = value == 1;
+                *result = motion.Enabled() ? 1 : 0;
+                break;
+            case 3:
+                *result = uint32_t(motion.recatches);
+                break;
+            case 4:
+                *result = uint32_t(found->second->strip->slotFaceWidth + .5f);
+                break;
+            case 5: {
+                auto& strip = *found->second->strip;
+                *result = (strip.groupSurface.surfaces.count(value) ? 1u : 0u) |
+                          (strip.ambient.groups.count(value) ? 2u : 0u);
+                break;
+            }
+            default:
+                return E_INVALIDARG;
         }
         return S_OK;
-    } catch (...) { return to_hresult(); }
+    } catch (...) {
+        return to_hresult();
+    }
 }
 // Test-only: exercise a queued grouping dwell against a real loaded storyboard.
 // No global drag is armed, so the harness can advance animation time separately.
@@ -4046,19 +4526,23 @@ extern "C" __declspec(dllexport) HRESULT WINAPI WinUIPaneTestGroupSlide(HWND hwn
             strip.presentation[sourceId].groupSource = true;
             strip.presentation[targetId].groupTarget = true;
             strip.groupingDelay = 1000;
-            const auto start = source.TransformToVisual(strip.view).TransformPoint({float(source.ActualWidth()/2), 16});
+            const auto start =
+                source.TransformToVisual(strip.view).TransformPoint({float(source.ActualWidth() / 2), 16});
             strip.ArmDrag(sourceId, start);
             if (!strip.TryPromote(sourceId, {start.X + 4, start.Y})) return E_FAIL;
-            const Windows::Foundation::Point center{float(strip.drag.originalLeftEdge[1] + target.ActualWidth()/2), 16};
+            const Windows::Foundation::Point center{float(strip.drag.originalLeftEdge[1] + target.ActualWidth() / 2),
+                                                    16};
             if (!strip.UpdateGroupHover(center) || strip.armedGroupTarget) return E_FAIL;
             // ShellCore deliberately keeps an exact row midpoint before that
             // row. Cross it explicitly so this fixture always opens the second
             // insertion gap instead of depending on fractional XAML geometry.
-            shell_core_tab_drag_update(strip.core, center.X + 1, center.Y, strip.view.ActualWidth(), strip.view.ActualHeight(), true);
+            shell_core_tab_drag_update(strip.core, center.X + 1, center.Y, strip.view.ActualWidth(),
+                                       strip.view.ActualHeight(), true);
             strip.ShiftSibling(1);
             return strip.rowAnimations.count(targetId) ? S_OK : E_FAIL;
         }
-        const Windows::Foundation::Point oldCenter{float(strip.drag.originalLeftEdge[1] + target.ActualWidth()/2), 16};
+        const Windows::Foundation::Point oldCenter{float(strip.drag.originalLeftEdge[1] + target.ActualWidth() / 2),
+                                                   16};
         if (operation == 1) {
             // A zero delay represents a timer whose deadline has already passed.
             strip.groupingDelay = 0;
@@ -4066,7 +4550,8 @@ extern "C" __declspec(dllexport) HRESULT WINAPI WinUIPaneTestGroupSlide(HWND hwn
             const auto offset = strip.RowTransform(target).X();
             if (strip.UpdateGroupHover(oldCenter) || strip.groupCandidate || strip.armedGroupTarget ||
                 strip.Drag().projected != 2 || !strip.rowAnimations.count(targetId) ||
-                strip.rowAnimations.at(targetId).storyboard != storyboard || strip.RowTransform(target).X() != offset) return E_FAIL;
+                strip.rowAnimations.at(targetId).storyboard != storyboard || strip.RowTransform(target).X() != offset)
+                return E_FAIL;
             return S_OK;
         }
         if (operation == 2) {
@@ -4076,14 +4561,17 @@ extern "C" __declspec(dllexport) HRESULT WINAPI WinUIPaneTestGroupSlide(HWND hwn
             auto actualCenter = oldCenter;
             actualCenter.X += float(offset);
             if (!strip.UpdateGroupHover(actualCenter) || strip.armedGroupTarget != targetId ||
-                strip.Drag().projected != 2 || strip.RowTransform(target).X() != offset) return E_FAIL;
+                strip.Drag().projected != 2 || strip.RowTransform(target).X() != offset)
+                return E_FAIL;
             strip.CancelDrag();
             strip.presentation[sourceId].groupSource = false;
             strip.presentation[targetId].groupTarget = false;
             return S_OK;
         }
         return E_INVALIDARG;
-    } catch (...) { return to_hresult(); }
+    } catch (...) {
+        return to_hresult();
+    }
 }
 // Test-only: copy the actual popup bitmap for pixel regression checks.
 extern "C" __declspec(dllexport) HRESULT WINAPI WinUIPaneTestCopyDragBitmap(HBITMAP* result) noexcept {
@@ -4094,7 +4582,9 @@ extern "C" __declspec(dllexport) HRESULT WINAPI WinUIPaneTestCopyDragBitmap(HBIT
         if (!dragSession().tearoffBitmap) return S_FALSE;
         *result = HBITMAP(CopyImage(dragSession().tearoffBitmap, IMAGE_BITMAP, 0, 0, LR_CREATEDIBSECTION));
         return *result ? S_OK : E_FAIL;
-    } catch (...) { return to_hresult(); }
+    } catch (...) {
+        return to_hresult();
+    }
 }
 // Test-only: force the same drag-in-progress state a real gesture sets, for
 // the same reason as above -- confirms Sync() ignores Firefox snapshots that
@@ -4121,8 +4611,10 @@ extern "C" __declspec(dllexport) HRESULT WINAPI WinUIPaneTestHoverCard(HWND hwnd
         auto& strip = *found->second->strip;
         auto& card = strip.hoverCard;
         if (!strip.rows.count(tab) || !card.cards.count(tab)) return E_INVALIDARG;
-        if (hover) card.Enter(tab, strip.rows.at(tab));
-        else card.Hide(tab);
+        if (hover)
+            card.Enter(tab, strip.rows.at(tab));
+        else
+            card.Hide(tab);
         // Hand out a new reference; detaching the card's own would empty it.
         *flyout = detach_abi(Controls::Flyout(card.cards.at(tab).flyout));
         return S_OK;
@@ -4132,9 +4624,11 @@ extern "C" __declspec(dllexport) HRESULT WINAPI WinUIPaneTestHoverCard(HWND hwnd
 }
 // Test-only: retain a rejected old departure while a newer one hides the same
 // real row. Cleanup must match the source token, not merely its tab/lifetime.
-extern "C" __declspec(dllexport) HRESULT WINAPI WinUIPaneTestTransferOverlap(HWND sourceHwnd, HWND destinationHwnd, uint32_t tab) noexcept {
+extern "C" __declspec(dllexport) HRESULT WINAPI WinUIPaneTestTransferOverlap(HWND sourceHwnd, HWND destinationHwnd,
+                                                                             uint32_t tab) noexcept {
     try {
-        check_hresult(Check(sourceHwnd)); check_hresult(Check(destinationHwnd));
+        check_hresult(Check(sourceHwnd));
+        check_hresult(Check(destinationHwnd));
         auto& source = *state().panes.at(sourceHwnd)->strip;
         auto& destination = *state().panes.at(destinationHwnd)->strip;
         if (!source.rows.count(tab)) return E_INVALIDARG;
@@ -4150,6 +4644,8 @@ extern "C" __declspec(dllexport) HRESULT WINAPI WinUIPaneTestTransferOverlap(HWN
         if (shell_core_transfer_bind(destination.core, newer, 0, false) != SHELL_STATUS_OK) return E_FAIL;
         destination.ReconcileTransfers();
         return source.rows.at(tab).Opacity() == 1 && !destination.transferPeers.count(newer) ? S_OK : E_FAIL;
-    } catch (...) { return to_hresult(); }
+    } catch (...) {
+        return to_hresult();
+    }
 }
 #endif

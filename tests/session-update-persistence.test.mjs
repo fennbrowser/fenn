@@ -8,7 +8,7 @@ function sessionFile(fail) {
   const RunState = { isClosed: false, isClosing: false };
   const lazy = { RunState, sessionStoreLogger: { error() {} } };
   const source = readFileSync(new URL("../upstream/firefox/browser/components/sessionstore/SessionFile.sys.mjs", import.meta.url), "utf8")
-    .replace(/^import .*;$/m, "").replace("export var SessionFile", "var SessionFile");
+    .replace(/^import\b[^;]*;$/m, "").replace("export var SessionFile", "var SessionFile");
   const scope = {
     XPCOMUtils: { declareLazy: () => lazy },
     PathUtils: { profileDir: "profile", join: (...parts) => parts.join("/") },

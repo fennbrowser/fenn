@@ -3,7 +3,7 @@ import {readFile} from "node:fs/promises";
 import test from "node:test";
 
 globalThis.JSWindowActorChild = class {};
-const source = (await readFile(new URL("../upstream/firefox/browser/components/fennadblock/FennAdblockChild.sys.mjs", import.meta.url), "utf8")).replace(/^import .*;$/gm, "");
+const source = (await readFile(new URL("../upstream/firefox/browser/components/fennadblock/FennAdblockChild.sys.mjs", import.meta.url), "utf8")).replace(/^import\b[^;]*;$/gm, "");
 const {FennAdblockChild} = await import("data:text/javascript;base64," + Buffer.from(source).toString("base64"));
 function setup() {
   const sharedData = new Map([["FennAdblock:ResourceToken", "7:1"]]);

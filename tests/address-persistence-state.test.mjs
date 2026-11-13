@@ -102,9 +102,9 @@ test('retained persistence binding applies service effects and avoids disabled b
 function ownerFixture(){
   const f=fixture();
   const c=vm.createContext({UrlbarShared:{deepEqual:(a,b)=>JSON.stringify(a)===JSON.stringify(b)},ChromeUtils:{defineESModuleGetters:target=>{target.UrlbarSearchTermsPersistence=f.service;}}});
-  vm.runInContext(read('content/UrlbarSearchModeModel.mjs').replace(/^import .*;$/gm,'').replaceAll('export ','')+
+  vm.runInContext(read('content/UrlbarSearchModeModel.mjs').replace(/^import\b[^;]*;$/gm,'').replaceAll('export ','')+
     ';this.UrlbarSearchModeModel=UrlbarSearchModeModel;',c);
-  vm.runInContext(read('content/UrlbarBrowserState.mjs').replace(/^import .*;$/gm,'').replaceAll('export ','')+
+  vm.runInContext(read('content/UrlbarBrowserState.mjs').replace(/^import\b[^;]*;$/gm,'').replaceAll('export ','')+
     ';this.Owner=UrlbarBrowserState;',c);
   return {...f,owner:new c.Owner()};
 }

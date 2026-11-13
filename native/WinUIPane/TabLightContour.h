@@ -26,7 +26,7 @@ struct Face {
     bool selected{};
     bool operator==(Face const& other) const {
         return id == other.id && bounds == other.bounds && leftRadius == other.leftRadius &&
-            rightRadius == other.rightRadius && selected == other.selected;
+               rightRadius == other.rightRadius && selected == other.selected;
     }
 };
 
@@ -75,16 +75,20 @@ struct Mask {
         outside = compositor.CreateShapeVisual();
         auto shape = compositor.CreateSpriteShape(exterior);
         shape.FillBrush(compositor.CreateColorBrush({255, 255, 255, 255}));
-        outside.Shapes().Append(shape); root.Children().InsertAtBottom(outside);
-        surface = compositor.CreateVisualSurface(); surface.SourceVisual(root);
+        outside.Shapes().Append(shape);
+        root.Children().InsertAtBottom(outside);
+        surface = compositor.CreateVisualSurface();
+        surface.SourceVisual(root);
     }
 
     void Update(ID2D1Factory* factory, Rect view, std::vector<Face> const& current) {
         if (viewport == view && previous == current) return;
         auto compositor = root.Compositor();
-        const winrt::Windows::Foundation::Numerics::float2 size{
-            std::max(0.f, view.X + view.Width), std::max(0.f, view.Y + view.Height)};
-        root.Size(size); outside.Size(size); surface.SourceSize(size);
+        const winrt::Windows::Foundation::Numerics::float2 size{std::max(0.f, view.X + view.Width),
+                                                                std::max(0.f, view.Y + view.Height)};
+        root.Size(size);
+        outside.Size(size);
+        surface.SourceSize(size);
         std::vector<winrt::com_ptr<ID2D1PathGeometry>> paths;
         std::vector<ID2D1Geometry*> geometries;
         std::set<uint32_t> live;
@@ -99,8 +103,10 @@ struct Mask {
                 auto shape = compositor.CreateSpriteShape(compositor.CreatePathGeometry());
                 auto fill = compositor.CreateLinearGradientBrush();
                 fill.MappingMode(winrt::Microsoft::UI::Composition::CompositionMappingMode::Absolute);
-                for (auto [offset, alpha] : {std::pair{0.f, 255}, {.12f, 170}, {.32f, 24}, {.68f, 24}, {.88f, 170}, {1.f, 255}})
-                    fill.ColorStops().Append(compositor.CreateColorGradientStop(offset, {uint8_t(alpha), 255, 255, 255}));
+                for (auto [offset, alpha] :
+                     {std::pair{0.f, 255}, {.12f, 170}, {.32f, 24}, {.68f, 24}, {.88f, 170}, {1.f, 255}})
+                    fill.ColorStops().Append(
+                        compositor.CreateColorGradientStop(offset, {uint8_t(alpha), 255, 255, 255}));
                 shape.FillBrush(fill);
                 auto edge = compositor.CreateLinearGradientBrush();
                 edge.MappingMode(winrt::Microsoft::UI::Composition::CompositionMappingMode::Absolute);
@@ -113,7 +119,8 @@ struct Mask {
             visual.Size(size);
             auto shape = visual.Shapes().GetAt(0).as<winrt::Microsoft::UI::Composition::CompositionSpriteShape>();
 #ifdef WINUI_PANE_TESTING
-            shape.Properties().InsertVector4(L"FaceBounds", {face.bounds.X, face.bounds.Y, face.bounds.Width, face.bounds.Height});
+            shape.Properties().InsertVector4(L"FaceBounds",
+                                             {face.bounds.X, face.bounds.Y, face.bounds.Width, face.bounds.Height});
 #endif
             auto geometry = shape.Geometry().as<winrt::Microsoft::UI::Composition::CompositionPathGeometry>();
             geometry.Path(winrt::Microsoft::UI::Composition::CompositionPath(winrt::make<TabAmbientClip>(path)));
@@ -123,38 +130,50 @@ struct Mask {
             constexpr uint8_t inactiveAlpha[] = {255, 170, 24, 24, 170, 255};
             for (uint32_t i = 0; i < fill.ColorStops().Size(); ++i)
                 fill.ColorStops().GetAt(i).Color({face.selected ? uint8_t(0) : inactiveAlpha[i], 255, 255, 255});
-            fill.StartPoint({0, face.bounds.Y}); fill.EndPoint({0, face.bounds.Y + face.bounds.Height});
+            fill.StartPoint({0, face.bounds.Y});
+            fill.EndPoint({0, face.bounds.Y + face.bounds.Height});
             // Fade out before the selected tab's bottom flares: no reflected
             // light underneath its selection surface, while top/sides remain.
             auto edge = shape.StrokeBrush().as<winrt::Microsoft::UI::Composition::CompositionLinearGradientBrush>();
             const float bottom = face.bounds.Y + face.bounds.Height;
-            edge.StartPoint({0, bottom - Flare - 1}); edge.EndPoint({0, bottom - Flare});
+            edge.StartPoint({0, bottom - Flare - 1});
+            edge.EndPoint({0, bottom - Flare});
             edge.ColorStops().GetAt(1).Color({face.selected ? uint8_t(0) : uint8_t(180), 255, 255, 255});
-            geometries.push_back(path.get()); paths.push_back(std::move(path));
+            geometries.push_back(path.get());
+            paths.push_back(std::move(path));
         }
         for (auto it = faces.begin(); it != faces.end();) {
-            if (live.count(it->first)) { ++it; continue; }
-            root.Children().Remove(it->second); it = faces.erase(it);
+            if (live.count(it->first)) {
+                ++it;
+                continue;
+            }
+            root.Children().Remove(it->second);
+            it = faces.erase(it);
         }
         winrt::com_ptr<ID2D1RectangleGeometry> rectangle;
-        winrt::check_hresult(factory->CreateRectangleGeometry({view.X, view.Y, view.X + view.Width, view.Y + view.Height}, rectangle.put()));
+        winrt::check_hresult(factory->CreateRectangleGeometry(
+            {view.X, view.Y, view.X + view.Width, view.Y + view.Height}, rectangle.put()));
         winrt::com_ptr<ID2D1PathGeometry> remaining;
         winrt::check_hresult(factory->CreatePathGeometry(remaining.put()));
         winrt::com_ptr<ID2D1GeometrySink> sink;
         winrt::check_hresult(remaining->Open(sink.put()));
         if (geometries.empty()) {
-            winrt::check_hresult(rectangle->Simplify(D2D1_GEOMETRY_SIMPLIFICATION_OPTION_CUBICS_AND_LINES, nullptr, sink.get()));
+            winrt::check_hresult(
+                rectangle->Simplify(D2D1_GEOMETRY_SIMPLIFICATION_OPTION_CUBICS_AND_LINES, nullptr, sink.get()));
         } else {
             // Winding unites overlapping faces before subtraction; alternate
             // holes alone would expose bright patches during tab movement.
             winrt::com_ptr<ID2D1GeometryGroup> united;
-            winrt::check_hresult(factory->CreateGeometryGroup(D2D1_FILL_MODE_WINDING,
-                geometries.data(), uint32_t(geometries.size()), united.put()));
-            winrt::check_hresult(rectangle->CombineWithGeometry(united.get(), D2D1_COMBINE_MODE_EXCLUDE, nullptr, sink.get()));
+            winrt::check_hresult(factory->CreateGeometryGroup(D2D1_FILL_MODE_WINDING, geometries.data(),
+                                                              uint32_t(geometries.size()), united.put()));
+            winrt::check_hresult(
+                rectangle->CombineWithGeometry(united.get(), D2D1_COMBINE_MODE_EXCLUDE, nullptr, sink.get()));
         }
         winrt::check_hresult(sink->Close());
-        exterior.Path(winrt::Microsoft::UI::Composition::CompositionPath(winrt::make<TabAmbientClip>(std::move(remaining))));
-        previous = current; viewport = view;
+        exterior.Path(
+            winrt::Microsoft::UI::Composition::CompositionPath(winrt::make<TabAmbientClip>(std::move(remaining))));
+        previous = current;
+        viewport = view;
     }
 };
-}
+}  // namespace TabLightContour

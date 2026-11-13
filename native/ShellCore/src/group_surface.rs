@@ -64,11 +64,28 @@ pub struct ShellGroupSurfaceResult {
 }
 
 #[derive(Clone, Copy, Default)]
-struct Rect { x: f32, y: f32, width: f32, height: f32 }
+struct Rect {
+    x: f32,
+    y: f32,
+    width: f32,
+    height: f32,
+}
 
 impl Rect {
-    fn of(s: &ShellGroupSurface) -> Self { Self { x: s.x, y: s.y, width: s.width, height: s.height } }
-    fn store(self, s: &mut ShellGroupSurface) { s.x = self.x; s.y = self.y; s.width = self.width; s.height = self.height; }
+    fn of(s: &ShellGroupSurface) -> Self {
+        Self {
+            x: s.x,
+            y: s.y,
+            width: s.width,
+            height: s.height,
+        }
+    }
+    fn store(self, s: &mut ShellGroupSurface) {
+        s.x = self.x;
+        s.y = self.y;
+        s.width = self.width;
+        s.height = self.height;
+    }
 }
 
 fn eased(start: f64, now: f64) -> f32 {
@@ -76,28 +93,55 @@ fn eased(start: f64, now: f64) -> f32 {
 }
 
 #[derive(Clone, Copy, Default)]
-struct Reach { group: u32, from: f32, target: f32, start: f64 }
+struct Reach {
+    group: u32,
+    from: f32,
+    target: f32,
+    start: f64,
+}
 
 impl Reach {
-    fn value(&self, now: f64) -> f32 { self.from + (self.target - self.from) * eased(self.start, now) }
-    fn settled(&self, now: f64) -> bool { now - self.start >= EASE_MS }
+    fn value(&self, now: f64) -> f32 {
+        self.from + (self.target - self.from) * eased(self.start, now)
+    }
+    fn settled(&self, now: f64) -> bool {
+        now - self.start >= EASE_MS
+    }
 }
 
 #[derive(Clone, Copy, Default)]
-struct SourceHold { group: u32, rect: Rect, from: Rect, released: bool, at: f64 }
+struct SourceHold {
+    group: u32,
+    rect: Rect,
+    from: Rect,
+    released: bool,
+    at: f64,
+}
 
 impl SourceHold {
     fn shown(&self, base: Rect, now: f64) -> Rect {
         let target = if self.released { base } else { self.rect };
         let e = eased(self.at, now);
         let left = self.from.x + (target.x - self.from.x) * e;
-        let right = self.from.x + self.from.width + (target.x + target.width - self.from.x - self.from.width) * e;
-        Rect { x: left, y: target.y, width: right - left, height: target.height }
+        let right = self.from.x
+            + self.from.width
+            + (target.x + target.width - self.from.x - self.from.width) * e;
+        Rect {
+            x: left,
+            y: target.y,
+            width: right - left,
+            height: target.height,
+        }
     }
 }
 
 #[derive(Clone, Copy, Default)]
-struct JoinHold { group: u32, tab: u32, rect: Rect, until: f64 }
+struct JoinHold {
+    group: u32,
+    tab: u32,
+    rect: Rect,
+    until: f64,
+}
 
 #[derive(Default)]
 pub struct GroupSurfaceMotion {
@@ -109,35 +153,60 @@ pub struct GroupSurfaceMotion {
 
 impl GroupSurfaceMotion {
     /// Adjust `surfaces` (one per group, unordered) for this refresh.
-    pub fn frame(&mut self, f: &ShellGroupSurfaceFrame, layout: &[ShellStripSlot],
-                 surfaces: &mut [ShellGroupSurface]) -> ShellGroupSurfaceResult {
+    pub fn frame(
+        &mut self,
+        f: &ShellGroupSurfaceFrame,
+        layout: &[ShellStripSlot],
+        surfaces: &mut [ShellGroupSurface],
+    ) -> ShellGroupSurfaceResult {
         let now = f.frame_ms;
         // Open the destination group toward the insertion gap. A different
         // destination starts closed; the old one snaps shut.
         if f.tail_group != 0 && f.tail_group != self.reach.group {
-            self.reach = Reach { group: f.tail_group, from: 0.0, target: 0.0, start: now };
+            self.reach = Reach {
+                group: f.tail_group,
+                from: 0.0,
+                target: 0.0,
+                start: now,
+            };
         }
         let desired = if f.tail_group != 0 { f.tail_width } else { 0.0 };
         if self.reach.group != 0 && desired != self.reach.target {
-            self.reach.from = if f.animate { self.reach.value(now) } else { desired };
+            self.reach.from = if f.animate {
+                self.reach.value(now)
+            } else {
+                desired
+            };
             self.reach.target = desired;
             self.reach.start = now;
         }
-        let extra = if self.reach.group != 0 { self.reach.value(now) } else { 0.0 };
+        let extra = if self.reach.group != 0 {
+            self.reach.value(now)
+        } else {
+            0.0
+        };
         if extra > 0.01 {
             if let Some(s) = surfaces.iter_mut().find(|s| s.group == self.reach.group) {
-                if f.right_to_left { s.x -= extra; }
+                if f.right_to_left {
+                    s.x -= extra;
+                }
                 s.width += extra;
             }
         }
-        if self.reach.group != 0 && f.tail_group == 0 && self.reach.target == 0.0 && self.reach.settled(now) {
+        if self.reach.group != 0
+            && f.tail_group == 0
+            && self.reach.target == 0.0
+            && self.reach.settled(now)
+        {
             self.reach = Reach::default();
         }
 
         // Hold a lifted member's group at its pick-up extent while the pointer
         // stays within it; ease to the remaining members once it leaves, and
         // back again if it returns.
-        if self.source.group != f.source_group { self.source = SourceHold::default(); }
+        if self.source.group != f.source_group {
+            self.source = SourceHold::default();
+        }
         if f.source_group != 0 {
             if let Some(s) = surfaces.iter_mut().find(|s| s.group == f.source_group) {
                 let base = Rect::of(s);
@@ -146,12 +215,18 @@ impl GroupSurfaceMotion {
                     let right = (base.x + base.width).max(f.drag_slot_x + f.drag_slot_width);
                     let x = base.x.min(f.drag_slot_x);
                     hold.group = f.source_group;
-                    hold.rect = Rect { x, width: right - x, ..base };
+                    hold.rect = Rect {
+                        x,
+                        width: right - x,
+                        ..base
+                    };
                     hold.from = hold.rect;
                     hold.released = false;
                     hold.at = now - EASE_MS - 1.0;
                 }
-                let inside = !f.source_released && f.pointer_x >= hold.rect.x && f.pointer_x <= hold.rect.x + hold.rect.width;
+                let inside = !f.source_released
+                    && f.pointer_x >= hold.rect.x
+                    && f.pointer_x <= hold.rect.x + hold.rect.width;
                 if inside == hold.released {
                     hold.from = hold.shown(base, now);
                     hold.released = !inside;
@@ -165,11 +240,18 @@ impl GroupSurfaceMotion {
 
         if f.dragging && f.join_group != 0 {
             if let Some(s) = surfaces.iter().find(|s| s.group == f.join_group) {
-                self.last = JoinHold { group: f.join_group, tab: 0, rect: Rect::of(s), until: 0.0 };
+                self.last = JoinHold {
+                    group: f.join_group,
+                    tab: 0,
+                    rect: Rect::of(s),
+                    until: 0.0,
+                };
             }
         }
         if self.hold.group != 0 {
-            let joined = layout.iter().any(|s| s.group == self.hold.group && s.tab == self.hold.tab);
+            let joined = layout
+                .iter()
+                .any(|s| s.group == self.hold.group && s.tab == self.hold.tab);
             if joined || f.dragging || f.wall_ms > self.hold.until {
                 self.hold = JoinHold::default();
                 self.reach = Reach::default();
@@ -188,7 +270,12 @@ impl GroupSurfaceMotion {
     /// dragged surface until the join is published or `until` passes.
     pub fn join(&mut self, group: u32, tab: u32, until: f64) {
         if group != 0 && self.last.group == group {
-            self.hold = JoinHold { group, tab, rect: self.last.rect, until };
+            self.hold = JoinHold {
+                group,
+                tab,
+                rect: self.last.rect,
+                until,
+            };
         }
     }
 }
@@ -203,7 +290,8 @@ pub fn extend(surfaces: &mut [ShellGroupSurface], reach: f32, separation: f32) {
     let mut right = vec![reach; order.len()];
     for i in 1..order.len() {
         let (prev, next) = (&surfaces[order[i - 1]], &surfaces[order[i]]);
-        let share = ((next.x - (prev.x + prev.width) - separation) / 2.0).clamp(0.0, reach.max(0.0));
+        let share =
+            ((next.x - (prev.x + prev.width) - separation) / 2.0).clamp(0.0, reach.max(0.0));
         right[i - 1] = right[i - 1].min(share);
         left[i] = left[i].min(share);
     }
@@ -218,10 +306,21 @@ mod tests {
     use super::*;
 
     fn surface(group: u32, x: f32, width: f32) -> ShellGroupSurface {
-        ShellGroupSurface { group, x, y: 0.0, width, height: 32.0 }
+        ShellGroupSurface {
+            group,
+            x,
+            y: 0.0,
+            width,
+            height: 32.0,
+        }
     }
     fn frame(now: f64) -> ShellGroupSurfaceFrame {
-        ShellGroupSurfaceFrame { frame_ms: now, wall_ms: now, animate: true, ..Default::default() }
+        ShellGroupSurfaceFrame {
+            frame_ms: now,
+            wall_ms: now,
+            animate: true,
+            ..Default::default()
+        }
     }
 
     #[test]
@@ -246,7 +345,11 @@ mod tests {
     #[test]
     fn tail_reach_eases_open_and_closed_then_settles() {
         let mut m = GroupSurfaceMotion::default();
-        let open = |now| ShellGroupSurfaceFrame { tail_group: 7, tail_width: 90.0, ..frame(now) };
+        let open = |now| ShellGroupSurfaceFrame {
+            tail_group: 7,
+            tail_width: 90.0,
+            ..frame(now)
+        };
         let mut s = [surface(7, 0.0, 100.0)];
         let r = m.frame(&open(1000.0), &[], &mut s);
         assert_eq!(s[0].width, 100.0);
@@ -271,7 +374,13 @@ mod tests {
     #[test]
     fn reach_snaps_without_animation_and_extends_left_in_rtl() {
         let mut m = GroupSurfaceMotion::default();
-        let f = ShellGroupSurfaceFrame { tail_group: 7, tail_width: 40.0, animate: false, right_to_left: true, ..frame(5.0) };
+        let f = ShellGroupSurfaceFrame {
+            tail_group: 7,
+            tail_width: 40.0,
+            animate: false,
+            right_to_left: true,
+            ..frame(5.0)
+        };
         let mut s = [surface(7, 100.0, 100.0)];
         m.frame(&f, &[], &mut s);
         assert_eq!((s[0].x, s[0].width), (60.0, 140.0));
@@ -286,7 +395,13 @@ mod tests {
     fn source_group_holds_its_pick_up_extent_until_the_pointer_leaves() {
         let mut m = GroupSurfaceMotion::default();
         let lifted = |now, pointer_x| ShellGroupSurfaceFrame {
-            source_group: 3, drag_slot_x: 200.0, drag_slot_width: 100.0, pointer_x, dragging: true, ..frame(now) };
+            source_group: 3,
+            drag_slot_x: 200.0,
+            drag_slot_width: 100.0,
+            pointer_x,
+            dragging: true,
+            ..frame(now)
+        };
         // Remaining members span 0..200; the lifted tab's slot was 200..300.
         let mut s = [surface(3, 0.0, 200.0)];
         let r = m.frame(&lifted(0.0, 250.0), &[], &mut s);
@@ -307,10 +422,20 @@ mod tests {
         assert_eq!(s[0].width, 300.0);
         // A join target or detaching drag releases it even inside.
         let mut s = [surface(3, 0.0, 200.0)];
-        let f = ShellGroupSurfaceFrame { source_released: true, ..lifted(1000.0, 50.0) };
+        let f = ShellGroupSurfaceFrame {
+            source_released: true,
+            ..lifted(1000.0, 50.0)
+        };
         m.frame(&f, &[], &mut s);
         let mut s = [surface(3, 0.0, 200.0)];
-        m.frame(&ShellGroupSurfaceFrame { frame_ms: 1000.0 + EASE_MS, ..f }, &[], &mut s);
+        m.frame(
+            &ShellGroupSurfaceFrame {
+                frame_ms: 1000.0 + EASE_MS,
+                ..f
+            },
+            &[],
+            &mut s,
+        );
         assert_eq!(s[0].width, 200.0);
         // Ending the drag forgets the hold.
         let mut s = [surface(3, 0.0, 200.0)];
@@ -321,8 +446,15 @@ mod tests {
 
     #[test]
     fn joined_surface_is_held_until_published_dragging_or_expiry() {
-        let layout = [ShellStripSlot { group: 5, tab: 0 }, ShellStripSlot { group: 5, tab: 1 }];
-        let dragged = ShellGroupSurfaceFrame { dragging: true, join_group: 5, ..frame(0.0) };
+        let layout = [
+            ShellStripSlot { group: 5, tab: 0 },
+            ShellStripSlot { group: 5, tab: 1 },
+        ];
+        let dragged = ShellGroupSurfaceFrame {
+            dragging: true,
+            join_group: 5,
+            ..frame(0.0)
+        };
         let setup = || {
             let mut m = GroupSurfaceMotion::default();
             let mut s = [surface(5, 0.0, 300.0)];
@@ -343,12 +475,26 @@ mod tests {
         // Expired, measured on the wall clock.
         let mut m = setup();
         let mut s = [surface(5, 0.0, 200.0)];
-        m.frame(&ShellGroupSurfaceFrame { wall_ms: 1501.0, ..frame(100.0) }, &layout, &mut s);
+        m.frame(
+            &ShellGroupSurfaceFrame {
+                wall_ms: 1501.0,
+                ..frame(100.0)
+            },
+            &layout,
+            &mut s,
+        );
         assert_eq!(s[0].width, 200.0);
         // A new drag.
         let mut m = setup();
         let mut s = [surface(5, 0.0, 200.0)];
-        m.frame(&ShellGroupSurfaceFrame { dragging: true, ..frame(100.0) }, &layout, &mut s);
+        m.frame(
+            &ShellGroupSurfaceFrame {
+                dragging: true,
+                ..frame(100.0)
+            },
+            &layout,
+            &mut s,
+        );
         assert_eq!(s[0].width, 200.0);
         // Joining a group the drag never measured holds nothing.
         let mut m = setup();

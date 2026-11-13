@@ -30,10 +30,22 @@ struct InlineTabGroups {
         Media::Animation::Storyboard indicatorMotion{nullptr};
         bool indicatorActive{}, shown{}, indicatorPending{};
         double indicatorFrom{};
-        Run() { model.Insert(L"Items", items); model.Insert(L"Header", nullptr); model.Insert(L"Gap", box_value(24.0)); }
+        Run() {
+            model.Insert(L"Items", items);
+            model.Insert(L"Header", nullptr);
+            model.Insert(L"Gap", box_value(24.0));
+        }
         ~Run() {
-            if (arrowMotion) { try { arrowMotion.Stop(); } catch (...) {} }
-            if (indicatorMotion) { try { indicatorMotion.Stop(); } catch (...) {} }
+            if (arrowMotion) {
+                try {
+                    arrowMotion.Stop();
+                } catch (...) {}
+            }
+            if (indicatorMotion) {
+                try {
+                    indicatorMotion.Stop();
+                } catch (...) {}
+            }
         }
     };
     Data::CollectionViewSource source;
@@ -49,7 +61,10 @@ struct InlineTabGroups {
     void ApplyHoverFill(Controls::Button const& button) {
         auto resources = button.Resources();
         const auto key = box_value(L"SubtleButtonBackgroundPointerOver");
-        if (!washesGroup) { if (resources.HasKey(key)) resources.Remove(key); return; }
+        if (!washesGroup) {
+            if (resources.HasKey(key)) resources.Remove(key);
+            return;
+        }
         Media::SolidColorBrush none;
         none.Color(Windows::UI::Colors::Transparent());
         resources.Insert(key, none);
@@ -57,14 +72,15 @@ struct InlineTabGroups {
     void WashesGroup(bool value) {
         if (washesGroup == value) return;
         washesGroup = value;
-        for (auto& [id, run] : runs) if (run.button) ApplyHoverFill(run.button);
+        for (auto& [id, run] : runs)
+            if (run.button) ApplyHoverFill(run.button);
     }
     std::function<void(uint32_t, Windows::Foundation::Rect, Controls::Button const&)> context;
     std::function<void(uint32_t, Microsoft::UI::Xaml::Input::PointerRoutedEventArgs const&)> press;
     uint32_t suppressClick{};
     GroupTabsFlyout hover;
     bool configured{}, active{}, hasPreview{};
-    Windows::Foundation::Point lastPointer{-1000000,-1000000};
+    Windows::Foundation::Point lastPointer{-1000000, -1000000};
     ~InlineTabGroups() { lifetime.reset(); }
     // Called by the strip's destructor, while XAML still runs. The grouped
     // collection view keeps its own references to `data`, to every model map
@@ -77,14 +93,24 @@ struct InlineTabGroups {
         lifetime.reset();
         realized = nullptr;
         realizing.clear();
-        try { if (active) view.TabItemsSource(nullptr); } catch (...) {}
-        try { source.Source(nullptr); } catch (...) {}
-        try { data.Clear(); } catch (...) {}
+        try {
+            if (active) view.TabItemsSource(nullptr);
+        } catch (...) {}
+        try {
+            source.Source(nullptr);
+        } catch (...) {}
+        try {
+            data.Clear();
+        } catch (...) {}
         // Retired maps share `items` with the current one; clearing it
         // empties them as well.
         for (auto& [id, run] : runs) {
-            try { run.model.Clear(); } catch (...) {}
-            try { run.items.Clear(); } catch (...) {}
+            try {
+                run.model.Clear();
+            } catch (...) {}
+            try {
+                run.items.Clear();
+            } catch (...) {}
         }
         runs.clear();
         order.clear();
@@ -135,7 +161,10 @@ struct InlineTabGroups {
             auto marker = Marker(run);
             const auto previous = run.indicatorPending ? run.indicatorFrom : marker.Width();
             run.indicatorPending = false;
-            if (run.indicatorMotion) { run.indicatorMotion.Stop(); run.indicatorMotion = nullptr; }
+            if (run.indicatorMotion) {
+                run.indicatorMotion.Stop();
+                run.indicatorMotion = nullptr;
+            }
             if (animate && run.shown && !run.button.IsLoaded()) {
                 // A grouped-source change can detach a shown header in the
                 // same update that changes the active tab. Keep the displayed
@@ -154,7 +183,10 @@ struct InlineTabGroups {
     void AnimateIndicator(uint64_t id, Run& run, double previous, bool animate) {
         auto marker = Marker(run);
         const double target = run.indicatorActive ? 16.0 : 6.0;
-        if (!animate || !marker.IsLoaded()) { marker.Width(target); return; }
+        if (!animate || !marker.IsLoaded()) {
+            marker.Width(target);
+            return;
+        }
         // Keep the displayed width as the base value until the motion ends.
         // A storyboard begun during layout (a header's Loaded) can render a
         // frame before its From value applies, which would flash the target.
@@ -184,7 +216,11 @@ struct InlineTabGroups {
             });
             run.indicatorMotion.Begin();
         } catch (...) {
-            if (run.indicatorMotion) { try { run.indicatorMotion.Stop(); } catch (...) {} }
+            if (run.indicatorMotion) {
+                try {
+                    run.indicatorMotion.Stop();
+                } catch (...) {}
+            }
             run.indicatorMotion = nullptr;
             marker.Width(target);
         }
@@ -202,14 +238,19 @@ struct InlineTabGroups {
             return;
         }
         for (auto const& [id, run] : runs) {
-            if (!run.button || !run.button.IsLoaded() || run.button.Visibility() != Visibility::Visible || run.button.Opacity() == 0) continue;
-            auto bounds = run.button.TransformToVisual(relativeTo).TransformBounds(
-                {0,0,float(run.button.ActualWidth()),float(run.button.ActualHeight())});
-            if (point.X >= bounds.X && point.X < bounds.X + bounds.Width &&
-                point.Y >= bounds.Y && point.Y < bounds.Y + bounds.Height) {
+            if (!run.button || !run.button.IsLoaded() || run.button.Visibility() != Visibility::Visible ||
+                run.button.Opacity() == 0)
+                continue;
+            auto bounds =
+                run.button.TransformToVisual(relativeTo)
+                    .TransformBounds({0, 0, float(run.button.ActualWidth()), float(run.button.ActualHeight())});
+            if (point.X >= bounds.X && point.X < bounds.X + bounds.Width && point.Y >= bounds.Y &&
+                point.Y < bounds.Y + bounds.Height) {
                 if (highlight) highlight(uint32_t(id));
-                if (run.collapsed && (!hover.allowed || hover.allowed())) hover.Enter(uint32_t(id),run.button,run.metadata);
-                else hover.Exit(hover.group);
+                if (run.collapsed && (!hover.allowed || hover.allowed()))
+                    hover.Enter(uint32_t(id), run.button, run.metadata);
+                else
+                    hover.Exit(hover.group);
                 return;
             }
         }
@@ -224,9 +265,11 @@ struct InlineTabGroups {
         if (!list || list.Name() != L"TabListView") return false;
         if (!Media::VisualTreeHelper::GetChildrenCount(list)) return false;
         auto templateRoot = Media::VisualTreeHelper::GetChild(list, 0).try_as<FrameworkElement>();
-        auto scroller = templateRoot ? templateRoot.FindName(L"ScrollViewer").try_as<Controls::ScrollViewer>() : nullptr;
+        auto scroller =
+            templateRoot ? templateRoot.FindName(L"ScrollViewer").try_as<Controls::ScrollViewer>() : nullptr;
         auto grid = Media::VisualTreeHelper::GetParent(list).try_as<Controls::Grid>();
-        if (!scroller || !grid || grid.Name() != L"TabContainerGrid" || grid.ColumnDefinitions().Size() != 4) return false;
+        if (!scroller || !grid || grid.Name() != L"TabContainerGrid" || grid.ColumnDefinitions().Size() != 4)
+            return false;
         if (!Media::VisualTreeHelper::GetChildrenCount(scroller)) return false;
         auto scrollRoot = Media::VisualTreeHelper::GetChild(scroller, 0).as<FrameworkElement>();
         auto decrease = scrollRoot.FindName(L"ScrollDecreaseButton").try_as<Controls::Primitives::RepeatButton>();
@@ -237,7 +280,8 @@ struct InlineTabGroups {
         style.HeaderTemplate(Markup::XamlReader::Load(LR"(
 <DataTemplate xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation">
  <Grid MinWidth="{Binding [Gap]}"><ContentPresenter Content="{Binding [Header]}" VerticalAlignment="Center"/></Grid>
-</DataTemplate>)").as<DataTemplate>());
+</DataTemplate>)")
+                                 .as<DataTemplate>());
         // The stock header stacks a divider below its content, making a
         // 32-DIP capsule measure 41 DIP and displacing the entire tab row.
         // Keep the owner's 24-DIP empty-header gap (the template's Gap entry)
@@ -255,7 +299,8 @@ struct InlineTabGroups {
     VerticalContentAlignment="{TemplateBinding VerticalContentAlignment}"/>
   </ControlTemplate>
  </Setter.Value></Setter>
-</Style>)").as<Style>());
+</Style>)")
+                                       .as<Style>());
         list.GroupStyle().Append(style);
         // Keep the scroll offset when tabs are added or removed, as Firefox's
         // own tab strip does. The default KeepItemsInView re-anchored on the
@@ -265,7 +310,8 @@ struct InlineTabGroups {
         list.ItemsPanel(Markup::XamlReader::Load(LR"(
 <ItemsPanelTemplate xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation">
  <ItemsStackPanel Orientation="Horizontal" GroupHeaderPlacement="Left" ItemsUpdatingScrollMode="KeepScrollOffset"/>
-</ItemsPanelTemplate>)").as<Controls::ItemsPanelTemplate>());
+</ItemsPanelTemplate>)")
+                            .as<Controls::ItemsPanelTemplate>());
         source.IsSourceGrouped(true);
         source.ItemsPath(PropertyPath(L"[Items]"));
         source.Source(data);
@@ -310,16 +356,25 @@ struct InlineTabGroups {
         auto presenter = templateRoot.FindName(L"TabsItemsPresenter").try_as<UIElement>();
         if (presenter) {
             const auto alive = std::weak_ptr<int>(lifetime);
-            auto requested = [this, alive](auto&&...) { if (!alive.expired()) requestEpoch = ++scrollEpoch; };
+            auto requested = [this, alive](auto&&...) {
+                if (!alive.expired()) requestEpoch = ++scrollEpoch;
+            };
             presenter.as<FrameworkElement>().SizeChanged(requested);
             view.SelectionChanged(requested);
             list.GettingFocus(requested);
             list.DragItemsCompleted(requested);
             for (auto const& arrow : {decrease, increase})
-                arrow.Click([this, alive](auto&&...) { if (!alive.expired()) NoteUserScroll(); });
-            scroller.DirectManipulationStarted([this, alive](auto&&...) { if (!alive.expired()) NoteUserScroll(); });
+                arrow.Click([this, alive](auto&&...) {
+                    if (!alive.expired()) NoteUserScroll();
+                });
+            scroller.DirectManipulationStarted([this, alive](auto&&...) {
+                if (!alive.expired()) NoteUserScroll();
+            });
             scroller.AddHandler(UIElement::PointerWheelChangedEvent(),
-                box_value(Microsoft::UI::Xaml::Input::PointerEventHandler([this, alive](auto&&...) { if (!alive.expired()) NoteUserScroll(); })), true);
+                                box_value(Microsoft::UI::Xaml::Input::PointerEventHandler([this, alive](auto&&...) {
+                                    if (!alive.expired()) NoteUserScroll();
+                                })),
+                                true);
             static const bool diagnostics = GetEnvironmentVariableW(L"FENN_PANE_DIAGNOSTICS", nullptr, 0) != 0;
             presenter.BringIntoViewRequested([this, alive](auto const&, BringIntoViewRequestedEventArgs const& args) {
                 if (alive.expired()) return;
@@ -335,7 +390,8 @@ struct InlineTabGroups {
                     // An entering tab may have requested only the 2-DIP pad
                     // before it was measured. Expand that stale request too,
                     // otherwise overflow reveals only its leading edge.
-                    if (const auto limit = float(tab.ActualWidth()) + 2 - rect.X; tab.ActualWidth() > 0 && rect.Width != limit) {
+                    if (const auto limit = float(tab.ActualWidth()) + 2 - rect.X;
+                        tab.ActualWidth() > 0 && rect.Width != limit) {
                         rect.Width = std::max(0.f, limit);
                         args.TargetRect(rect);
                     }
@@ -345,18 +401,20 @@ struct InlineTabGroups {
                     if (animateBring && animateBring(tab)) args.AnimationDesired(true);
                 }
                 if (diagnostics)
-                    fprintf(stderr, "WinUIPane tab-scroll bring tab=%u rect=%.1f,%.1f,%.1f width=%.1f dropped=%d animated=%d\n",
+                    fprintf(stderr,
+                            "WinUIPane tab-scroll bring tab=%u rect=%.1f,%.1f,%.1f width=%.1f dropped=%d animated=%d\n",
                             tab.Tag() ? unbox_value_or<uint32_t>(tab.Tag(), 0) : 0, rect.X, args.TargetRect().Width,
                             rect.Height, tab.ActualWidth(), stale, int(args.AnimationDesired()));
             });
         }
         if (GetEnvironmentVariableW(L"FENN_PANE_DIAGNOSTICS", nullptr, 0)) {
             // Diagnostics only: who moves the stock scroller.
-            scroller.ViewChanged([scroll = make_weak(scroller), weakList = make_weak(list)](auto const&, auto const& args) {
+            scroller.ViewChanged([scroll = make_weak(scroller), weakList = make_weak(list)](auto const&,
+                                                                                            auto const& args) {
                 auto scroller = scroll.get();
                 if (!scroller) return;
-                fprintf(stderr, "WinUIPane tab-scroll view offset=%.1f intermediate=%d\n",
-                        scroller.HorizontalOffset(), args.IsIntermediate());
+                fprintf(stderr, "WinUIPane tab-scroll view offset=%.1f intermediate=%d\n", scroller.HorizontalOffset(),
+                        args.IsIntermediate());
                 if (args.IsIntermediate()) return;
                 // Which item the panel keeps in place across an items change.
                 auto list = weakList.get();
@@ -365,9 +423,11 @@ struct InlineTabGroups {
                 double x = -1;
                 if (auto first = list.ContainerFromIndex(panel.FirstVisibleIndex()).try_as<FrameworkElement>())
                     x = first.TransformToVisual(scroller).TransformPoint({0, 0}).X;
-                fprintf(stderr, "WinUIPane tab-scroll anchor mode=%d first=%d last=%d firstX=%.1f extent=%.1f scrollable=%.1f\n",
-                        int(panel.ItemsUpdatingScrollMode()), panel.FirstVisibleIndex(), panel.LastVisibleIndex(), x,
-                        scroller.ExtentWidth(), scroller.ScrollableWidth());
+                fprintf(
+                    stderr,
+                    "WinUIPane tab-scroll anchor mode=%d first=%d last=%d firstX=%.1f extent=%.1f scrollable=%.1f\n",
+                    int(panel.ItemsUpdatingScrollMode()), panel.FirstVisibleIndex(), panel.LastVisibleIndex(), x,
+                    scroller.ExtentWidth(), scroller.ScrollableWidth());
             });
         }
         // Equal mode divides the full width among tabs alone, so in its fill
@@ -390,17 +450,19 @@ struct InlineTabGroups {
                             refreshArrows](auto const&, auto const&) {
             if (alive.expired() || layoutUpdating) return;
             layoutUpdating = true;
-            struct LayoutPass { bool& active; ~LayoutPass() { active = false; } } pass{layoutUpdating};
+            struct LayoutPass {
+                bool& active;
+                ~LayoutPass() { active = false; }
+            } pass{layoutUpdating};
             auto list = weakList.get();
             auto view = weakView.get();
             if (!list || !view || view.ActualWidth() <= 0) return;
             auto grid = Media::VisualTreeHelper::GetParent(list).try_as<Controls::Grid>();
             if (!grid || grid.Name() != L"TabContainerGrid" || grid.ColumnDefinitions().Size() != 4) return;
             auto footer = grid.FindName(L"RightContentPresenter").try_as<FrameworkElement>();
-            const auto available = std::max(0.0, view.ActualWidth() -
-                grid.ColumnDefinitions().GetAt(0).ActualWidth() -
-                grid.ColumnDefinitions().GetAt(2).ActualWidth() -
-                (footer ? footer.DesiredSize().Width : 0));
+            const auto available = std::max(0.0, view.ActualWidth() - grid.ColumnDefinitions().GetAt(0).ActualWidth() -
+                                                     grid.ColumnDefinitions().GetAt(2).ActualWidth() -
+                                                     (footer ? footer.DesiredSize().Width : 0));
             if (list.MaxWidth() != available) list.MaxWidth(available);
             // TabView can retain a pixel width computed while the add column
             // measured zero during a narrow layout. Capping only the list then
@@ -436,7 +498,8 @@ struct InlineTabGroups {
                     double arrows = 0;
                     for (auto const& weak : {back, forward}) {
                         auto arrow = weak.get();
-                        auto slot = arrow ? Media::VisualTreeHelper::GetParent(arrow).try_as<FrameworkElement>() : nullptr;
+                        auto slot =
+                            arrow ? Media::VisualTreeHelper::GetParent(arrow).try_as<FrameworkElement>() : nullptr;
                         if (!slot) slot = arrow;
                         if (!slot || slot.Visibility() != Visibility::Visible) continue;
                         arrows += slot.ActualWidth() + slot.Margin().Left + slot.Margin().Right;
@@ -452,8 +515,12 @@ struct InlineTabGroups {
                 inputs.values[4] = 1;
                 if (auto xaml = view.XamlRoot()) inputs.values[4] = xaml.RasterizationScale();
                 if (!widthWork || widthWork(inputs)) {
-                    try { cappedExtent = CapTabWidths(space, inputs.values[1], minTab, maxTab); }
-                    catch (...) { if (geometryChanged) geometryChanged(); throw; }
+                    try {
+                        cappedExtent = CapTabWidths(space, inputs.values[1], minTab, maxTab);
+                    } catch (...) {
+                        if (geometryChanged) geometryChanged();
+                        throw;
+                    }
                 }
                 const double extent = cappedExtent;
                 const auto wanted = extent > space + .5 ? Controls::ScrollBarVisibility::Visible
@@ -496,26 +563,31 @@ struct InlineTabGroups {
                 current = root.FindName(L"ScrollViewer").try_as<Controls::ScrollViewer>();
         const auto local = scroller.ReadLocalValue(Controls::ScrollViewer::HorizontalScrollBarVisibilityProperty());
         const auto localAuto = local.try_as<Windows::Foundation::IReference<Controls::ScrollBarVisibility>>() &&
-            unbox_value<Controls::ScrollBarVisibility>(local) == Controls::ScrollBarVisibility::Auto;
+                               unbox_value<Controls::ScrollBarVisibility>(local) == Controls::ScrollBarVisibility::Auto;
         const auto column = grid.ColumnDefinitions().GetAt(1);
         size_t tabs = 0, hidden = 0;
         double tabWidth = 0;
-        for (auto const& [id, run] : runs) for (auto item : run.items) {
-            auto row = item.as<Controls::TabViewItem>();
-            if (row.Visibility() != Visibility::Visible) { ++hidden; continue; }
-            ++tabs; tabWidth = row.ActualWidth();
-        }
+        for (auto const& [id, run] : runs)
+            for (auto item : run.items) {
+                auto row = item.as<Controls::TabViewItem>();
+                if (row.Visibility() != Visibility::Visible) {
+                    ++hidden;
+                    continue;
+                }
+                ++tabs;
+                tabWidth = row.ActualWidth();
+            }
         char line[512];
         snprintf(line, sizeof line,
-            "WinUIPane tab-scroll same=%d localAuto=%d mode=%d listMode=%d computed=%d extent=%.1f viewport=%.1f "
-            "offset=%.1f scroller=%.1f list=%.1f listMax=%.1f available=%.1f column=%.1f/%d/%.1f "
-            "runs=%zu tabs=%zu hidden=%zu tab=%.1f\n",
-            current == scroller, localAuto, int(scroller.HorizontalScrollBarVisibility()),
-            int(Controls::ScrollViewer::GetHorizontalScrollBarVisibility(list)),
-            scroller.ComputedHorizontalScrollBarVisibility() == Visibility::Visible,
-            scroller.ExtentWidth(), scroller.ViewportWidth(), scroller.HorizontalOffset(), scroller.ActualWidth(),
-            list.ActualWidth(), list.MaxWidth(), available, column.Width().Value, int(column.Width().GridUnitType),
-            column.ActualWidth(), runs.size(), tabs, hidden, tabWidth);
+                 "WinUIPane tab-scroll same=%d localAuto=%d mode=%d listMode=%d computed=%d extent=%.1f viewport=%.1f "
+                 "offset=%.1f scroller=%.1f list=%.1f listMax=%.1f available=%.1f column=%.1f/%d/%.1f "
+                 "runs=%zu tabs=%zu hidden=%zu tab=%.1f\n",
+                 current == scroller, localAuto, int(scroller.HorizontalScrollBarVisibility()),
+                 int(Controls::ScrollViewer::GetHorizontalScrollBarVisibility(list)),
+                 scroller.ComputedHorizontalScrollBarVisibility() == Visibility::Visible, scroller.ExtentWidth(),
+                 scroller.ViewportWidth(), scroller.HorizontalOffset(), scroller.ActualWidth(), list.ActualWidth(),
+                 list.MaxWidth(), available, column.Width().Value, int(column.Width().GridUnitType),
+                 column.ActualWidth(), runs.size(), tabs, hidden, tabWidth);
         if (lastScrollLog == line) return;
         lastScrollLog = line;
         fputs(line, stderr);
@@ -540,7 +612,10 @@ struct InlineTabGroups {
                 tabs.push_back(row);
                 // Grouped-source rows can be measured and arranged while
                 // IsLoaded stays false, so a nonzero measure marks realization.
-                if (const auto width = row.DesiredSize().Width; width > 0) { measured += width; ++loaded; }
+                if (const auto width = row.DesiredSize().Width; width > 0) {
+                    measured += width;
+                    ++loaded;
+                }
             }
         }
         if (!loaded || space <= 0) return extent;
@@ -549,7 +624,9 @@ struct InlineTabGroups {
         const double others = std::max(0.0, extent - tabExtent);
         const double average = measured / loaded;
         double scale = 1;
-        try { if (auto root = tabs.front().XamlRoot()) scale = std::max(1.0, root.RasterizationScale()); } catch (...) {}
+        try {
+            if (auto root = tabs.front().XamlRoot()) scale = std::max(1.0, root.RasterizationScale());
+        } catch (...) {}
         // Split the space in whole physical pixels: the first `extra` tabs take
         // one pixel more. Flooring every tab alone leaves up to tabs.size()
         // pixels unused, and that remainder changes with each tab count, so the
@@ -587,7 +664,8 @@ struct InlineTabGroups {
             if (found == runs.end() || !found->second.button) continue;
             auto& run = found->second;
             run.metadata = group;
-            if (group.GetNamedBoolean(L"collapsed") && group.HasKey(L"tabs") && group.GetNamedArray(L"tabs").Size()) hasPreview = true;
+            if (group.GetNamedBoolean(L"collapsed") && group.HasKey(L"tabs") && group.GetNamedArray(L"tabs").Size())
+                hasPreview = true;
             hover.Refresh(id, group);
             auto name = group.GetNamedString(L"name"), label = group.GetNamedString(L"label");
             auto headerText = group.GetNamedString(L"headerText", L"");
@@ -600,10 +678,15 @@ struct InlineTabGroups {
                 run.headerText = headerText;
                 text.Text(headerText);
                 text.Visibility(named ? Visibility::Visible : Visibility::Collapsed);
-                rotor.Margin(named ? Thickness{4,0,0,0} : Thickness{0,0,0,0});
-                if (named) run.button.ClearValue(FrameworkElement::WidthProperty());
-                else run.button.Width(32);
-                if (run.arrowMotion) { run.arrowMotion.Stop(); run.arrowMotion = nullptr; }
+                rotor.Margin(named ? Thickness{4, 0, 0, 0} : Thickness{0, 0, 0, 0});
+                if (named)
+                    run.button.ClearValue(FrameworkElement::WidthProperty());
+                else
+                    run.button.Width(32);
+                if (run.arrowMotion) {
+                    run.arrowMotion.Stop();
+                    run.arrowMotion = nullptr;
+                }
             }
             const bool collapsed = group.GetNamedBoolean(L"collapsed");
             if (run.name.empty() || run.collapsed != collapsed) {
@@ -616,7 +699,10 @@ struct InlineTabGroups {
                 // a separate layout container so those transforms cannot clash.
                 auto turn = rotor.RenderTransform().as<Media::RotateTransform>();
                 const auto previous = turn.Angle();
-                if (run.arrowMotion) { run.arrowMotion.Stop(); run.arrowMotion = nullptr; }
+                if (run.arrowMotion) {
+                    run.arrowMotion.Stop();
+                    run.arrowMotion = nullptr;
+                }
                 arrow.Glyph(collapsed ? L"\uE70D" : L"\uE76C");
                 turn.Angle(0);
                 if (changed && animate && arrow.IsLoaded()) {
@@ -645,7 +731,8 @@ struct InlineTabGroups {
             const auto color = uint32_t(group.GetNamedNumber(L"color", 0));
             if (color != run.color) {
                 run.color = color;
-                run.accent.Color(Windows::UI::Color{uint8_t(color >> 24), uint8_t(color >> 16), uint8_t(color >> 8), uint8_t(color)});
+                run.accent.Color(Windows::UI::Color{uint8_t(color >> 24), uint8_t(color >> 16), uint8_t(color >> 8),
+                                                    uint8_t(color)});
                 auto panel = run.button.Content().as<Controls::Grid>();
                 panel.Children().GetAt(0).Visibility(color ? Visibility::Visible : Visibility::Collapsed);
             }
@@ -654,8 +741,7 @@ struct InlineTabGroups {
     }
 
     void Sync(Controls::TabView const& view, std::vector<ShellStripSlot> const& layout,
-              std::map<uint32_t, Controls::TabViewItem> const& rows,
-              Windows::Data::Json::JsonArray const& groups) {
+              std::map<uint32_t, Controls::TabViewItem> const& rows, Windows::Data::Json::JsonArray const& groups) {
         if (geometryChanged) geometryChanged();
         std::set<void*> shown;
         for (auto const& element : realizing) shown.insert(Identity(element));
@@ -669,15 +755,20 @@ struct InlineTabGroups {
         uint64_t key = 0;
         bool ungrouped = false;
         for (auto slot : layout) {
-            if (!slot.tab) { key = slot.group; wanted.push_back(key); members[key]; ungrouped = false; }
-            else {
+            if (!slot.tab) {
+                key = slot.group;
+                wanted.push_back(key);
+                members[key];
+                ungrouped = false;
+            } else {
                 if (!slot.group && !ungrouped) {
                     // An ungrouped run belongs to the boundary after the
                     // preceding group (zero at the start), not its first tab.
                     // Reordering that tab must not replace the whole group:
                     // WinUI can retain a stale selected index across replacement.
                     key = (uint64_t(1) << 32) | key;
-                    wanted.push_back(key); ungrouped = true;
+                    wanted.push_back(key);
+                    ungrouped = true;
                 }
                 members[key].push_back(rows.at(slot.tab));
             }
@@ -690,8 +781,8 @@ struct InlineTabGroups {
         for (auto& [id, run] : runs) {
             auto desired = members.find(id);
             if (!run.button || desired == members.end()) continue;
-            if ((run.items.Size()==0) != desired->second.empty()) {
-                run.model.Insert(L"Header",nullptr);
+            if ((run.items.Size() == 0) != desired->second.empty()) {
+                run.model.Insert(L"Header", nullptr);
                 reattach.push_back(id);
             }
         }
@@ -700,8 +791,9 @@ struct InlineTabGroups {
         for (auto& [id, run] : runs) {
             auto desired = members.find(id);
             std::set<uint32_t> desiredIds;
-            if (desired != members.end()) for (auto item : desired->second)
-                desiredIds.insert(unbox_value<uint32_t>(item.as<Controls::TabViewItem>().Tag()));
+            if (desired != members.end())
+                for (auto item : desired->second)
+                    desiredIds.insert(unbox_value<uint32_t>(item.as<Controls::TabViewItem>().Tag()));
             for (uint32_t i = run.items.Size(); i > 0; --i) {
                 auto item = run.items.GetAt(i - 1);
                 if (!desiredIds.count(unbox_value<uint32_t>(item.as<Controls::TabViewItem>().Tag())))
@@ -713,7 +805,8 @@ struct InlineTabGroups {
             auto& run = it->second;
             if (created && id == (uint64_t(1) << 32)) run.model.Insert(L"Gap", box_value(0.0));
             if (created && id <= UINT32_MAX) {
-                run.button = Markup::XamlReader::Load(LR"(
+                run.button = Markup::XamlReader::Load(
+                                 LR"(
 <Button xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml" Style="{StaticResource SubtleButtonStyle}" Margin="4,0" Padding="4,0" MinWidth="32" MinHeight="0" Width="32" Height="32" VerticalAlignment="Center">
  <Button.Resources><ResourceDictionary><ResourceDictionary.ThemeDictionaries>
   <ResourceDictionary x:Key="Default"><SolidColorBrush x:Key="InlineGroupColorBrush" Color="Transparent"/></ResourceDictionary>
@@ -728,10 +821,15 @@ struct InlineTabGroups {
   </Grid>
   <TextBlock FontSize="12" VerticalAlignment="Center" TextWrapping="NoWrap" TextTrimming="CharacterEllipsis" Visibility="Collapsed"/>
  </Grid>
-</Button>)").as<Controls::Button>();
+</Button>)")
+                                 .as<Controls::Button>();
                 ApplyHoverFill(run.button);
-                run.accent = run.button.Resources().ThemeDictionaries().Lookup(box_value(L"Default")).as<ResourceDictionary>()
-                    .Lookup(box_value(L"InlineGroupColorBrush")).as<Media::SolidColorBrush>();
+                run.accent = run.button.Resources()
+                                 .ThemeDictionaries()
+                                 .Lookup(box_value(L"Default"))
+                                 .as<ResourceDictionary>()
+                                 .Lookup(box_value(L"InlineGroupColorBrush"))
+                                 .as<Media::SolidColorBrush>();
                 // One retained Button owns the entire input target. A future
                 // group drag can arm from this opaque ID, use the existing drag
                 // session, and suppress Click after crossing its drag threshold.
@@ -743,13 +841,15 @@ struct InlineTabGroups {
                     if (!alive.expired() && geometryChanged) geometryChanged();
                 });
                 run.button.AddHandler(UIElement::PointerPressedEvent(),
-                    box_value(Microsoft::UI::Xaml::Input::PointerEventHandler([this, alive, id](auto&&, auto const& args) {
-                        if (alive.expired()) return;
-                        if (args.GetCurrentPoint(nullptr).Properties().IsLeftButtonPressed()) {
-                            suppressClick = 0;
-                            if (press) press(uint32_t(id),args);
-                        }
-                    })), true);
+                                      box_value(Microsoft::UI::Xaml::Input::PointerEventHandler(
+                                          [this, alive, id](auto&&, auto const& args) {
+                                              if (alive.expired()) return;
+                                              if (args.GetCurrentPoint(nullptr).Properties().IsLeftButtonPressed()) {
+                                                  suppressClick = 0;
+                                                  if (press) press(uint32_t(id), args);
+                                              }
+                                          })),
+                                      true);
                 run.button.ContextRequested([this, alive, id](auto&&, auto&& args) {
                     if (alive.expired() || !context) return;
                     auto found = runs.find(id);
@@ -758,13 +858,17 @@ struct InlineTabGroups {
                     hover.Dismiss();
                     auto button = found->second.button;
                     auto bounds = button.TransformToVisual(nullptr).TransformBounds(
-                        {0,0,float(button.ActualWidth()),float(button.ActualHeight())});
+                        {0, 0, float(button.ActualWidth()), float(button.ActualHeight())});
                     auto screen = button.XamlRoot().ContentIsland().CoordinateConverter().ConvertLocalToScreen(bounds);
-                    context(uint32_t(id), {float(screen.X),float(screen.Y),float(screen.Width),float(screen.Height)}, button);
+                    context(uint32_t(id), {float(screen.X), float(screen.Y), float(screen.Width), float(screen.Height)},
+                            button);
                 });
                 run.button.Click([this, alive, id](auto&&, auto&&) {
                     if (alive.expired()) return;
-                    if (suppressClick == id) { suppressClick = 0; return; }
+                    if (suppressClick == id) {
+                        suppressClick = 0;
+                        return;
+                    }
                     hover.Hide();
                     auto found = runs.find(id);
                     if (found != runs.end() && toggle) toggle(uint32_t(id), !found->second.collapsed);
@@ -825,13 +929,13 @@ struct InlineTabGroups {
         if (wanted != order || !reattach.empty()) {
             for (auto& [id, run] : runs) {
                 if (run.button) {
-                    run.model.Insert(L"Header",nullptr);
+                    run.model.Insert(L"Header", nullptr);
                     // Retired presenters can retain a binding to the old map
                     // in the panel's recycling section. Never put the Button
                     // back in that map: only the new presentation owns it.
                     run.model = single_threaded_observable_map<hstring, Object>();
-                    run.model.Insert(L"Items",run.items);
-                    run.model.Insert(L"Header",nullptr);
+                    run.model.Insert(L"Items", run.items);
+                    run.model.Insert(L"Header", nullptr);
                     reattach.push_back(id);
                 }
             }
@@ -840,10 +944,14 @@ struct InlineTabGroups {
             data.ReplaceAll(models);
         }
         for (auto it = runs.begin(); it != runs.end();) {
-            if (!live.count(it->first)) it = runs.erase(it); else ++it;
+            if (!live.count(it->first))
+                it = runs.erase(it);
+            else
+                ++it;
         }
         order = std::move(wanted);
-        for (auto id : reattach) if (runs.count(id)) runs.at(id).model.Insert(L"Header",runs.at(id).button);
+        for (auto id : reattach)
+            if (runs.count(id)) runs.at(id).model.Insert(L"Header", runs.at(id).button);
         realizing.clear();
         auto detached = [&](FrameworkElement const& element) {
             if (element && !element.IsLoaded() && shown.count(Identity(element))) realizing.push_back(element);

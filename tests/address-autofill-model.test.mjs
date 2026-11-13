@@ -5,8 +5,8 @@ import vm from 'node:vm';
 const root=new URL('../upstream/firefox/browser/components/urlbar/content/',import.meta.url);
 const context=vm.createContext({URL,UrlbarContentUtils:{},UrlbarPrefs:{}});
 const shared=readFileSync(new URL('UrlbarShared.mjs',root),'utf8');
-vm.runInContext(shared.replace(/^import .*;$/gm,'').replace('export const UrlbarShared','var UrlbarShared'),context);
-vm.runInContext(readFileSync(new URL('UrlbarAutofillModel.mjs',root),'utf8').replace(/^import .*;$/gm,'')
+vm.runInContext(shared.replace(/^import\b[^;]*;$/gm,'').replace('export const UrlbarShared','var UrlbarShared'),context);
+vm.runInContext(readFileSync(new URL('UrlbarAutofillModel.mjs',root),'utf8').replace(/^import\b[^;]*;$/gm,'')
   .replace('export class UrlbarAutofillModel','this.Model=class UrlbarAutofillModel'),context);
 const M=context.Model;
 const placeholder={value:'Example.test/path/',type:'url',selectionStart:3,selectionEnd:18,untrimmedValue:'https://Example.test/path/'};

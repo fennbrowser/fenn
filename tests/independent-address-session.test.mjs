@@ -43,7 +43,7 @@ function load(){
       UrlbarResultPresentation:class {},UrlbarResultActions:class {},
     })}});
   const source=readFileSync(new URL('../upstream/firefox/browser/base/content/WinUIAddressSession.sys.mjs',import.meta.url),'utf8')
-    .replace(/^import .*;\r?$/gm,'').replace('export class WinUIAddressSession','this.Session = class WinUIAddressSession');
+    .replace(/^import\b[^;]*;\r?$/gm,'').replace('export class WinUIAddressSession','this.Session = class WinUIAddressSession');
   vm.runInContext(source,context);
   Object.assign(context.Session.prototype,inherited);
   // The retained class exposes these as accessors over the original input; the

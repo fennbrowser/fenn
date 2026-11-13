@@ -3,7 +3,7 @@ import test from 'node:test';
 import vm from 'node:vm';
 import {readFileSync} from 'node:fs';
 const source=readFileSync(new URL('../upstream/firefox/browser/base/content/browser-siteIdentity.js',import.meta.url),'utf8');
-const adapter=readFileSync(new URL('../upstream/firefox/browser/base/content/WinUIConnectionPanel.sys.mjs',import.meta.url),'utf8').replace(/^import .*;$/m,'').replace('export class WinUIConnectionPanel','this.Panel=class WinUIConnectionPanel');
+const adapter=readFileSync(new URL('../upstream/firefox/browser/base/content/WinUIConnectionPanel.sys.mjs',import.meta.url),'utf8').replace(/^import\b[^;]*;$/m,'').replace('export class WinUIConnectionPanel','this.Panel=class WinUIConnectionPanel');
 const settle=()=>new Promise(resolve=>setTimeout(resolve,0));
 function fixture(){
  const calls=[],permissions=new Map();let privateWindow=false,dataReply,qwacReply,trackingException=false,trackingSupported=true;

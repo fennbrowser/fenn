@@ -12,26 +12,36 @@ struct NativeWindowsShare {
     winrt::event_token requested{};
     bool subscribed{};
     void Close() noexcept {
-        if(manager && subscribed) {try{manager.DataRequested(requested);}catch(...) {}}
-        subscribed=false;manager=nullptr;
+        if (manager && subscribed) {
+            try {
+                manager.DataRequested(requested);
+            } catch (...) {}
+        }
+        subscribed = false;
+        manager = nullptr;
     }
-    ~NativeWindowsShare(){Close();}
-    HRESULT Open(HWND owner,winrt::hstring title,winrt::hstring url,std::function<bool()> current) noexcept {
+    ~NativeWindowsShare() { Close(); }
+    HRESULT Open(HWND owner, winrt::hstring title, winrt::hstring url, std::function<bool()> current) noexcept {
         Close();
         try {
             using namespace winrt::Windows::ApplicationModel::DataTransfer;
-            auto interop=winrt::get_activation_factory<DataTransferManager,IDataTransferManagerInterop>();
-            winrt::check_hresult(interop->GetForWindow(owner,winrt::guid_of<DataTransferManager>(),winrt::put_abi(manager)));
-            requested=manager.DataRequested([title,url,current](auto const&,DataRequestedEventArgs const& args) {
-                if(!current())return;
-                auto data=args.Request().Data();
+            auto interop = winrt::get_activation_factory<DataTransferManager, IDataTransferManagerInterop>();
+            winrt::check_hresult(
+                interop->GetForWindow(owner, winrt::guid_of<DataTransferManager>(), winrt::put_abi(manager)));
+            requested = manager.DataRequested([title, url, current](auto const&, DataRequestedEventArgs const& args) {
+                if (!current()) return;
+                auto data = args.Request().Data();
                 data.Properties().Title(title);
                 data.SetText(L"");
                 data.SetWebLink(winrt::Windows::Foundation::Uri(url));
             });
-            subscribed=true;
+            subscribed = true;
             winrt::check_hresult(interop->ShowShareUIForWindow(owner));
             return S_OK;
-        }catch(...){const auto hr=winrt::to_hresult();Close();return hr;}
+        } catch (...) {
+            const auto hr = winrt::to_hresult();
+            Close();
+            return hr;
+        }
     }
 };

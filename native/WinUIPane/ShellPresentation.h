@@ -9,10 +9,12 @@
 namespace ShellPresentation {
 struct Draft {
     std::wstring text;
-    int selection{},length{};
+    int selection{}, length{};
     bool focused{};
 };
-struct ShareIdentity { uint64_t session{},document{}; };
+struct ShareIdentity {
+    uint64_t session{}, document{};
+};
 
 HRESULT ShowInteractiveStartup(HWND, const wchar_t* profile, const wchar_t* presentation) noexcept;
 HRESULT PrepareInteractiveStartup(HWND, const wchar_t* profile, const wchar_t* presentation) noexcept;
@@ -35,4 +37,4 @@ HRESULT OpenShare(HWND, const winrt::hstring& title, const winrt::hstring& url, 
 void SetRestartProcess(HANDLE) noexcept;
 void ApplyFrame(const ShellFrameView&, WinUIPaneNotifyFn);
 void PrepareAndNotify(HWND) noexcept;
-}
+}  // namespace ShellPresentation

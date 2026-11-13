@@ -1,6 +1,6 @@
 //! Address-section identity only. Firefox owns queries, policy and content.
-use crate::publication::{Classification, Stream, StreamKind, ShellPublicationCounts};
 use crate::address::MAX_EDIT_ID;
+use crate::publication::{Classification, ShellPublicationCounts, Stream, StreamKind};
 
 pub const MAX_FINGERPRINT: usize = 6 * 1024 * 1024;
 
@@ -11,29 +11,60 @@ pub struct AddressPublication {
 }
 impl Default for AddressPublication {
     fn default() -> Self {
-        Self { session: Vec::new(), structure: 0, stream: Stream::new(StreamKind::Snapshot) }
+        Self {
+            session: Vec::new(),
+            structure: 0,
+            stream: Stream::new(StreamKind::Snapshot),
+        }
     }
 }
 impl AddressPublication {
-    pub fn reset(&mut self) { self.session.clear(); self.structure = 0; self.stream.reset(); }
-    pub fn counts(&self) -> ShellPublicationCounts { self.stream.counts() }
-    pub fn resolve(&mut self, session: &[u16], sequence: u64, structure: u64, fingerprint: &[u16], commit: bool) -> Result<bool, ()> {
+    pub fn reset(&mut self) {
+        self.session.clear();
+        self.structure = 0;
+        self.stream.reset();
+    }
+    pub fn counts(&self) -> ShellPublicationCounts {
+        self.stream.counts()
+    }
+    pub fn resolve(
+        &mut self,
+        session: &[u16],
+        sequence: u64,
+        structure: u64,
+        fingerprint: &[u16],
+        commit: bool,
+    ) -> Result<bool, ()> {
         let same_session = session == self.session;
-        let class = if session.is_empty() || session.len() > 256 || sequence == 0 ||
-            sequence > MAX_EDIT_ID || structure > MAX_EDIT_ID || fingerprint.len() > MAX_FINGERPRINT {
+        let class = if session.is_empty()
+            || session.len() > 256
+            || sequence == 0
+            || sequence > MAX_EDIT_ID
+            || structure > MAX_EDIT_ID
+            || fingerprint.len() > MAX_FINGERPRINT
+        {
             Classification::Invalid
         } else {
-            let class = if same_session { self.stream.classify(0, sequence, fingerprint) }
-                else { Classification::Accepted };
+            let class = if same_session {
+                self.stream.classify(0, sequence, fingerprint)
+            } else {
+                Classification::Accepted
+            };
             if same_session && class == Classification::Accepted && structure < self.structure {
                 Classification::Invalid
-            } else { class }
+            } else {
+                class
+            }
         };
         // Resolution counts no accepted work: edits may defer native application.
-        if commit || class != Classification::Accepted { self.stream.record(class); }
+        if commit || class != Classification::Accepted {
+            self.stream.record(class);
+        }
         let apply = class.outcome(StreamKind::Snapshot)?;
         if apply && commit {
-            if !same_session { self.stream.reset(); }
+            if !same_session {
+                self.stream.reset();
+            }
             self.session = session.to_vec();
             self.structure = structure;
             self.stream.commit(sequence, fingerprint);
@@ -72,11 +103,21 @@ mod tests {
         let mut p = AddressPublication::default();
         let wide = u32::MAX as u64 + 1;
         assert_eq!(p.resolve(&[1], wide, wide, &[1], true), Ok(true));
-        assert_eq!(p.resolve(&[1], MAX_EDIT_ID, MAX_EDIT_ID, &[2], true), Ok(true));
-        for (session, sequence, structure) in [(&[][..], 1, 0), (&[1][..], 0, 0),
-            (&[1][..], MAX_EDIT_ID + 1, 0), (&[1][..], MAX_EDIT_ID, MAX_EDIT_ID + 1)] {
+        assert_eq!(
+            p.resolve(&[1], MAX_EDIT_ID, MAX_EDIT_ID, &[2], true),
+            Ok(true)
+        );
+        for (session, sequence, structure) in [
+            (&[][..], 1, 0),
+            (&[1][..], 0, 0),
+            (&[1][..], MAX_EDIT_ID + 1, 0),
+            (&[1][..], MAX_EDIT_ID, MAX_EDIT_ID + 1),
+        ] {
             assert_eq!(p.resolve(session, sequence, structure, &[2], true), Err(()));
         }
-        assert_eq!(p.resolve(&[1], MAX_EDIT_ID, MAX_EDIT_ID, &[2], true), Ok(false));
+        assert_eq!(
+            p.resolve(&[1], MAX_EDIT_ID, MAX_EDIT_ID, &[2], true),
+            Ok(false)
+        );
     }
 }

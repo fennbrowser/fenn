@@ -56,7 +56,7 @@ test('explicit bounce needs no input and preserves replacement and view-time fil
 
 test('shared bounce builder freezes engagement mode and exposure into event fields',()=>{
   const c=vm.createContext({});
-  vm.runInContext(read('content/UrlbarTelemetryUtils.mjs').replace(/^import .*;\r?$/gm,'')
+  vm.runInContext(read('content/UrlbarTelemetryUtils.mjs').replace(/^import\b[^;]*;\r?$/gm,'')
     .replace('export class UrlbarTelemetryUtils','this.Utils=class UrlbarTelemetryUtils'),c);
   const u=c.Utils;u.getInteractionType=(method,start,source,words,mode,previous)=>{
     assert.equal(method,'bounce');assert.equal(previous,'previous');return {interaction:'captured'};};

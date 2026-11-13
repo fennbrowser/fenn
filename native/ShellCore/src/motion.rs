@@ -38,7 +38,9 @@ pub const SHELL_MOTION_MOVE_Y2: f64 = 1.0;
 /// Invert the Bezier time axis so lighting follows compositor geometry.
 pub fn reposition(t: f64) -> f64 {
     let t = t.clamp(0.0, 1.0);
-    if t == 0.0 || t == 1.0 { return t; }
+    if t == 0.0 || t == 1.0 {
+        return t;
+    }
     fn axis(u: f64, a: f64, b: f64) -> f64 {
         let v = 1.0 - u;
         3.0 * v * v * u * a + 3.0 * v * u * u * b + u * u * u
@@ -46,10 +48,17 @@ pub fn reposition(t: f64) -> f64 {
     let (mut low, mut high) = (0.0, 1.0);
     for _ in 0..32 {
         let u = (low + high) * 0.5;
-        if axis(u, SHELL_MOTION_MOVE_X1, SHELL_MOTION_MOVE_X2) < t { low = u; }
-        else { high = u; }
+        if axis(u, SHELL_MOTION_MOVE_X1, SHELL_MOTION_MOVE_X2) < t {
+            low = u;
+        } else {
+            high = u;
+        }
     }
-    axis((low + high) * 0.5, SHELL_MOTION_MOVE_Y1, SHELL_MOTION_MOVE_Y2)
+    axis(
+        (low + high) * 0.5,
+        SHELL_MOTION_MOVE_Y1,
+        SHELL_MOTION_MOVE_Y2,
+    )
 }
 
 #[cfg(test)]

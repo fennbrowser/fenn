@@ -10,7 +10,7 @@ function fixture(){
  const w={gBrowser:{selectedBrowser:b,selectedTab:{}},document:{fullscreen:false},setTimeout(fn){calls.push(fn);},focus(){calls.push('focus');},CustomEvent:class {constructor(type,options){this.type=type;Object.assign(this,options);}},Localization:class {formatValueSync(id){return id;}formatMessagesSync(){return [{attributes:[{name:'label',value:'OK'}]}];}}};
  const toolbar={active:true,navigation:true,supported:()=>true,owner:{addressSession:{sessionId:1},invalidateAddress(){}},window:w,omnibar:{entries:new Map()},menuAnchor:()=>true};
  const context=vm.createContext({console,ChromeUtils:{now:()=>now},Services:{focus:{activeWindow:w},console:{logStringMessage(){}},prefs:{}},XPCOMUtils:{defineLazyPreferenceGetter:(object,key)=>object[key]=1000}});
- vm.runInContext(controller.replace(/^import .*;\r?\n/gm,'').replace('export function PopupNotifications','function PopupNotifications')+'\nthis.Controller=PopupNotifications;',context);
+ vm.runInContext(controller.replace(/^import\b[^;]*;\r?\n/gm,'').replace('export function PopupNotifications','function PopupNotifications')+'\nthis.Controller=PopupNotifications;',context);
  vm.runInContext(adapter.replace('export class WinUINotificationPanel','this.Panel=class WinUINotificationPanel'),context);
  const p=new context.Panel(toolbar);toolbar.notificationPanel=p;w.gWinUIPane={addressToolbar:toolbar};
  const m=Object.create(context.Controller.prototype);m.window=w;m.tabbrowser=w.gBrowser;m.panel={state:'closed',children:[],setAttribute(){},removeAttribute(){},hasAttribute:()=>true,dispatchEvent:e=>calls.push(e.type)};
@@ -24,7 +24,8 @@ function fixture(){
  return {p,m,w,b,n,el,attrs,calls,open,invoke,tick:ms=>now+=ms,toolbar};
 }
 test('native gateway shares original showing and refresh ordering',()=>{
- assert.ok(controller.indexOf('this._refreshPanel(notificationsToShow);')<controller.indexOf('notificationPanel?.show(this, notificationsToShow, anchorElement)'));
+ const flat=controller.replace(/\s+/g,''),refresh=flat.indexOf('this._refreshPanel(notificationsToShow);'),show=flat.indexOf('notificationPanel?.show(this,notificationsToShow,anchorElement');
+ assert.ok(refresh>=0 && show>=0 && refresh<show);
  assert.match(controller,/notificationPanel\?\.hide\(\)/);
 });
 test('native shown acknowledgment starts the original security clock once',()=>{

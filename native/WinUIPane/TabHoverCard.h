@@ -43,13 +43,13 @@ struct TabHoverCard {
     void Bind(UIElement const& root) {
         passThrough = root;
         root.AddHandler(UIElement::KeyDownEvent(),
-            box_value(Microsoft::UI::Xaml::Input::KeyEventHandler(
-                [this, alive = std::weak_ptr<int>(lifetime)](auto const&, auto const&) {
-                    if (alive.expired()) return;
-                    if (waiting) Hide(waiting);
-                    if (shown) Hide(shown);
-                })),
-            true);
+                        box_value(Microsoft::UI::Xaml::Input::KeyEventHandler(
+                            [this, alive = std::weak_ptr<int>(lifetime)](auto const&, auto const&) {
+                                if (alive.expired()) return;
+                                if (waiting) Hide(waiting);
+                                if (shown) Hide(shown);
+                            })),
+                        true);
     }
 
     struct Card {
@@ -82,7 +82,8 @@ struct TabHoverCard {
         if (timer) timer.Stop();
         try {
             if (auto found = cards.find(shown); found != cards.end()) found->second.flyout.Hide();
-        } catch (...) { /* The island may already be closing. */ }
+        } catch (...) { /* The island may already be closing. */
+        }
     }
 
     // The presenter is transparent so the Flyout's own SystemBackdrop shows;
@@ -91,7 +92,9 @@ struct TabHoverCard {
     // contrast color.
     Card Create() {
         if (!presenterStyle) {
-            presenterStyle = Markup::XamlReader::Load(LR"(<Style xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" TargetType="FlyoutPresenter">
+            presenterStyle =
+                Markup::XamlReader::Load(
+                    LR"(<Style xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" TargetType="FlyoutPresenter">
   <Setter Property="Background" Value="Transparent"/>
   <Setter Property="Padding" Value="0"/>
   <Setter Property="MinWidth" Value="0"/>
@@ -105,10 +108,13 @@ struct TabHoverCard {
   <Setter Property="IsHitTestVisible" Value="False"/>
   <Setter Property="ScrollViewer.HorizontalScrollBarVisibility" Value="Disabled"/>
   <Setter Property="ScrollViewer.VerticalScrollBarVisibility" Value="Disabled"/>
-</Style>)").as<Style>();
+</Style>)")
+                    .as<Style>();
         }
         Card card;
-        auto content = Markup::XamlReader::Load(LR"(<Grid xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+        auto content =
+            Markup::XamlReader::Load(
+                LR"(<Grid xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
   <Grid.Resources>
     <ResourceDictionary>
       <ResourceDictionary.ThemeDictionaries>
@@ -128,7 +134,8 @@ struct TabHoverCard {
     </Border>
   </StackPanel>
   </Border>
-</Grid>)").as<Controls::Grid>();
+</Grid>)")
+                .as<Controls::Grid>();
         auto panel = content.Children().GetAt(0).as<Controls::Border>().Child().as<Controls::StackPanel>();
         card.title = panel.Children().GetAt(0).as<Controls::TextBlock>();
         card.domain = panel.Children().GetAt(1).as<Controls::TextBlock>();
@@ -153,14 +160,17 @@ struct TabHoverCard {
 
     void CancelRequest() {
         if (core) shell_core_preview_dismiss(core, pending);
-        tab = 0; pending = 0;
+        tab = 0;
+        pending = 0;
     }
     void Request(uint32_t id, Controls::TabViewItem const& row) {
         uint64_t request = 0;
         if (!core || shell_core_preview_begin(core, id, &request) != SHELL_STATUS_OK) {
-            CancelRequest(); return;
+            CancelRequest();
+            return;
         }
-        tab = id; pending = request;
+        tab = id;
+        pending = request;
         const double scale = row.XamlRoot() ? row.XamlRoot().RasterizationScale() : 1.0;
         if (send) send(id, pending, scale);
     }
@@ -168,7 +178,7 @@ struct TabHoverCard {
     static std::chrono::milliseconds HoverDelay() {
         UINT ms = 0;
         return SystemParametersInfoW(SPI_GETMOUSEHOVERTIME, 0, &ms, 0) && ms ? std::chrono::milliseconds(ms)
-                                                                            : std::chrono::milliseconds(400);
+                                                                             : std::chrono::milliseconds(400);
     }
 
     void Show(uint32_t id) {
@@ -189,7 +199,10 @@ struct TabHoverCard {
             // and moving between tabs would otherwise silently open nothing.
             bool ours = false;
             for (auto const& [otherId, other] : cards)
-                if (presenter.Content() == other.flyout.Content()) { ours = true; break; }
+                if (presenter.Content() == other.flyout.Content()) {
+                    ours = true;
+                    break;
+                }
             if (!ours) return;
         }
         // Queuing can wake a host that republishes at once and drops rows, so
@@ -268,7 +281,8 @@ struct TabHoverCard {
             if (alive.expired()) return;
             auto element = sender.template as<FrameworkElement>();
             auto at = args.GetCurrentPoint(element).Position();
-            const bool outside = at.X < 0 || at.Y < 0 || at.X >= element.ActualWidth() || at.Y >= element.ActualHeight();
+            const bool outside =
+                at.X < 0 || at.Y < 0 || at.X >= element.ActualWidth() || at.Y >= element.ActualHeight();
             // The card's own dismissal layer (and a layout shift) raises
             // PointerExited with the pointer still on the row. Closing here
             // lost the card for good: no PointerEntered follows, so it never
@@ -284,11 +298,12 @@ struct TabHoverCard {
         // closed it within the reshow window) raced the row's context flyout,
         // whose opening the reopened card then light-dismissed.
         row.AddHandler(UIElement::PointerPressedEvent(),
-            box_value(Microsoft::UI::Xaml::Input::PointerEventHandler([this, alive, id](auto&&, auto&&) {
-                if (alive.expired()) return;
-                pressed = id;
-                Hide(id);
-            })), true);
+                       box_value(Microsoft::UI::Xaml::Input::PointerEventHandler([this, alive, id](auto&&, auto&&) {
+                           if (alive.expired()) return;
+                           pressed = id;
+                           Hide(id);
+                       })),
+                       true);
         card.flyout.Opened([this, alive, id](auto const&, auto const&) {
             if (!alive.expired() && cards.count(id)) open = true;
         });
@@ -298,7 +313,10 @@ struct TabHoverCard {
             closed.image.Source(nullptr);
             closed.frame.Visibility(Visibility::Collapsed);
             // A light dismissal is a close this card did not ask for.
-            if (shown == id) { shown = 0; closedAt = std::chrono::steady_clock::now(); }
+            if (shown == id) {
+                shown = 0;
+                closedAt = std::chrono::steady_clock::now();
+            }
             if (tab == id) CancelRequest();
             if (!tab) open = false;
         });
@@ -345,14 +363,16 @@ struct TabHoverCard {
         size_t pixels = 0;
         NativeJson::ValidateImage(answer, pixels, kPreviewLimits);
         const bool hasImage = answer.HasKey(L"image") &&
-            answer.GetNamedValue(L"image").ValueType() != Windows::Data::Json::JsonValueType::Null;
+                              answer.GetNamedValue(L"image").ValueType() != Windows::Data::Json::JsonValueType::Null;
         const auto fingerprint = answer.Stringify();
         const uint32_t phase = answer.HasKey(L"image") ? 2 : 1;
         bool apply = false;
         auto resolve = [&](bool commit) {
             check_hresult(shell_core_preview_publication(core, id, uint64_t(request), phase,
-                reinterpret_cast<uint16_t const*>(fingerprint.c_str()), fingerprint.size(), commit, &apply)
-                == SHELL_STATUS_OK ? S_OK : E_INVALIDARG);
+                                                         reinterpret_cast<uint16_t const*>(fingerprint.c_str()),
+                                                         fingerprint.size(), commit, &apply) == SHELL_STATUS_OK
+                              ? S_OK
+                              : E_INVALIDARG);
         };
         resolve(false);
         if (!apply || !cards.count(id)) return;
@@ -363,8 +383,10 @@ struct TabHoverCard {
         if (!apply) return;
         auto& card = cards.at(id);
         SetText(card.domain, domain);
-        if (hasImage) card.image.Source(bitmap);
-        else if (!thumbnail) card.image.Source(nullptr);
+        if (hasImage)
+            card.image.Source(bitmap);
+        else if (!thumbnail)
+            card.image.Source(nullptr);
         // Reserve the frame as soon as Firefox says a thumbnail is coming, so
         // the card does not grow when the capture lands.
         card.frame.Visibility(thumbnail || hasImage ? Visibility::Visible : Visibility::Collapsed);

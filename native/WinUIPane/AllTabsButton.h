@@ -13,10 +13,12 @@ struct AllTabsButton {
     void SetWindowActive(bool) {}
 
     AllTabsButton() {
-        button = Markup::XamlReader::Load(
-            LR"x(<Button xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" Style="{StaticResource SubtleButtonStyle}" MinWidth="0" MinHeight="0" Padding="0" VerticalAlignment="Center" ToolTipService.ToolTip="List all tabs" AutomationProperties.Name="List all tabs" AutomationProperties.AutomationId="FennAllTabs">
+        button =
+            Markup::XamlReader::Load(
+                LR"x(<Button xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" Style="{StaticResource SubtleButtonStyle}" MinWidth="0" MinHeight="0" Padding="0" VerticalAlignment="Center" ToolTipService.ToolTip="List all tabs" AutomationProperties.Name="List all tabs" AutomationProperties.AutomationId="FennAllTabs">
   <FontIcon Glyph="&#xE70D;" FontSize="12" HorizontalAlignment="Center" VerticalAlignment="Center"/>
-</Button>)x").as<Controls::Button>();
+</Button>)x")
+                .as<Controls::Button>();
         button.Width(ToolbarMetrics::kButton);
         button.Height(ToolbarMetrics::kButton);
     }

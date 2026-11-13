@@ -4,7 +4,7 @@ import {readFileSync} from 'node:fs';
 import vm from 'node:vm';
 
 const root=new URL('../upstream/firefox/browser/components/',import.meta.url);
-const source=name=>readFileSync(new URL(name,root),'utf8').replace(/^import .*;$/gm,'').replaceAll('export class ','class ');
+const source=name=>readFileSync(new URL(name,root),'utf8').replace(/^import\b[^;]*;$/gm,'').replaceAll('export class ','class ');
 const modelScope=vm.createContext({UrlbarPrefs:{},UrlbarShared:{RESULT_SOURCE:{SEARCH:3}}});
 vm.runInContext(source('urlbar/content/UrlbarSearchModeModel.mjs')+'\nthis.Model=UrlbarSearchModeModel;',modelScope);
 const Model=modelScope.Model;

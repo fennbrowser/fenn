@@ -42,7 +42,10 @@ struct NativeProductMenu {
     std::function<void()> customize;
     std::function<bool()> closeEditor;
     std::shared_ptr<int> lifetime = std::make_shared<int>(0);
-    struct Approval { winrt::hstring token; winrt::hstring status; };
+    struct Approval {
+        winrt::hstring token;
+        winrt::hstring status;
+    };
     std::shared_ptr<Approval> approval = std::make_shared<Approval>();
 
     static bool ValidId(winrt::hstring const& id) {
@@ -50,14 +53,19 @@ struct NativeProductMenu {
         bool boundary = true;
         for (wchar_t c : id) {
             const bool alnum = (c >= L'a' && c <= L'z') || (c >= L'0' && c <= L'9');
-            if (c == L'-') { if (boundary) return false; boundary = true; continue; }
+            if (c == L'-') {
+                if (boundary) return false;
+                boundary = true;
+                continue;
+            }
             if (!alnum) return false;
             boundary = false;
         }
         return !boundary;
     }
 
-    static void ValidateItems(Array const& items, uint32_t depth, uint32_t& total, std::set<winrt::hstring>& ids, size_t& pixels) {
+    static void ValidateItems(Array const& items, uint32_t depth, uint32_t& total, std::set<winrt::hstring>& ids,
+                              size_t& pixels) {
         using winrt::Windows::Data::Json::JsonValueType;
         if (depth > kMaxDepth || items.Size() > kMaxItemsPerLevel) winrt::throw_hresult(E_INVALIDARG);
         for (auto value : items) {
@@ -113,9 +121,9 @@ struct NativeProductMenu {
         if (ids.count(L"check-updates") && !menu.HasKey(L"updateLabels")) winrt::throw_hresult(E_INVALIDARG);
         if (menu.HasKey(L"updateLabels")) {
             auto labels = menu.GetNamedObject(L"updateLabels");
-            for (auto key : {L"title", L"checking", L"current", L"available-store", L"available-feed",
-                             L"unavailable", L"failed", L"open-store", L"open-feed", L"close",
-                             L"downloading", L"ready", L"install", L"installing"}) {
+            for (auto key :
+                 {L"title", L"checking", L"current", L"available-store", L"available-feed", L"unavailable", L"failed",
+                  L"open-store", L"open-feed", L"close", L"downloading", L"ready", L"install", L"installing"}) {
                 const auto label = labels.GetNamedString(key);
                 if (label.empty()) winrt::throw_hresult(E_INVALIDARG);
                 NativeJson::RequireLength(label, kMaxLabel);
@@ -136,13 +144,16 @@ struct NativeProductMenu {
         if (!updateItem || !flyout || !model) return;
         auto labels = UpdateLabels();
         const auto state = updates->current;
-        if (updates->installing) updateItem.Text(NativePackageUpdates::Text(labels, L"installing"));
-        else if (state && state->ready) updateItem.Text(NativePackageUpdates::Text(labels,
-            state->status == L"failed" ? L"failed" : L"install"));
+        if (updates->installing)
+            updateItem.Text(NativePackageUpdates::Text(labels, L"installing"));
+        else if (state && state->ready)
+            updateItem.Text(NativePackageUpdates::Text(labels, state->status == L"failed" ? L"failed" : L"install"));
         else if (updates->checking && state && state->status == L"downloading")
             updateItem.Text(NativePackageUpdates::Text(labels, L"downloading"));
-        else if (updates->checking && updates->manualCheck) updateItem.Text(NativePackageUpdates::Text(labels, L"checking"));
-        else if (updates->showingResult && state) updateItem.Text(NativePackageUpdates::Text(labels, state->status.c_str()));
+        else if (updates->checking && updates->manualCheck)
+            updateItem.Text(NativePackageUpdates::Text(labels, L"checking"));
+        else if (updates->showingResult && state)
+            updateItem.Text(NativePackageUpdates::Text(labels, state->status.c_str()));
         else {
             for (auto entry : model.GetNamedArray(L"items")) {
                 auto item = entry.GetObject();
@@ -164,9 +175,10 @@ struct NativeProductMenu {
         updates->changed = [this, alive = std::weak_ptr<int>(lifetime)] {
             if (!alive.expired()) RefreshUpdateItem();
         };
-        updates->prepare = [this, alive = std::weak_ptr<int>(lifetime), grant = approval]() -> NativePackageUpdates::Action {
+        updates->prepare = [this, alive = std::weak_ptr<int>(lifetime),
+                            grant = approval]() -> NativePackageUpdates::Action {
             if (alive.expired() || !enabled || !dispatch) winrt::throw_hresult(E_ABORT);
-            static uint64_t serial = 0; // UI thread only; unique across browser windows.
+            static uint64_t serial = 0;  // UI thread only; unique across browser windows.
             grant->token = winrt::to_hstring(GetTickCount64()) + L"-" + winrt::to_hstring(++serial);
             grant->status = L"pending";
             dispatch((std::wstring(L"product:prepare-update-") + grant->token.c_str()).c_str(), 0, button);
@@ -184,8 +196,10 @@ struct NativeProductMenu {
                 dispatch((std::wstring(L"product:update-failed-") + grant->token.c_str()).c_str(), 0, button);
             grant->status = L"failed";
         };
-        button = Markup::XamlReader::Load(
-            LR"(<Button xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" Style="{StaticResource SubtleButtonStyle}" MinWidth="0" MinHeight="0" Padding="0"/>)").as<Button>();
+        button =
+            Markup::XamlReader::Load(
+                LR"(<Button xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" Style="{StaticResource SubtleButtonStyle}" MinWidth="0" MinHeight="0" Padding="0"/>)")
+                .as<Button>();
         button.Width(ToolbarMetrics::kButton);
         button.Height(ToolbarMetrics::kButton);
         Viewbox host;
@@ -203,7 +217,11 @@ struct NativeProductMenu {
             OpenFrom(button);
         });
     }
-    ~NativeProductMenu() { lifetime.reset(); updates->Cancel(); Close(); }
+    ~NativeProductMenu() {
+        lifetime.reset();
+        updates->Cancel();
+        Close();
+    }
 
     void Close() {
         pendingRequest = L"";
@@ -219,8 +237,10 @@ struct NativeProductMenu {
     // Reuse the same publication, refresh handshake and command routing when a
     // toolbar button opens one of the product menu's submenus directly.
     void OpenFrom(Button const& source, winrt::hstring const& root = L"") {
-        if (anchor == source && rootId == root &&
-            (!pendingRequest.empty() || (flyout && flyout.IsOpen()))) { Close(); return; }
+        if (anchor == source && rootId == root && (!pendingRequest.empty() || (flyout && flyout.IsOpen()))) {
+            Close();
+            return;
+        }
         Close();
         anchor = source;
         rootId = root;
@@ -264,37 +284,62 @@ struct NativeProductMenu {
     // icon. Never turn a site title, extension name or localized label into an
     // icon guess, and leave visibility choices to their stock check marks.
     static Microsoft::UI::Xaml::Controls::IconElement Icon(std::wstring_view id) {
-        struct Entry { std::wstring_view id; wchar_t const* glyph; };
+        struct Entry {
+            std::wstring_view id;
+            wchar_t const* glyph;
+        };
         static constexpr Entry entries[] = {
-            {L"new-tab", L"\xE710"}, {L"new-window", L"\xE78B"},
+            {L"new-tab", L"\xE710"},
+            {L"new-window", L"\xE78B"},
             {L"new-private-window", L"\xE727"},
-            {L"history", L"\xE81C"}, {L"history-show-all", L"\xE81C"},
-            {L"history-restore-tab", L"\xE7A7"}, {L"downloads", L"\xE896"},
-            {L"bookmarks", L"\xE734"}, {L"bookmarks-bookmark-tab", L"\xE734"},
-            {L"bookmarks-show-all", L"\xE8F1"}, {L"bookmarks-toolbar", L"\xE8A4"},
-            {L"bookmarks-list-toolbar", L"\xE8B7"}, {L"bookmarks-list-menu", L"\xE8B7"},
+            {L"history", L"\xE81C"},
+            {L"history-show-all", L"\xE81C"},
+            {L"history-restore-tab", L"\xE7A7"},
+            {L"downloads", L"\xE896"},
+            {L"bookmarks", L"\xE734"},
+            {L"bookmarks-bookmark-tab", L"\xE734"},
+            {L"bookmarks-show-all", L"\xE8F1"},
+            {L"bookmarks-toolbar", L"\xE8A4"},
+            {L"bookmarks-list-toolbar", L"\xE8B7"},
+            {L"bookmarks-list-menu", L"\xE8B7"},
             {L"bookmarks-list-unfiled", L"\xE8B7"},
-            {L"extensions", L"\xEA86"}, {L"extensions-add", L"\xE710"},
-            {L"extensions-manage", L"\xE713"}, {L"view", L"\xE890"},
-            {L"view-sidebar", L"\xE90C"}, {L"view-autohide-tabs", L"\xE77A"},
-            {L"zoom-in", L"\xE8A3"}, {L"zoom-out", L"\xE71F"},
-            {L"zoom-reset", L"\xE71E"}, {L"developer-tools", L"\xE943"},
-            {L"inspect-element", L"\xE721"}, {L"browser-console", L"\xE756"},
-            {L"task-manager", L"\xE9D9"}, {L"print", L"\xE749"},
-            {L"help", L"\xE897"}, {L"help-support", L"\xE897"},
-            {L"help-broken-site", L"\xE7BA"}, {L"help-feedback", L"\xE90A"},
-            {L"help-safe-mode", L"\xE90F"}, {L"help-troubleshooting", L"\xE943"},
-            {L"help-report-deceptive", L"\xE7BA"}, {L"help-not-deceptive", L"\xE73E"},
-            {L"help-switch-device", L"\xE8A1"}, {L"help-about", L"\xE946"},
-            {L"set-default", L"\xE73E"}, {L"settings", L"\xE713"},
-            {L"customize-toolbar", L"\xE771"}, {L"check-updates", L"\xE895"},
+            {L"extensions", L"\xEA86"},
+            {L"extensions-add", L"\xE710"},
+            {L"extensions-manage", L"\xE713"},
+            {L"view", L"\xE890"},
+            {L"view-sidebar", L"\xE90C"},
+            {L"view-autohide-tabs", L"\xE77A"},
+            {L"zoom-in", L"\xE8A3"},
+            {L"zoom-out", L"\xE71F"},
+            {L"zoom-reset", L"\xE71E"},
+            {L"developer-tools", L"\xE943"},
+            {L"inspect-element", L"\xE721"},
+            {L"browser-console", L"\xE756"},
+            {L"task-manager", L"\xE9D9"},
+            {L"print", L"\xE749"},
+            {L"help", L"\xE897"},
+            {L"help-support", L"\xE897"},
+            {L"help-broken-site", L"\xE7BA"},
+            {L"help-feedback", L"\xE90A"},
+            {L"help-safe-mode", L"\xE90F"},
+            {L"help-troubleshooting", L"\xE943"},
+            {L"help-report-deceptive", L"\xE7BA"},
+            {L"help-not-deceptive", L"\xE73E"},
+            {L"help-switch-device", L"\xE8A1"},
+            {L"help-about", L"\xE946"},
+            {L"set-default", L"\xE73E"},
+            {L"settings", L"\xE713"},
+            {L"customize-toolbar", L"\xE771"},
+            {L"check-updates", L"\xE895"},
             {L"quit", L"\xE8BB"},
         };
         for (auto const& entry : entries) {
             if (entry.id != id) continue;
             using namespace Microsoft::UI::Xaml;
-            auto icon = Markup::XamlReader::Load(
-                LR"(<FontIcon xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" FontFamily="{ThemeResource SymbolThemeFontFamily}" FontSize="16" IsHitTestVisible="False"/>)").as<Controls::FontIcon>();
+            auto icon =
+                Markup::XamlReader::Load(
+                    LR"(<FontIcon xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" FontFamily="{ThemeResource SymbolThemeFontFamily}" FontSize="16" IsHitTestVisible="False"/>)")
+                    .as<Controls::FontIcon>();
             icon.Glyph(entry.glyph);
             // ChromeClose has a larger visual footprint than the other glyphs.
             // Keep the stock menu icon slot, with a smaller X inside it.
@@ -306,7 +351,8 @@ struct NativeProductMenu {
                 icon.RenderTransform(scale);
             }
             Automation::AutomationProperties::SetAccessibilityView(icon, Automation::Peers::AccessibilityView::Raw);
-            Automation::AutomationProperties::SetAutomationId(icon, winrt::hstring(L"FennProductMenuIcon-") + winrt::hstring(id));
+            Automation::AutomationProperties::SetAutomationId(
+                icon, winrt::hstring(L"FennProductMenuIcon-") + winrt::hstring(id));
             return icon;
         }
         return nullptr;
@@ -315,8 +361,9 @@ struct NativeProductMenu {
     static Microsoft::UI::Xaml::Controls::IconElement ItemIcon(Object const& item) {
         using namespace Microsoft::UI::Xaml;
         const auto id = item.GetNamedString(L"id");
-        if (!item.HasKey(L"image") || item.GetNamedValue(L"image").ValueType() ==
-            winrt::Windows::Data::Json::JsonValueType::Null) return Icon(id);
+        if (!item.HasKey(L"image") ||
+            item.GetNamedValue(L"image").ValueType() == winrt::Windows::Data::Json::JsonValueType::Null)
+            return Icon(id);
         Controls::ImageIcon icon;
         icon.Source(NativeJson::DecodeImage(item.GetNamedObject(L"image")));
         icon.IsHitTestVisible(false);
@@ -325,7 +372,8 @@ struct NativeProductMenu {
         return icon;
     }
 
-    void Fill(winrt::Windows::Foundation::Collections::IVector<Microsoft::UI::Xaml::Controls::MenuFlyoutItemBase> const& target,
+    void Fill(winrt::Windows::Foundation::Collections::IVector<Microsoft::UI::Xaml::Controls::MenuFlyoutItemBase> const&
+                  target,
               Array const& items) {
         using namespace Microsoft::UI::Xaml;
         using namespace Microsoft::UI::Xaml::Controls;
@@ -360,11 +408,14 @@ struct NativeProductMenu {
                 if (id == L"check-updates") {
                     if (!model.HasKey(L"updateLabels")) return;
                     if (updates->showingResult || updates->installing ||
-                        (updates->checking && (updates->manualCheck || (updates->current && updates->current->status == L"downloading")))) return;
+                        (updates->checking &&
+                         (updates->manualCheck || (updates->current && updates->current->status == L"downloading"))))
+                        return;
                     bool offered = false;
                     for (auto item : model.GetNamedArray(L"items")) {
                         auto current = item.GetObject();
-                        if (current.GetNamedString(L"id", L"") == id && current.GetNamedBoolean(L"enabled", true)) offered = true;
+                        if (current.GetNamedString(L"id", L"") == id && current.GetNamedBoolean(L"enabled", true))
+                            offered = true;
                     }
                     if (!offered) return;
                     if (!updates->current || !updates->current->ready) {
@@ -391,7 +442,8 @@ struct NativeProductMenu {
                 if (flyout && flyout.IsOpen()) {
                     afterClose = std::move(send);
                     flyout.Hide();
-                } else send();
+                } else
+                    send();
             };
             MenuFlyoutItemBase base{nullptr};
             if (checkable) {
@@ -433,9 +485,15 @@ struct NativeProductMenu {
         }
         if (!enabled || !model || model.Size() == 0) return;
         auto source = anchor ? anchor : button;
-        if (!source.IsEnabled() || source.Visibility() != Visibility::Visible) { Close(); return; }
+        if (!source.IsEnabled() || source.Visibility() != Visibility::Visible) {
+            Close();
+            return;
+        }
         if (!refreshed && model.GetNamedBoolean(L"refreshOnOpen", false) && dispatch) {
-            if (!pendingRequest.empty()) { pendingRequest = L""; return; }
+            if (!pendingRequest.empty()) {
+                pendingRequest = L"";
+                return;
+            }
             static uint64_t serial = 0;
             pendingRequest = L"open-" + winrt::to_hstring(GetTickCount64()) + L"-" + winrt::to_hstring(++serial);
             dispatch((std::wstring(L"product:") + pendingRequest.c_str()).c_str(), Modifiers(), source);
@@ -446,9 +504,13 @@ struct NativeProductMenu {
             Object root;
             for (auto value : items) {
                 auto entry = value.GetObject();
-                if (entry.GetNamedString(L"id", L"") == rootId && entry.GetNamedString(L"kind") == L"submenu") root = entry;
+                if (entry.GetNamedString(L"id", L"") == rootId && entry.GetNamedString(L"kind") == L"submenu")
+                    root = entry;
             }
-            if (!root.HasKey(L"items") || !root.GetNamedBoolean(L"enabled", true)) { Close(); return; }
+            if (!root.HasKey(L"items") || !root.GetNamedBoolean(L"enabled", true)) {
+                Close();
+                return;
+            }
             items = root.GetNamedArray(L"items");
         }
         flyout = MenuFlyout();
@@ -469,7 +531,7 @@ struct NativeProductMenu {
         });
         const bool alignRight = (source.FlowDirection() == FlowDirection::RightToLeft) == rootId.empty();
         flyout.Placement(alignRight ? Primitives::FlyoutPlacementMode::BottomEdgeAlignedRight
-            : Primitives::FlyoutPlacementMode::BottomEdgeAlignedLeft);
+                                    : Primitives::FlyoutPlacementMode::BottomEdgeAlignedLeft);
         Fill(flyout.Items(), items);
         RefreshUpdateItem();
         flyout.ShowAt(source);

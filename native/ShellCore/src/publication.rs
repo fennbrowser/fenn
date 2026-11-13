@@ -95,7 +95,12 @@ impl<R: Copy + Ord + From<u8>> Stream<R> {
             kind,
             revision: R::from(0),
             fingerprint: Vec::new(),
-            counts: ShellPublicationCounts { accepted: 0, unchanged: 0, ignored: 0, refused: 0 },
+            counts: ShellPublicationCounts {
+                accepted: 0,
+                unchanged: 0,
+                ignored: 0,
+                refused: 0,
+            },
         }
     }
 
@@ -147,7 +152,8 @@ impl<R: Copy + Ord + From<u8>> Stream<R> {
 
     /// Classify and apply the kind's policy in one step.
     pub fn check(&self, base: R, revision: R, fingerprint: &[u16]) -> Result<bool, ()> {
-        self.classify(base, revision, fingerprint).outcome(self.kind)
+        self.classify(base, revision, fingerprint)
+            .outcome(self.kind)
     }
 
     /// Record an accepted publication. Call only after the caller has applied
@@ -255,10 +261,22 @@ mod tests {
             delta.record(class);
             menu.record(class);
         }
-        let counts = |accepted, unchanged, ignored, refused|
-            ShellPublicationCounts { accepted, unchanged, ignored, refused };
-        assert_eq!(delta.counts(), counts(1, 1, 0, 4), "a late delta is refused");
-        assert_eq!(menu.counts(), counts(1, 1, 1, 3), "a late snapshot is ignored");
+        let counts = |accepted, unchanged, ignored, refused| ShellPublicationCounts {
+            accepted,
+            unchanged,
+            ignored,
+            refused,
+        };
+        assert_eq!(
+            delta.counts(),
+            counts(1, 1, 0, 4),
+            "a late delta is refused"
+        );
+        assert_eq!(
+            menu.counts(),
+            counts(1, 1, 1, 3),
+            "a late snapshot is ignored"
+        );
         delta.reset();
         assert_eq!(delta.counts(), counts(1, 1, 0, 4));
     }
@@ -272,19 +290,27 @@ mod tests {
                     for revision in 0..8u32 {
                         for same in [false, true] {
                             let fp = [if same { held as u16 } else { 99 }];
-                            let expected = if revision == 0 || (base != 0 && kind != StreamKind::Delta) {
-                                Invalid
-                            } else if revision < held {
-                                Stale
-                            } else if revision == held {
-                                if same { Unchanged } else { Conflict }
-                            } else if base != 0 && base != held {
-                                Gap
-                            } else {
-                                Accepted
-                            };
-                            assert_eq!(s.classify(base, revision, &fp), expected,
-                                "{kind:?} held {held} base {base} revision {revision} same {same}");
+                            let expected =
+                                if revision == 0 || (base != 0 && kind != StreamKind::Delta) {
+                                    Invalid
+                                } else if revision < held {
+                                    Stale
+                                } else if revision == held {
+                                    if same {
+                                        Unchanged
+                                    } else {
+                                        Conflict
+                                    }
+                                } else if base != 0 && base != held {
+                                    Gap
+                                } else {
+                                    Accepted
+                                };
+                            assert_eq!(
+                                s.classify(base, revision, &fp),
+                                expected,
+                                "{kind:?} held {held} base {base} revision {revision} same {same}"
+                            );
                         }
                     }
                 }

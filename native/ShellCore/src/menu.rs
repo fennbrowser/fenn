@@ -1,7 +1,7 @@
 //! Native menu protocol identity. Firefox owns command meaning and eligibility;
 //! WinUI supplies the enabled opaque IDs of the rendered description.
-use std::collections::BTreeSet;
 use crate::publication::{Classification, ShellPublicationCounts, Stream, StreamKind};
+use std::collections::BTreeSet;
 pub const MAX_TABS: usize = 10_000;
 pub const MAX_COMMANDS: usize = 128;
 pub const MAX_ID: usize = 64;
@@ -26,22 +26,47 @@ pub struct MenuState {
 }
 impl Default for MenuState {
     fn default() -> Self {
-        Self { state: ShellMenuState::default(), next_session: 0, tabs: BTreeSet::new(),
-            stream: Stream::new(StreamKind::Delta), enabled: BTreeSet::new() }
+        Self {
+            state: ShellMenuState::default(),
+            next_session: 0,
+            tabs: BTreeSet::new(),
+            stream: Stream::new(StreamKind::Delta),
+            enabled: BTreeSet::new(),
+        }
     }
 }
 impl MenuState {
-    pub fn state(&self) -> ShellMenuState { self.state }
-    pub fn has_tab(&self, id: u32) -> bool { self.tabs.contains(&id) }
-    pub fn counts(&self) -> ShellPublicationCounts { self.stream.counts() }
-    pub fn publish(&mut self, revision: u32, tabs: &[u32], fingerprint: &[u16]) -> Result<bool, ()> {
-        let refuse = |stream: &mut Stream| { stream.record(Classification::Invalid); Err(()) };
-        if tabs.len() > MAX_TABS || fingerprint.len() > MAX_FINGERPRINT { return refuse(&mut self.stream); }
+    pub fn state(&self) -> ShellMenuState {
+        self.state
+    }
+    pub fn has_tab(&self, id: u32) -> bool {
+        self.tabs.contains(&id)
+    }
+    pub fn counts(&self) -> ShellPublicationCounts {
+        self.stream.counts()
+    }
+    pub fn publish(
+        &mut self,
+        revision: u32,
+        tabs: &[u32],
+        fingerprint: &[u16],
+    ) -> Result<bool, ()> {
+        let refuse = |stream: &mut Stream| {
+            stream.record(Classification::Invalid);
+            Err(())
+        };
+        if tabs.len() > MAX_TABS || fingerprint.len() > MAX_FINGERPRINT {
+            return refuse(&mut self.stream);
+        }
         let members: BTreeSet<_> = tabs.iter().copied().collect();
-        if members.contains(&0) || members.len() != tabs.len() { return refuse(&mut self.stream); }
+        if members.contains(&0) || members.len() != tabs.len() {
+            return refuse(&mut self.stream);
+        }
         let class = self.stream.classify(0, revision, fingerprint);
         self.stream.record(class);
-        if !class.outcome(self.stream.kind())? { return Ok(false); }
+        if !class.outcome(self.stream.kind())? {
+            return Ok(false);
+        }
         self.tabs = members;
         self.stream.commit(revision, fingerprint);
         self.state.state_revision = revision;
@@ -53,7 +78,13 @@ impl MenuState {
         let keep: BTreeSet<_> = ids.iter().copied().collect();
         self.tabs.retain(|id| keep.contains(id));
     }
-    pub fn selection(&mut self, base: u32, revision: u32, selected: &[u32], fingerprint: &[u16]) -> Result<bool, ()> {
+    pub fn selection(
+        &mut self,
+        base: u32,
+        revision: u32,
+        selected: &[u32],
+        fingerprint: &[u16],
+    ) -> Result<bool, ()> {
         if base == 0 || selected.len() > MAX_TABS || fingerprint.len() > MAX_FINGERPRINT {
             self.stream.record(Classification::Invalid);
             return Err(());
@@ -65,7 +96,9 @@ impl MenuState {
         }
         let class = self.stream.classify(base, revision, fingerprint);
         self.stream.record(class);
-        if !class.outcome(self.stream.kind())? { return Ok(false); }
+        if !class.outcome(self.stream.kind())? {
+            return Ok(false);
+        }
         // Selection is a complete, bounded presentation set; the presenter
         // copies it only after this membership/revision validation succeeds.
         // Retain the existing membership instead of reconstructing every tab.
@@ -75,7 +108,9 @@ impl MenuState {
     }
     pub fn open(&mut self, tab: u32) -> bool {
         self.dismiss();
-        if !self.has_tab(tab) || self.next_session == u32::MAX { return false; }
+        if !self.has_tab(tab) || self.next_session == u32::MAX {
+            return false;
+        }
         self.next_session += 1;
         self.state.session = self.next_session;
         self.state.tab = tab;
@@ -84,30 +119,60 @@ impl MenuState {
         true
     }
     pub fn dismiss(&mut self) {
-        self.state = ShellMenuState { state_revision: self.state.state_revision, ..Default::default() };
+        self.state = ShellMenuState {
+            state_revision: self.state.state_revision,
+            ..Default::default()
+        };
         self.enabled.clear();
     }
     pub fn close(&mut self) {
-        self.dismiss(); self.tabs.clear(); self.stream.reset(); self.state.state_revision = 0;
+        self.dismiss();
+        self.tabs.clear();
+        self.stream.reset();
+        self.state.state_revision = 0;
         // Never reuse a session ID within this endpoint, even after cancellation.
     }
     pub fn matches(&self, session: u32, tab: u32, revision: u32) -> bool {
-        session != 0 && session == self.state.session && tab == self.state.tab &&
-            revision == self.state.revision && revision == self.state.state_revision &&
-            self.state.awaiting != 0 && self.has_tab(tab)
+        session != 0
+            && session == self.state.session
+            && tab == self.state.tab
+            && revision == self.state.revision
+            && revision == self.state.state_revision
+            && self.state.awaiting != 0
+            && self.has_tab(tab)
     }
-    pub fn accept(&mut self, session: u32, tab: u32, revision: u32, ids: &[Vec<u16>]) -> Result<bool, ()> {
-        if ids.len() > MAX_COMMANDS || ids.iter().any(|id| id.is_empty() || id.len() > MAX_ID) { return Err(()); }
+    pub fn accept(
+        &mut self,
+        session: u32,
+        tab: u32,
+        revision: u32,
+        ids: &[Vec<u16>],
+    ) -> Result<bool, ()> {
+        if ids.len() > MAX_COMMANDS || ids.iter().any(|id| id.is_empty() || id.len() > MAX_ID) {
+            return Err(());
+        }
         let enabled: BTreeSet<_> = ids.iter().cloned().collect();
-        if enabled.len() != ids.len() { return Err(()); }
-        if !self.matches(session,tab,revision) { return Ok(false); }
-        self.enabled = enabled; self.state.awaiting = 0;
+        if enabled.len() != ids.len() {
+            return Err(());
+        }
+        if !self.matches(session, tab, revision) {
+            return Ok(false);
+        }
+        self.enabled = enabled;
+        self.state.awaiting = 0;
         Ok(true)
     }
     pub fn activate(&mut self, session: u32, revision: u32, id: &[u16]) -> bool {
-        if session == 0 || session != self.state.session || revision != self.state.revision ||
-            revision != self.state.state_revision || self.state.awaiting != 0 ||
-            !self.has_tab(self.state.tab) || !self.enabled.contains(id) { return false; }
+        if session == 0
+            || session != self.state.session
+            || revision != self.state.revision
+            || revision != self.state.state_revision
+            || self.state.awaiting != 0
+            || !self.has_tab(self.state.tab)
+            || !self.enabled.contains(id)
+        {
+            return false;
+        }
         self.enabled.clear();
         true
     }
@@ -116,93 +181,146 @@ impl MenuState {
 #[cfg(test)]
 mod tests {
     use super::*;
-    fn id(value: &str) -> Vec<u16> { value.encode_utf16().collect() }
+    fn id(value: &str) -> Vec<u16> {
+        value.encode_utf16().collect()
+    }
     fn menu() -> MenuState {
-        let mut m=MenuState::default(); assert_eq!(m.publish(1,&[7,8],&id("state1")),Ok(true));m
+        let mut m = MenuState::default();
+        assert_eq!(m.publish(1, &[7, 8], &id("state1")), Ok(true));
+        m
     }
     #[test]
     fn opening_requires_membership_and_exhaustion_never_wraps() {
-        let mut m=menu(); assert!(!m.open(9)); assert!(m.open(7));
-        assert_eq!(m.state().session,1); assert_eq!(m.state().awaiting,1);
-        m.dismiss(); assert!(m.open(8)); assert_eq!(m.state().session,2);
-        m.next_session=u32::MAX; assert!(!m.open(7)); assert_eq!(m.state().session,0);
+        let mut m = menu();
+        assert!(!m.open(9));
+        assert!(m.open(7));
+        assert_eq!(m.state().session, 1);
+        assert_eq!(m.state().awaiting, 1);
+        m.dismiss();
+        assert!(m.open(8));
+        assert_eq!(m.state().session, 2);
+        m.next_session = u32::MAX;
+        assert!(!m.open(7));
+        assert_eq!(m.state().session, 0);
     }
     #[test]
     fn description_requires_exact_live_opening_and_is_accepted_once() {
-        let mut m=menu(); m.open(7); let s=m.state().session;
-        for (session,tab,revision) in [(s+1,7,1),(s,8,1),(s,7,2)] {
-            assert_eq!(m.accept(session,tab,revision,&[id("reload")]),Ok(false));
+        let mut m = menu();
+        m.open(7);
+        let s = m.state().session;
+        for (session, tab, revision) in [(s + 1, 7, 1), (s, 8, 1), (s, 7, 2)] {
+            assert_eq!(m.accept(session, tab, revision, &[id("reload")]), Ok(false));
         }
-        assert!(!m.activate(s,1,&id("reload")));
-        assert_eq!(m.accept(s,7,1,&[id("reload")]),Ok(true));
-        assert_eq!(m.accept(s,7,1,&[id("close")]),Ok(false));
-        assert!(!m.activate(s,1,&id("close"))); assert!(m.activate(s,1,&id("reload")));
-        assert!(!m.activate(s,1,&id("reload")));
+        assert!(!m.activate(s, 1, &id("reload")));
+        assert_eq!(m.accept(s, 7, 1, &[id("reload")]), Ok(true));
+        assert_eq!(m.accept(s, 7, 1, &[id("close")]), Ok(false));
+        assert!(!m.activate(s, 1, &id("close")));
+        assert!(m.activate(s, 1, &id("reload")));
+        assert!(!m.activate(s, 1, &id("reload")));
     }
     #[test]
     fn dismissal_retarget_and_revision_revoke_old_answers_and_clicks() {
-        let mut m=menu(); m.open(7); let s=m.state().session;
-        m.dismiss(); assert_eq!(m.accept(s,7,1,&[id("a")]),Ok(false));
-        m.open(8); let newer=m.state().session;
-        assert_eq!(m.accept(newer,8,1,&[id("a")]),Ok(true));
-        assert!(!m.activate(s,1,&id("a")));
-        m.publish(2,&[7,8],&id("state2")).unwrap();
-        assert!(!m.activate(newer,1,&id("a")));
-        assert!(!m.matches(newer,8,1));
+        let mut m = menu();
+        m.open(7);
+        let s = m.state().session;
+        m.dismiss();
+        assert_eq!(m.accept(s, 7, 1, &[id("a")]), Ok(false));
+        m.open(8);
+        let newer = m.state().session;
+        assert_eq!(m.accept(newer, 8, 1, &[id("a")]), Ok(true));
+        assert!(!m.activate(s, 1, &id("a")));
+        m.publish(2, &[7, 8], &id("state2")).unwrap();
+        assert!(!m.activate(newer, 1, &id("a")));
+        assert!(!m.matches(newer, 8, 1));
     }
     #[test]
     fn publication_validation_is_atomic_and_late_contexts_require_recovery() {
-        let mut m=menu();m.open(7);let before=m.state();
-        for (revision,tabs,fingerprint) in [(2,vec![7,7],id("duplicate")),(2,vec![0],id("zero")),(1,vec![7],id("conflict")),(0,vec![7],id("zero revision"))] {
-            assert_eq!(m.publish(revision,&tabs,&fingerprint),Err(()));assert_eq!(m.state(),before);
+        let mut m = menu();
+        m.open(7);
+        let before = m.state();
+        for (revision, tabs, fingerprint) in [
+            (2, vec![7, 7], id("duplicate")),
+            (2, vec![0], id("zero")),
+            (1, vec![7], id("conflict")),
+            (0, vec![7], id("zero revision")),
+        ] {
+            assert_eq!(m.publish(revision, &tabs, &fingerprint), Err(()));
+            assert_eq!(m.state(), before);
             assert!(m.has_tab(8));
         }
-        assert_eq!(m.publish(1,&[7,8],&id("state1")),Ok(false));
-        m.publish(3,&[8],&id("state3")).unwrap();
-        assert_eq!(m.publish(2,&[7],&id("state2")),Err(()));assert!(!m.has_tab(7));
+        assert_eq!(m.publish(1, &[7, 8], &id("state1")), Ok(false));
+        m.publish(3, &[8], &id("state3")).unwrap();
+        assert_eq!(m.publish(2, &[7], &id("state2")), Err(()));
+        assert!(!m.has_tab(7));
     }
     #[test]
     fn selection_context_retains_membership_and_revokes_old_menu_actions() {
-        let mut m=menu();m.open(7);let s=m.state().session;
-        m.accept(s,7,1,&[id("reload")]).unwrap();
-        assert_eq!(m.selection(1,2,&[8],&id("selection2")),Ok(true));
+        let mut m = menu();
+        m.open(7);
+        let s = m.state().session;
+        m.accept(s, 7, 1, &[id("reload")]).unwrap();
+        assert_eq!(m.selection(1, 2, &[8], &id("selection2")), Ok(true));
         assert!(m.has_tab(7) && m.has_tab(8));
-        assert!(!m.activate(s,1,&id("reload")));
-        assert_eq!(m.selection(1,2,&[8],&id("selection2")),Ok(false));
-        assert_eq!(m.state().state_revision,2);
-        assert_eq!(m.selection(2,3,&[],&id("empty")),Ok(true));
+        assert!(!m.activate(s, 1, &id("reload")));
+        assert_eq!(m.selection(1, 2, &[8], &id("selection2")), Ok(false));
+        assert_eq!(m.state().state_revision, 2);
+        assert_eq!(m.selection(2, 3, &[], &id("empty")), Ok(true));
         assert!(m.has_tab(7));
     }
     #[test]
     fn invalid_selection_contexts_are_atomic_and_recover_once_with_membership() {
-        let mut m=menu();let before=m.state();
-        for (base,revision,selected,print) in [(0,2,vec![7],"zero base"),(8,9,vec![7],"gap"),
-            (1,2,vec![7,7],"duplicate"),(1,2,vec![9],"unknown"),(1,2,vec![0],"zero"),
-            (1,1,vec![7],"conflict")] {
-            assert_eq!(m.selection(base,revision,&selected,&id(print)),Err(()));
-            assert_eq!(m.state(),before);
+        let mut m = menu();
+        let before = m.state();
+        for (base, revision, selected, print) in [
+            (0, 2, vec![7], "zero base"),
+            (8, 9, vec![7], "gap"),
+            (1, 2, vec![7, 7], "duplicate"),
+            (1, 2, vec![9], "unknown"),
+            (1, 2, vec![0], "zero"),
+            (1, 1, vec![7], "conflict"),
+        ] {
+            assert_eq!(m.selection(base, revision, &selected, &id(print)), Err(()));
+            assert_eq!(m.state(), before);
         }
-        m.publish(3,&[8,9],&id("recovered")).unwrap();
-        assert_eq!(m.selection(3,4,&[9],&id("next")),Ok(true));
+        m.publish(3, &[8, 9], &id("recovered")).unwrap();
+        assert_eq!(m.selection(3, 4, &[9], &id("next")), Ok(true));
         assert!(!m.has_tab(7));
-        assert_eq!(m.selection(1,2,&[8],&id("late")),Err(()));
-        m.close();assert_eq!(m.selection(4,5,&[],&id("closed")),Err(()));
+        assert_eq!(m.selection(1, 2, &[8], &id("late")), Err(()));
+        m.close();
+        assert_eq!(m.selection(4, 5, &[], &id("closed")), Err(()));
     }
     #[test]
     fn invalid_command_sets_do_not_consume_pending_description() {
-        let mut m=menu();m.open(7);let s=m.state().session;
-        for commands in [vec![id("")],vec![vec![65;65]],vec![id("a"),id("a")],vec![id("a");129]] {
-            assert_eq!(m.accept(s,7,1,&commands),Err(()));assert_eq!(m.state().awaiting,1);
+        let mut m = menu();
+        m.open(7);
+        let s = m.state().session;
+        for commands in [
+            vec![id("")],
+            vec![vec![65; 65]],
+            vec![id("a"), id("a")],
+            vec![id("a"); 129],
+        ] {
+            assert_eq!(m.accept(s, 7, 1, &commands), Err(()));
+            assert_eq!(m.state().awaiting, 1);
         }
-        assert_eq!(m.accept(s,7,1,&[]),Ok(true));assert!(!m.activate(s,1,&id("disabled")));
+        assert_eq!(m.accept(s, 7, 1, &[]), Ok(true));
+        assert!(!m.activate(s, 1, &id("disabled")));
     }
     #[test]
     fn pruning_and_close_revoke_actions_without_reusing_session_ids() {
-        let mut m=menu();m.open(7);let s=m.state().session;
-        m.accept(s,7,1,&[id("a")]).unwrap();m.retain(&[8]);
-        assert!(!m.has_tab(7));assert!(!m.activate(s,1,&id("a")));
-        m.close();assert!(!m.open(8));assert_eq!(m.state().state_revision,0);
-        m.publish(1,&[7],&id("new state")).unwrap();m.open(7);
-        assert!(m.state().session>s);assert_eq!(m.accept(s,7,1,&[id("a")]),Ok(false));
+        let mut m = menu();
+        m.open(7);
+        let s = m.state().session;
+        m.accept(s, 7, 1, &[id("a")]).unwrap();
+        m.retain(&[8]);
+        assert!(!m.has_tab(7));
+        assert!(!m.activate(s, 1, &id("a")));
+        m.close();
+        assert!(!m.open(8));
+        assert_eq!(m.state().state_revision, 0);
+        m.publish(1, &[7], &id("new state")).unwrap();
+        m.open(7);
+        assert!(m.state().session > s);
+        assert_eq!(m.accept(s, 7, 1, &[id("a")]), Ok(false));
     }
 }

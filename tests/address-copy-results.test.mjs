@@ -4,7 +4,7 @@ import {readFileSync} from 'node:fs';
 import vm from 'node:vm';
 const context=vm.createContext({console,UrlbarShared:{RESULT_TYPE:{DYNAMIC:6,SEARCH:2,URL:3,TAB_SWITCH:4}}});
 vm.runInContext(readFileSync(new URL('../upstream/firefox/browser/base/content/WinUIAddressSession.sys.mjs',import.meta.url),'utf8')
- .replace(/^import .*;$/m,'').replace('export class WinUIAddressSession','this.Session = class WinUIAddressSession'),context);
+ .replace(/^import\b[^;]*;$/m,'').replace('export class WinUIAddressSession','this.Session = class WinUIAddressSession'),context);
 function fixture(kind='calculator') {
  const s=Object.create(context.Session.prototype), row={id:'r'};
  const result={type:6,providerName:kind==='calculator'?'UrlbarProviderCalculator':'UrlbarProviderUnitConversion',payload:{dynamicType:kind}};

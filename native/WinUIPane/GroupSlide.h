@@ -7,12 +7,33 @@
 struct GroupSlide {
     using Element = FrameworkElement;
     using Rect = Windows::Foundation::Rect;
-    struct Frame { Element element{nullptr}; Rect bounds{}; };
-    struct Moving { Element element{nullptr}; Media::Transform previous{nullptr}; };
-    struct Ghost { Controls::Border clipper{nullptr}; Rect bounds{}; uint32_t tab{}; };
-    struct Borrowed { Controls::TabViewItem source{nullptr}, ghost{nullptr}; Windows::Foundation::IInspectable content{nullptr}; };
-    struct InputState { UIElement element{nullptr}; bool hitTest{}; Automation::Peers::AccessibilityView accessibility{}; hstring id; };
-    struct Resize { Controls::TabViewItem row{nullptr}; double from{}, to{}, minWidth{}, maxWidth{}; };
+    struct Frame {
+        Element element{nullptr};
+        Rect bounds{};
+    };
+    struct Moving {
+        Element element{nullptr};
+        Media::Transform previous{nullptr};
+    };
+    struct Ghost {
+        Controls::Border clipper{nullptr};
+        Rect bounds{};
+        uint32_t tab{};
+    };
+    struct Borrowed {
+        Controls::TabViewItem source{nullptr}, ghost{nullptr};
+        Windows::Foundation::IInspectable content{nullptr};
+    };
+    struct InputState {
+        UIElement element{nullptr};
+        bool hitTest{};
+        Automation::Peers::AccessibilityView accessibility{};
+        hstring id;
+    };
+    struct Resize {
+        Controls::TabViewItem row{nullptr};
+        double from{}, to{}, minWidth{}, maxWidth{};
+    };
     std::vector<Borrowed> borrowed;
     std::vector<InputState> inputStates;
     std::map<uint64_t, Frame> before;
@@ -47,34 +68,56 @@ struct GroupSlide {
         return Windows::UI::ViewManagement::UISettings().AnimationsEnabled();
     }
     static Rect Bounds(Element const& element, Element const& relative) {
-        return element.TransformToVisual(relative).TransformBounds({0,0,float(element.ActualWidth()),float(element.ActualHeight())});
+        return element.TransformToVisual(relative).TransformBounds(
+            {0, 0, float(element.ActualWidth()), float(element.ActualHeight())});
     }
     // Grouped-source rows can be measured and arranged while IsLoaded stays
     // false, so a nonzero arranged width also marks a placed element.
-    static bool Placed(Element const& element) {
-        return element && (element.IsLoaded() || element.ActualWidth() > 0);
+    static bool Placed(Element const& element) { return element && (element.IsLoaded() || element.ActualWidth() > 0); }
+    ~GroupSlide() {
+        life.reset();
+        try {
+            Cancel();
+        } catch (...) {}
     }
-    ~GroupSlide() { life.reset(); try { Cancel(); } catch (...) {} }
     void Cancel() noexcept {
         pending = false;
-        if (observing) { try { Media::CompositionTarget::Rendering(rendering); } catch (...) {} observing = false; }
-        if (storyboard) { try { storyboard.Stop(); } catch (...) {} storyboard = nullptr; }
+        if (observing) {
+            try {
+                Media::CompositionTarget::Rendering(rendering);
+            } catch (...) {}
+            observing = false;
+        }
+        if (storyboard) {
+            try {
+                storyboard.Stop();
+            } catch (...) {}
+            storyboard = nullptr;
+        }
         if (resizing) {
             // Stopping removed the animated limits; let the caps settle on the
             // final layout even when no limit changed value at the end.
             resizing = false;
-            try { if (viewport) viewport.InvalidateMeasure(); } catch (...) {}
+            try {
+                if (viewport) viewport.InvalidateMeasure();
+            } catch (...) {}
         }
         if (holdingViewport) {
             holdingViewport = false;
-            try { viewport.MinWidth(savedMinWidth); } catch (...) {}
+            try {
+                viewport.MinWidth(savedMinWidth);
+            } catch (...) {}
         }
-        for (auto& item : moving) { try { item.element.RenderTransform(item.previous); } catch (...) {} }
+        for (auto& item : moving) {
+            try {
+                item.element.RenderTransform(item.previous);
+            } catch (...) {}
+        }
         for (auto& item : inputStates) {
             try {
                 item.element.IsHitTestVisible(item.hitTest);
-                Automation::AutomationProperties::SetAccessibilityView(item.element,item.accessibility);
-                Automation::AutomationProperties::SetAutomationId(item.element,item.id);
+                Automation::AutomationProperties::SetAccessibilityView(item.element, item.accessibility);
+                Automation::AutomationProperties::SetAutomationId(item.element, item.id);
             } catch (...) {}
         }
         inputStates.clear();
@@ -85,36 +128,51 @@ struct GroupSlide {
             } catch (...) {}
         }
         borrowed.clear();
-        moving.clear(); departing.clear(); active = nullptr;
-        if (overlay) { try { overlay.Children().Clear(); } catch (...) {} }
-        before.clear(); returning.clear(); plan.clear();
+        moving.clear();
+        departing.clear();
+        active = nullptr;
+        if (overlay) {
+            try {
+                overlay.Children().Clear();
+            } catch (...) {}
+        }
+        before.clear();
+        returning.clear();
+        plan.clear();
     }
     void Remember(uint64_t key, Element const& element) {
         if (!Placed(element) || before.size() >= 128) return;
         Rect bounds{};
-        try { bounds = Bounds(element, root); } catch (...) { return; }
+        try {
+            bounds = Bounds(element, root);
+        } catch (...) {
+            return;
+        }
         if (bounds.Width <= 0 || bounds.X + bounds.Width <= 0 || bounds.X >= root.ActualWidth()) return;
         before.emplace(key, Frame{element, bounds});
     }
-    void Prepare(Controls::Grid const& owner, Controls::TabView const& view,
-                 Controls::ListViewBase const& list,
-                 std::map<uint32_t, Controls::TabViewItem> const& rows,
-                 InlineTabGroups const& groups, Controls::Button const& add,
-                 std::vector<ShellGroupMotionRow> changes) {
-        if (changes.empty() || !Enabled() || !owner.IsLoaded()) { Cancel(); return; }
+    void Prepare(Controls::Grid const& owner, Controls::TabView const& view, Controls::ListViewBase const& list,
+                 std::map<uint32_t, Controls::TabViewItem> const& rows, InlineTabGroups const& groups,
+                 Controls::Button const& add, std::vector<ShellGroupMotionRow> changes) {
+        if (changes.empty() || !Enabled() || !owner.IsLoaded()) {
+            Cancel();
+            return;
+        }
         // Sample live rows and departing faces before stopping their timelines.
         // A reversal must start where the previous frame drew them, not at the
         // old animation's destination. Ghosts supply geometry only; Firefox's
         // newly published rows remain the sole interactive controls.
         std::map<uint32_t, Rect> reversed;
         for (auto const& ghost : departing) {
-            try { reversed.emplace(ghost.tab, Bounds(ghost.clipper.Child().as<Element>(), owner)); }
-            catch (...) {}
+            try {
+                reversed.emplace(ghost.tab, Bounds(ghost.clipper.Child().as<Element>(), owner));
+            } catch (...) {}
         }
         before.clear();
         root = owner;
         for (auto const& [id, row] : rows) Remember(id, row);
-        for (auto const& [id, run] : groups.runs) if (run.button) Remember(GroupKey(uint32_t(id)), run.button);
+        for (auto const& [id, run] : groups.runs)
+            if (run.button) Remember(GroupKey(uint32_t(id)), run.button);
         Remember(AddKey, add);
         auto displayed = std::move(before);
         const auto displayedWidth = list ? list.ActualWidth() : 0;
@@ -142,15 +200,16 @@ struct GroupSlide {
     // including their close buttons and any other descendants in the UIA tree.
     static void MakeVisualOnly(DependencyObject const& node, std::vector<InputState>* restore = nullptr) {
         if (auto element = node.try_as<UIElement>()) {
-            if (restore) restore->push_back({element,element.IsHitTestVisible(),
-                Automation::AutomationProperties::GetAccessibilityView(element),
-                Automation::AutomationProperties::GetAutomationId(element)});
+            if (restore)
+                restore->push_back({element, element.IsHitTestVisible(),
+                                    Automation::AutomationProperties::GetAccessibilityView(element),
+                                    Automation::AutomationProperties::GetAutomationId(element)});
             element.IsHitTestVisible(false);
             Automation::AutomationProperties::SetAccessibilityView(element, Automation::Peers::AccessibilityView::Raw);
             Automation::AutomationProperties::SetAutomationId(element, L"");
         }
         for (int i = 0; i < Media::VisualTreeHelper::GetChildrenCount(node); ++i)
-            MakeVisualOnly(Media::VisualTreeHelper::GetChild(node, i),restore);
+            MakeVisualOnly(Media::VisualTreeHelper::GetChild(node, i), restore);
     }
     void Slide(Element const& element, double from, double to) {
         if (std::abs(from - to) < .5) return;
@@ -159,8 +218,10 @@ struct GroupSlide {
         element.RenderTransform(transform);
         transform.X(to);
         Media::Animation::DoubleAnimation animation;
-        animation.From(from); animation.To(to);
-        animation.Duration(Duration{Windows::Foundation::TimeSpan{InlineTabGroups::MotionDuration}, DurationType::TimeSpan});
+        animation.From(from);
+        animation.To(to);
+        animation.Duration(
+            Duration{Windows::Foundation::TimeSpan{InlineTabGroups::MotionDuration}, DurationType::TimeSpan});
         auto ease = TabMotion::Ease();
         animation.EasingFunction(ease);
         Media::Animation::Storyboard::SetTarget(animation, transform);
@@ -173,22 +234,29 @@ struct GroupSlide {
             // Transform into each clipper's local coordinates. Subtracting
             // root-space X positions is incorrect when RTL mirrors that space.
             const auto a = Bounds(active, ghost.clipper);
-            Rect clip{0,0,ghost.bounds.Width,ghost.bounds.Height};
+            Rect clip{0, 0, ghost.bounds.Width, ghost.bounds.Height};
             if (a.X < clip.Width && a.X + a.Width > 0) {
                 const auto left = std::clamp(a.X, 0.0f, clip.Width);
                 const auto rightEdge = std::clamp(a.X + a.Width, 0.0f, clip.Width);
-                if (left >= clip.Width - rightEdge) clip.Width = left;
-                else { clip.X = rightEdge; clip.Width -= rightEdge; }
+                if (left >= clip.Width - rightEdge)
+                    clip.Width = left;
+                else {
+                    clip.X = rightEdge;
+                    clip.Width -= rightEdge;
+                }
             }
             ghost.clipper.Clip().as<Media::RectangleGeometry>().Rect(clip);
         }
     }
-    void Commit(std::map<uint32_t, Controls::TabViewItem> const& rows,
-                InlineTabGroups const& groups, Controls::Button const& add, uint32_t activeId,
-                bool retainDeparting = false, uint32_t draggedGroup = 0) {
+    void Commit(std::map<uint32_t, Controls::TabViewItem> const& rows, InlineTabGroups const& groups,
+                Controls::Button const& add, uint32_t activeId, bool retainDeparting = false,
+                uint32_t draggedGroup = 0) {
         if (!pending) return;
         pending = false;
-        if (!Enabled()) { Cancel(); return; }
+        if (!Enabled()) {
+            Cancel();
+            return;
+        }
         root.UpdateLayout();
         const auto finalAdd = add ? Bounds(add, root).X : 0;
         // Equal-width tabs change size when a group opens into or leaves a full
@@ -221,32 +289,49 @@ struct GroupSlide {
         if (!resizes.empty()) {
             resizing = true;
             std::map<uint64_t, Element> tracked;
-            for (auto const& [id, row] : rows) if (Placed(row)) tracked.emplace(id, row);
-            for (auto const& [id, run] : groups.runs) if (Placed(run.button)) tracked.emplace(GroupKey(uint32_t(id)), run.button);
+            for (auto const& [id, row] : rows)
+                if (Placed(row)) tracked.emplace(id, row);
+            for (auto const& [id, run] : groups.runs)
+                if (Placed(run.button)) tracked.emplace(GroupKey(uint32_t(id)), run.button);
             if (Placed(add)) tracked.emplace(AddKey, add);
             std::map<uint64_t, double> finalX;
             for (auto const& [key, element] : tracked) finalX.emplace(key, Bounds(element, root).X);
             auto restore = [&] {
-                for (auto const& item : resizes) { item.row.MinWidth(item.minWidth); item.row.MaxWidth(item.maxWidth); }
+                for (auto const& item : resizes) {
+                    item.row.MinWidth(item.minWidth);
+                    item.row.MaxWidth(item.maxWidth);
+                }
             };
             try {
-                for (auto const& item : resizes) { item.row.MinWidth(item.from); item.row.MaxWidth(item.from); }
+                for (auto const& item : resizes) {
+                    item.row.MinWidth(item.from);
+                    item.row.MaxWidth(item.from);
+                }
                 root.UpdateLayout();
-                for (auto const& [key, element] : tracked) reflow.emplace(key, Bounds(element, root).X - finalX.at(key));
-            } catch (...) { restore(); throw; }
+                for (auto const& [key, element] : tracked)
+                    reflow.emplace(key, Bounds(element, root).X - finalX.at(key));
+            } catch (...) {
+                restore();
+                throw;
+            }
             restore();
             root.UpdateLayout();
         }
-        auto shift = [&](uint64_t key) { auto found = reflow.find(key); return found == reflow.end() ? 0.0 : found->second; };
+        auto shift = [&](uint64_t key) {
+            auto found = reflow.find(key);
+            return found == reflow.end() ? 0.0 : found->second;
+        };
         storyboard = Media::Animation::Storyboard();
         for (auto const& item : resizes) {
             // An animated limit outranks TabView's own Width writes and the
             // owner's caps; stopping the Storyboard restores their values.
             for (auto property : {L"MinWidth", L"MaxWidth"}) {
                 Media::Animation::DoubleAnimation animation;
-                animation.From(item.from); animation.To(item.to);
+                animation.From(item.from);
+                animation.To(item.to);
                 animation.EnableDependentAnimation(true);
-                animation.Duration(Duration{Windows::Foundation::TimeSpan{InlineTabGroups::MotionDuration}, DurationType::TimeSpan});
+                animation.Duration(
+                    Duration{Windows::Foundation::TimeSpan{InlineTabGroups::MotionDuration}, DurationType::TimeSpan});
                 auto ease = TabMotion::Ease();
                 animation.EasingFunction(ease);
                 Media::Animation::Storyboard::SetTarget(animation, item.row);
@@ -271,8 +356,8 @@ struct GroupSlide {
                 const auto now = Bounds(row, root);
                 if (now.X + now.Width <= 0 || now.X >= root.ActualWidth()) continue;
                 auto previous = returning.find(change.tab);
-                const auto from = previous != returning.end() ? previous->second.X - now.X :
-                    edge - now.X - (rtl ? 0 : now.Width);
+                const auto from =
+                    previous != returning.end() ? previous->second.X - now.X : edge - now.X - (rtl ? 0 : now.Width);
                 Slide(row, from - shift(change.tab), 0);
             } else if (before.count(change.tab)) {
                 auto old = before.at(change.tab);
@@ -283,30 +368,34 @@ struct GroupSlide {
                 auto content = source.Header();
                 source.Header(nullptr);
                 Controls::TabViewItem ghost;
-                if (retainDeparting) borrowed.push_back({source,ghost,content});
+                if (retainDeparting) borrowed.push_back({source, ghost, content});
                 ghost.Header(content);
                 ghost.IsSelected(source.IsSelected());
                 ghost.IsClosable(source.IsClosable());
                 ghost.FontWeight(source.FontWeight());
                 ghost.HorizontalContentAlignment(source.HorizontalContentAlignment());
                 old.element = ghost;
-                old.element.Width(old.bounds.Width); old.element.Height(old.bounds.Height);
+                old.element.Width(old.bounds.Width);
+                old.element.Height(old.bounds.Height);
                 Controls::Border wrapper;
-                wrapper.Width(old.bounds.Width); wrapper.Height(old.bounds.Height);
+                wrapper.Width(old.bounds.Width);
+                wrapper.Height(old.bounds.Height);
                 Media::RectangleGeometry clip;
-                clip.Rect({0,0,old.bounds.Width,old.bounds.Height}); wrapper.Clip(clip);
+                clip.Rect({0, 0, old.bounds.Width, old.bounds.Height});
+                wrapper.Clip(clip);
                 wrapper.Child(old.element);
                 Controls::Canvas::SetLeft(wrapper, old.bounds.X);
                 Controls::Canvas::SetTop(wrapper, old.bounds.Y);
                 overlay.Children().Append(wrapper);
                 ghost.UpdateLayout();
-                MakeVisualOnly(ghost,retainDeparting ? &inputStates : nullptr);
+                MakeVisualOnly(ghost, retainDeparting ? &inputStates : nullptr);
                 departing.push_back({wrapper, old.bounds, change.tab});
                 Slide(old.element, 0, edge - old.bounds.X - (rtl ? 0 : old.bounds.Width));
             }
         }
         auto move = [&](uint64_t key, Element const& element) {
-            if (Placed(element) && before.count(key)) Slide(element, before.at(key).bounds.X - Bounds(element, root).X - shift(key), 0);
+            if (Placed(element) && before.count(key))
+                Slide(element, before.at(key).bounds.X - Bounds(element, root).X - shift(key), 0);
         };
         for (auto const& [id, row] : rows) move(id, row);
         for (auto const& [id, run] : groups.runs)
@@ -321,7 +410,13 @@ struct GroupSlide {
         });
         if (active && !departing.empty()) {
             rendering = Media::CompositionTarget::Rendering([this, weak](auto&&, auto&&) {
-                if (!weak.expired()) { try { ClipActive(); } catch (...) { Cancel(); } }
+                if (!weak.expired()) {
+                    try {
+                        ClipActive();
+                    } catch (...) {
+                        Cancel();
+                    }
+                }
             });
             observing = true;
         }

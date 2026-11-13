@@ -53,10 +53,10 @@ struct NativeBookmarksToolbar {
         root.AllowDrop(true);
         auto alive = std::weak_ptr<int>(lifetime);
         using Microsoft::UI::Xaml::Input::PointerEventHandler;
-        root.AddHandler(UIElement::PointerMovedEvent(), winrt::box_value(PointerEventHandler(
-            [this, alive](auto const&, auto const& args) {
-                if (alive.expired() || !gesture || gesture->pointer.PointerId() != args.Pointer().PointerId())
-                    return;
+        root.AddHandler(
+            UIElement::PointerMovedEvent(),
+            winrt::box_value(PointerEventHandler([this, alive](auto const&, auto const& args) {
+                if (alive.expired() || !gesture || gesture->pointer.PointerId() != args.Pointer().PointerId()) return;
                 auto current = args.GetCurrentPoint(root);
                 if (!current.Properties().IsLeftButtonPressed()) {
                     EndGesture();
@@ -64,8 +64,7 @@ struct NativeBookmarksToolbar {
                 }
                 auto point = current.Position();
                 if (!gesture->dragging) {
-                    if (std::abs(point.X - gesture->start.X) < 4 &&
-                        std::abs(point.Y - gesture->start.Y) < 4) return;
+                    if (std::abs(point.X - gesture->start.X) < 4 && std::abs(point.Y - gesture->start.Y) < 4) return;
                     gesture->source.ReleasePointerCapture(args.Pointer());
                     if (!root.CapturePointer(args.Pointer())) {
                         EndGesture();
@@ -89,15 +88,19 @@ struct NativeBookmarksToolbar {
                 } else if (external && !gesture->url.empty()) {
                     auto source = gesture->source;
                     EndGesture();
-                    try { source.StartDragAsync(current); } catch (winrt::hresult_error const&) {}
+                    try {
+                        source.StartDragAsync(current);
+                    } catch (winrt::hresult_error const&) {}
                 }
-            })), true);
-        root.AddHandler(UIElement::PointerReleasedEvent(), winrt::box_value(PointerEventHandler(
-            [this, alive](auto const&, auto const& args) {
-                if (alive.expired() || !gesture || gesture->pointer.PointerId() != args.Pointer().PointerId())
-                    return;
+            })),
+            true);
+        root.AddHandler(
+            UIElement::PointerReleasedEvent(),
+            winrt::box_value(PointerEventHandler([this, alive](auto const&, auto const& args) {
+                if (alive.expired() || !gesture || gesture->pointer.PointerId() != args.Pointer().PointerId()) return;
                 auto current = args.GetCurrentPoint(root);
-                if (current.Properties().PointerUpdateKind() != Microsoft::UI::Input::PointerUpdateKind::LeftButtonReleased)
+                if (current.Properties().PointerUpdateKind() !=
+                    Microsoft::UI::Input::PointerUpdateKind::LeftButtonReleased)
                     return;
                 if (!gesture->dragging) {
                     EndGesture();
@@ -113,8 +116,11 @@ struct NativeBookmarksToolbar {
                     }
                 }
                 EndGesture();
-            })), true);
-        root.PointerCanceled([this, alive](auto const&, auto const&) { if (!alive.expired()) EndGesture(); });
+            })),
+            true);
+        root.PointerCanceled([this, alive](auto const&, auto const&) {
+            if (!alive.expired()) EndGesture();
+        });
         root.PointerCaptureLost([this, alive](auto const&, auto const& args) {
             if (!alive.expired() && gesture && gesture->dragging && args.OriginalSource() == root) {
                 CancelHover(gesture->target);
@@ -157,8 +163,8 @@ struct NativeBookmarksToolbar {
     }
 
     bool Available() const {
-        return activate && root.Visibility() == Microsoft::UI::Xaml::Visibility::Visible &&
-            root.XamlRoot() && !windowId.empty();
+        return activate && root.Visibility() == Microsoft::UI::Xaml::Visibility::Visible && root.XamlRoot() &&
+               !windowId.empty();
     }
 
     Point LocalPoint(POINT cursor) const {
@@ -226,8 +232,8 @@ struct NativeBookmarksToolbar {
         }
     }
 
-    void SendDrag(std::wstring_view verb, winrt::hstring const& sourceWindow,
-                  winrt::hstring const& id, Point point, uint32_t modifiers) {
+    void SendDrag(std::wstring_view verb, winrt::hstring const& sourceWindow, winrt::hstring const& id, Point point,
+                  uint32_t modifiers) {
         if (!Available()) return;
         std::wstring command = L"bookmarks-toolbar:";
         command.append(verb).append(L":").append(sourceWindow.c_str()).append(L":").append(id.c_str());
@@ -246,13 +252,18 @@ struct NativeBookmarksToolbar {
     void BindGesture(FrameworkElement const& source, winrt::hstring const& id, winrt::hstring const& url) {
         using Microsoft::UI::Xaml::UIElement;
         auto alive = std::weak_ptr<int>(lifetime);
-        source.AddHandler(UIElement::PointerPressedEvent(), winrt::box_value(
-            Microsoft::UI::Xaml::Input::PointerEventHandler([this, alive, id, url](auto const& sender, auto const& args) {
-                if (alive.expired() || systemSource) return;
-                auto point = args.GetCurrentPoint(root);
-                if (point.Properties().PointerUpdateKind() == Microsoft::UI::Input::PointerUpdateKind::LeftButtonPressed)
-                    gesture.emplace(Gesture{id, url, args.Pointer(), sender.template as<FrameworkElement>(), point.Position()});
-            })), true);
+        source.AddHandler(
+            UIElement::PointerPressedEvent(),
+            winrt::box_value(Microsoft::UI::Xaml::Input::PointerEventHandler(
+                [this, alive, id, url](auto const& sender, auto const& args) {
+                    if (alive.expired() || systemSource) return;
+                    auto point = args.GetCurrentPoint(root);
+                    if (point.Properties().PointerUpdateKind() ==
+                        Microsoft::UI::Input::PointerUpdateKind::LeftButtonPressed)
+                        gesture.emplace(
+                            Gesture{id, url, args.Pointer(), sender.template as<FrameworkElement>(), point.Position()});
+                })),
+            true);
         source.DragStarting([this, alive, id, url](auto const&, auto const& args) {
             if (alive.expired() || systemSource) {
                 args.Cancel(true);
@@ -297,8 +308,7 @@ struct NativeBookmarksToolbar {
     }
 
     static uint32_t Modifiers() {
-        return ((GetKeyState(VK_CONTROL) < 0) ? 1u : 0u) |
-               ((GetKeyState(VK_MENU) < 0) ? 2u : 0u) |
+        return ((GetKeyState(VK_CONTROL) < 0) ? 1u : 0u) | ((GetKeyState(VK_MENU) < 0) ? 2u : 0u) |
                ((GetKeyState(VK_SHIFT) < 0) ? 4u : 0u) |
                ((GetKeyState(VK_LWIN) < 0 || GetKeyState(VK_RWIN) < 0) ? 8u : 0u);
     }
@@ -321,7 +331,7 @@ struct NativeBookmarksToolbar {
         auto label = state.GetNamedString(L"label", L"");
         windowId = state.GetNamedString(L"windowId", L"");
         auto key = rows.Stringify() + L":" + std::to_wstring(top) + L":" + std::to_wstring(height) +
-            (rtl ? L":rtl:" : L":ltr:") + label;
+                   (rtl ? L":rtl:" : L":ltr:") + label;
         if (publication == key) {
             ApplyArtwork(images);
             return;
@@ -336,14 +346,15 @@ struct NativeBookmarksToolbar {
             auto title = row.GetNamedString(L"label");
             const auto left = row.GetNamedNumber(L"left");
             const auto width = row.GetNamedNumber(L"width");
-            if (!std::isfinite(left) || !std::isfinite(width) || left < 0 ||
-                width <= 0 || left + width > 32768 || id.empty() || id.size() > 16 ||
-                title.size() > 1024)
+            if (!std::isfinite(left) || !std::isfinite(width) || left < 0 || width <= 0 || left + width > 32768 ||
+                id.empty() || id.size() > 16 || title.size() > 1024)
                 winrt::throw_hresult(E_INVALIDARG);
 
             if (kind == L"separator") {
-                auto line = Markup::XamlReader::Load(
-                    LR"(<Border xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" Background="{ThemeResource DividerStrokeColorDefaultBrush}" Width="1"/>)").as<Border>();
+                auto line =
+                    Markup::XamlReader::Load(
+                        LR"(<Border xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" Background="{ThemeResource DividerStrokeColorDefaultBrush}" Width="1"/>)")
+                        .as<Border>();
                 line.Height(height - 10);
                 line.VerticalAlignment(VerticalAlignment::Center);
                 line.HorizontalAlignment(HorizontalAlignment::Center);
@@ -359,10 +370,11 @@ struct NativeBookmarksToolbar {
             }
 
             const bool overflow = kind == L"overflow";
-            if (!overflow && kind != L"folder" && kind != L"bookmark")
-                winrt::throw_hresult(E_INVALIDARG);
-            auto button = Markup::XamlReader::Load(
-                LR"(<Button xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" Style="{StaticResource SubtleButtonStyle}" MinWidth="0" MinHeight="0" Padding="4,0"/>)").as<Button>();
+            if (!overflow && kind != L"folder" && kind != L"bookmark") winrt::throw_hresult(E_INVALIDARG);
+            auto button =
+                Markup::XamlReader::Load(
+                    LR"(<Button xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" Style="{StaticResource SubtleButtonStyle}" MinWidth="0" MinHeight="0" Padding="4,0"/>)")
+                    .as<Button>();
             button.Width(width);
             button.Height(height);
             button.FlowDirection(rtl ? FlowDirection::RightToLeft : FlowDirection::LeftToRight);
@@ -395,16 +407,16 @@ struct NativeBookmarksToolbar {
             button.Content(content);
             ToolTipService::SetToolTip(button, winrt::box_value(title));
             Automation::AutomationProperties::SetName(button, title);
-            Automation::AutomationProperties::SetAutomationId(button,
-                overflow ? L"FennBookmarksOverflow" : L"FennBookmark-" + id);
+            Automation::AutomationProperties::SetAutomationId(
+                button, overflow ? L"FennBookmarksOverflow" : L"FennBookmark-" + id);
 
             auto dispatch = [this, alive = std::weak_ptr<int>(lifetime), id](
-                Button const& sender, std::wstring_view verb, uint32_t modifiers) {
+                                Button const& sender, std::wstring_view verb, uint32_t modifiers) {
                 if (alive.expired() || !activate) return;
                 std::wstring command = L"bookmarks-toolbar:";
                 command.append(verb).append(L":").append(id.c_str());
                 activate(command.c_str(), modifiers, sender,
-                    {0, 0, float(sender.ActualWidth()), float(sender.ActualHeight())}, {});
+                         {0, 0, float(sender.ActualWidth()), float(sender.ActualHeight())}, {});
             };
             button.Click([dispatch](auto const& sender, auto const&) {
                 dispatch(sender.template as<Button>(), L"open", Modifiers());
@@ -419,14 +431,17 @@ struct NativeBookmarksToolbar {
                 BindGesture(button, id, url);
             }
             if (!overflow) {
-                button.AddHandler(UIElement::PointerReleasedEvent(), winrt::box_value(
-                    Microsoft::UI::Xaml::Input::PointerEventHandler([dispatch](auto const& sender, auto const& e) {
-                        auto source = sender.template as<Button>();
-                        if (e.GetCurrentPoint(source).Properties().PointerUpdateKind() !=
-                            Microsoft::UI::Input::PointerUpdateKind::MiddleButtonReleased) return;
-                        e.Handled(true);
-                        dispatch(source, L"middle", uint32_t(e.KeyModifiers()) & 15u);
-                    })), true);
+                button.AddHandler(UIElement::PointerReleasedEvent(),
+                                  winrt::box_value(Microsoft::UI::Xaml::Input::PointerEventHandler(
+                                      [dispatch](auto const& sender, auto const& e) {
+                                          auto source = sender.template as<Button>();
+                                          if (e.GetCurrentPoint(source).Properties().PointerUpdateKind() !=
+                                              Microsoft::UI::Input::PointerUpdateKind::MiddleButtonReleased)
+                                              return;
+                                          e.Handled(true);
+                                          dispatch(source, L"middle", uint32_t(e.KeyModifiers()) & 15u);
+                                      })),
+                                  true);
             }
             children.push_back(button);
         }

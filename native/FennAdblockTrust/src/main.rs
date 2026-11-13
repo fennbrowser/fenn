@@ -10,11 +10,11 @@ type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 #[path = "../../FennAdblock/src/admission_jobs.rs"]
 mod admission_jobs;
 mod broker;
+mod cost;
 #[path = "../../FennAdblock/src/fetch_jobs.rs"]
 mod fetch_jobs;
 mod http;
 mod state;
-mod cost;
 #[cfg(test)]
 mod tests;
 const META: u64 = 1024 * 1024;

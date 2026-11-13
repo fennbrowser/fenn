@@ -25,8 +25,8 @@ struct NativeAddressInteraction {
     void Move(winrt::Microsoft::UI::Input::PointerPoint const& point) {
         const auto position = point.Position();
         // WinUI positions are DIPs, so request the system tolerance at 96 DPI.
-        const bool moved = std::abs(position.X-origin.X) > GetSystemMetricsForDpi(SM_CXDRAG,96) ||
-                           std::abs(position.Y-origin.Y) > GetSystemMetricsForDpi(SM_CYDRAG,96);
+        const bool moved = std::abs(position.X - origin.X) > GetSystemMetricsForDpi(SM_CXDRAG, 96) ||
+                           std::abs(position.Y - origin.Y) > GetSystemMetricsForDpi(SM_CYDRAG, 96);
         core.AddressInteraction(SHELL_ADDRESS_INTERACTION_KIND_MOVE, point.PointerId(), token, moved);
     }
     ShellAddressInteractionState Release(winrt::Microsoft::UI::Input::PointerPoint const& point, bool editorOwned) {

@@ -77,7 +77,8 @@ struct NativeTabMenu {
                     throw winrt::hresult_invalid_argument();
                 e.color = uint32_t(color);
                 NativeJson::ValidateImage(o, *imageTotal, NativeJson::ImageLimits{32, 128 * 1024});
-                if (o.HasKey(L"image") && o.GetNamedValue(L"image").ValueType() != winrt::Windows::Data::Json::JsonValueType::Null)
+                if (o.HasKey(L"image") &&
+                    o.GetNamedValue(L"image").ValueType() != winrt::Windows::Data::Json::JsonValueType::Null)
                     e.image = o.GetNamedObject(L"image");
                 if (e.label.empty() || e.label.size() > NativeJson::kMaxShortLabel || e.accessKey.size() > 16)
                     throw winrt::hresult_invalid_argument();
@@ -143,8 +144,8 @@ struct NativeTabMenu {
 
     template <typename Vector>
     void Render(Vector const& target, std::vector<Entry> const& entries,
-                Microsoft::UI::Xaml::Controls::MenuFlyout const& ownerMenu, uint32_t modelSession, uint32_t modelRevision,
-                std::set<winrt::hstring>& modelIds, bool parentEnabled = true) {
+                Microsoft::UI::Xaml::Controls::MenuFlyout const& ownerMenu, uint32_t modelSession,
+                uint32_t modelRevision, std::set<winrt::hstring>& modelIds, bool parentEnabled = true) {
         using namespace Microsoft::UI::Xaml::Controls;
         for (auto const& e : entries) {
             if (e.kind == L"separator") {
@@ -156,7 +157,8 @@ struct NativeTabMenu {
                 item.Text(e.label);
                 item.AccessKey(e.accessKey);
                 item.IsEnabled(e.enabled);
-                Render(item.Items(), e.children, ownerMenu, modelSession, modelRevision, modelIds, parentEnabled && e.enabled);
+                Render(item.Items(), e.children, ownerMenu, modelSession, modelRevision, modelIds,
+                       parentEnabled && e.enabled);
                 target.Append(item);
                 continue;
             }
@@ -177,14 +179,18 @@ struct NativeTabMenu {
             if (parentEnabled && e.enabled) modelIds.insert(e.id);
             auto expected = modelRevision;
             auto owner = winrt::make_weak(ownerMenu);
-            item.Click(
-                [this, alive = std::weak_ptr<int>(lifetime), owner, expected, modelSession, id = e.id](auto const&, auto const&) {
-                    if (alive.expired() || active != owner.get()) return;
-                    bool accepted = false;
-                    if (!core || shell_core_menu_activate(core, modelSession, expected,
-                            reinterpret_cast<uint16_t const*>(id.c_str()), id.size(), &accepted) != SHELL_STATUS_OK || !accepted) return;
-                    Queue(L"activate", id);
-                });
+            item.Click([this, alive = std::weak_ptr<int>(lifetime), owner, expected, modelSession, id = e.id](
+                           auto const&, auto const&) {
+                if (alive.expired() || active != owner.get()) return;
+                bool accepted = false;
+                if (!core ||
+                    shell_core_menu_activate(core, modelSession, expected,
+                                             reinterpret_cast<uint16_t const*>(id.c_str()), id.size(),
+                                             &accepted) != SHELL_STATUS_OK ||
+                    !accepted)
+                    return;
+                Queue(L"activate", id);
+            });
             target.Append(item);
         }
     }
@@ -204,8 +210,9 @@ struct NativeTabMenu {
         std::vector<ShellMenuCommand> commands;
         for (auto const& id : enabled) commands.push_back({reinterpret_cast<uint16_t const*>(id.c_str()), id.size()});
         bool accepted = false;
-        if (shell_core_menu_description(core, forSession, forTab, forRevision,
-                commands.data(), commands.size(), &accepted) != SHELL_STATUS_OK) throw winrt::hresult_invalid_argument();
+        if (shell_core_menu_description(core, forSession, forTab, forRevision, commands.data(), commands.size(),
+                                        &accepted) != SHELL_STATUS_OK)
+            throw winrt::hresult_invalid_argument();
         if (accepted) Replace(rendered);
     }
     // The pending state: one disabled row, no command ids registered, so there
@@ -255,11 +262,12 @@ struct NativeTabMenu {
                     if (!std::isfinite(number) || number < 1 || number > UINT32_MAX || std::floor(number) != number)
                         throw winrt::hresult_invalid_argument();
                     const auto id = uint32_t(number);
-                    nextTabs.push_back(id); // Keep duplicates for Rust validation.
+                    nextTabs.push_back(id);  // Keep duplicates for Rust validation.
                     nextSelected.insert(id);
                 }
             } else {
-                if (state.HasKey(L"base") && state.GetNamedNumber(L"base") != 0) throw winrt::hresult_invalid_argument();
+                if (state.HasKey(L"base") && state.GetNamedNumber(L"base") != 0)
+                    throw winrt::hresult_invalid_argument();
                 auto bindings = state.GetNamedArray(L"tabs");
                 if (bindings.Size() > NativeJson::kMaxTabs) throw winrt::hresult_invalid_argument();
                 for (auto value : bindings) {
@@ -289,10 +297,10 @@ struct NativeTabMenu {
             if (!core) throw winrt::hresult_invalid_argument();
             const auto text = reinterpret_cast<uint16_t const*>(fingerprint.c_str());
             const auto status = base ? shell_core_menu_selection(core, base, incoming, nextTabs.data(), nextTabs.size(),
-                    text, fingerprint.size(), &changed) :
-                shell_core_menu_publish(core, incoming, nextTabs.data(), nextTabs.size(), text, fingerprint.size(), &changed);
-            if (status != SHELL_STATUS_OK)
-                throw winrt::hresult_invalid_argument();
+                                                                 text, fingerprint.size(), &changed)
+                                     : shell_core_menu_publish(core, incoming, nextTabs.data(), nextTabs.size(), text,
+                                                               fingerprint.size(), &changed);
+            if (status != SHELL_STATUS_OK) throw winrt::hresult_invalid_argument();
             if (changed) {
                 selectedTabs = std::move(nextSelected);
                 hasSelection = nextHasSelection;

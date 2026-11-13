@@ -31,7 +31,7 @@ struct NativeWindowCaption {
             const auto* host = NativeWindowHost::Get(owner);
             if (host) {
                 const double inset = NativeWindowHost::ContentBridgeTopInset(owner, *host) /
-                    toolbarSurface.XamlRoot().RasterizationScale();
+                                     toolbarSurface.XamlRoot().RasterizationScale();
                 if (toolbarSurface.Margin().Bottom != inset) toolbarSurface.Margin({0, 0, 0, inset});
             }
         }
@@ -46,7 +46,7 @@ struct NativeWindowCaption {
             const double below = (radius.BottomLeft > 0 || radius.BottomRight > 0) ? 1.0 : 0.0;
             for (auto const& edge : {toolbarLeftEdge, toolbarRightEdge}) {
                 edge.Visibility(toolbarSurface.Visibility());
-                edge.Margin({margin.Left-1, margin.Top-1, margin.Right-1, margin.Bottom-below});
+                edge.Margin({margin.Left - 1, margin.Top - 1, margin.Right - 1, margin.Bottom - below});
             }
         }
         if (!root || !root.IsLoaded()) return;
@@ -60,51 +60,57 @@ struct NativeWindowCaption {
             // arcs and interactive elements retain their original rendering.
             std::function<void(DependencyObject const&)> collect = [&](DependencyObject const& node) {
                 if (node.try_as<Controls::TabViewItem>()) return;
-                if (auto line = node.try_as<Controls::Border>(); line &&
-                    (line.Name() == L"LeftBottomBorderLine" || line.Name() == L"RightBottomBorderLine"))
+                if (auto line = node.try_as<Controls::Border>();
+                    line && (line.Name() == L"LeftBottomBorderLine" || line.Name() == L"RightBottomBorderLine"))
                     bottomLines.push_back(line);
-                for (int i=0; i<Media::VisualTreeHelper::GetChildrenCount(node); ++i)
+                for (int i = 0; i < Media::VisualTreeHelper::GetChildrenCount(node); ++i)
                     collect(Media::VisualTreeHelper::GetChild(node, i));
             };
             collect(current);
         }
-        bool trim = toolbarSurface && toolbarSurface.Visibility() == Visibility::Visible &&
-                    toolbarSurface.IsLoaded() && toolbarSurface.ActualWidth() > 0;
+        bool trim = toolbarSurface && toolbarSurface.Visibility() == Visibility::Visible && toolbarSurface.IsLoaded() &&
+                    toolbarSurface.ActualWidth() > 0;
         double left{}, right{};
         if (trim) {
             // Both supported hosts place chrome in one Window tree. Avoid
             // screen conversion during ContentIsland minimize/restore transitions.
             auto transform = toolbarSurface.TransformToVisual(root);
-            auto start = transform.TransformPoint({0,0});
-            auto end = transform.TransformPoint({float(toolbarSurface.ActualWidth()),0});
+            auto start = transform.TransformPoint({0, 0});
+            auto end = transform.TransformPoint({float(toolbarSurface.ActualWidth()), 0});
             auto radius = toolbarSurface.CornerRadius();
             // Use the same full-size Grid stroke as TabView's TabContainer,
             // one DIP outside the surface with concentric corners. Clip only
             // its side bands, which end where the trimmed top divider begins.
             const bool below = radius.BottomLeft > 0 || radius.BottomRight > 0;
-            const auto grow = [](double r) { return r > 0 ? r+1 : 0.0; };
-            const auto width = toolbarSurface.ActualWidth()+2;
-            const auto height = toolbarSurface.ActualHeight()+(below ? 2 : 1);
+            const auto grow = [](double r) { return r > 0 ? r + 1 : 0.0; };
+            const auto width = toolbarSurface.ActualWidth() + 2;
+            const auto height = toolbarSurface.ActualHeight() + (below ? 2 : 1);
             const auto leftWidth = (std::max)({1.0, grow(radius.TopLeft), grow(radius.BottomLeft)});
             const auto rightWidth = (std::max)({1.0, grow(radius.TopRight), grow(radius.BottomRight)});
             for (auto const& edge : {toolbarLeftEdge, toolbarRightEdge}) {
-                edge.CornerRadius({grow(radius.TopLeft), grow(radius.TopRight),
-                                   grow(radius.BottomRight), grow(radius.BottomLeft)});
-                edge.BorderThickness({1,1,1,below ? 1.0 : 0.0});
+                edge.CornerRadius(
+                    {grow(radius.TopLeft), grow(radius.TopRight), grow(radius.BottomRight), grow(radius.BottomLeft)});
+                edge.BorderThickness({1, 1, 1, below ? 1.0 : 0.0});
             }
-            toolbarLeftEdge.Clip().Rect({0,0,float(leftWidth),float(height)});
-            toolbarRightEdge.Clip().Rect({float(width-rightWidth),0,float(rightWidth),float(height)});
+            toolbarLeftEdge.Clip().Rect({0, 0, float(leftWidth), float(height)});
+            toolbarRightEdge.Clip().Rect({float(width - rightWidth), 0, float(rightWidth), float(height)});
             left = start.X + radius.TopLeft;
             right = end.X - radius.TopRight;
         }
         for (auto const& line : bottomLines) {
-            if (!trim) { if (line.Clip()) line.Clip(nullptr); continue; }
-            auto origin = line.TransformToVisual(root).TransformPoint({0,0});
-            const double begin = std::clamp(left-origin.X, 0.0, line.ActualWidth());
-            const double end = std::clamp(right-origin.X, begin, line.ActualWidth());
-            Windows::Foundation::Rect bounds{float(begin),0,float(end-begin),float(line.ActualHeight())};
+            if (!trim) {
+                if (line.Clip()) line.Clip(nullptr);
+                continue;
+            }
+            auto origin = line.TransformToVisual(root).TransformPoint({0, 0});
+            const double begin = std::clamp(left - origin.X, 0.0, line.ActualWidth());
+            const double end = std::clamp(right - origin.X, begin, line.ActualWidth());
+            Windows::Foundation::Rect bounds{float(begin), 0, float(end - begin), float(line.ActualHeight())};
             auto clip = line.Clip();
-            if (!clip) { clip = Media::RectangleGeometry(); line.Clip(clip); }
+            if (!clip) {
+                clip = Media::RectangleGeometry();
+                line.Clip(clip);
+            }
             auto old = clip.Rect();
             if (old.X != bounds.X || old.Width != bounds.Width || old.Height != bounds.Height) clip.Rect(bounds);
         }
@@ -119,7 +125,8 @@ struct NativeWindowCaption {
             }
             toolbarSurface.SizeChanged(toolbarSizeToken);
             toolbarSurface.Loaded(toolbarLoadedToken);
-            toolbarSurface.UnregisterPropertyChangedCallback(Controls::Grid::CornerRadiusProperty(), toolbarRadiusToken);
+            toolbarSurface.UnregisterPropertyChangedCallback(Controls::Grid::CornerRadiusProperty(),
+                                                             toolbarRadiusToken);
             toolbarSurface.UnregisterPropertyChangedCallback(UIElement::VisibilityProperty(), toolbarVisibilityToken);
         }
         toolbarSurface = surface;
@@ -128,8 +135,10 @@ struct NativeWindowCaption {
         toolbarRightEdge = nullptr;
         if (surface) {
             auto makeEdge = [&] {
-                auto edge = Markup::XamlReader::Load(
-                    LR"(<Grid xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" BorderBrush="{ThemeResource TabViewBorderBrush}" BorderThickness="1,1,1,0" Margin="0,-1,0,0" IsHitTestVisible="False" AutomationProperties.AccessibilityView="Raw"/>)").as<Controls::Grid>();
+                auto edge =
+                    Markup::XamlReader::Load(
+                        LR"(<Grid xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" BorderBrush="{ThemeResource TabViewBorderBrush}" BorderThickness="1,1,1,0" Margin="0,-1,0,0" IsHitTestVisible="False" AutomationProperties.AccessibilityView="Raw"/>)")
+                        .as<Controls::Grid>();
                 edge.Clip(Media::RectangleGeometry());
                 // Siblings can reach the strip's last DIP above this surface
                 // without being clipped by its rounded background.
@@ -141,10 +150,13 @@ struct NativeWindowCaption {
             toolbarLeftEdge = makeEdge();
             toolbarRightEdge = makeEdge();
             auto weak = std::weak_ptr<int>(lifetime);
-            auto update = [this,weak](auto const&,auto const&) { if (!weak.expired()) UpdateBottomLines(); };
+            auto update = [this, weak](auto const&, auto const&) {
+                if (!weak.expired()) UpdateBottomLines();
+            };
             toolbarSizeToken = surface.SizeChanged(update);
             toolbarLoadedToken = surface.Loaded(update);
-            toolbarRadiusToken = surface.RegisterPropertyChangedCallback(Controls::Grid::CornerRadiusProperty(), update);
+            toolbarRadiusToken =
+                surface.RegisterPropertyChangedCallback(Controls::Grid::CornerRadiusProperty(), update);
             toolbarVisibilityToken = surface.RegisterPropertyChangedCallback(UIElement::VisibilityProperty(), update);
         }
         UpdateBottomLines();
@@ -156,7 +168,8 @@ struct NativeWindowCaption {
     bool previousExtended{}, visible{};
     Height previousHeight{};
     Theme previousTheme{};
-    Windows::Foundation::IReference<Windows::UI::Color> previousBackground{nullptr}, previousInactiveBackground{nullptr};
+    Windows::Foundation::IReference<Windows::UI::Color> previousBackground{nullptr},
+        previousInactiveBackground{nullptr};
     Windows::Foundation::IReference<Windows::UI::Color> previousHover{nullptr}, previousPressed{nullptr};
     std::shared_ptr<int> lifetime = std::make_shared<int>(0);
 
@@ -165,8 +178,8 @@ struct NativeWindowCaption {
         trailing = element;
         trailingWidth = width;
         root = grid;
-        bar = Microsoft::UI::Windowing::AppWindow::GetFromWindowId(
-            Microsoft::UI::GetWindowIdFromWindow(hwnd)).TitleBar();
+        bar =
+            Microsoft::UI::Windowing::AppWindow::GetFromWindowId(Microsoft::UI::GetWindowIdFromWindow(hwnd)).TitleBar();
         previousExtended = bar.ExtendsContentIntoTitleBar();
 #ifdef FENN_SHELL_PROCESS
         window = NativeWindowHost::Get(hwnd)->window;
@@ -191,8 +204,10 @@ struct NativeWindowCaption {
         // Continue TabView's themed bottom edge beneath the system captions
         // in the 40-DIP layout without covering the selected tab's open edge.
         auto makeBottomLine = [&](int column) {
-            auto line = Markup::XamlReader::Load(
-                LR"(<Border xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" Background="{ThemeResource TabViewBorderBrush}" Height="1" VerticalAlignment="Bottom" IsHitTestVisible="False" Visibility="Collapsed" AutomationProperties.AccessibilityView="Raw"/>)").as<Controls::Border>();
+            auto line =
+                Markup::XamlReader::Load(
+                    LR"(<Border xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" Background="{ThemeResource TabViewBorderBrush}" Height="1" VerticalAlignment="Bottom" IsHitTestVisible="False" Visibility="Collapsed" AutomationProperties.AccessibilityView="Raw"/>)")
+                    .as<Controls::Border>();
             Controls::Grid::SetColumn(line, column);
             grid.Children().Append(line);
             return line;
@@ -204,9 +219,10 @@ struct NativeWindowCaption {
         root.ActualThemeChanged([this, weak](auto const&, auto const&) {
             // Read the settled theme after XAML finishes propagating it through
             // the tree; decorative children can change notification ordering.
-            if (!weak.expired()) root.DispatcherQueue().TryEnqueue([this, weak] {
-                if (!weak.expired()) Update();
-            });
+            if (!weak.expired())
+                root.DispatcherQueue().TryEnqueue([this, weak] {
+                    if (!weak.expired()) Update();
+                });
         });
     }
     void SetVisible(bool value) {
@@ -273,8 +289,10 @@ struct NativeWindowCaption {
         // High contrast keeps the system's own rules.
         const bool contrast = Windows::UI::ViewManagement::AccessibilitySettings().HighContrast();
         const bool dark = theme == Theme::Dark;
-        const Windows::UI::Color hover = dark ? Windows::UI::Color{0x0F, 255, 255, 255} : Windows::UI::Color{0x09, 0, 0, 0};
-        const Windows::UI::Color pressed = dark ? Windows::UI::Color{0x0A, 255, 255, 255} : Windows::UI::Color{0x06, 0, 0, 0};
+        const Windows::UI::Color hover =
+            dark ? Windows::UI::Color{0x0F, 255, 255, 255} : Windows::UI::Color{0x09, 0, 0, 0};
+        const Windows::UI::Color pressed =
+            dark ? Windows::UI::Color{0x0A, 255, 255, 255} : Windows::UI::Color{0x06, 0, 0, 0};
         auto sameColor = [](auto const& a, Windows::UI::Color const& b) {
             return a && a.Value().A == b.A && a.Value().R == b.R && a.Value().G == b.G && a.Value().B == b.B;
         };
@@ -309,9 +327,13 @@ struct NativeWindowCaption {
     }
     void Close(bool restore = true) noexcept {
         lifetime.reset();
-        try { SetToolbarSurface(nullptr); } catch (...) {}
+        try {
+            SetToolbarSurface(nullptr);
+        } catch (...) {}
         if (owner) RemovePropW(owner, WINUI_PANE_SYSTEM_CAPTION_PROPERTY);
-        try { if (restore && owner && IsWindow(owner)) SetVisible(false); } catch (...) {}
+        try {
+            if (restore && owner && IsWindow(owner)) SetVisible(false);
+        } catch (...) {}
         trailing = nullptr;
         bar = nullptr;
         owner = nullptr;

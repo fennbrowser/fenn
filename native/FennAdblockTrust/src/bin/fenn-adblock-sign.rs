@@ -347,7 +347,9 @@ fn run(request: &Value) -> Result<Value> {
             if !verify_signature(&request["key"], raw.as_bytes(), &signature)? {
                 return Err("hardware proof signature rejected".into());
             }
-            Ok(json!({"verified":true,"keyid":hash(&canonical(&request["key"])?),"payload_sha256":hash(raw.as_bytes())}))
+            Ok(
+                json!({"verified":true,"keyid":hash(&canonical(&request["key"])?),"payload_sha256":hash(raw.as_bytes())}),
+            )
         }
         "public" => {
             let key: tough::schema::key::Key = field(request, "public_pem")?.parse()?;

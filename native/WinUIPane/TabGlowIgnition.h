@@ -35,7 +35,8 @@ struct TabGlowIgnition {
     static constexpr float CornerDuration = 260, SecondaryDelay = 90;
     static constexpr float HaloStep = 45, HaloDuration = 280;
     // Several groups lighting together start left to right, briefly.
-    static constexpr float Stagger = 70; static constexpr size_t StaggerCap = 5;
+    static constexpr float Stagger = 70;
+    static constexpr size_t StaggerCap = 5;
     static constexpr float FollowDuration = 180, TintDuration = 240;
     static constexpr float RecatchDip = .4f;
     // Extinguishing is quick: highlights and halo first, then the body.
@@ -65,7 +66,10 @@ struct TabGlowIgnition {
     // Groups whose light-up is still running.
     std::map<uint32_t, Batch> active;
     // Visuals dimming out, released when their batch completes.
-    struct Retained { Batch batch{nullptr}; std::function<void()> release; };
+    struct Retained {
+        Batch batch{nullptr};
+        std::function<void()> release;
+    };
     std::map<uint64_t, Retained> dimming;
     uint64_t nextDim{};
     uint64_t recatches{};
@@ -82,7 +86,8 @@ struct TabGlowIgnition {
     }
     static double Now() {
         LARGE_INTEGER counter{}, frequency{};
-        QueryPerformanceCounter(&counter); QueryPerformanceFrequency(&frequency);
+        QueryPerformanceCounter(&counter);
+        QueryPerformanceFrequency(&frequency);
         return counter.QuadPart * 1000.0 / frequency.QuadPart;
     }
 
@@ -108,7 +113,8 @@ struct TabGlowIgnition {
     static auto Accelerate(Compositor const& compositor) {
         return compositor.CreateCubicBezierEasingFunction({.7f, 0.f}, {1.f, .5f});
     }
-    template <class Animation> static void Time(Animation const& animation, float delay, float duration) {
+    template <class Animation>
+    static void Time(Animation const& animation, float delay, float duration) {
         animation.DelayTime(Ms(delay));
         animation.Duration(Ms(duration));
         animation.DelayBehavior(winrt::Microsoft::UI::Composition::AnimationDelayBehavior::SetInitialValueBeforeDelay);
@@ -165,20 +171,25 @@ struct TabGlowIgnition {
         brush.EllipseCenter(center);
         brush.EllipseRadius({radius, radius});
         for (auto [offset, alpha] : {std::pair{0.f, 255}, {1.f - RevealEdge, 255}, {1.f, 0}})
-            brush.ColorStops().Append(compositor.CreateColorGradientStop(offset,
-                {uint8_t(inverse ? 255 - alpha : alpha), 255, 255, 255}));
+            brush.ColorStops().Append(
+                compositor.CreateColorGradientStop(offset, {uint8_t(inverse ? 255 - alpha : alpha), 255, 255, 255}));
         return brush;
     }
     // The radius that reaches every corner of `size` from `center` with the
     // soft edge fully past it.
-    static float Reach(winrt::Windows::Foundation::Numerics::float2 center, winrt::Windows::Foundation::Numerics::float2 size) {
+    static float Reach(winrt::Windows::Foundation::Numerics::float2 center,
+                       winrt::Windows::Foundation::Numerics::float2 size) {
         const float dx = std::max(center.x, size.x - center.x), dy = std::max(center.y, size.y - center.y);
         return std::max(1.f, std::sqrt(dx * dx + dy * dy) / (1.f - RevealEdge));
     }
     // Grow the fronts together; `done` releases the reveal masks.
-    void Reveal(uint32_t id, std::vector<winrt::Microsoft::UI::Composition::CompositionRadialGradientBrush> const& fronts,
+    void Reveal(uint32_t id,
+                std::vector<winrt::Microsoft::UI::Composition::CompositionRadialGradientBrush> const& fronts,
                 float delay, std::function<void()> done) {
-        if (fronts.empty()) { if (done) done(); return; }
+        if (fronts.empty()) {
+            if (done) done();
+            return;
+        }
         auto compositor = fronts.front().Compositor();
         auto batch = compositor.CreateScopedBatch(winrt::Microsoft::UI::Composition::CompositionBatchTypes::Animation);
         for (auto const& front : fronts) {
@@ -190,16 +201,20 @@ struct TabGlowIgnition {
         }
         batch.End();
         Track(id, batch);
-        if (Diagnostics()) fprintf(stderr, "WinUIPane glow reveal begin group=%u delay=%.0f at=%.1f\n", id, delay, Now());
+        if (Diagnostics())
+            fprintf(stderr, "WinUIPane glow reveal begin group=%u delay=%.0f at=%.1f\n", id, delay, Now());
         batch.Completed([weak = std::weak_ptr<int>(life), done = std::move(done), id](auto&&, auto&&) {
             if (Diagnostics()) fprintf(stderr, "WinUIPane glow reveal end group=%u at=%.1f\n", id, Now());
-            if (!weak.expired() && done) try { done(); } catch (...) {}
+            if (!weak.expired() && done) try {
+                    done();
+                } catch (...) {}
         });
     }
     // The halo option turned on for a group that is already lit.
     void IgniteHalo(uint32_t id, ShapeVisual const& halo) {
         if (!halo) return;
-        auto batch = halo.Compositor().CreateScopedBatch(winrt::Microsoft::UI::Composition::CompositionBatchTypes::Animation);
+        auto batch =
+            halo.Compositor().CreateScopedBatch(winrt::Microsoft::UI::Composition::CompositionBatchTypes::Animation);
         RiseHalo(halo, 0);
         batch.End();
         if (!Active(id)) Track(id, batch);
@@ -233,7 +248,8 @@ struct TabGlowIgnition {
         auto animation = compositor.CreateScalarKeyFrameAnimation();
         animation.InsertExpressionKeyFrame(0.f, L"this.StartingValue");
         animation.InsertKeyFrame(1.f, 0.f, Accelerate(compositor));
-        animation.DelayTime(Ms(delay)); animation.Duration(Ms(duration));
+        animation.DelayTime(Ms(delay));
+        animation.Duration(Ms(duration));
         visual.StartAnimation(L"Opacity", animation);
         batch.End();
         const auto key = ++nextDim;
@@ -244,14 +260,19 @@ struct TabGlowIgnition {
             if (it == dimming.end()) return;
             auto release = std::move(it->second.release);
             dimming.erase(it);
-            if (release) try { release(); } catch (...) {}
+            if (release) try {
+                    release();
+                } catch (...) {}
         });
     }
     // Option or system animations turned off: release every dimming visual now.
     void Cancel() {
         auto pending = std::move(dimming);
         dimming.clear();
-        for (auto& [key, retained] : pending) if (retained.release) try { retained.release(); } catch (...) {}
+        for (auto& [key, retained] : pending)
+            if (retained.release) try {
+                    retained.release();
+                } catch (...) {}
         active.clear();
     }
 
@@ -292,7 +313,10 @@ struct TabGlowIgnition {
             auto brush = BrushOf(shapes, index);
             if (!brush || !brush.try_as<winrt::Microsoft::UI::Composition::CompositionRadialGradientBrush>()) continue;
             brush.ImplicitAnimations(on ? follow : nullptr);
-            if (!on) { brush.StopAnimation(L"EllipseCenter"); brush.StopAnimation(L"EllipseRadius"); }
+            if (!on) {
+                brush.StopAnimation(L"EllipseCenter");
+                brush.StopAnimation(L"EllipseRadius");
+            }
         }
     }
     void Attach(Visual const& visual, bool on) {

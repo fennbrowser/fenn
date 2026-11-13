@@ -27,10 +27,16 @@ pub struct ShellSettleSample {
 }
 
 /// Sample the same structural curve used by XAML and Composition.
-pub fn ease(t: f64) -> f64 { crate::motion::reposition(t) }
+pub fn ease(t: f64) -> f64 {
+    crate::motion::reposition(t)
+}
 
 #[derive(Clone, Copy)]
-struct Hold { dx: f32, sx: f32, start: f64 }
+struct Hold {
+    dx: f32,
+    sx: f32,
+    start: f64,
+}
 
 #[derive(Default)]
 pub struct Settle {
@@ -41,17 +47,35 @@ impl Settle {
     /// Record an element held at offset `dx` and scale `sx`, easing to rest
     /// from `start`. Returns false when the bound is reached.
     pub fn hold(&mut self, kind: u32, id: u32, dx: f32, sx: f32, start: f64) -> bool {
-        if self.holds.len() >= MAX_SETTLING && !self.holds.contains_key(&(kind, id)) { return false; }
+        if self.holds.len() >= MAX_SETTLING && !self.holds.contains_key(&(kind, id)) {
+            return false;
+        }
         self.holds.insert((kind, id), Hold { dx, sx, start });
         true
     }
 
     /// Where the element is drawn at `now`, relative to its layout bounds.
     pub fn sample(&self, kind: u32, id: u32, now: f64) -> ShellSettleSample {
-        let Some(h) = self.holds.get(&(kind, id)) else { return ShellSettleSample { active: false, dx: 0.0, sx: 1.0 }; };
-        if now - h.start >= SETTLE_MS { return ShellSettleSample { active: false, dx: 0.0, sx: 1.0 }; }
+        let Some(h) = self.holds.get(&(kind, id)) else {
+            return ShellSettleSample {
+                active: false,
+                dx: 0.0,
+                sx: 1.0,
+            };
+        };
+        if now - h.start >= SETTLE_MS {
+            return ShellSettleSample {
+                active: false,
+                dx: 0.0,
+                sx: 1.0,
+            };
+        }
         let rest = (1.0 - ease((now - h.start) / SETTLE_MS)) as f32;
-        ShellSettleSample { active: true, dx: h.dx * rest, sx: 1.0 + (h.sx - 1.0) * rest }
+        ShellSettleSample {
+            active: true,
+            dx: h.dx * rest,
+            sx: 1.0 + (h.sx - 1.0) * rest,
+        }
     }
 
     /// Forget finished holds; whether any element is still settling.
@@ -60,7 +84,9 @@ impl Settle {
         !self.holds.is_empty()
     }
 
-    pub fn clear(&mut self) { self.holds.clear(); }
+    pub fn clear(&mut self) {
+        self.holds.clear();
+    }
 }
 
 #[cfg(test)]
@@ -87,12 +113,26 @@ mod tests {
         let mut settle = Settle::default();
         assert!(settle.hold(SHELL_SETTLE_TAB, 7, -100.0, 0.5, 1000.0));
         let start = settle.sample(SHELL_SETTLE_TAB, 7, 1000.0);
-        assert_eq!(start, ShellSettleSample { active: true, dx: -100.0, sx: 0.5 });
+        assert_eq!(
+            start,
+            ShellSettleSample {
+                active: true,
+                dx: -100.0,
+                sx: 0.5
+            }
+        );
         let mid = settle.sample(SHELL_SETTLE_TAB, 7, 1000.0 + SETTLE_MS / 2.0);
         assert!(mid.active && mid.dx > -50.0 && mid.dx < 0.0 && mid.sx > 0.75 && mid.sx < 1.0);
         assert!(settle.advance(1000.0 + SETTLE_MS - 1.0));
         let done = settle.sample(SHELL_SETTLE_TAB, 7, 1000.0 + SETTLE_MS);
-        assert_eq!(done, ShellSettleSample { active: false, dx: 0.0, sx: 1.0 });
+        assert_eq!(
+            done,
+            ShellSettleSample {
+                active: false,
+                dx: 0.0,
+                sx: 1.0
+            }
+        );
         assert!(!settle.advance(1000.0 + SETTLE_MS));
         assert!(!settle.sample(SHELL_SETTLE_TAB, 7, 1000.0).active);
     }
@@ -107,7 +147,11 @@ mod tests {
         settle.hold(SHELL_SETTLE_TAB, 3, 40.0, 1.0, 100.0);
         assert_eq!(settle.sample(SHELL_SETTLE_TAB, 3, 100.0).dx, 40.0);
         assert!(settle.advance(SETTLE_MS + 1.0));
-        assert!(!settle.sample(SHELL_SETTLE_HEADER, 3, SETTLE_MS + 1.0).active);
+        assert!(
+            !settle
+                .sample(SHELL_SETTLE_HEADER, 3, SETTLE_MS + 1.0)
+                .active
+        );
         settle.clear();
         assert!(!settle.advance(0.0));
     }
@@ -121,13 +165,18 @@ mod tests {
         let mid = settle.sample(SHELL_SETTLE_CLOCK, 0, 100.0 + SETTLE_MS / 2.0);
         assert!(mid.active && mid.dx > 0.0 && mid.dx < 1.0);
         assert_eq!(settle.sample(SHELL_SETTLE_TAB, 0, 100.0).dx, 20.0);
-        assert_eq!(settle.sample(SHELL_SETTLE_CLOCK, 0, 100.0 + SETTLE_MS).dx, 0.0);
+        assert_eq!(
+            settle.sample(SHELL_SETTLE_CLOCK, 0, 100.0 + SETTLE_MS).dx,
+            0.0
+        );
     }
 
     #[test]
     fn holds_are_bounded() {
         let mut settle = Settle::default();
-        for id in 0..MAX_SETTLING as u32 { assert!(settle.hold(SHELL_SETTLE_TAB, id, 1.0, 1.0, 0.0)); }
+        for id in 0..MAX_SETTLING as u32 {
+            assert!(settle.hold(SHELL_SETTLE_TAB, id, 1.0, 1.0, 0.0));
+        }
         assert!(!settle.hold(SHELL_SETTLE_TAB, MAX_SETTLING as u32, 1.0, 1.0, 0.0));
         assert!(settle.hold(SHELL_SETTLE_TAB, 0, 2.0, 1.0, 0.0));
     }
