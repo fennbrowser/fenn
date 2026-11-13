@@ -17,6 +17,8 @@ struct NativeAddressInteraction {
         return core.AddressInteraction(SHELL_ADDRESS_INTERACTION_KIND_OBSERVE, 0, 0, inside);
     }
     void PointerFocus() { core.AddressInteraction(SHELL_ADDRESS_INTERACTION_KIND_POINTER_FOCUS); }
+    // A user edit while a pointer gesture is pending cancels its select-all.
+    void Edit() { core.AddressInteraction(SHELL_ADDRESS_INTERACTION_KIND_EDIT); }
     void Begin(winrt::Microsoft::UI::Input::PointerPoint const& point, bool entry) {
         origin = point.Position();
         pointer = point.PointerId();

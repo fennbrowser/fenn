@@ -11,7 +11,7 @@ function fixture(text, host, base = host) {
   const state = {urlMetaData:{inputValue:text, untrimmedValue:"https://" + text, data:metadata}};
   const lazy = {UrlbarPrefs:{get:()=>true}, SearchService:{isInitialized:true}};
   const input = {value:text, untrimmedValue:"https://" + text, focused:false,
-    getBrowserState:()=>state, window:{gBrowser:{selectedBrowser:{}},addEventListener(){}}};
+    getBrowserState:()=>state, documentGlobal:{gBrowser:{selectedBrowser:{}},addEventListener(){}}};
   const context = vm.createContext({XPCOMUtils:{declareLazy:()=>lazy}, Services:{eTLD:{getBaseDomainFromHost:()=>base}}});
   vm.runInContext(source, context);
   return {formatter:new context.Formatter(input), input, state, lazy, metadata};

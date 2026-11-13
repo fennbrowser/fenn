@@ -71,7 +71,7 @@ test('preference notifications, alternate panels and malformed/stale requests ca
 test('Firefox Forget gateway retains exact clearing categories, range, window privacy and notifier',async()=>{
   const source=readFileSync(new URL('../upstream/firefox/browser/components/customizableui/CustomizableWidgets.sys.mjs',import.meta.url),'utf8');
   const start=source.indexOf('if (Services.prefs.getBoolPref("privacy.panicButton.enabled"))');
-  const code=source.slice(start,source.indexOf('if (PrivateBrowsingUtils.enabled)',start));
+  const code=source.slice(start,source.indexOf('const kFireButtonNimbusFeature',start));
   const calls=[],window={private:true};
   const context=vm.createContext({CustomizableWidgets:[],Services:{prefs:{getBoolPref:()=>true},wm:{getMostRecentWindow:()=>({PanicButtonNotifier:{notify:()=>calls.push('notify')}})}},
     PrivateBrowsingUtils:{isWindowPrivate:w=>w.private},lazy:{Sanitizer:{getClearRange:span=>{calls.push(['range',span]);return [10,20];},sanitize:(items,options)=>{calls.push([Array.from(items),options]);return Promise.resolve();}}}});

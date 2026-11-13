@@ -303,7 +303,7 @@ test('original mode owner keeps confirmed state below previews and clears invali
     lazy:{UrlbarSearchTermsPersistence:{onSearchModeChanged(){}}},Event:class {}});
   vm.runInContext('this.Binding=class {'+method+'}',context);
   const input=new context.Binding(),browser={},modes={};
-  input.window={gBrowser:{selectedBrowser:browser}};input._isAddressbar=true;
+  input.browserWindow={gBrowser:{selectedBrowser:browser}};input._isAddressbar=true;
   input._getModes=()=>modes;input.getSearchMode=()=>modes.preview ?? modes.confirmed;
   input.controller={engineStore:{initialized:true,getEngineByName:name=>name==='Engine'?{isGeneralPurposeEngine:true}:null}};
   input.parentController={recordSearchMode(){}};input._updateSearchModeUI=()=>{};input.dispatchEvent=()=>{};
@@ -382,7 +382,7 @@ test('original search binding keeps focus, mode-before-text and input-event orde
   const {model,services}=fixture(),source=readFileSync(new URL('UrlbarInputBase.mjs',base),'utf8');
   const start=source.indexOf('  search(value, options = {}) {');
   const method=source.slice(start,source.indexOf('\n  /**',start));
-  const context=vm.createContext({UrlbarSearchModeModel:model.constructor,UrlbarShared:{RESTRICT_TOKENS:{SEARCH:'?'}},
+  const context=vm.createContext({window:{},UrlbarSearchModeModel:model.constructor,UrlbarShared:{RESTRICT_TOKENS:{SEARCH:'?'}},
     UIEvent:class {constructor(type,options){this.type=type;this.options=options;}}});
   vm.runInContext('this.Binding=class {'+method+'}',context);
   const input=new context.Binding(),calls=[];let value,mode;

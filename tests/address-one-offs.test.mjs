@@ -132,7 +132,7 @@ function commandFixture({where='current',background=false,pageValid=false,value=
   const f=retainedFixture(),calls=[],event={shiftKey:false};
   const newTab={linkedBrowser:{},documentGlobal:{gURLBar:{startQuery:p=>calls.push(['new-query',p])}}};
   const browser={addTrustedTab:url=>{calls.push(['tab',url]);return newTab;}};
-  const input={value,getAttribute:()=>pageValid?'valid':'invalid',window:{gBrowser:browser},
+  const input={value,getAttribute:()=>pageValid?'valid':'invalid',browserWindow:{gBrowser:browser},
     controller:{engagementEvent:{discard:()=>calls.push(['discard'])}},
     startQuery:p=>calls.push(['query',p]),handleNavigation:p=>calls.push(['navigation',p]),
     setSearchMode:(mode,target)=>calls.push(['mode',mode,target]),select:()=>calls.push(['select'])};
@@ -220,7 +220,7 @@ test('retained background setter refreshes and notifies the source after target 
       #isAddressbar=true; #getSearchModesObject(){return {};} getSearchMode(){return null;} ${method}
     }`)(modeModel,{deepEqual:()=>false},{UrlbarSearchTermsPersistence:{onSearchModeChanged:window=>{
       assert.equal(window.gBrowser.selectedBrowser,sourceBrowser);f.calls.push(['persistence']);}}},Event);
-    const input=new Input();input.window=f.input.window;input.dispatchEvent=event=>{assert.equal(event.type,'searchmodechanged');f.calls.push(['notification']);};
+    const input=new Input();input.browserWindow=f.input.browserWindow;input.dispatchEvent=event=>{assert.equal(event.type,'searchmodechanged');f.calls.push(['notification']);};
     input._updateSearchModeUI=()=>{throw Error('unselected mode UI');};f.input.setSearchMode=input.setSearchMode.bind(input);
     Object.defineProperty(f.newTab.linkedBrowser,'userTypedValue',{set:()=>f.calls.push(['typed'])});
     Object.defineProperty(f.browser,'selectedTab',{set:()=>f.calls.push(['selected'])});

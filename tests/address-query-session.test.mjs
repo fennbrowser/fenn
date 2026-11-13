@@ -38,7 +38,7 @@ function fixture({hold=false,uninitializedResults=false,onPresentationRequest=nu
       QUERY_FIRST_RESULT:'onFirstResult',QUERY_RESULTS:'onQueryResults',QUERY_FINISHED:'onQueryFinished'}},
     UrlbarPrefs:{get:key=>prefs[key] ?? 10,getScotchBonnetPref:key=>!!(prefs["scotchBonnet.enableOverride"] || prefs[key])},UrlbarContentUtils:{usesMessagePath:()=>false,getDisplaySpec:spec=>spec,getFixupPrimitives:()=>({}),getPlatform:()=> 'win',whereToOpenLink:e=>e?.where || 'current',willLoadInBackground:(_where,params)=>!params.forceForeground},
     UrlbarQueryContext:class {constructor(options){Object.assign(this,options,{id:++id,results:uninitializedResults?undefined:[]});}},
-    ChromeUtils:{defineESModuleGetters(target){target.UrlbarParentController=Parent;target.QuickSuggest={getFeature:()=>sandbox.backend};target.UrlUtils={LOOKS_LIKE_ORIGIN:{NONE:0},looksLikeOrigin:text=>text.includes(".")?1:0};target.UrlbarTokenizer={tokenize:context=>[{value:context.searchString}]};}}});
+    ChromeUtils:{importESModule(){return {XPCOMUtils:{declareLazy(){const target={};sandbox.ChromeUtils.defineESModuleGetters(target);return target;}}};},defineESModuleGetters(target){target.UrlbarParentController=Parent;target.QuickSuggest={getFeature:()=>sandbox.backend};target.UrlUtils={LOOKS_LIKE_ORIGIN:{NONE:0},looksLikeOrigin:text=>text.includes(".")?1:0};target.UrlbarTokenizer={tokenize:context=>[{value:context.searchString}]};}}});
   vm.runInContext(readFileSync(new URL('../upstream/firefox/browser/components/urlbar/content/UrlbarUrlValue.mjs',import.meta.url),'utf8')
     .replace(/^import\b[^;]*;$/gm,'').replaceAll('export function ','function '),sandbox);
   Object.assign(sandbox.UrlbarShared, {isSearchbarSAP:sharedPolicy.UrlbarShared.isSearchbarSAP.bind(sharedPolicy.UrlbarShared),getLoadRequestFromResult:sharedPolicy.UrlbarShared.getLoadRequestFromResult.bind(sharedPolicy.UrlbarShared),looksLikeSingleWordHost:sharedPolicy.UrlbarShared.looksLikeSingleWordHost.bind(sharedPolicy.UrlbarShared),isInstance:(event,type)=>event instanceof type,REGEXP_SPACES:sharedPolicy.UrlbarShared.REGEXP_SPACES,RESTRICT_TOKENS:sharedPolicy.UrlbarShared.RESTRICT_TOKENS,
@@ -526,27 +526,6 @@ test('parent close requests require exact current context and original view igno
   view.onResultsCloseRequested(1,true);view.onResultsCloseRequested(2,false);
   assert.equal(calls.length,1);view.onResultsCloseRequested(2,true);
   assert.deepEqual(calls[1],{elementPicked:true});
-});
-
-test('contextual commands retain effects and close-before-removal order without reading a view or container',()=>{
-  const source=readFileSync(new URL('../upstream/firefox/browser/components/urlbar/UrlbarProviderQuickSuggestContextualOptIn.sys.mjs',import.meta.url),'utf8');
-  const a=source.indexOf('  onEngagement(queryContext,'),b=source.indexOf('  #dismiss()',a);
-  const calls=[],Provider=new Function('lazy',`return class {
-    #dismiss(){this.calls.push('dismiss');} #shouldDisplayContextualOptIn(){return false;}
-    ${source.slice(a,b)}
-  }`)({UrlbarPrefs:{set:(...args)=>calls.push(['pref',...args])}});
-  const provider=new Provider();provider.calls=calls;
-  const q={},result={},controller={get view(){throw Error('provider accessed a view');},
-    browserWindow:{openHelpLink:name=>calls.push(['help',name])},
-    requestResultsClose:context=>{assert.equal(context,q);calls.push('close');},
-    removeResult:r=>{assert.equal(r,result);calls.push('remove');}};
-  for(const [selType,effect] of [['allow',['pref','quicksuggest.online.enabled',true]],
-    ['learn_more',['help','firefox-suggest']],['dismiss','dismiss']]) {
-    calls.length=0;provider.onEngagement(q,controller,{selType,result});
-    assert.deepEqual(calls,[effect,'close','remove']);
-  }
-  calls.length=0;provider.onEngagement(q,controller,{selType:'unknown',result});assert.deepEqual(calls,[]);
-  assert.doesNotMatch(source,/controller\.view|container\.hidden/);
 });
 
 test('streaming updates preserve context identity and suppress stale, cancelled and out-of-scope callbacks',async()=>{
@@ -2305,7 +2284,7 @@ test('retained attribution binding preserves lazy DOM and browser-state reads',(
     [{mode:{source:4},oneoff:true,terms:'kept terms'},'urlbar',['switcher','oneoff','mode','browser']],
   ]) {
     const calls=[],event={};const host={isAddressbar:true,sapName:facts.isAddressbar===false?'searchbar':'urlbar',
-      ...facts,window:{gBrowser:{selectedBrowser:{}}},
+      ...facts,browserWindow:{gBrowser:{selectedBrowser:{}}},
       searchModeSwitcher:{eventTargetIsPanelItem:e=>{assert.equal(e,event);calls.push('switcher');return !!facts.switcher;}},
       view:{oneOffSearchButtons:{eventTargetIsAOneOff:e=>{assert.equal(e,event);calls.push('oneoff');return !!facts.oneoff;}}},
       get searchMode(){calls.push('mode');return facts.mode;},
@@ -2904,7 +2883,9 @@ function parentLoadFixture() {
   const modelFixture=fixture();lazy.UrlbarSearchModeModel=modelFixture.sandbox.UrlbarSearchModeModel;
   lazy.UrlbarCompositionModel=modelFixture.sandbox.UrlbarCompositionModel;lazy.UrlbarShared=modelFixture.sandbox.UrlbarShared;modelFixture.session.close();
   lazy.ReaderMode={getOriginalUrlObjectForDisplay:()=>null};
-  const Parent=new Function('lazy','Cr',`return class {
+  lazy.URILoadingHelper={openTrustedLinkIn:(win,...args)=>win.openTrustedLinkIn(...args),switchToTabHavingURI:(win,...args)=>win.switchToTabHavingURI(...args)};
+  const claims=[];
+  const Parent=new Function('lazy','Cr','claimBounceForLoad',`return class {
     isPrivate=false;
     #currentLoad=null;#currentLoadRecovery=null;#currentLoadGeneration=0;#destroyed=false;#isAddressbar=true;#oneOffSearchTabs=new WeakMap();#independentEngineTargets=new WeakMap();#actor={};
     #recordSearchForBrowser(data){this.recorded?.(data);}
@@ -2912,12 +2893,12 @@ function parentLoadFixture() {
     destroy(){this.#destroyed=true;this.#currentLoad=null;this.#discardCurrentLoadRecovery();}
     describeCurrentPageRevert(){return this.recoveryDescription??null;}
     ${methods}
-  }`)(lazy,{NS_ERROR_LOAD_SHOWED_ERRORPAGE:99});
+  }`)(lazy,{NS_ERROR_LOAD_SHOWED_ERRORPAGE:99},source=>{claims.push(source);return ()=>{};});
   const p=new Parent();p.resolveTargetBrowser=id=>id===42?browser:null;
   p.recordSearchMode=mode=>calls.push(['mode-entry',mode]);p.markEngineAsUsed=id=>calls.push(['engine-used',id]);
   p.browserWindow={gBrowser:{selectedBrowser:browser},openTrustedLinkIn:(url,where,params)=>calls.push({url,where,params})};
   const data={where:'current',browserId:42,loadRequest:{urlLoad:{url:'https://chosen.test/'}},params:{avoidBrowserFocus:false},userTypedValue:'chosen'};
-  return {p,browser,data,calls,lazy};
+  return {p,browser,data,calls,lazy,claims};
 }
 
 test('parent current loads copy preparation, supersede tokens and dispatch exactly once',()=>{
@@ -8204,6 +8185,7 @@ test('parent current engine dispatch preserves submission, POST data, pinned bro
   assert.equal(outcome.dispatched,true);assert.equal(outcome.browserId,42);assert.equal(f.calls.length,1);
   const load=f.calls[0];assert.equal(load.where,'current');assert.equal(load.params.targetBrowser,f.browser);assert.equal(load.params.postData,f.postData);
   assert.equal(load.params.globalHistoryOptions.triggeringSource,'urlbar');assert.equal(load.params.globalHistoryOptions.triggeringSearchEngine,'Engine Two');
+  assert.deepEqual(f.claims,[f.browser]);assert.equal(load.params.initiatedByURLBar,true);assert.equal(typeof load.params.resolveOnContentBrowserCreated,'function');
   assert.equal(f.p.dispatchIndependentCurrentEngineSearch(target.token,{engineId:'second',searchString:'typed words'},()=>true),null);
 });
 

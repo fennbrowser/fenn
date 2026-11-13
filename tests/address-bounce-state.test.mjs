@@ -41,12 +41,15 @@ test('direct bounce captures presentation before navigation and never reads a la
   assert.equal(f.records[0].model,'old');assert.equal(f.records[0].view_time,'1.2');assert.equal(f.reads,2);
 });
 
-test('explicit bounce needs no input and preserves replacement and view-time filtering',async()=>{
+test('explicit bounce needs no input, ignores unrecordable candidates and filters view time',async()=>{
   const f=fixture();f.prohibit();const state={engagementData:f.data,smartbarData:f.smart};
   await f.recorder.startTrackingBounceEvent(1,{}, {searchSource:'urlbar_handoff'},state);
+  // As upstream (bug 2076827): an engagement with no snapshot neither triggers
+  // nor replaces the tracked bounce; its own trigger records it.
   f.recorder.discard();await f.recorder.startTrackingBounceEvent(1,{}, {searchSource:'urlbar'},state);
-  assert.equal(f.records.length,1);assert.equal(f.records[0].sap,'handoff');
-  await f.c.trigger(f.browser);assert.equal(f.records.length,1);assert.equal(f.reads,0);
+  assert.equal(f.records.length,0);
+  await f.c.trigger(f.browser);assert.equal(f.records.length,1);assert.equal(f.records[0].sap,'handoff');
+  assert.equal(f.reads,0);
   for(const time of [0,10000,15000]) {
     f.recorder._startEventInfo={};await f.recorder.startTrackingBounceEvent(1,{}, {searchSource:'urlbar'},state);
     f.setTime(time);await f.c.trigger(f.browser);

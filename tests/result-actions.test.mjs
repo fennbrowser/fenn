@@ -15,8 +15,8 @@ function fixture() {
   });
   vm.runInContext(readFileSync(new URL('../upstream/firefox/browser/components/urlbar/content/UrlbarResultActions.mjs',import.meta.url),'utf8')
     .replace(/^import\b[^;]*;\r?$/gm,'').replace('export class UrlbarResultActions','this.Actions = class UrlbarResultActions'),context);
-  const input={handlesOpenInCommands:true,document:{l10n:{formatMessages:async specs=>specs.map(({id})=>({value:'Localized '+id,attributes:[{name:'accesskey',value:'L'}]}))}},
-    window:{getHelpLinkURL:topic=>'https://help.test/'+topic},
+  const input={handlesOpenInCommands:true,ownerDocument:{l10n:{formatMessages:async specs=>specs.map(({id})=>({value:'Localized '+id,attributes:[{name:'accesskey',value:'L'}]}))}},
+    browserWindow:{getHelpLinkURL:topic=>'https://help.test/'+topic},
     view:{updateMenuButtonKeyboardAccessibility(){calls.push('accessibility');}},
     controller:{engineStore:{default:{name:'Default Engine'}},parentController:{openContainerCreationPanel:arg=>calls.push(['create',arg]),openPreferences:(...args)=>calls.push(['preferences',...args])}},
     pickResult:options=>calls.push(options)};

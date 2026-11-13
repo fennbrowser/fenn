@@ -13,6 +13,8 @@ pub enum ShellAddressInteractionKind {
     Interrupt = 7,
     ContentFocus = 8,
     PrepareSubmit = 9,
+    /// The user changed the text; a pending entry gesture must not select all.
+    Edit = 10,
 }
 #[repr(u32)]
 pub enum ShellAddressInteractionEffect {
@@ -36,6 +38,7 @@ struct Gesture {
     pointer: u32,
     entry: bool,
     moved: bool,
+    edited: bool,
 }
 #[derive(Default)]
 pub struct AddressInteraction {
@@ -88,6 +91,7 @@ impl AddressInteraction {
             7 => Interrupt,
             8 => ContentFocus,
             9 => PrepareSubmit,
+            10 => Edit,
             _ => return None,
         };
         use ShellAddressInteractionEffect as Effect;
@@ -106,6 +110,13 @@ impl AddressInteraction {
                     effects = Effect::Focus as u32;
                 }
             }
+            Edit => {
+                // Text typed after the focusing press (bug 1953361's native
+                // equivalent): the release must not select it all.
+                if let Some(g) = &mut self.gesture {
+                    g.edited = true;
+                }
+            }
             PointerFocus => {
                 self.pointer_entry = true;
                 if let Some(g) = &mut self.gesture {
@@ -122,6 +133,7 @@ impl AddressInteraction {
                         pointer,
                         entry: self.pointer_entry || !self.focused || value != 0,
                         moved: false,
+                        edited: false,
                     });
                 }
                 self.pointer_entry = false;
@@ -142,7 +154,7 @@ impl AddressInteraction {
                         if kind == Release && value != 0 {
                             self.focused = true;
                             effects = Effect::Focus as u32
-                                | if g.entry && !g.moved {
+                                | if g.entry && !g.moved && !g.edited {
                                     Effect::SelectAll as u32
                                 } else {
                                     0
@@ -197,6 +209,24 @@ mod tests {
         assert_eq!(ev(&mut s, 1, 0, 0, 1).effects, 0);
         assert_eq!(ev(&mut s, 1, 0, 0, 0).effects, 5);
         assert_eq!(ev(&mut s, 1, 0, 0, 0).effects, 1);
+    }
+    #[test]
+    fn edit_during_entry_gesture_suppresses_select_all() {
+        let mut s = AddressInteraction::default();
+        let t = ev(&mut s, 3, 4, 0, 1).token;
+        assert_eq!(ev(&mut s, 10, 0, 0, 0).effects, 0);
+        assert_eq!(ev(&mut s, 5, 4, t, 1).effects, 2);
+        // Blur, then a new entry gesture selects all again.
+        assert_eq!(ev(&mut s, 1, 0, 0, 0).effects, 5);
+        let t = ev(&mut s, 3, 4, 0, 1).token;
+        assert_eq!(ev(&mut s, 5, 4, t, 1).effects, 10);
+    }
+    #[test]
+    fn edit_without_gesture_has_no_effect() {
+        let mut s = AddressInteraction::default();
+        let state = ev(&mut s, 10, 0, 0, 0);
+        assert_eq!((state.effects, state.holding), (0, 0));
+        assert!(s.event(10, 0, 0, 2).is_none());
     }
     #[test]
     fn movement_latches_and_caret_click_does_not_select_all() {

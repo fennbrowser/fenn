@@ -94,7 +94,7 @@ function fixture({visible=true,page='https://page.test/',heuristic=true}={}){
     searchMode:{engineName:'Held'},mirrorSearchMode(mode,browser){calls.push(['mirror',mode,browser]);}};
   const window={gBrowser:{selectedBrowser:browser,selectedTab:{isEmpty:false,userContextId:0}},gURLBar:input,
     KeyboardEvent:class {constructor(type,init){this.type=type;Object.assign(this,init);}},performance:{now:()=>1},
-    windowGlobalChild:{getActor:()=>({})},gWinUIPane:{addressFallback(){calls.push(['address-fallback']);}}};
+    windowGlobalChild:{parentActor:{getActor:()=>({})}},gWinUIPane:{addressFallback(){calls.push(['address-fallback']);}}};
   const s=new Session(window);
   view.nativePresentation=s;
   const result={id:11,type:1,payload:{url:'https://result.test/'}};

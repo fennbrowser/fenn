@@ -24,7 +24,7 @@
  layout or meaning of anything in [`ffi`] changes; the native host refuses to
  use a core whose version it was not compiled against.
  */
-#define SHELL_CORE_ABI_VERSION 99
+#define SHELL_CORE_ABI_VERSION 100
 
 #define MAX_EDIT_ID 9007199254740991
 
@@ -390,6 +390,10 @@ enum ShellAddressInteractionKind
   SHELL_ADDRESS_INTERACTION_KIND_INTERRUPT = 7,
   SHELL_ADDRESS_INTERACTION_KIND_CONTENT_FOCUS = 8,
   SHELL_ADDRESS_INTERACTION_KIND_PREPARE_SUBMIT = 9,
+  /*
+   The user changed the text; a pending entry gesture must not select all.
+   */
+  SHELL_ADDRESS_INTERACTION_KIND_EDIT = 10,
 };
 #ifndef __cplusplus
 #if __STDC_VERSION__ >= 202311L

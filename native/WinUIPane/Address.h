@@ -366,6 +366,7 @@ struct NativeAddress {
             return;
         }
         if (field.Text() == observedText && composing == observedComposing) return;
+        interaction.Edit();
         // A text change replaces whatever was staged: what the user can see is
         // the newest thing they have said. Composition start and end are edits
         // too, which is why this is the one intent not suppressed by an active

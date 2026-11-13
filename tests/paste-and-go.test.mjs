@@ -25,13 +25,15 @@ function binding(name,smartbar=false) {
   const source=readFileSync(new URL('../upstream/firefox/browser/components/urlbar/content/'+name,import.meta.url),'utf8');
   const method=name=>{const start=source.indexOf('  '+name+'(');assert.notEqual(start,-1);return source.slice(start,source.indexOf('\n  }\n',start)+4);};
   const trace=[];
-  const context=vm.createContext({executeUrlbarPasteAndGo,Services:{clipboard:{hasDataMatchingFlavors:()=>true}},Ci:{nsIClipboard:{kGlobalClipboard:1}}});
+  const window={goDoCommand:c=>trace.push(c)},document={};
+  const context=vm.createContext({window,document,executeUrlbarPasteAndGo,Services:{clipboard:{hasDataMatchingFlavors:()=>true}},Ci:{nsIClipboard:{kGlobalClipboard:1}}});
   vm.runInContext('this.Binding=class {#isSmartbarMode='+smartbar+';#readClipboardData(){return {getData:()=>"clipboard"};}'+
     method('pasteAndGo')+method('canPasteAndGo')+(name==='SmartbarInput.mjs'?method('#pasteForPasteAndGo'):'')+'}',context);
   const b=new context.Binding();const controller={isCommandEnabled:()=>true,doCommand:c=>trace.push(c)};
+  document.commandDispatcher={getControllerForCommand:()=>controller};
   Object.assign(b,{inputField:{value:'text',setSelectionRange:(a,z)=>trace.push([a,z]),controllers:{getControllerForCommand:()=>controller}},
-    document:{commandDispatcher:{getControllerForCommand:()=>controller}},view:{nativePresentation:null},
-    window:{goDoCommand:c=>trace.push(c)},select:()=>trace.push('select'),
+    document,view:{nativePresentation:null},
+    select:()=>trace.push('select'),
     setResultForCurrentValue:v=>trace.push(['result',v]),handleCommand:()=>trace.push('submit'),
     parentController:{clearLastQueryContextCache:()=>trace.push('cache')},
     suppressStartQuery(){this._suppressStartQuery=true;},unsuppressStartQuery(){this._suppressStartQuery=false;}});

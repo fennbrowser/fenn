@@ -99,10 +99,11 @@ test('real child controller admits queries and local editor listeners without an
     UrlbarContentUtils:{usesMessagePath:()=>false},UrlbarParentControllerProxy:class{},
     UrlbarShared:{NOTIFICATIONS:{QUERY_ARMED:'onQueryArmed',QUERY_RESULTS:'onQueryResults',
       QUERY_FIRST_RESULT:'onFirstResult',QUERY_FINISHED:'onQueryFinished',QUERY_CANCELLED:'onQueryCancelled'}},
-    ChromeUtils:{defineESModuleGetters(target){target.UrlbarParentController=Parent;}}});
+    ChromeUtils:{importESModule:()=>({XPCOMUtils:{declareLazy:()=>({UrlbarParentController:Parent})}}),
+      defineESModuleGetters(target){target.UrlbarParentController=Parent;}}});
   const source=readFileSync(new URL('../upstream/firefox/browser/components/urlbar/content/UrlbarChildController.mjs',import.meta.url),'utf8');
   vm.runInContext(source.replace(/^import\b[^;]*;$/gm,'').replace('export class UrlbarChildController','this.Controller = class UrlbarChildController'),context);
-  const input={sapName:'urlbar',isPrivate:false,window:{windowGlobalChild:{getActor:()=>({})}},
+  const input={sapName:'urlbar',isPrivate:false,browserWindow:{windowGlobalChild:{parentActor:{getActor:()=>({})}}},
     get eventBufferer(){throw Error('DOM bufferer read');}};
   const controller=new context.Controller({input});
   const listener={onQueryArmed:q=>events.push('arm '+q.id),onQueryCancelled:()=>events.push('cancelled'),

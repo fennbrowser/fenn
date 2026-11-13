@@ -3,7 +3,7 @@ import vm from 'node:vm';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 function fixture(){
-  const calls=[],groups=[],saved=[],prefs=new Map([['browser.tabs.groups.alternateMenu',true]]),source={};
+  const calls=[],groups=[],saved=[],prefs=new Map([['browser.toolbars.tab-groups.enabled',true]]),source={};
   const metrics={METRIC_SOURCE:{TAB_OVERFLOW_MENU:'overflow',TAB_GROUP_MENU:'group'},userTriggeredContext:v=>v};
   const sharing={isEnabled:false,handleShareTabGroup:g=>calls.push(['share',g])};
   const window={document:{},private:false,PrivateBrowsingUtils:{isWindowPrivate:w=>w.private},BROWSER_NEW_TAB_URL:'about:newtab',
@@ -49,7 +49,7 @@ test('context commands route to Firefox owners and respect sole-group and sharin
 test('rename, same-position tab replacement, source/context/policy changes revoke actions',()=>{
   for(const change of [f=>f.groups[0].name='Changed',f=>f.groups[0].tabs=[{_tPos:0}],f=>f.groups[0]={...f.groups[0]},f=>f.item.placed=false,
     f=>f.toolbar.owner.addressDocument++,f=>f.toolbar.customization.nativeOverflow.add('tab-groups-button'),f=>f.toolbar.customization.editorOpen=true,
-    f=>f.prefs.set('browser.tabs.groups.alternateMenu',false),f=>f.sharing.isEnabled=true]){
+    f=>f.prefs.set('browser.toolbars.tab-groups.enabled',false),f=>f.sharing.isEnabled=true]){
     const f=fixture();f.add();f.open();const id=f.menu.description.items[0].id;change(f);assert.equal(f.invoke(id),2);assert.deepEqual(f.calls,[]);
   }
 });

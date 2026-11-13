@@ -7,8 +7,8 @@ const read=name=>readFileSync(new URL('../upstream/firefox/browser/components/ur
 const uri=spec=>({spec,equals:other=>other?.spec===spec});
 function fixture(){
   class URIURL extends URL {static fromURI(value){return new URL(value.spec);}}
-  const c=vm.createContext({URL:URIURL,ChromeUtils:{defineESModuleGetters(){},defineLazyGetter(){}}});
-  vm.runInContext(read('UrlbarSearchTermsPersistence.sys.mjs').replace('export var ','var '),c);
+  const c=vm.createContext({URL:URIURL,ChromeUtils:{defineESModuleGetters(){},defineLazyGetter(){}},XPCOMUtils:{declareLazy:()=>({})}});
+  vm.runInContext(read('UrlbarSearchTermsPersistence.sys.mjs').replace(/^import\b[^;]*;$/m,'').replace('export var ','var '),c);
   const service=c.UrlbarSearchTermsPersistence,resets=[];
   service.setPersistenceState=(state,originalURI)=>{resets.push(originalURI);state.persist={originalURI,
     searchTerms:'chosen words',origin:'https://search.test',pathname:'/search',originalEngineName:'engine',isDefaultEngine:true,shouldPersist:null};};
@@ -90,11 +90,11 @@ test('retained persistence binding applies service effects and avoids disabled b
   const {service,facts}=fixture(),events=[];let enabled=true;
   const Input=new Function('lazy','Glean',`return class {${method}}`)({UrlbarUtils:{isPersistedSearchTermsEnabled:()=>enabled},UrlbarSearchTermsPersistence:service},
     {urlbarPersistedsearchterms:{viewCount:{add:n=>events.push(n)}}});
-  const input=new Input();input.window={gBrowser:{selectedBrowser:{originalURI:facts.originalURI},currentURI:facts.uri}};
+  const input=new Input();input.browserWindow={gBrowser:{selectedBrowser:{originalURI:facts.originalURI},currentURI:facts.uri}};
   input.userTypedValue=null;input.toggleAttribute=(...args)=>events.push(args);
   assert.equal(input.update({state:{},dueToTabSwitch:true,isSameDocument:false,hideSearchTerms:false}),true);
   assert.equal(input.userTypedValue,'chosen words');assert.deepEqual(events,[['persistsearchterms',true],1]);
-  enabled=false;Object.defineProperty(input,'window',{get(){throw Error('disabled browser read');}});events.length=0;
+  enabled=false;Object.defineProperty(input,'browserWindow',{get(){throw Error('disabled browser read');}});events.length=0;
   assert.equal(input.update({state:{persist:{}}}),false);assert.deepEqual(events,[['persistsearchterms',false]]);
 });
 
@@ -213,7 +213,7 @@ test('retained input identity applies shared persistence while preserving displa
   const {service}=fixture(),events=[];let active=true;
   const Input=new Function('lazy','UrlbarInputIdentity',`return class {#isAddressbar=true;setAddressbar(value){this.#isAddressbar=value;}${method}}`)({UrlbarSearchTermsPersistence:service},UrlbarInputIdentity);
   const input=new Input(),state={persist:{shouldPersist:true,searchTerms:'displayed'}};
-  input.window={gBrowser:{selectedBrowser:{}}};input.getBrowserState=()=>state;
+  input.browserWindow={gBrowser:{selectedBrowser:{}}};input.getBrowserState=()=>state;
   input.getAttribute=()=> 'invalid';input.toggleAttribute=(...args)=>events.push(args);input.removeAttribute=name=>events.push(name);
   Object.defineProperty(input,'value',{get(){if(!active)throw Error('unneeded value read');return 'displayed';}});
   input.update('different argument');assert.equal(state.persist.shouldPersist,true);

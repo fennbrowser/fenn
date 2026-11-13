@@ -42,8 +42,21 @@ test('stale page, tab, text, edit, disconnected node and disabled actions cannot
 test('superseded asynchronous localization never publishes an old menu',async()=>{
   const f=fixture();let done;
   f.session.window.document.l10n.translateElements=()=>new Promise(resolve=>done=resolve);
-  const pending=f.adapter.open(f.request);f.adapter.close();done();await pending;
+  const pending=f.adapter.open(f.request);f.adapter.close();
+  while(!done)await null;
+  done();await pending;
   assert.equal(f.published,0);assert.equal(f.session.contextSnapshot,null);
+});
+
+test('native menu localizes only after asynchronous item preparation settles',async()=>{
+  const f=fixture();let release,translated=0;
+  const prepare=f.session.window.EditContextMenu.prepare;
+  f.session.window.EditContextMenu.prepare=function(...args){const popup=prepare.apply(this,args);
+    this.prepared=new Promise(resolve=>release=resolve);return popup;};
+  f.session.window.document.l10n.translateElements=async()=>{translated++;};
+  const pending=f.adapter.open(f.request);
+  for(let i=0;i<10;i++)await null;
+  assert.equal(translated,0);release();await pending;assert.equal(translated,1);
 });
 
 test('close accepts a carried Undo/Redo edit before revoking the opening',async()=>{

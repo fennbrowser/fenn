@@ -37,7 +37,9 @@ test('browser facts and search-mode identity survive without a window or element
   assert.equal(q.userContextId,4);assert.equal(q.tabGroup,'group');assert.equal(q.currentPage,browser.currentPage);
   assert.equal(q.isPrivate,true);assert.equal(q.allowAutofill,false);assert.equal(q.searchString,'');
   prefs['unifiedSearchButton.historyInSearchMode']=true;
-  try {assert.equal('sources' in create({searchMode:mode}),false);}
+  // Local modes never show history (bug 2079241); engine modes follow the pref.
+  try {assert.deepEqual([...create({searchMode:mode}).sources],[2]);
+    assert.equal('sources' in create({searchMode:{source:2,engineName:'Engine'}}),false);}
   finally {prefs['unifiedSearchButton.historyInSearchMode']=false;}
   for(const currentPage of [undefined,null,'']) assert.equal('currentPage' in create({browser:{currentPage}}),false);
   assert.equal('userContextId' in create(),false);
@@ -53,12 +55,12 @@ test('both actual retained bindings capture browser facts and paste UTF-16 lengt
       ' make(options){return this.#makeQueryContext(options);}}',sandbox);
     const input=new sandbox.Binding();
     Object.assign(input,{isPrivate:false,sapName:name==='SmartbarInput.mjs'?'smartbar':'urlbar',searchMode:null,
-      window:{gBrowser:{selectedBrowser:{getAttribute:()=> '6'},selectedTab:{group:{id:'g'}},currentURI:null}}});
+      browserWindow:{gBrowser:{selectedBrowser:{getAttribute:()=> '6'},selectedTab:{group:{id:'g'}},currentURI:null}}});
     const q=input.make({searchString:'query',event:{inputType:'insertFromPaste',data:'😀😀😀😀x'}});
     assert.equal(q.userContextId,6);assert.equal(q.tabGroup,'g');assert.equal('currentPage' in q,false);
     assert.equal(q.prohibitRemoteResults,true);assert.equal(q.maxResults,name==='SmartbarInput.mjs'?5:10);
     assert.equal(input.make({searchString:'query',event:{inputType:'insertText',get data(){throw Error('Non-paste data read');}}}).prohibitRemoteResults,false);
-    input.window={};assert.equal('userContextId' in input.make({searchString:'query'}),false);
+    input.browserWindow={};assert.equal('userContextId' in input.make({searchString:'query'}),false);
   }
 });
 
