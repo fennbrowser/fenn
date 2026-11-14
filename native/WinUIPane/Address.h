@@ -2148,6 +2148,15 @@ struct NativeAddress {
             // Retained visual rows still count even while their actions are stale.
             popup.IsOpen(checkedOpen && (suggestions.list.Items().Size() || !actions.visuals.empty()));
         }
+        if (interaction.FocusWithin() && !interaction.Holding()) {
+            // Recover focus after row mutation before opening a requested menu.
+            // ShowAt can transfer focus synchronously; restoring the old button
+            // afterward steals that focus and immediately dismisses its flyout.
+            // Recovery still runs when removing the last rich row closes the
+            // suggestions popup, while pending action focus requires it open.
+            suggestions.RestoreControlFocus();
+            if (!popup || popup.IsOpen()) suggestions.FocusPending();
+        }
         if (contextDecision == SHELL_ADDRESS_SECTION_DECISION_ACCEPTED)
             shell.AddressSection(SHELL_PUBLICATION_CHANNEL_ADDRESS_CONTEXT_MENU, nextSession, contextGeneration,
                                  contextFingerprint, contextEligible, true);
@@ -2160,13 +2169,6 @@ struct NativeAddress {
             resultMenu.Reset();
         else
             resultMenu.Sync(snapshot, resultDecision == SHELL_ADDRESS_SECTION_DECISION_ACCEPTED, field);
-        if (interaction.FocusWithin() && !interaction.Holding()) {
-            // Removing the last focused rich result closes the popup, but its
-            // edit-target recovery must still run. Only focusing a remaining
-            // suggestion action requires an open popup.
-            suggestions.RestoreControlFocus();
-            if (!popup || popup.IsOpen()) suggestions.FocusPending();
-        }
         // Firefox has already focused content. Finish only the HWND handoff,
         // after publication and pending-input guards; Escape and mode picks
         // leave Gecko focus on its address proxy and never take this path.
