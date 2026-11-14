@@ -2159,8 +2159,13 @@ struct NativeAddress {
             resultMenu.Reset();
         else
             resultMenu.Sync(snapshot, resultDecision == SHELL_ADDRESS_SECTION_DECISION_ACCEPTED, field);
-        if (interaction.FocusWithin() && !interaction.Holding() && (!popup || popup.IsOpen()))
-            suggestions.FocusPending();
+        if (interaction.FocusWithin() && !interaction.Holding()) {
+            // Removing the last focused rich result closes the popup, but its
+            // edit-target recovery must still run. Only focusing a remaining
+            // suggestion action requires an open popup.
+            suggestions.RestoreControlFocus();
+            if (!popup || popup.IsOpen()) suggestions.FocusPending();
+        }
         // Firefox has already focused content. Finish only the HWND handoff,
         // after publication and pending-input guards; Escape and mode picks
         // leave Gecko focus on its address proxy and never take this path.
