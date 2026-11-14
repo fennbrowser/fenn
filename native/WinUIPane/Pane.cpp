@@ -675,7 +675,10 @@ struct Pane {
         };
         address->observeFocus = [this] {
             if (!address) return;
-            bool ownsFocus = (addressSource ? addressSource : source).HasFocus();
+            // ObserveFocus classifies the actual address controls and open menus.
+            // A nested flyout can leave the region's visual ancestry while still
+            // holding focus in this Window's shared XAML content HWND.
+            bool ownsFocus = InWindow(addressSource ? addressWindow : childWindow, GetFocus());
             auto island = addressSource ? addressIsland : contentIsland;
             if (!ownsFocus && island) {
                 const HWND focused = GetFocus();

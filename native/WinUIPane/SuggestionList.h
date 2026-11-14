@@ -168,7 +168,6 @@ struct SuggestionList {
         return false;
     }
     void FocusPending() {
-        RestoreControlFocus();
         if (pendingFocus.empty()) return;
         for (auto const& row : visuals)
             for (uint32_t i = 0; i < row.buttonIds.size(); ++i)
