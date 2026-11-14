@@ -32,6 +32,7 @@ test("automatic connection waits for services and both native replacements, and 
   try {
     beginAutomaticStartup(f.window); await settle();
     assert.equal(f.pane.automaticStartup.phase, "waiting");
+    assert.equal(f.pane.automaticStartup.normalPresentationReady, false);
     f.attrs.set("winui-replaces-tabs", ""); f.attrs.set("winui-hides-nav-bar", "");
     advanceAutomaticStartup(f.window); await settle(); assert.deepEqual(f.calls, []);
     f.fireReady(); await settle();
@@ -45,7 +46,13 @@ test("automatic connection waits for services and both native replacements, and 
 
 test("windows without an early presenter retain Firefox fallback", async () => {
   const f = fixture({ early: false });
-  try { beginAutomaticStartup(f.window); await settle(); assert.deepEqual(f.calls, []);
+  f.pane.groupHeader = { pendingCreation: {} };
+  f.pane.publishStrip = force => {
+    assert.equal(f.pane.automaticStartup.normalPresentationReady, true);
+    assert.equal(force, true);
+    f.calls.push("pending-creation");
+  };
+  try { beginAutomaticStartup(f.window); await settle(); assert.deepEqual(f.calls, ["pending-creation"]);
     assert.equal(f.attrs.get("winui-startup-chrome-ready"), "fallback");
   } finally { f.restore(); }
 });

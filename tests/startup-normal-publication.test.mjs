@@ -18,9 +18,14 @@ test("normal strip metadata is reseeded only after acknowledged presenter retire
       const tab = {}, publications = [];
       let retirementReply;
       const pane = {
+        automaticStartup: { phase: "connecting", normalPresentationReady: false },
         tabIds: new Map([[tab, 90]]), visibleTabs: () => [tab],
         syncTabs() { publications.push("tabs"); },
-        publishStrip(force) { publications.push(["strip", force]); },
+        publishStrip(force) {
+          assert.equal(this.automaticStartup.normalPresentationReady, true);
+          assert.equal(this.startupConnection, null);
+          publications.push(["strip", force]);
+        },
         publish(force) { publications.push(["publish", force]); },
         syncAddress() {},
       };
@@ -43,10 +48,12 @@ test("normal strip metadata is reseeded only after acknowledged presenter retire
       await new Promise(resolve => setImmediate(resolve));
       assert.equal(typeof retirementReply, "function");
       assert.deepEqual(publications, [], "pending retirement must retain startup presentation");
+      assert.equal(pane.automaticStartup.normalPresentationReady, false);
       retirementReply();
       await pending;
       assert.deepEqual(publications, accepted ? [["strip", true], "tabs", ["publish", true]] : []);
       assert.equal(connection.stopped, accepted);
+      assert.equal(pane.automaticStartup.normalPresentationReady, accepted);
       assert.equal(pane.startupConnection, accepted ? null : connection);
       connection.disconnect();
       await new Promise(resolve => setImmediate(resolve));

@@ -20641,10 +20641,10 @@ index 00000000000..92444c06428
 +}
 diff --git a/browser/base/content/WinUIAutomaticStartup.sys.mjs b/browser/base/content/WinUIAutomaticStartup.sys.mjs
 new file mode 100644
-index 00000000000..4543d17a031
+index 00000000000..b5c6ef2887f
 --- /dev/null
 +++ b/browser/base/content/WinUIAutomaticStartup.sys.mjs
-@@ -0,0 +1,412 @@
+@@ -0,0 +1,414 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -20928,7 +20928,7 @@ index 00000000000..4543d17a031
 +  if (!automaticStartupRequested()) return;
 +  const pane = window.gWinUIPane;
 +  if (pane.automaticStartup) return;
-+  pane.automaticStartup = { phase: "probing" };
++  pane.automaticStartup = { phase: "probing", normalPresentationReady: false };
 +  const { transferStartup } = ChromeUtils.importESModule(
 +    "chrome://browser/content/WinUIStartupTransfer.sys.mjs"
 +  );
@@ -20946,7 +20946,9 @@ index 00000000000..4543d17a031
 +  const root = window.document.documentElement;
 +  if (!probe?.early) {
 +    state.phase = "fallback";
++    state.normalPresentationReady = true;
 +    root.setAttribute(READY, "fallback");
++    if (pane.groupHeader?.pendingCreation) pane.publishStrip(true);
 +    return;
 +  }
 +  state.session = probe.session;
@@ -21116,10 +21118,10 @@ index 00000000000..bc6974c0236
 +#endif
 diff --git a/browser/base/content/WinUIStartupTransfer.sys.mjs b/browser/base/content/WinUIStartupTransfer.sys.mjs
 new file mode 100644
-index 00000000000..5627de145eb
+index 00000000000..dd26bea02f5
 --- /dev/null
 +++ b/browser/base/content/WinUIStartupTransfer.sys.mjs
-@@ -0,0 +1,755 @@
+@@ -0,0 +1,757 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -21652,6 +21654,8 @@ index 00000000000..5627de145eb
 +        // The startup presenter intentionally ignored normal strip metadata. Its
 +        // retirement reply is the ordering barrier: seed that stream completely
 +        // before the next tab snapshot can render against its grouped layout.
++        if (pane.automaticStartup)
++          pane.automaticStartup.normalPresentationReady = true;
 +        pane.publishStrip(true);
 +        pane.structuralDirty = true;
 +        pane.syncTabs();
@@ -46772,10 +46776,10 @@ index 00000000000..dae1debadbe
 +}
 diff --git a/browser/base/content/WinUIGroupHeader.sys.mjs b/browser/base/content/WinUIGroupHeader.sys.mjs
 new file mode 100644
-index 00000000000..a7a604f38e0
+index 00000000000..04070bc0b2b
 --- /dev/null
 +++ b/browser/base/content/WinUIGroupHeader.sys.mjs
-@@ -0,0 +1,483 @@
+@@ -0,0 +1,492 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -46854,6 +46858,15 @@ index 00000000000..a7a604f38e0
 +    const pending = this.pendingCreation,
 +      w = this.window;
 +    if (!pending || pending.sent) return;
++    // Unlike strip snapshots, this one-shot request cannot be discarded by the
++    // startup presenter. Its retirement reply republishes the normal strip and
++    // retries this pending request after native ownership has changed.
++    if (
++      this.owner.startupConnection ||
++      (this.owner.automaticStartup &&
++        !this.owner.automaticStartup.normalPresentationReady)
++    )
++      return;
 +    const group = this.owner.stripSession?.ids.get(pending.group);
 +    if (
 +      !group ||

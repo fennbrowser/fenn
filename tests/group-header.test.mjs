@@ -54,6 +54,47 @@ function create(f){
   assert.equal(f.menu.open(f.group,{x:4,y:5,width:60,height:32},1,request.request),true);
   return request;
 }
+test('creation waits for startup retirement before publishing its one-shot request', () => {
+  const startupStates = [
+    ...['probing', 'waiting', 'blocked', 'connecting', 'connected'].map(phase => ({
+      automaticStartup: { phase, normalPresentationReady: false },
+    })),
+    { startupConnection: { presentationActive: false } },
+    { startupConnection: { presentationActive: true } },
+  ];
+  for (const state of startupStates) {
+    const f = fixture();
+    Object.assign(f.owner, state);
+    assert.equal(f.menu.requestCreation(f.group), true);
+    const request = f.menu.pendingCreation.request;
+    f.menu.publishCreation();
+    f.menu.publishCreation();
+    assert.equal(f.publications.length, 0);
+    assert.notEqual(f.menu.pendingCreation.sent, true);
+    f.owner.startupConnection = null;
+    if (f.owner.automaticStartup) f.owner.automaticStartup.normalPresentationReady = true;
+    f.menu.publishCreation();
+    f.menu.publishCreation();
+    assert.equal(f.publications.length, 1);
+    assert.equal(f.publications[0].request, request);
+    assert.equal(f.menu.open(f.group, { x: 4, y: 5, width: 60, height: 32 }, 1, request), true);
+    assert.equal(f.menu.description.creation, true);
+  }
+});
+test('startup-deferred creation cannot resurrect a removed group or closed owner', () => {
+  for (const close of [false, true]) {
+    const f = fixture();
+    f.owner.startupConnection = { presentationActive: true };
+    assert.equal(f.menu.requestCreation(f.group), true);
+    f.menu.publishCreation();
+    if (close) f.menu.close();
+    else f.group.isConnected = false;
+    f.owner.startupConnection = null;
+    f.menu.publishCreation();
+    assert.equal(f.menu.pendingCreation, null);
+    assert.equal(f.publications.length, 0);
+  }
+});
 test('creation publishes after strip identity and exposes only name, color, Done and Cancel',()=>{
   const f=fixture();create(f);
   assert.equal(f.menu.description.creation,true);assert.equal(f.menu.description.commands.length,0);
