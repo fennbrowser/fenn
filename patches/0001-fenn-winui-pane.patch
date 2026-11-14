@@ -22757,7 +22757,7 @@ index 0000000000..629b93a7c8
 +}
 diff --git a/browser/base/content/WinUIAllTabs.sys.mjs b/browser/base/content/WinUIAllTabs.sys.mjs
 new file mode 100644
-index 0000000000..d7d241db68
+index 0000000000..c138ef8573
 --- /dev/null
 +++ b/browser/base/content/WinUIAllTabs.sys.mjs
 @@ -0,0 +1,898 @@
@@ -23105,7 +23105,7 @@ index 0000000000..d7d241db68
 +        title: this.label(
 +          this.hidden
 +            ? "all-tabs-menu-hidden-tabs"
-+            : "tabs-toolbar-list-all-tabs",
++            : "tabs-toolbar-list-all-tabs-2",
 +          "label"
 +        ),
 +        search: this.label("all-tabs-menu-search-all-tabs", "label"),
@@ -57504,7 +57504,7 @@ index 0000000000..1d40129db1
 +}
 diff --git a/browser/base/content/browser-winui-pane.js b/browser/base/content/browser-winui-pane.js
 new file mode 100644
-index 0000000000..46fa6b447e
+index 0000000000..3f4e4a681d
 --- /dev/null
 +++ b/browser/base/content/browser-winui-pane.js
 @@ -0,0 +1,3370 @@
@@ -59440,7 +59440,7 @@ index 0000000000..46fa6b447e
 +          (message?.attributes || []).map(a => [a.name, a.value])
 +        );
 +      };
-+      const allTabs = attributes("tabs-toolbar-list-all-tabs");
++      const allTabs = attributes("tabs-toolbar-list-all-tabs-2");
 +      const newTab = attributes("tabs-toolbar-new-tab");
 +      let shortcut = "";
 +      try {

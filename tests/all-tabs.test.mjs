@@ -3,6 +3,14 @@ import vm from 'node:vm';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
+const localizedMessages = new Set([
+  'browser/locales/en-US/browser/allTabsMenu.ftl',
+  'browser/locales/en-US/browser/tabbrowser.ftl',
+  'browser/locales/en-US/browser/browser.ftl',
+  'toolkit/locales/en-US/toolkit/global/contextual-identity.ftl',
+].flatMap(path => [...readFileSync(new URL('../upstream/firefox/' + path, import.meta.url), 'utf8')
+  .matchAll(/^([A-Za-z][A-Za-z0-9_-]*)\s*=/gm)].map(match => match[1])));
+
 // Run the real TabsPanel row builder and command handlers, including its
 // collapsed-group rules. The fixture only substitutes DOM and browser services.
 function fixture(){
@@ -37,7 +45,7 @@ function fixture(){
   Object.defineProperty(browser,'openTabs',{get:()=>browser.tabs});
   document.defaultView=window={document,gBrowser:browser,gDialogBox:{isOpen:false},PrivateBrowsingUtils:{isWindowPrivate:w=>!!w.private},
     ContextualIdentityService:{getPublicIdentityFromId:id=>id?{name:'Work'}:null,getUserContextLabel:id=>'Container '+id,getPublicIdentities:()=>[{userContextId:1}]},
-    Localization:class{formatMessagesSync([{id,args}]){return [{value:args?.tabGroupName || id,attributes:['label','title','tooltiptext'].map(name=>({name,value:args?.tabGroupName || id}))}];}},
+    Localization:class{formatMessagesSync([{id,args}]){assert(localizedMessages.has(id), `Native All Tabs message was removed upstream: ${id}`);return [{value:args?.tabGroupName || id,attributes:['label','title','tooltiptext'].map(name=>({name,value:args?.tabGroupName || id}))}];}},
     SessionStore:{savedGroups:[],openSavedTabGroup:(...a)=>calls.push(['restore',...a])},
     windowUtils:{syncWinUITabMenu:s=>publications.push(JSON.parse(s)),setHandlingUserInput:()=>({destruct(){}})},
     openNewUserContextTab:({target})=>calls.push(['container','Browser:NewUserContextTab',target.getAttribute('data-usercontextid'),target.getAttribute('data-container-entrypoint')]),FirefoxViewHandler:{tab:{} ,openTab:v=>calls.push(['view',v])}};
