@@ -4,6 +4,16 @@ import vm from 'node:vm';
 import {STOCK_TOOLBAR_WIDGETS,WinUIStockToolbar} from '../upstream/firefox/browser/base/content/WinUIStockToolbar.sys.mjs';
 import {readFileSync} from 'node:fs';
 import {readActionStamp,actionStampMatches} from '../upstream/firefox/browser/base/content/WinUIActionStamp.sys.mjs';
+function customizationMessages(requests) {
+ const resource=readFileSync(new URL('../upstream/firefox/browser/locales/en-US/browser/customizeMode.ftl',import.meta.url),'utf8');
+ return requests.map(({id})=>{
+  const message=resource.match(new RegExp(`^${id} =[^\\n]*(?:\\n[ \t]+[^\\n]*)*`,'m'));
+  assert(message,`Missing customization message ${id}`);
+  const title=message[0].match(/\.title\s*=\s*([^\n]+)/)?.[1];
+  assert(title,`Missing title for ${id}`);
+  return {attributes:[{name:'title',value:title}]};
+ });
+}
 function fixture(retired=[]) {
  let order=['back-button','urlbar-container','stop-reload-button','fxa-toolbar-menu-button',...retired],revision=0;
  let nextSpring=0; let saved=null; const listeners=new Set();
@@ -17,10 +27,10 @@ function fixture(retired=[]) {
   undoReset(){calls.push(['undo-reset']);order=saved;saved=null;for(const l of listeners)l.onAreaReset?.();},
   removeWidgetFromArea(id){calls.push(['remove',id]);order=order.filter(x=>x!==id);},addWidgetToArea(id,area,position=order.length){calls.push(['add',id]);order=order.filter(x=>x!==id);const old=overflow.indexOf(id);if(old>=0)overflow.splice(old,1);if(area==='overflow'){overflow.push(id);return;}if(id==='spring'){id=`customizableui-special-spring${++nextSpring}`;nodes.set(id,{getAttribute:()=>id});}order.splice(position,0,id);},
   moveWidgetWithinArea(id,position){saved=null;calls.push(['move',id,position]);if(order.indexOf(id)<position)position--;order=order.filter(x=>x!==id);order.splice(position,0,id);}};
- const context=vm.createContext({Services:{strings:{createBundle:()=>({GetStringFromName:()=> 'Flexible Space'})},prefs:{addObserver(){},removeObserver(){},getPrefType(p){return prefs.has(p)?64:0;},getIntPref(p){return prefs.get(p);},prefHasUserValue(p){return prefs.has(p);}}},ChromeUtils:{importESModule:()=>({CustomizableUI:ui})}});
+ const context=vm.createContext({Services:{strings:{createBundle:url=>{throw new Error(`Unexpected legacy localization resource: ${url}`);}},prefs:{addObserver(){},removeObserver(){},getPrefType(p){return prefs.has(p)?64:0;},getIntPref(p){return prefs.get(p);},prefHasUserValue(p){return prefs.has(p);}}},ChromeUtils:{importESModule:()=>({CustomizableUI:ui})}});
  Object.assign(context,{readActionStamp,actionStampMatches,STOCK_TOOLBAR_WIDGETS,WinUIStockToolbar});
  vm.runInContext(readFileSync(new URL('../upstream/firefox/browser/base/content/WinUIToolbarCustomization.sys.mjs',import.meta.url),'utf8').replace(/^import\b[^;]*;$/gm,'').replace('export function startupToolbarControls','this.startupToolbarControls = function').replace('export class WinUIToolbarCustomization','this.Customization = class WinUIToolbarCustomization'),context);
- const toolbar={window:{MutationObserver:class {observe(){} disconnect(){}},addEventListener(){},removeEventListener(){},document:{getElementById:()=>({overflowable:{setNativeOverflow:ids=>calls.push(["transient",...ids])}})}},owner:{invalidateAddress(){revision++;},localization:()=>({formatValueSync:k=>k})}};
+ const toolbar={window:{MutationObserver:class {observe(){} disconnect(){}},addEventListener(){},removeEventListener(){},document:{getElementById:()=>({overflowable:{setNativeOverflow:ids=>calls.push(["transient",...ids])}})}},owner:{invalidateAddress(){revision++;},localization:()=>({formatValueSync:k=>k,formatMessagesSync:customizationMessages})}};
  ui.getNativeStartupWidgetIdsInArea=area=>ui.getWidgetIdsInArea(area);
  const c=new context.Customization(toolbar);toolbar.navigationState=()=>c.snapshot({});
  const state=()=>c.snapshot({});
@@ -201,7 +211,8 @@ test('shared stamp preserves digit grammar and rejects unsafe revisions before c
 
 test('palette labels can refresh without revoking Firefox customization commands',()=>{
  const f=fixture(),before=f.state(),command=f.command('profile','remove');
- f.c.toolbar.owner.localization=()=>({formatValueSync:k=>k.startsWith('winui-toolbar-customize-')?'Translated '+k:k});
+ const localization=f.c.toolbar.owner.localization();
+ f.c.toolbar.owner.localization=()=>({...localization,formatValueSync:k=>k.startsWith('winui-toolbar-customize-')?'Translated '+k:k});
  const after=f.state();assert.equal(after.revision,before.revision);
  assert.deepEqual(after.items,before.items);assert.notDeepEqual(after.labels,before.labels);
  assert.equal(f.c.execute(command),1);assert.equal(f.order().includes('fxa-toolbar-menu-button'),false);

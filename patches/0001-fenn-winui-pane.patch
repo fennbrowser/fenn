@@ -47496,10 +47496,10 @@ index 0000000000..ae6ffe8a6a
 +}
 diff --git a/browser/base/content/WinUIToolbarCustomization.sys.mjs b/browser/base/content/WinUIToolbarCustomization.sys.mjs
 new file mode 100644
-index 0000000000..d6d0599ea6
+index 0000000000..fc6f01bcbd
 --- /dev/null
 +++ b/browser/base/content/WinUIToolbarCustomization.sys.mjs
-@@ -0,0 +1,466 @@
+@@ -0,0 +1,468 @@
 +// Firefox owns widget eligibility and durable placement; native owns the editor.
 +import {
 +  readActionStamp,
@@ -47551,9 +47551,6 @@ index 0000000000..d6d0599ea6
 +      )
 +        this.ui.removeWidgetFromArea(widget);
 +    }
-+    this.widgetStrings = Services.strings.createBundle(
-+      "chrome://browser/locale/customizableui/customizableWidgets.properties"
-+    );
 +    this.editorOpen = false;
 +    this.ownsReset = false;
 +    this.resetting = false;
@@ -47634,7 +47631,12 @@ index 0000000000..d6d0599ea6
 +      if (stock) this.stock.observe(node);
 +      if (spring) {
 +        control = widget === "spring" ? "new-spring" : widget;
-+        label = this.widgetStrings.GetStringFromName("toolbarspring.label");
++        const [message] = toolbar.owner
++          .localization()
++          .formatMessagesSync([{ id: "customize-mode-toolbarspring" }]);
++        label = message?.attributes?.find(
++          attribute => attribute.name === "title"
++        )?.value;
 +      } else if (stock) {
 +        control = "stock:" + widget;
 +        label =
@@ -57504,10 +57506,10 @@ index 0000000000..1d40129db1
 +}
 diff --git a/browser/base/content/browser-winui-pane.js b/browser/base/content/browser-winui-pane.js
 new file mode 100644
-index 0000000000..3f4e4a681d
+index 0000000000..f5c61628f0
 --- /dev/null
 +++ b/browser/base/content/browser-winui-pane.js
-@@ -0,0 +1,3370 @@
+@@ -0,0 +1,3371 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -59418,6 +59420,7 @@ index 0000000000..3f4e4a681d
 +          "browser/tabContextMenu.ftl",
 +          "browser/tabbrowser.ftl",
 +          "browser/toolbarContextMenu.ftl",
++          "browser/customizeMode.ftl",
 +          "browser/browser.ftl",
 +          "browser/browserContext.ftl",
 +        ],

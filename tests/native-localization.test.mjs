@@ -85,3 +85,13 @@ test("native container-menu labels exist with the attributes Firefox consumes", 
     assert.match(message[0], /\.label\s*=/, `${id} must supply the label attribute`);
   }
 });
+
+
+test("native customization loads Firefox's current flexible-space resource", () => {
+  const context = { window: { addEventListener() {} }, Localization: class {
+    constructor(resources) { this.resources = resources; }
+  } };
+  runInNewContext(readFileSync(new URL(
+    "../upstream/firefox/browser/base/content/browser-winui-pane.js", import.meta.url), "utf8"), context);
+  assert(context.gWinUIPane.localization().resources.includes("browser/customizeMode.ftl"));
+});
