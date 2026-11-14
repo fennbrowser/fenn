@@ -4224,18 +4224,23 @@ extern "C" __declspec(dllexport) HRESULT WINAPI WinUIPaneTestGroupMotion(HWND hw
             motion.disableForTest = false;
         else if (operation == 7 || operation == 8) {
             // New-tab entry: 7 starts the reveal on the second tab and reports
-            // whether it is clipped and tracked; 8 stops it and reports
-            // whether the row is back to a clean, unclipped rest state.
+            // whether the row is held hidden, unshifted, until its space is
+            // ready (the entry then animates asynchronously; observe it with
+            // WinUIPaneTestEntryMotion); 8 stops it and reports whether the
+            // row is back to a clean, visible, unclipped rest state.
             auto& strip = *found->second->strip;
             if (strip.view.TabItems().Size() < 2) return E_INVALIDARG;
             auto row = strip.view.TabItems().GetAt(1).as<Controls::TabViewItem>();
             const auto id = unbox_value<uint32_t>(row.Tag());
             if (operation == 7) {
                 strip.RevealNewRow(row, id, std::numeric_limits<double>::quiet_NaN());
-                *ghosts = strip.rowAnimations.count(id) && row.Clip() && strip.RowTransform(row).X() == 0 ? 1 : 0;
+                *ghosts = row.Opacity() == 0 && strip.RowTransform(row).X() == 0 ? 1 : 0;
             } else {
                 strip.ResetRowOffset(row, id);
-                *ghosts = !strip.rowAnimations.count(id) && !row.Clip() && strip.RowTransform(row).X() == 0 ? 1 : 0;
+                *ghosts = !strip.rowAnimations.count(id) && !row.Clip() && strip.RowTransform(row).X() == 0 &&
+                                  strip.RowTransform(row).Y() == 0 && row.Opacity() == 1
+                              ? 1
+                              : 0;
             }
             return S_OK;
         } else if (operation == 4)

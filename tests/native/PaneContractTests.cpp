@@ -4188,6 +4188,9 @@ static void CheckInlineGroups(HMODULE module, WinUIPaneApi& api, HWND host, bool
         auto motion = reinterpret_cast<HRESULT(WINAPI*)(HWND, uint32_t, uint32_t*)>(
             GetProcAddress(module, "WinUIPaneTestGroupMotion"));
         Require(motion != nullptr, "group motion lifecycle hook exists");
+        auto entryMotion = reinterpret_cast<HRESULT(WINAPI*)(HWND, uint32_t, uint32_t*)>(
+            GetProcAddress(module, "WinUIPaneTestEntryMotion"));
+        Require(entryMotion != nullptr, "entry motion inspector exists");
         auto motionState = [&](uint32_t revision, bool collapsed) {
             auto state = winrt::Windows::Data::Json::JsonObject::Parse(
                 LR"({"version":2,"publishOnly":true,"strip":{"version":2,"base":0,"revision":9,"rtl":false,"groupsLabel":"Groups","groups":[{"id":7,"name":"Research","label":"Research","collapsed":false}],"rows":[{"id":41,"detail":"","flags":0},{"id":42,"detail":"","flags":0}],"layout":[{"group":7,"tab":0},{"group":7,"tab":41},{"group":7,"tab":42}]}})");
@@ -4227,9 +4230,21 @@ static void CheckInlineGroups(HMODULE module, WinUIPaneApi& api, HWND host, bool
         settle();
         if (winrt::Windows::UI::ViewManagement::UISettings().AnimationsEnabled()) {
             Require(SUCCEEDED(motion(host, 1, &ghosts)), "end group motion before the entry slide");
-            Require(SUCCEEDED(motion(host, 7, &ghosts)) && ghosts == 1, "new tab is revealed through an animated clip");
+            Require(SUCCEEDED(motion(host, 7, &ghosts)) && ghosts == 1,
+                    "a new tab is held hidden until its entry reveal starts");
+            bool entered{};
+            for (int i = 0; i < 400 && !entered; ++i) {
+                uint32_t out[10]{};
+                Require(SUCCEEDED(entryMotion(host, 0, out)), "inspect entry motion");
+                entered = out[0] != 0 && out[1] != 0 && out[1] == out[2];
+                if (!entered) {
+                    Pump();
+                    Sleep(2);
+                }
+            }
+            Require(entered, "new tab is revealed through its tracked entry channels");
             Require(SUCCEEDED(motion(host, 8, &ghosts)) && ghosts == 1,
-                    "stopping the entry reveal leaves an unclipped row at rest");
+                    "stopping the entry reveal leaves a visible, unclipped row at rest");
         }
         Require(SUCCEEDED(motion(host, 2, &ghosts)), "simulate reduced-motion preference");
         motionState(12, true);
@@ -4662,12 +4677,27 @@ static void CheckInlineGroups(HMODULE module, WinUIPaneApi& api, HWND host, bool
         auto aTransform = a.RenderTransform().as<Media::TranslateTransform>();
         auto bTransform = b.RenderTransform().as<Media::TranslateTransform>();
         const auto originalWidth = groupVisual.Size().x;
-        aTransform.X(48);
-        bTransform.X(48);
+        const auto originalA = a.TransformToVisual(ambientLayer).TransformPoint({0, 0}).X;
+        const auto originalB = b.TransformToVisual(ambientLayer).TransformPoint({0, 0}).X;
+        auto moveTabs = [&](double ax, double bx) {
+            aTransform.X(ax);
+            bTransform.X(bx);
+            // After compositor motion, XAML publishes RenderTransform changes
+            // on a later frame. Wait for the tabs, never for their lighting:
+            // refreshAmbient below must match the live geometry immediately.
+            for (int i = 0; i < 200; ++i) {
+                const auto leftA = a.TransformToVisual(ambientLayer).TransformPoint({0, 0}).X;
+                const auto leftB = b.TransformToVisual(ambientLayer).TransformPoint({0, 0}).X;
+                if (std::abs(leftA - originalA - ax) < .5 && std::abs(leftB - originalB - bx) < .5) return;
+                Pump();
+                Sleep(5);
+            }
+            Require(false, "synthetic tab translations reach live XAML geometry");
+        };
+        moveTabs(48, 48);
         refreshAmbient();
         Require(groupVisual.Size().x > originalWidth + 40, "group light immediately reaches moved tabs");
-        aTransform.X(24);
-        bTransform.X(72);
+        moveTabs(24, 72);
         refreshAmbient();
         Require(groupVisual.Size().x > originalWidth + 64 && bottomGlow.Children().First().Current() == groupVisual,
                 "rapid geometry changes update the retained light immediately");
@@ -4682,13 +4712,11 @@ static void CheckInlineGroups(HMODULE module, WinUIPaneApi& api, HWND host, bool
         Require(setAmbientDragging && SUCCEEDED(setAmbientDragging(host, TRUE)), "start direct manipulation");
         Require(ambientRefresh(host) == S_FALSE && !groupVisual.ImplicitAnimations(),
                 "dragging only observes the existing gesture");
-        aTransform.X(40);
-        bTransform.X(40);
+        moveTabs(40, 40);
         Require(ambientRefresh(host) == S_FALSE && !groupVisual.ImplicitAnimations(),
                 "live drag coordinates never launch decorative easing");
         Require(SUCCEEDED(setAmbientDragging(host, FALSE)), "end direct manipulation");
-        aTransform.X(0);
-        bTransform.X(0);
+        moveTabs(0, 0);
         refreshAmbient();
         for (int i = 0; i < 50; ++i) {
             Pump();
@@ -4994,13 +5022,15 @@ static void CheckInlineGroups(HMODULE module, WinUIPaneApi& api, HWND host, bool
                     fflush(stdout);
                     Require(std::abs(closedWidth - lastTab.ActualWidth()) < 1,
                             "closing an ungrouped tab leaves the group's last tab at its settled width");
-                    // Equal mode gives every tab a numeric Width. NaN means TabView
-                    // was left sizing tabs to their content, which is what made the
-                    // group's last tab shrink until the pointer moved.
+                    // The grouped layout constrains each Equal-mode slot through
+                    // MinWidth/MaxWidth; Width may remain Auto after realization.
+                    // Verify the rendered contract rather than that local value.
+                    Require(view.TabWidthMode() == Controls::TabViewWidthMode::Equal,
+                            "closing a grouped tab layout preserves Equal mode");
                     for (auto item : view.TabItems())
                         if (auto row = item.try_as<Controls::TabViewItem>(); row && row.Tag())
-                            Require(!std::isnan(row.Width()),
-                                    "closing a tab leaves every tab with an Equal-mode width");
+                            Require(row.ActualWidth() > 0 && std::abs(row.ActualWidth() - closedWidth) < 1,
+                                    "closing a tab leaves every tab at the settled Equal-mode width");
                     lastGroup(revision++, true);
                     Require(SUCCEEDED(api.syncTabs(host, opened, 3, 43, NextTabRevision(), &selected)),
                             "reopen the ungrouped tab after the close width check");

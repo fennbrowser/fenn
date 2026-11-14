@@ -2589,7 +2589,7 @@ struct NativeTabStrip {
         shell_core_settle_hold(core, SHELL_SETTLE_CLOCK, 0, 1, 1, SteadyMs());
         ambient.Motion(true);
     }
-    void CancelCloseSequence() {
+    void CancelCloseSequence(bool awaitReportedBounds = false) {
         closeSequence = false;
         preparingClose = false;
         for (auto const& storyboard : closeStoryboards) storyboard.Stop();
@@ -2600,7 +2600,7 @@ struct NativeTabStrip {
         closeFrom.clear();
         closeTarget.clear();
         StartAddSlide(0);
-        ClearSettling();
+        ClearSettling(awaitReportedBounds);
     }
     void UpdateCloseSequence() {
         if (!closeSequence || updatingClose || preparingClose || syncing) return;
@@ -2666,7 +2666,7 @@ struct NativeTabStrip {
         }
         ShellSettleSample clock{};
         shell_core_settle_sample(core, SHELL_SETTLE_CLOCK, 0, SteadyMs(), &clock);
-        if (closeCheckpoints.empty() && !clock.active) CancelCloseSequence();
+        if (closeCheckpoints.empty() && !clock.active) CancelCloseSequence(true);
     }
 
     // A shrinking ScrollViewer otherwise clips the held rightmost tab before
@@ -2792,7 +2792,7 @@ struct NativeTabStrip {
     static constexpr double SettleLagMs = 250;
     double settlingUntil = 0;
 
-    void ClearSettling() noexcept {
+    void ClearSettling(bool awaitReportedBounds = false) noexcept {
         ReleaseCloseViewport();
         for (auto& held : settling) {
             try {
@@ -2804,7 +2804,16 @@ struct NativeTabStrip {
                 visual.Properties().InsertVector3(L"Translation", {0, 0, 0});
             } catch (...) {}
         }
-        settling.clear();
+        // Normal close completion releases the compositor at once, but XAML
+        // may still report its last translation for another frame. Keep the
+        // zero-offset layout-slot measurement until reported bounds agree;
+        // otherwise decorations briefly move back after reaching their target.
+        if (awaitReportedBounds && !settling.empty()) {
+            for (auto& held : settling) held.rested = false;
+            settlingUntil = SteadyMs() + SettleLagMs;
+        } else {
+            settling.clear();
+        }
         bool active{};
         if (core) shell_core_settle_advance(core, SteadyMs(), true, &active);
     }
