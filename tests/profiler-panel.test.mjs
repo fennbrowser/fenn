@@ -44,6 +44,14 @@ test('global state changes revoke stale operations and paused capture is unavail
 test('capture consumes the opening once and uses the original service',()=>{
   const f=fixture();f.setState(true);f.act();assert.equal(f.act('invoke',3),1);assert.equal(f.act('invoke',3),2);assert.deepEqual(f.calls,[['capture','aboutprofiling']]);
 });
+
+test('Firefox disabling the source during capture revokes the panel and stale commands',()=>{
+  const f=fixture();f.act();const revision=f.panel.revision;
+  f.setState(true,true);f.item.stock[0].enabled=false;f.observers.get('profiler-paused')();
+  assert.equal(f.panel.description,null);assert.equal(f.panel.session,0);
+  assert.equal(f.panel.snapshot().enabled,false);assert.equal(f.act('invoke',3,revision),2);
+  assert.deepEqual(f.calls,[]);
+});
 test('source, browser identity, customization and policy changes revoke without commands',()=>{
   for(const change of [f=>f.item.placed=false,f=>f.toolbar.customization.nativeOverflow.add('profiler-button'),f=>f.toolbar.customization.editorOpen=true,
     f=>f.toolbar.owner.addressDocument++,f=>f.window.gBrowser.selectedTab={},f=>f.toolbar.active=false,f=>f.window.gDialogBox={isOpen:true},

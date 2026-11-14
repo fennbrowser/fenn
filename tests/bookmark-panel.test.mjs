@@ -31,6 +31,21 @@ function fixture(){
 }
 const settle=()=>new Promise(resolve=>setTimeout(resolve,0));
 
+test('new and existing bookmark labels name pinned Firefox messages and attributes',async()=>{
+ const source=['browser.ftl','editBookmarkOverlay.ftl','tabbrowser.ftl'].map(file=>readFileSync(new URL('../upstream/firefox/browser/locales/en-US/browser/'+file,import.meta.url),'utf8')).join('\n');
+ const messages=new Map([...source.matchAll(/^([A-Za-z][A-Za-z0-9_-]*)\s*=([^\n]*(?:\n[ \t]+[^\n]*)*)/gm)].map(([,id,body])=>[id,body]));
+ for(const isNew of [false,true]){
+  const f=fixture();
+  f.panel.label=(id,attr)=>{
+   assert(messages.has(id),`Bookmark message was removed upstream: ${id}`);
+   if(attr)assert(new RegExp('\\.'+attr+'\\s*=').test(messages.get(id)),`Missing bookmark attribute ${id}.${attr}`);
+   return id+(attr?'-'+attr:'');
+  };
+  await f.open(isNew);
+  assert.equal(f.panel.snapshot().labels.save,'bookmark-panel-save-button2-label');
+ }
+});
+
 test('the original panel hook runs before lazy DOM construction',()=>{
  const source=readFileSync(new URL('../upstream/firefox/browser/base/content/browser-places.js',import.meta.url),'utf8');
  const body=source.slice(source.indexOf('  async showEditBookmarkPopup('));

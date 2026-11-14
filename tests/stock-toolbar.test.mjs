@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import {readFileSync} from 'node:fs';
 import {STOCK_TOOLBAR_WIDGETS,WinUIStockToolbar} from '../upstream/firefox/browser/base/content/WinUIStockToolbar.sys.mjs';
 
 function fixture(widget='find-button') {
@@ -18,6 +19,19 @@ function fixture(widget='find-button') {
   toolbar.navigationState=()=>({customization:c.snapshot()});
   return {stock,c,toolbar,window,attrs,cmdattrs,button,source,calls,setPlaced:value=>placed=value};
 }
+
+test('the default Mini Window palette item resolves its pinned Fluent resource',()=>{
+  const f=fixture('mini-window-button');
+  f.attrs.set('data-l10n-id','toolbar-button-mini-window');
+  const source=readFileSync(new URL('../upstream/firefox/browser/locales/en-US/browser/miniWindow.ftl',import.meta.url),'utf8');
+  const label=source.match(/^toolbar-button-mini-window\s*=\s*\n\s*\.label\s*=\s*(.+)$/m)?.[1];
+  assert(label,'Firefox supplies the Mini Window label');
+  f.window.Localization=class {
+    constructor(resources){this.available=resources.includes('browser/miniWindow.ftl');}
+    formatMessagesSync([{id}]){assert.equal(id,'toolbar-button-mini-window');return this.available?[{attributes:[{name:'label',value:label}]}]:[];}
+  };
+  assert.equal(f.stock.label(f.button),label);
+});
 test('stock inventory explicitly covers stock buttons and groups, excluding arbitrary widgets and Sidebar',()=>{
   assert.deepEqual(STOCK_TOOLBAR_WIDGETS['zoom-controls'],['zoom-out-button','zoom-reset-button','zoom-in-button']);
   assert.equal(STOCK_TOOLBAR_WIDGETS['edit-controls'].length,3);
