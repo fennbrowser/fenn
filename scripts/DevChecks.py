@@ -9,6 +9,7 @@ import subprocess
 import sys
 
 ROOT = Path(__file__).resolve().parents[1]
+DEFAULT_PYTHON_WORKERS = 2
 
 
 def environment(root, base=None):
@@ -130,7 +131,7 @@ def doctor(checks, tools, baseline):
     print("This diagnosis does not prove SDK restore, compilation, runtime compatibility, or patch content equality.")
 
 
-def fast(checks, tools):
+def fast(checks, tools, python_workers=DEFAULT_PYTHON_WORKERS, python_profile=None):
     python = sys.executable
     problem = source_problem(checks.root)
     checks.run("Line endings", [python, "scripts/Check-LineEndings.py"],
@@ -161,7 +162,10 @@ def fast(checks, tools):
         # The sparse CI reconstruction has no Firefox node_modules; do not fail it for that.
         checks.record("Patch JavaScript runtime lint", "NOT RUN",
                       "Firefox's ESLint is not installed; run `mach eslint --setup` in upstream/firefox.")
-    checks.run("Python unit tests", [python, "-m", "unittest", "discover", "-s", "tests", "-p", "test_*.py", "-v"])
+    python_tests = [python, "scripts/Run-PythonFastTests.py", "--workers", str(python_workers)]
+    if python_profile:
+        python_tests.extend(["--profile", str(python_profile)])
+    checks.run("Python unit tests", python_tests)
     checks.run("ShellCore generated header", [python, "scripts/Export-ShellCoreHeader.py", "--check"],
                missing=None if tools["cbindgen"] and tools["cargo"] else "cbindgen and Cargo are required; run the doctor.")
     checks.record("WinUI manifest, native contracts, Firefox/UIA and performance", "NOT RUN",
@@ -171,6 +175,10 @@ def fast(checks, tools):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("mode", choices=("doctor", "fast"))
+    parser.add_argument("--python-workers", type=int, choices=(1, 2), default=DEFAULT_PYTHON_WORKERS,
+                        help="maximum Python test workers for fast (default: %(default)s)")
+    parser.add_argument("--python-profile", type=Path,
+                        help="write Python module timings and outcomes from fast as JSON")
     args = parser.parse_args()
     env, shared = environment(ROOT)
     tools = resolve(ROOT, env, shared)
@@ -181,7 +189,7 @@ def main():
     if args.mode == "doctor":
         doctor(checks, tools, json.loads((ROOT / "configs/toolchain-baseline.json").read_text()))
     else:
-        fast(checks, tools)
+        fast(checks, tools, args.python_workers, args.python_profile)
     return checks.finish()
 
 
