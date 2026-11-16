@@ -37,8 +37,9 @@
   <p>Fenn is a browser, so it sends requests that you or Firefox's own features cause:</p>
   <ul>
     <li><strong>Websites you visit</strong> and the search engine you choose receive what any browser sends them. Fenn presents Firefox's user agent to web content.</li>
-    <li><strong>Ad-blocking filters.</strong> Ad blocking is off by default. In the development trial, enabling it also enables signed filter-list checks, approximately daily after startup, from updates-test.fennbrowser.com, hosted by Cloudflare. These requests omit cookies and referrers and contain no browsing URLs, account credentials or added user identifier. Like other HTTPS requests, the host receives your IP address and ordinary request headers. Disabling ad blocking stops these checks. Already accepted lists continue to work offline.</li>
+    <li><strong>Ad-blocking filters.</strong> Ad blocking is off by default. Enabling it also enables signed filter-list checks, approximately daily after startup, from updates.fennbrowser.com, hosted by Cloudflare. These requests omit cookies and referrers and contain no browsing URLs, account credentials or added user identifier. Like other HTTPS requests, the host receives your IP address and ordinary request headers. Disabling ad blocking stops these checks. Already accepted lists continue to work offline.</li>
     <li><strong>Media components.</strong> At startup Fenn checks Mozilla's servers for the OpenH264 codec and downloads Widevine DRM from Google. These requests include the browser version, build ID and operating system.</li>
+    <li><strong>Browser updates</strong> are delivered by Windows, through the Microsoft Store or an App Installer feed, not by Firefox's updater. Those requests are made by Windows to the Store or feed host under their own terms.</li>
     <li><strong>Add-ons</strong> are installed from, and checked against, addons.mozilla.org.</li>
     <li><strong>Mozilla accounts and Sync</strong>, if you use them, are operated by Mozilla under Mozilla's own terms.</li>
     <li><strong>Safe Browsing</strong> runs without Google's v4 lists in this build, because Fenn has no Safe Browsing key.</li>
