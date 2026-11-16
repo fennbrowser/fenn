@@ -136,11 +136,18 @@ test("raw submission is copied and kept behind the matching browser identity", a
   assert.equal(f.calls.length, 2);
   assert.equal((await f.consumer.execute(packet(1))).reason, "stale-request");
 });
+test("cached shortcut submissions carry their opaque ID and modifiers", async () => {
+  const f = fixture(); await f.consumer.execute(packet(1));
+  assert.equal((await f.consumer.execute(packet(2, 2, { browser: "90", text: "0a1b", modifiers: 10 }))).accepted, true);
+  assert.deepEqual(f.calls[1], ["submit", "90", "0a1b", 10]);
+});
 test("invalid identities and modifiers have no side effects", async () => {
   const f = fixture();
   for (const change of [{ session: Number(identity.session) }, { generation: "8" },
     { request: "18446744073709551616" }, { request: "01" }, { draft: "0" },
-    { kind: 2, browser: "90", text: "x", modifiers: 8 }]) {
+    { kind: 2, browser: "90", text: "x", modifiers: 16 },
+    { kind: 2, browser: "90", text: "Not an id", modifiers: 8 },
+    { kind: 2, browser: "90", text: "a".repeat(65), modifiers: 9 }]) {
     assert.equal((await f.consumer.execute({ ...packet(1), ...change })).reason, "invalid-envelope");
   }
   assert.equal(f.calls.length, 0);

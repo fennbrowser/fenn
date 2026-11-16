@@ -432,6 +432,7 @@ struct Pane {
 #ifdef WINUI_PANE_TESTING
     std::function<bool()> startupNormalIdentity;
     hstring startupInitialLabel;
+    hstring startupInitialNewTab;
     bool startupBeforeGecko{};
     bool startupInitialRtl{};
 #endif
@@ -627,6 +628,10 @@ struct Pane {
         address->bookmarksToolbar.BindWindow(parent);
         address->presentationChanged = [this] { RefreshAddressPresentation(); };
         address->newTab.activate = [this](hstring const& id) {
+            if (address->startupShortcut) {
+                address->startupShortcut(id);
+                return;
+            }
             NativeAddress::JObject action;
             action.SetNamedValue(L"version", NativeAddress::JValue::CreateNumberValue(1));
             action.SetNamedValue(L"command", NativeAddress::JValue::CreateStringValue(L"newtab-shortcut"));
@@ -3140,6 +3145,13 @@ HRESULT PrepareInteractiveStartup(HWND hwnd, const wchar_t* profile, const wchar
                 presenter->toolbarPreview = initialPresentation.GetNamedObject(L"toolbar");
                 pane.address->navigation->StartupLayout(presenter->toolbarPreview);
             }
+            // Only this launch's live answer (never the labels cache) offers the page.
+            if (initialPresentation.HasKey(L"newTab") && initialPresentation.GetNamedValue(L"newTab").ValueType() ==
+                                                             Windows::Data::Json::JsonValueType::Object) {
+                presenter->newTabPreview =
+                    NativeNewTabPage::ReadStartup(profile, initialPresentation.GetNamedObject(L"newTab"));
+                presenter->PresentNewTab();
+            }
         }
         // Finish the initial control layout before asking Windows to show its
         // opening fade. This does not show, cloak or recreate the HWND/editor.
@@ -3156,6 +3168,11 @@ HRESULT PrepareInteractiveStartup(HWND hwnd, const wchar_t* profile, const wchar
                                     initial.address->root.FlowDirection() == FlowDirection::RightToLeft;
         // Seed through the real editor callback before Gecko can bind. Never
         // available in the production DLL or parsed as browser navigation here.
+        std::wstring shown = initial.address->newTab.enabled ? L"on:" : L"off";
+        if (initial.address->newTab.enabled)
+            for (auto row : initial.address->newTab.state.GetNamedArray(L"shortcuts"))
+                shown += std::wstring(row.GetObject().GetNamedString(L"id")) + L",";
+        initial.startupInitialNewTab = hstring{shown};
         wchar_t queued[4097]{};
         const auto length = GetEnvironmentVariableW(L"FENN_TEST_STARTUP_TEXT", queued, 4097);
         if (length && length < 4097) {
@@ -3163,6 +3180,12 @@ HRESULT PrepareInteractiveStartup(HWND hwnd, const wchar_t* profile, const wchar
             pane.address->field.Text(queued);
             pane.address->Action(L"activate");
         }
+        // Activate a cached shortcut through the button's own callback.
+        wchar_t shortcut[65]{};
+        const auto shortcutLength = GetEnvironmentVariableW(L"FENN_TEST_STARTUP_SHORTCUT", shortcut, 65);
+        if (shortcutLength && shortcutLength < 65 && initial.address->newTab.enabled &&
+            initial.address->newTab.activate)
+            initial.address->newTab.activate(shortcut);
 #endif
         BeginPageHold(hwnd);
         // An island's window is white until XAML first composes, in either theme. Clip it away until then
@@ -3428,7 +3451,14 @@ static HRESULT WINAPI TestStartupDraft(HWND hwnd, uint32_t operation, const wcha
     };
     try {
         auto found = state().panes.find(hwnd);
-        if (found == state().panes.end() || !text || !pending || operation > 30) return E_INVALIDARG;
+        if (found == state().panes.end() || !text || !pending || operation > 31) return E_INVALIDARG;
+        if (operation == 31) {
+            // The cached new-tab page shown at first presentation, and whether it is shown now.
+            auto& pane = *found->second;
+            require(pane.startupInitialNewTab == text);
+            *pending = pane.address->newTab.enabled ? 1u : 0u;
+            return S_OK;
+        }
         if (operation == 30) {
             auto& pane = *found->second;
             const bool rtl = std::wstring_view(text) == L"rtl";

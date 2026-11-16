@@ -3,10 +3,11 @@ import {readFileSync} from "node:fs";
 import test from "node:test";
 import vm from "node:vm";
 
-function fixture() {
+function fixture(options={}) {
   const source=readFileSync(new URL("../upstream/firefox/browser/base/content/WinUINewTabPage.sys.mjs",import.meta.url),"utf8")
     .replace(/^import\b[^;]*;$/m,"")
-    .replace("export class WinUINewTabPage","this.WinUINewTabPage = class WinUINewTabPage");
+    .replace("export class WinUINewTabPage","this.WinUINewTabPage = class WinUINewTabPage")
+    .replace(/^export (async function|function) /gm,"$1 ");
   const attributes=new Set(),prefs=new Map([["fenn.winui.newtab.enabled",true]]),opened=[];
   const loadFlags={STATE_START:1,STATE_IS_NETWORK:2,STATE_STOP:4};
   const element={setAttribute:k=>attributes.add(k),removeAttribute:k=>attributes.delete(k)};
@@ -22,13 +23,20 @@ function fixture() {
     openTrustedLinkIn:(...args)=>opened.push(args)};
   const owner={addressToolbar:{active:true},addressSession:{sessionId:"session-1"},invalidateAddress(){},
     localization:()=>({formatValueSync:id=>id})};
-  const context=vm.createContext({authorizeNewTabWindow(){},ChromeUtils:{registerWindowActor(){},importESModule:()=>({AboutNewTab:about,BrowserUtils:{whereToOpenLink:e=>e.ctrlKey?"tab":"current"},NewTabPagePreloading:{removePreloadedBrowser(){}}})},
-    Services:{prefs:{getBoolPref:(key,fallback)=>prefs.get(key)??fallback,addObserver(){},removeObserver(){}},
-      obs:{addObserver(){},removeObserver(){}}},Ci:{nsIWebProgressListener:loadFlags}});
+  const files=new Map(),timers=[];let uuid=0;
+  const context=vm.createContext({authorizeNewTabWindow(){},ChromeUtils:{registerWindowActor(){},importESModule:()=>({AboutNewTab:about,BrowserUtils:{whereToOpenLink:e=>e.ctrlKey?"tab":"current"},NewTabPagePreloading:{removePreloadedBrowser(){}},
+      PrivateBrowsingUtils:{permanentPrivateBrowsing:false},setTimeout:callback=>timers.push(callback)})},
+    Services:{prefs:{getBoolPref:(key,fallback)=>prefs.get(key)??fallback,getIntPref:(key,fallback)=>prefs.get(key)??fallback,addObserver(){},removeObserver(){}},
+      obs:{addObserver(){},removeObserver(){}},uuid:{generateUUID:()=>`{0000000${++uuid}-0000-4000-8000-000000000000}`}},
+    Ci:{nsIWebProgressListener:loadFlags},console,
+    ...(options.io?{IOUtils:{
+      readJSON:async path=>{if(!files.has(path))throw new Error("missing");return JSON.parse(files.get(path));},
+      writeJSON:async(path,data)=>{files.set(path,JSON.stringify(data));}},
+      PathUtils:{profileDir:"P",join:(...parts)=>parts.join("/")}}:{})});
   vm.runInContext(source,context);
   const model=new context.WinUINewTabPage(window,owner);model.loadImage=()=>{};
   const action=id=>({version:1,command:"newtab-shortcut",id,session:"session-1",modifiers:0});
-  return {model,window,browser,about,owner,prefs,attributes,opened,action,loadFlags};
+  return {model,window,browser,about,owner,prefs,attributes,opened,action,loadFlags,context,files,timers};
 }
 
 function openPending(f) {
@@ -176,4 +184,55 @@ test("internal stock restoration preserves current typing once without changing 
     f.model.progress.onStateChange(f.browser,{isTopLevel:true},request,3);
     assert.equal(retained,once);assert.equal(value,"latest edit");
   }
+});
+
+test("startup offers the cached page only for a plain default-page launch",()=>{
+  const f=fixture();const expected=initial=>f.context.startupNewTabExpected(initial);
+  assert.equal(expected("about:home"),true);assert.equal(expected("about:newtab"),true);
+  for(const initial of ["about:blank","about:welcome|about:home","https://example.com/",""])
+    assert.equal(expected(initial),false,initial);
+  for(const [key,value] of [["browser.startup.page",3],["browser.sessionstore.resume_session_once",true],
+    ["fenn.winui.newtab.enabled",false],["browser.newtabpage.enabled",false],["fenn.winui.navigation.toolbar.enabled",false]]){
+    const g=fixture();g.prefs.set(key,value);assert.equal(g.context.startupNewTabExpected("about:home"),false,key);
+  }
+  const g=fixture();g.about.newTabURLOverridden=true;assert.equal(g.context.startupNewTabExpected("about:home"),false);
+});
+
+test("the startup cache keeps destinations in Firefox's file and resolves queued shortcuts",async()=>{
+  const f=fixture({io:true});
+  f.files.set("P/fenn-startup-newtab-targets.json",JSON.stringify({version:1,targets:{
+    abc:"https://example.com/",bad:"javascript:alert(1)","Upper":"https://example.org/"}}));
+  assert.equal(f.context.offerStartupNewTab("about:home"),true);
+  assert.equal(f.context.offerStartupNewTab("about:home"),false);
+  assert.equal(await f.context.resolveStartupShortcut("abc"),"https://example.com/");
+  assert.equal(await f.context.resolveStartupShortcut("bad"),null);
+  assert.equal(await f.context.resolveStartupShortcut("Upper"),null);
+  assert.equal(await f.context.resolveStartupShortcut("missing"),null);
+  f.about.getTopSites=()=>[{url:"https://example.com/",title:"Example"},{url:"https://new.example/",title:"New"}];
+  const live=f.model.snapshot();assert.equal(live.enabled,true);
+  assert.equal(f.timers.length,1);f.timers.shift()();
+  await new Promise(resolve=>setTimeout(resolve,10));
+  const presentation=JSON.parse(f.files.get("P/fenn-startup-newtab.json"));
+  const targets=JSON.parse(f.files.get("P/fenn-startup-newtab-targets.json")).targets;
+  assert.equal(JSON.stringify(presentation).includes("https:"),false);
+  assert.deepEqual(presentation.shortcuts.map(s=>s.label),["Example","New"]);
+  assert.equal(presentation.shortcuts[0].id,"abc");
+  assert.match(presentation.shortcuts[1].id,/^[0-9a-f]{32}$/);
+  assert.deepEqual(Object.values(targets),["https://example.com/","https://new.example/"]);
+  assert.equal(await f.context.resolveStartupShortcut(presentation.shortcuts[1].id),"https://new.example/");
+});
+
+test("the first startup window keeps its initial default page presented while it loads",()=>{
+  const f=fixture({io:true});f.window.gBrowser.tabs=[{}];
+  f.browser.currentURI.spec="about:blank";f.browser.browsingContext.currentWindowGlobal=null;
+  f.context.offerStartupNewTab("about:home");
+  const model=new f.context.WinUINewTabPage(f.window,f.owner);model.loadImage=()=>{};
+  assert.equal(model.snapshot().enabled,true);
+  const request={QueryInterface:()=>({originalURI:{spec:"about:home"}})};
+  f.browser.webProgress.isLoadingDocument=true;
+  model.progress.onStateChange(f.browser,{isTopLevel:true},request,3);
+  f.browser.currentURI.spec="about:home";model.progress.onLocationChange(f.browser);
+  assert.equal(model.snapshot().enabled,true);
+  const other=new f.context.WinUINewTabPage(f.window,f.owner);
+  assert.equal(other.pendingNewTabs.has(f.browser),false);
 });

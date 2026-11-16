@@ -1602,6 +1602,18 @@ struct NativeAddress {
             }
         });
     }
+    void PresentNewTab(JObject const& state) {
+        newTab.Apply(state);
+        SetNewTabCorners(newTab.enabled);
+        editorLayoutHeight = -1;
+        // One live theme surface joins the navigation row to the native page.
+        toolbarSurface.BorderThickness(newTab.enabled ? Microsoft::UI::Xaml::Thickness{}
+                                                      : Microsoft::UI::Xaml::Thickness{0, 0, 0, 1});
+        if (presentationChanged) presentationChanged();
+        ArrangeEditor();
+    }
+    // A cached new-tab shortcut activated before Firefox connects.
+    std::function<void(winrt::hstring const&)> startupShortcut;
     void PlacePopup() {
         if (!popup || !root.XamlRoot()) return;
         popup.XamlRoot(root.XamlRoot());
@@ -2058,13 +2070,7 @@ struct NativeAddress {
                                  true);
         animateEditorPlacement = !newTab.enabled && newTabState.GetNamedBoolean(L"enabled", false) &&
                                  newTabState.GetNamedBoolean(L"animate", false);
-        newTab.Apply(newTabState);
-        SetNewTabCorners(newTab.enabled);
-        editorLayoutHeight = -1;
-        // One live theme surface joins the navigation row to the native page.
-        toolbarSurface.BorderThickness(newTab.enabled ? Thickness{} : Thickness{0, 0, 0, 1});
-        if (presentationChanged) presentationChanged();
-        ArrangeEditor();
+        PresentNewTab(newTabState);
         syncing = true;
         try {
             auto placeholder = snapshot.GetNamedString(L"placeholder", L"Search or enter address");

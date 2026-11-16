@@ -839,7 +839,9 @@ pub unsafe extern "C" fn shell_core_startup_editor(
 }
 
 /// Local-only operations: 0 inspect, 1 add, 2 edit, 3 select, 4 close,
-/// 5 submit (argument=modifier bits shift/control/alt), 6 reorder (argument=index).
+/// 5 submit (argument=modifier bits shift/control/alt), 6 reorder (argument=index),
+/// 7 queue a cached new-tab shortcut (text=opaque ID, argument=modifier bits); its
+/// submission carries modifier bit 8 and the ID as text.
 /// No operation drains or acknowledges a browser command.
 /// # Safety
 /// Text must reference length UTF-16 units; output must be writable and disjoint.
@@ -862,10 +864,10 @@ pub unsafe extern "C" fn shell_core_startup(
         {
             return ShellStatus::Rejected;
         }
-        if core.startup_handoff.editor_browser != 0 && matches!(operation, 1 | 3 | 5) {
+        if core.startup_handoff.editor_browser != 0 && matches!(operation, 1 | 3 | 5 | 7) {
             return ShellStatus::Rejected;
         }
-        if output.is_null() || operation > 6 || (length != 0 && text.is_null()) {
+        if output.is_null() || operation > 7 || (length != 0 && text.is_null()) {
             return ShellStatus::InvalidArgument;
         }
         if core.queue.is_closed() {
@@ -888,6 +890,7 @@ pub unsafe extern "C" fn shell_core_startup(
             4 => s.close(tab),
             5 => s.submit(tab, argument),
             6 => s.reorder(tab, argument as usize),
+            7 => s.submit_shortcut(tab, argument, text),
             _ => unreachable!(),
         };
         if !accepted {

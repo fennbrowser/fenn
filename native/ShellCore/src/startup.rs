@@ -6,6 +6,9 @@ pub const STARTUP_MAX_TABS: usize = 32;
 pub const STARTUP_MAX_TEXT: usize = 32768;
 pub const STARTUP_MAX_SUBMISSIONS: usize = 64;
 pub const STARTUP_MAX_UNITS: usize = 262144;
+/// Submission modifier bit marking text as an opaque cached new-tab shortcut ID.
+pub const STARTUP_SHORTCUT: u32 = 8;
+pub const STARTUP_MAX_SHORTCUT_ID: usize = 64;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Draft {
@@ -203,11 +206,64 @@ impl Startup {
         self.next_request = request;
         true
     }
+    /// Queue activation of a shortcut from the cached new-tab presentation. The
+    /// ID is opaque here; Firefox resolves it against its own cached targets.
+    pub fn submit_shortcut(&mut self, id: u64, modifiers: u32, shortcut: &[u16]) -> bool {
+        let Some(tab) = self.tabs.iter_mut().find(|t| t.id == id) else {
+            return false;
+        };
+        if self.closed
+            || tab.composing
+            || modifiers & !7 != 0
+            || shortcut.is_empty()
+            || shortcut.len() > STARTUP_MAX_SHORTCUT_ID
+            || !shortcut
+                .iter()
+                .all(|c| matches!(c, 0x30..=0x39 | 0x61..=0x7a))
+            || self.submissions.len() == STARTUP_MAX_SUBMISSIONS
+        {
+            return false;
+        }
+        let Some(request) = self.next_request.checked_add(1) else {
+            return false;
+        };
+        tab.touched = true;
+        let revision = tab.revision;
+        self.submissions.push_back(Submission {
+            id: request,
+            tab: id,
+            revision,
+            modifiers: modifiers | STARTUP_SHORTCUT,
+            text: shortcut.to_vec(),
+        });
+        self.next_request = request;
+        true
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn shortcut_submissions_are_flagged_bounded_and_touch_the_draft() {
+        let mut s = Startup::default();
+        assert!(s.add());
+        assert!(!s.tabs[0].touched);
+        let id: Vec<u16> = "a1f".encode_utf16().collect();
+        assert!(s.submit_shortcut(1, 2, &id));
+        assert!(s.tabs[0].touched);
+        assert_eq!(s.submissions[0].modifiers, 2 | STARTUP_SHORTCUT);
+        assert_eq!(s.submissions[0].text, id);
+        assert!(s.tabs[0].text.is_empty());
+        assert!(!s.submit_shortcut(1, 8, &id));
+        assert!(!s.submit_shortcut(1, 0, &[]));
+        assert!(!s.submit_shortcut(1, 0, &"A".encode_utf16().collect::<Vec<_>>()));
+        assert!(!s.submit_shortcut(1, 0, &[0x61; STARTUP_MAX_SHORTCUT_ID + 1]));
+        assert!(!s.submit_shortcut(2, 0, &id));
+        assert_eq!(s.submissions.len(), 1);
+        assert!(s.close(1));
+        assert!(s.submissions.is_empty());
+    }
     #[test]
     fn submissions_survive_edits_and_keep_order_and_modifiers() {
         let mut s = Startup::default();

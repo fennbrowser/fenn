@@ -16,6 +16,9 @@ struct Presenter {
     bool applying{};
     bool browserEditor{};
     NativeNavigationToolbar::JObject toolbarPreview{nullptr};
+    // Cached new-tab page offered by this launch's live Firefox presentation.
+    // Shown for the selected local draft until it submits or Firefox publishes.
+    NativeNewTabPage::Object newTabPreview{nullptr};
     std::function<void()> browserAdd;
     // Retries the editor focus until Win32 keyboard focus is inside the island. Right after activation
     // XAML's logical focus is set but the host HWND still owns Win32 focus, so typed keys are lost.
@@ -342,6 +345,7 @@ struct Presenter {
         pane.address->toolbarRoot.IsHitTestVisible(true);
         pane.address->startupEdit = {};
         pane.address->startupSubmit = {};
+        pane.address->startupShortcut = {};
         pane.startupKey = {};
         restore();
     }
@@ -420,6 +424,24 @@ struct Presenter {
         pane.address->startupSubmit = [this](uint32_t modifiers) {
             if (Observe() && Run(5, view.selected, modifiers)) Refresh(false);
         };
+        pane.address->startupShortcut = [this](hstring const& id) {
+            const uint32_t modifiers = ((GetKeyState(VK_SHIFT) & 0x8000) ? 1 : 0) |
+                                       ((GetKeyState(VK_CONTROL) & 0x8000) ? 2 : 0) |
+                                       ((GetKeyState(VK_MENU) & 0x8000) ? 4 : 0);
+            if (Observe() && Run(7, view.selected, modifiers, id)) Refresh(false);
+        };
+    }
+    void PresentNewTab() {
+        if (!newTabPreview || browserEditor) return;
+        bool show = view.selected != 0;
+        for (uintptr_t i = 0; show && i < view.pending; ++i) {
+            ShellStartupView item{};
+            if (shell_core_startup_read(pane.shell.core, true, i, &item) == SHELL_STATUS_OK &&
+                item.tab == view.selected)
+                show = false;
+        }
+        if (show == pane.address->newTab.enabled && (!show || pane.address->newTab.state == newTabPreview)) return;
+        pane.address->PresentNewTab(show ? newTabPreview : NativeNewTabPage::Object());
     }
     bool Switching() const {
         ShellStartupTransfer state{};
@@ -492,6 +514,7 @@ struct Presenter {
                 return false;
             pane.address->startupEdit = {};
             pane.address->startupSubmit = {};
+            pane.address->startupShortcut = {};
             pane.address->field.IsReadOnly(false);
             SetBrowserEditor(true);
             // Local focus never started a Firefox query. Admit the ordinary
@@ -523,6 +546,7 @@ struct Presenter {
         if (firstApply) {
             pane.address->startupEdit = {};
             pane.address->startupSubmit = {};
+            pane.address->startupShortcut = {};
             pane.address->field.IsReadOnly(false);
             SetBrowserEditor(true);
             if (pane.address->EditorOwned()) pane.address->Action(L"focus");
@@ -596,6 +620,7 @@ struct Presenter {
         pane.startupKey = {};
         pane.address->startupEdit = {};
         pane.address->startupSubmit = {};
+        pane.address->startupShortcut = {};
         // Gecko attachment exposes a new accessible document beneath the host.
         // Reaffirm the retained native focus owner without moving focus, changing
         // selection, or recreating the editor (which would interrupt IME).
@@ -705,6 +730,7 @@ struct Presenter {
             if (pane.address->field.Text() != text) pane.address->field.Text(text);
             pane.address->field.Select(view.selection_start, view.selection_length);
         }
+        PresentNewTab();
     }
 };
 }  // namespace LocalStartup

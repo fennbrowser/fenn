@@ -13,7 +13,8 @@ function fixture({ mode = "1", platform = "win", owns = true, failure = false, r
     AppConstants: { platform, BROWSER_CHROME_URL: "chrome://browser/content/browser.xhtml" },
     XPCOMUtils: { defineLazyServiceGetters() {}, defineLazyPreferenceGetter() {} },
     console: {error() {}},
-    ChromeUtils: { importESModule: () => ({prepareStartupPresentation: () => {
+    ChromeUtils: { importESModule: () => ({prepareStartupPresentation: initial => {
+      calls.push({ initial });
       if(localizationFailure)throw Error("localization unavailable");
       return '{"version":2,"rtl":true}';
     }}), defineESModuleGetters(lazy) {
@@ -33,16 +34,27 @@ function fixture({ mode = "1", platform = "win", owns = true, failure = false, r
   });
   vm.runInContext(source, context);
   context.tracker.registerOpeningWindow = (window, privateWindow) => calls.push({ registered: window === win, privateWindow });
-  return { calls, open: () => context.tracker.openWindow({ args: { destination: "queued" }, private: true, remote: false, fission: true }) };
+  return { calls, open: (args = { destination: "queued" }, privateWindow = true) =>
+    context.tracker.openWindow({ args, private: privateWindow, remote: false, fission: true }) };
 }
+
+test("only a plain non-private launch reports its initial page for the cached new tab", () => {
+  const home = { QueryInterface: () => ({ data: "about:home" }) };
+  for (const [args, privateWindow, expected] of [[home, false, "about:home"], [home, true, ""],
+    [{ QueryInterface() { throw Error("not a string"); } }, false, ""]]) {
+    const f = fixture(); f.open(args, privateWindow);
+    assert.equal(f.calls.find(c => c?.initial !== undefined).initial, expected);
+  }
+});
 
 test("native preparation follows routing and precedes browser chrome with unchanged options", () => {
   const f = fixture(); f.open();
   assert.equal(f.calls[0], "routing");
-  assert.equal(f.calls[1], "fenn-native-startup-window");
-  assert.match(f.calls[2].open[3], /,private,non-remote,fission/);
-  assert.equal(f.calls[2].open[4].destination, "queued");
-  assert.deepEqual(f.calls[3], { registered: true, privateWindow: true });
+  assert.equal(f.calls[1].initial, "");
+  assert.equal(f.calls[2], "fenn-native-startup-window");
+  assert.match(f.calls[3].open[3], /,private,non-remote,fission/);
+  assert.equal(f.calls[3].open[4].destination, "queued");
+  assert.deepEqual(f.calls[4], { registered: true, privateWindow: true });
 });
 
 test("later windows do not repeat the one-use native preparation or localization", () => {
@@ -53,8 +65,8 @@ test("later windows do not repeat the one-use native preparation or localization
 
 test("unavailable localization retains native fallback and browser creation",()=>{
   const f=fixture({localizationFailure:true});f.open();
-  assert.equal(f.calls[1],"fenn-native-startup-window");
-  assert.equal(f.calls[3].registered,true);
+  assert.equal(f.calls[2],"fenn-native-startup-window");
+  assert.equal(f.calls[4].registered,true);
 });
 
 for (const failure of ["throw", "null"]) {

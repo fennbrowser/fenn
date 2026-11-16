@@ -36,6 +36,56 @@ struct NativeNewTabPage {
         }
         return value;
     }
+    // Before Firefox connects: this launch's live offer supplies the localized
+    // name, and Firefox's profile cache (fenn-startup-newtab.json) the artwork
+    // and opaque shortcut IDs. A missing or invalid cache presents no shortcuts.
+    static Object ReadStartup(const wchar_t* profile, Object const& offer) {
+        using winrt::Windows::Data::Json::JsonArray;
+        using winrt::Windows::Data::Json::JsonValue;
+        Object value;
+        value.Insert(L"enabled", JsonValue::CreateBooleanValue(true));
+        value.Insert(L"name", JsonValue::CreateStringValue(offer.GetNamedString(L"name")));
+        value.Insert(L"shortcutsLabel", JsonValue::CreateStringValue(offer.GetNamedString(L"shortcutsLabel")));
+        value.Insert(L"shortcuts", JsonArray());
+        Object wrapper;
+        wrapper.Insert(L"newTab", value);
+        Read(wrapper);
+        try {
+            if (!profile || !*profile) return value;
+            const auto path = std::wstring(profile) + L"\\fenn-startup-newtab.json";
+            HANDLE file =
+                CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
+                            OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+            if (file == INVALID_HANDLE_VALUE) return value;
+            struct Close {
+                HANDLE value;
+                ~Close() { CloseHandle(value); }
+            } close{file};
+            LARGE_INTEGER size{};
+            if (!GetFileSizeEx(file, &size) || size.QuadPart <= 0 || size.QuadPart > 524288) return value;
+            std::string bytes(static_cast<size_t>(size.QuadPart), '\0');
+            DWORD read{};
+            if (!ReadFile(file, bytes.data(), static_cast<DWORD>(bytes.size()), &read, nullptr) || read != bytes.size())
+                return value;
+            auto cached = Object::Parse(winrt::to_hstring(bytes));
+            if (cached.GetNamedNumber(L"version") != 1) return value;
+            Object candidate = Object::Parse(value.Stringify());
+            if (cached.HasKey(L"image")) candidate.Insert(L"image", cached.GetNamedValue(L"image"));
+            candidate.Insert(L"shortcuts", cached.GetNamedArray(L"shortcuts"));
+            Object check;
+            check.Insert(L"newTab", candidate);
+            Read(check);
+            for (auto row : candidate.GetNamedArray(L"shortcuts")) {
+                const auto id = row.GetObject().GetNamedString(L"id");
+                if (!std::all_of(id.begin(), id.end(),
+                                 [](wchar_t c) { return (c >= L'0' && c <= L'9') || (c >= L'a' && c <= L'z'); }))
+                    return value;
+            }
+            return candidate;
+        } catch (...) {
+            return value;
+        }
+    }
     void Create(Microsoft::UI::Xaml::Controls::Canvas const& canvas) {
         using namespace Microsoft::UI::Xaml;
         using namespace Microsoft::UI::Xaml::Controls;

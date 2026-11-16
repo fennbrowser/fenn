@@ -24,7 +24,7 @@
  layout or meaning of anything in [`ffi`] changes; the native host refuses to
  use a core whose version it was not compiled against.
  */
-#define SHELL_CORE_ABI_VERSION 100
+#define SHELL_CORE_ABI_VERSION 101
 
 #define MAX_EDIT_ID 9007199254740991
 
@@ -213,6 +213,13 @@
 #define STARTUP_MAX_SUBMISSIONS 64
 
 #define STARTUP_MAX_UNITS 262144
+
+/*
+ Submission modifier bit marking text as an opaque cached new-tab shortcut ID.
+ */
+#define STARTUP_SHORTCUT 8
+
+#define STARTUP_MAX_SHORTCUT_ID 64
 
 #define STARTUP_BROWSER_ROWS 4096
 
@@ -1862,7 +1869,9 @@ ShellStatus shell_core_startup_editor(ShellCore *core,
 
 /*
  Local-only operations: 0 inspect, 1 add, 2 edit, 3 select, 4 close,
- 5 submit (argument=modifier bits shift/control/alt), 6 reorder (argument=index).
+ 5 submit (argument=modifier bits shift/control/alt), 6 reorder (argument=index),
+ 7 queue a cached new-tab shortcut (text=opaque ID, argument=modifier bits); its
+ submission carries modifier bit 8 and the ID as text.
  No operation drains or acknowledges a browser command.
  # Safety
  Text must reference length UTF-16 units; output must be writable and disjoint.

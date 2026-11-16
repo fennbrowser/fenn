@@ -12125,14 +12125,14 @@ index a0dca5e087..69a6f0b5f7 100644
 -networkProtocolError=Firefox has experienced a network protocol violation that cannot be repaired.
 +networkProtocolError=Fenn has experienced a network protocol violation that cannot be repaired.
 diff --git a/browser/modules/BrowserWindowTracker.sys.mjs b/browser/modules/BrowserWindowTracker.sys.mjs
-index d90f63e373..5b7306c0d9 100644
+index d90f63e373..6ddad7e9c2 100644
 --- a/browser/modules/BrowserWindowTracker.sys.mjs
 +++ b/browser/modules/BrowserWindowTracker.sys.mjs
 @@ -40,2 +40,3 @@ const DEBUG = false;
  let _lastCurrentBrowserId = 0;
 +let nativeStartupAttempted = false;
  let _trackedWindows = [];
-@@ -394,9 +395,46 @@ export const BrowserWindowTracker = {
+@@ -394,9 +395,52 @@ export const BrowserWindowTracker = {
  
 -    let win = Services.ww.openWindow(
 -      openerWindow,
@@ -12160,7 +12160,13 @@ index d90f63e373..5b7306c0d9 100644
 +        const { prepareStartupPresentation } = ChromeUtils.importESModule(
 +          "chrome://browser/content/WinUIAutomaticStartup.sys.mjs"
 +        );
-+        presentation = prepareStartupPresentation();
++        let initial = "";
++        try {
++          initial = isPrivate
++            ? ""
++            : args.QueryInterface(Ci.nsISupportsString).data;
++        } catch {}
++        presentation = prepareStartupPresentation(initial);
 +      } catch (error) {
 +        console.error("Initial native startup localization unavailable", error);
 +      }
@@ -19432,14 +19438,152 @@ index 0000000000..1faf496e02
 +<html id="fenn-native-newtab"><head><meta charset="utf-8"></head><body></body></html>
 diff --git a/browser/base/content/WinUINewTabPage.sys.mjs b/browser/base/content/WinUINewTabPage.sys.mjs
 new file mode 100644
-index 0000000000..2b1f92869a
+index 0000000000..ae9ba0677a
 --- /dev/null
 +++ b/browser/base/content/WinUINewTabPage.sys.mjs
-@@ -0,0 +1,449 @@
+@@ -0,0 +1,604 @@
 +// Firefox owns new-tab eligibility and shortcut destinations. The native page
 +// consumes the existing address publication (a ShellCore Session stream).
 +import { authorizeNewTabWindow } from "chrome://browser/content/WinUINewTabDocument.sys.mjs";
 +let actorRegistered = false;
++
++// Presentation the native shell reads before Firefox connects: labels, decoded
++// pixels and opaque IDs only. Destinations stay in a separate Firefox-only file.
++const STARTUP_PRESENTATION = "fenn-startup-newtab.json";
++const STARTUP_TARGETS = "fenn-startup-newtab-targets.json";
++let startupTargets = null,
++  startupPreviewOffered = false,
++  startupClaimed = false,
++  startupPending = null,
++  startupTimer = null,
++  startupWriting = null,
++  startupKey = "";
++
++export function startupNewTabExpected(initial) {
++  try {
++    const { PrivateBrowsingUtils } = ChromeUtils.importESModule(
++      "resource://gre/modules/PrivateBrowsingUtils.sys.mjs"
++    );
++    const { AboutNewTab } = ChromeUtils.importESModule(
++      "resource:///modules/AboutNewTab.sys.mjs"
++    );
++    const pref = (name, value) => Services.prefs.getBoolPref(name, value);
++    return (
++      ["about:home", "about:newtab"].includes(initial) &&
++      pref("fenn.winui.newtab.enabled", true) &&
++      pref("browser.newtabpage.enabled", true) &&
++      pref("fenn.winui.navigation.toolbar.enabled", true) &&
++      Services.prefs.getIntPref("browser.startup.page", 1) !== 3 &&
++      !pref("browser.sessionstore.resume_session_once", false) &&
++      !PrivateBrowsingUtils.permanentPrivateBrowsing &&
++      !AboutNewTab.newTabURLOverridden &&
++      AboutNewTab.newTabURL === "about:newtab"
++    );
++  } catch {
++    return false;
++  }
++}
++
++// Called once, when routing has resolved the profile and before the first
++// window opens. Reads the targets that match what the shell may now present.
++export function offerStartupNewTab(initial) {
++  if (startupPreviewOffered || !startupNewTabExpected(initial)) return false;
++  startupPreviewOffered = true;
++  loadStartupTargets();
++  return true;
++}
++
++function loadStartupTargets() {
++  startupTargets ||= IOUtils.readJSON(
++    PathUtils.join(PathUtils.profileDir, STARTUP_TARGETS)
++  )
++    .then(data =>
++      data?.version === 1 && data.targets && typeof data.targets === "object"
++        ? new Map(
++            Object.entries(data.targets).filter(
++              ([id, url]) =>
++                /^[0-9a-z]{1,64}$/.test(id) &&
++                typeof url === "string" &&
++                /^https?:\/\//i.test(url)
++            )
++          )
++        : new Map()
++    )
++    .catch(() => new Map());
++  return startupTargets;
++}
++
++// Resolves a shortcut the user activated in the cached startup presentation.
++export async function resolveStartupShortcut(id) {
++  if (typeof id !== "string" || !/^[0-9a-z]{1,64}$/.test(id)) return null;
++  return (await loadStartupTargets()).get(id) || null;
++}
++
++function scheduleStartupCache(presentation, rows) {
++  if (typeof IOUtils === "undefined") return;
++  startupPending = { presentation, rows };
++  if (startupTimer) return;
++  const { setTimeout } = ChromeUtils.importESModule(
++    "resource://gre/modules/Timer.sys.mjs"
++  );
++  startupTimer = setTimeout(() => {
++    startupTimer = null;
++    writeStartupCache().catch(error =>
++      console.error("Native startup new tab cache unavailable", error)
++    );
++  }, 1000);
++}
++
++async function writeStartupCache() {
++  if (startupWriting) {
++    await startupWriting;
++    if (startupTimer || !startupPending) return;
++  }
++  const next = startupPending;
++  startupPending = null;
++  if (!next) return;
++  startupWriting = (async () => {
++    const previous = await loadStartupTargets();
++    const byUrl = new Map([...previous].map(([id, url]) => [url, id]));
++    const targets = {};
++    const shortcuts = next.presentation.shortcuts.map((item, index) => {
++      const url = next.rows[index].url;
++      let id = byUrl.get(url);
++      if (!id) {
++        id = Services.uuid
++          .generateUUID()
++          .toString()
++          .replace(/[^0-9a-f]/g, "");
++      }
++      targets[id] = url;
++      return { id, label: item.label, image: item.image };
++    });
++    const presentation = {
++      version: 1,
++      name: next.presentation.name,
++      shortcutsLabel: next.presentation.shortcutsLabel,
++      image: next.presentation.image,
++      shortcuts,
++    };
++    const key = JSON.stringify([presentation, targets]);
++    if (key === startupKey) return;
++    // Targets first: a presented ID must always resolve, or be rejected.
++    for (const [name, data] of [
++      [STARTUP_TARGETS, { version: 1, targets }],
++      [STARTUP_PRESENTATION, presentation],
++    ]) {
++      const path = PathUtils.join(PathUtils.profileDir, name);
++      await IOUtils.writeJSON(path, data, { tmpPath: path + ".tmp" });
++    }
++    startupTargets = Promise.resolve(new Map(Object.entries(targets)));
++    startupKey = key;
++  })();
++  try {
++    await startupWriting;
++  } finally {
++    startupWriting = null;
++  }
++}
 +export class WinUINewTabPage {
 +  constructor(window, owner) {
 +    this.window = window;
@@ -19477,6 +19621,18 @@ index 0000000000..2b1f92869a
 +    };
 +    window.gBrowser.tabContainer.addEventListener("TabOpen", this.tabsChanged);
 +    window.gBrowser.tabContainer.addEventListener("TabClose", this.tabsChanged);
++    if (startupPreviewOffered && !startupClaimed) {
++      // The shell may already show the cached page for this window's first
++      // tab. Keep that presentation through the initial default-page load.
++      startupClaimed = true;
++      const browser = window.gBrowser.selectedBrowser;
++      if (
++        window.gBrowser.tabs.length === 1 &&
++        (browser.currentURI.spec === "about:blank" ||
++          browser.webProgress?.isLoadingDocument)
++      )
++        this.pendingNewTabs.add(browser);
++    }
 +    this.authorize();
 +    this.changed = event => {
 +      if (event?.type === "TabSelect")
@@ -19515,7 +19671,8 @@ index 0000000000..2b1f92869a
 +          try {
 +            target = request.QueryInterface(Ci.nsIChannel).originalURI.spec;
 +          } catch {}
-+          if (target !== "about:newtab") this.pendingNewTabs.delete(browser);
++          if (target !== "about:newtab" && target !== "about:home")
++            this.pendingNewTabs.delete(browser);
 +        }
 +        if (flags & STATE_STOP && flags & STATE_IS_NETWORK)
 +          this.pendingNewTabs.delete(browser);
@@ -19642,7 +19799,9 @@ index 0000000000..2b1f92869a
 +    const pending =
 +      presentation &&
 +      this.pendingNewTabs.has(browser) &&
-+      ["about:blank", "about:newtab"].includes(browser.currentURI.spec);
++      ["about:blank", "about:newtab", "about:home"].includes(
++        browser.currentURI.spec
++      );
 +    const { AboutNewTab } = ChromeUtils.importESModule(
 +      "resource:///modules/AboutNewTab.sys.mjs"
 +    );
@@ -19745,7 +19904,7 @@ index 0000000000..2b1f92869a
 +    for (const [index, row] of (this.rows || []).entries())
 +      this.loadImage(row.url, false, sources[index]);
 +    this.loadImage("chrome://branding/content/icon128.png", true);
-+    return {
++    const result = {
 +      enabled: true,
 +      animate: !!this.entryMotion,
 +      name: this.owner.localization().formatValueSync("winui-newtab-name"),
@@ -19759,6 +19918,8 @@ index 0000000000..2b1f92869a
 +        image: this.images.get(sources[index] || url) || null,
 +      })),
 +    };
++    if (!pending) scheduleStartupCache(result, this.rows || []);
++    return result;
 +  }
 +  async loadImage(url, branding = false, suppliedSource = "") {
 +    const key = suppliedSource || url;
@@ -20561,10 +20722,10 @@ index 0000000000..92444c0642
 +}
 diff --git a/browser/base/content/WinUIAutomaticStartup.sys.mjs b/browser/base/content/WinUIAutomaticStartup.sys.mjs
 new file mode 100644
-index 0000000000..b5c6ef2887
+index 0000000000..37b98fd0f8
 --- /dev/null
 +++ b/browser/base/content/WinUIAutomaticStartup.sys.mjs
-@@ -0,0 +1,414 @@
+@@ -0,0 +1,425 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -20723,7 +20884,7 @@ index 0000000000..b5c6ef2887
 +
 +// Routing has resolved the profile, but no browser document or native controls
 +// exist yet. Use Firefox's negotiated Fluent resources and direction directly.
-+export function prepareStartupPresentation() {
++export function prepareStartupPresentation(initial = null) {
 +  const l10n = new Localization(
 +    ["branding/brand.ftl", "browser/tabbrowser.ftl"],
 +    true
@@ -20742,13 +20903,24 @@ index 0000000000..b5c6ef2887
 +  const toolbar = startupToolbarPresentation();
 +  watchStartupPresentation();
 +  persistStartupLabels({}, labels, toolbar);
-+  return JSON.stringify({
++  const presentation = {
 +    version: 3,
 +    locale: Services.locale.appLocaleAsBCP47,
 +    rtl: Services.locale.isAppLocaleRTL,
 +    labels,
 +    toolbar,
-+  });
++  };
++  if (initial !== null) {
++    const { offerStartupNewTab } = ChromeUtils.importESModule(
++      "chrome://browser/content/WinUINewTabPage.sys.mjs"
++    );
++    // Only this launch's live answer enables the cached page, never the labels cache.
++    presentation.newTab = offerStartupNewTab(initial) && {
++      name: l10n.formatValueSync("winui-newtab-name"),
++      shortcutsLabel: l10n.formatValueSync("winui-newtab-shortcuts"),
++    };
++  }
++  return JSON.stringify(presentation);
 +}
 +function startupToolbarPresentation() {
 +  const { CustomizableUI } = ChromeUtils.importESModule(
@@ -21038,10 +21210,10 @@ index 0000000000..bc6974c023
 +#endif
 diff --git a/browser/base/content/WinUIStartupTransfer.sys.mjs b/browser/base/content/WinUIStartupTransfer.sys.mjs
 new file mode 100644
-index 0000000000..dd26bea02f
+index 0000000000..81c2cc292b
 --- /dev/null
 +++ b/browser/base/content/WinUIStartupTransfer.sys.mjs
-@@ -0,0 +1,757 @@
+@@ -0,0 +1,794 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -21123,7 +21295,8 @@ index 0000000000..dd26bea02f
 +          input.text.length > 32768 ||
 +          !Number.isInteger(input.modifiers) ||
 +          input.modifiers < 0 ||
-+          input.modifiers > 7))
++          input.modifiers > 15 ||
++          (input.modifiers & 8 && !/^[0-9a-z]{1,64}$/.test(input.text))))
 +    ) {
 +      return reject("invalid-envelope");
 +    }
@@ -21672,6 +21845,41 @@ index 0000000000..dd26bea02f
 +    reason = value;
 +    return false;
 +  };
++  // A shortcut from the cached new-tab presentation, queued before Firefox
++  // connected. Its destination is resolved here and only if still cached.
++  const openStartupShortcut = async (tab, id, modifiers, live) => {
++    const { resolveStartupShortcut } = ChromeUtils.importESModule(
++      "chrome://browser/content/WinUINewTabPage.sys.mjs"
++    );
++    const url = await resolveStartupShortcut(id);
++    if (!url) return refuse("shortcut-unavailable");
++    if (!live() || resolve(String(pane.tabIds.get(tab))) !== tab)
++      return refuse("target-changed");
++    if (pane.processingAction || window.gDialogBox.isOpen)
++      return refuse("browser-busy");
++    const { BrowserUtils } = ChromeUtils.importESModule(
++      "resource://gre/modules/BrowserUtils.sys.mjs"
++    );
++    browser.selectedTab = tab;
++    const where = BrowserUtils.whereToOpenLink(
++      {
++        shiftKey: !!(modifiers & 1),
++        ctrlKey: !!(modifiers & 2),
++        altKey: !!(modifiers & 4),
++        metaKey: false,
++        button: 0,
++      },
++      false,
++      true
++    );
++    window.openTrustedLinkIn(url, where, {
++      fromChrome: true,
++      userContextId: tab.getAttribute("usercontextid") || 0,
++    });
++    pane.addressPublication = null;
++    pane.invalidateAddress();
++    return true;
++  };
 +  return new WinUIStartupTransfer(identity, {
 +    current,
 +    reason: () => reason,
@@ -21731,6 +21939,7 @@ index 0000000000..dd26bea02f
 +        return refuse("target-unavailable");
 +      if (pane.processingAction || window.gDialogBox.isOpen)
 +        return refuse("browser-busy");
++      if (modifiers & 8) return openStartupShortcut(tab, text, modifiers, live);
 +      browser.selectedTab = tab;
 +      pane.syncAddress();
 +      const session = pane.addressSession;
